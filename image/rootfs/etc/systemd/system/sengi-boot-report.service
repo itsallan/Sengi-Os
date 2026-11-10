@@ -1,0 +1,9 @@
+[Unit]
+Description=Report boot time and idle memory to the serial port (boot test only)
+ConditionCredential=sengi.test
+
+[Service]
+ExecStart=/usr/libexec/sengi-boot-report
+
+[Install]
+WantedBy=graphical.target

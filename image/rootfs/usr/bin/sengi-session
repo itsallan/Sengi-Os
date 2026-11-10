@@ -1,0 +1,7 @@
+#!/bin/sh
+# Start the Sengi OS desktop session.
+export XDG_CURRENT_DESKTOP=sengi:wlroots
+export XDG_SESSION_DESKTOP=sengi
+export XDG_SESSION_TYPE=wayland
+export MOZ_ENABLE_WAYLAND=1
+exec labwc

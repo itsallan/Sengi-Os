@@ -1,0 +1,50 @@
+<?xml version="1.0"?>
+<labwc_config>
+  <core>
+    <decoration>server</decoration>
+    <gap>@{space.xs}</gap>
+  </core>
+
+  <theme>
+    <name>Sengi</name>
+    <cornerRadius>@{radius.base}</cornerRadius>
+    <titlebar>
+      <!-- Window buttons sit on the left: close, minimise, maximise. -->
+      <layout>close,iconify,max:</layout>
+      <showTitle>yes</showTitle>
+    </titlebar>
+    <font place="ActiveWindow">
+      <name>@{type.family}</name>
+      <size>@{type.pt-md}</size>
+      <weight>bold</weight>
+    </font>
+    <font place="InactiveWindow">
+      <name>@{type.family}</name>
+      <size>@{type.pt-md}</size>
+    </font>
+    <font place="MenuItem">
+      <name>@{type.family}</name>
+      <size>@{type.pt-md}</size>
+    </font>
+    <font place="OnScreenDisplay">
+      <name>@{type.family}</name>
+      <size>@{type.pt-md}</size>
+    </font>
+  </theme>
+
+  <keyboard>
+    <default />
+    <keybind key="W-space">
+      <action name="Execute" command="fuzzel" />
+    </keybind>
+    <keybind key="W-Return">
+      <action name="Execute" command="sengi-run foot" />
+    </keybind>
+    <keybind key="W-l">
+      <action name="Execute" command="swaylock -f" />
+    </keybind>
+    <keybind key="W-q">
+      <action name="Close" />
+    </keybind>
+  </keyboard>
+</labwc_config>

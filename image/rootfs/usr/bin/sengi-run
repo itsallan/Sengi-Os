@@ -1,0 +1,7 @@
+#!/bin/sh
+# Launch an app in its own scope under app.slice, so the compositor and the
+# shell keep CPU and I/O priority over it and oomd can act on it alone.
+[ $# -gt 0 ] || { echo "usage: sengi-run COMMAND [ARGS...]" >&2; exit 2; }
+name=$(basename "$1" | tr -c 'A-Za-z0-9\n' '_')
+exec systemd-run --user --quiet --collect --scope --slice=app.slice \
+	--unit="app-$name-$$" -- "$@"

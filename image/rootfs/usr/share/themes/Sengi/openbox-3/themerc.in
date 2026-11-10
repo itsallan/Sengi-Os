@@ -1,0 +1,47 @@
+# Sengi OS window theme for labwc. Rendered from tokens/sengi.toml.
+
+border.width: @{border.width}
+
+window.titlebar.padding.width: @{space.sm}
+window.titlebar.padding.height: @{space.xxs}
+window.label.text.justify: center
+
+window.active.border.color: @{color.border}
+window.inactive.border.color: @{color.border}
+window.active.title.bg.color: @{color.surface}
+window.inactive.title.bg.color: @{color.bg}
+window.active.label.text.color: @{color.text}
+window.inactive.label.text.color: @{color.text-muted}
+
+window.button.width: @{size.button}
+window.button.height: @{size.button}
+window.button.spacing: @{space.xxs}
+window.button.hover.bg.color: @{color.surface-hover}
+window.button.hover.bg.corner-radius: @{radius.base}
+window.active.button.unpressed.image.color: @{color.text}
+window.inactive.button.unpressed.image.color: @{color.text-disabled}
+window.active.button.close.unpressed.image.color: @{color.danger}
+
+menu.border.width: @{border.width}
+menu.border.color: @{color.border}
+menu.items.padding.x: @{space.md}
+menu.items.padding.y: @{space.xs}
+menu.items.bg.color: @{color.surface}
+menu.items.text.color: @{color.text}
+menu.items.active.bg.color: @{color.accent}
+menu.items.active.text.color: @{color.accent-text}
+menu.separator.color: @{color.border}
+menu.title.bg.color: @{color.surface}
+menu.title.text.color: @{color.text-muted}
+
+osd.bg.color: @{color.surface}
+osd.border.color: @{color.border}
+osd.border.width: @{border.width}
+osd.label.text.color: @{color.text}
+osd.window-switcher.padding: @{space.sm}
+osd.window-switcher.item.padding.x: @{space.sm}
+osd.window-switcher.item.padding.y: @{space.xs}
+osd.window-switcher.item.active.border.width: @{border.width}
+
+snapping.overlay.region.bg.color: @{color.scrim}
+snapping.overlay.edge.bg.color: @{color.scrim}

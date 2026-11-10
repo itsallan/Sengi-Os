@@ -1,0 +1,81 @@
+#!/bin/sh
+# Runs as root inside the builder container (see scripts/build-iso.sh).
+# Bootstraps Debian, applies the Sengi OS overlay, and writes a hybrid
+# BIOS/UEFI live ISO to /out.
+set -eu
+
+: "${SUITE:?}" "${SNAPSHOT:?}" "${SOURCE_DATE_EPOCH:?}" "${VERSION:?}"
+export SOURCE_DATE_EPOCH LC_ALL=C TZ=UTC
+
+src=/src
+work=${WORK:-/work}
+out=${OUT:-/out}
+name=sengi-os-$VERSION-amd64
+mirror=http://snapshot.debian.org/archive/debian/$SNAPSHOT
+security=http://snapshot.debian.org/archive/debian-security/$SNAPSHOT
+
+rm -rf "$work/root" "$work/iso" "$work/overlay"
+mkdir -p "$work/iso/live" "$work/iso/boot/grub" "$out"
+
+"$src/scripts/render-tokens.sh" --tree "$src/image/rootfs" "$work/overlay"
+
+components=main
+packages=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$src/image/packages.list" | paste -sd, -)
+if [ "${SENGI_NONFREE_FIRMWARE:-0}" = 1 ]; then
+	components="main non-free-firmware"
+	packages="$packages,firmware-iwlwifi,firmware-intel-graphics,intel-microcode"
+fi
+
+mmdebstrap --variant=minbase \
+	--components="$components" \
+	--include="$packages" \
+	--aptopt='APT::Install-Recommends "false"' \
+	--aptopt='Acquire::Check-Valid-Until "false"' \
+	--dpkgopt='path-exclude=/usr/share/man/*' \
+	--dpkgopt='path-exclude=/usr/share/doc/*' \
+	--dpkgopt='path-include=/usr/share/doc/*/copyright' \
+	--dpkgopt='path-exclude=/usr/share/locale/*' \
+	--dpkgopt='path-exclude=/usr/share/info/*' \
+	--customize-hook="VERSION=$VERSION OVERLAY=$work/overlay $src/image/customize.sh \"\$1\"" \
+	"$SUITE" "$work/root" \
+	"deb $mirror $SUITE $components" \
+	"deb $mirror $SUITE-updates $components" \
+	"deb $security $SUITE-security $components"
+
+root=$work/root
+
+# Things mmdebstrap manages itself during the bootstrap, so they are set here.
+cat >"$root/etc/apt/sources.list" <<LIST
+deb http://deb.debian.org/debian $SUITE $components
+deb http://deb.debian.org/debian $SUITE-updates $components
+deb http://security.debian.org/debian-security $SUITE-security $components
+LIST
+ln -sf ../run/systemd/resolve/stub-resolv.conf "$root/etc/resolv.conf"
+
+# The kernel and initrd boot from the ISO, not from inside the squashfs.
+cp "$root"/boot/vmlinuz-* "$work/iso/live/vmlinuz"
+cp "$root"/boot/initrd.img-* "$work/iso/live/initrd.img"
+rm -f "$root"/boot/vmlinuz-* "$root"/boot/initrd.img-* "$root"/vmlinuz* "$root"/initrd.img*
+
+# Anything that differs from one build to the next has to go.
+rm -rf "$root"/var/lib/apt/lists/* "$root"/var/cache/apt/* "$root"/var/log/* \
+	"$root"/var/cache/ldconfig/aux-cache "$root"/var/cache/fontconfig/* \
+	"$root"/var/cache/debconf/*-old "$root"/var/lib/dpkg/*-old \
+	"$root"/var/lib/systemd/random-seed "$root"/etc/.pwd.lock \
+	"$root"/tmp/* "$root"/run/* "$root"/root/.[!.]*
+: >"$root/etc/machine-id"
+
+env -u SOURCE_DATE_EPOCH mksquashfs "$root" "$work/iso/live/filesystem.squashfs" \
+	-noappend -no-progress -comp zstd -Xcompression-level 15 -b 1M \
+	-all-time "$SOURCE_DATE_EPOCH" -mkfs-time "$SOURCE_DATE_EPOCH" >/dev/null
+
+sed "s/@VERSION@/$VERSION/g" "$src/image/grub.cfg" >"$work/iso/boot/grub/grub.cfg"
+find "$work/iso" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+
+grub-mkrescue -o "$out/$name.iso" "$work/iso" -- \
+	-volid SENGIOS -volume_date uuid "$(date -u -d "@$SOURCE_DATE_EPOCH" +%Y%m%d%H%M%S00)" \
+	2>"$work/xorriso.log" || { cat "$work/xorriso.log" >&2; exit 1; }
+
+(cd "$out" && sha256sum "$name.iso" >"$name.iso.sha256")
+chmod a+r "$out/$name.iso" "$out/$name.iso.sha256"
+du -h "$out/$name.iso"

@@ -1,0 +1,10 @@
+# Sengi OS terminal. Rendered from tokens/sengi.toml.
+[main]
+font=@{type.mono}:size=@{type.pt-md}
+pad=@{space.sm}x@{space.sm}
+
+[colors]
+background=@{color.bg|nohash}
+foreground=@{color.text|nohash}
+selection-background=@{color.accent|nohash}
+selection-foreground=@{color.accent-text|nohash}

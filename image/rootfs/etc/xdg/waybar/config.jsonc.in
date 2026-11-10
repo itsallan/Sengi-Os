@@ -1,0 +1,86 @@
+// Sengi OS 0.1 shell: one Waybar process draws the top bar and the dock.
+[
+  {
+    "name": "bar",
+    "layer": "top",
+    "position": "top",
+    "height": @{size.bar-height},
+    "spacing": @{space.md},
+    "modules-left": ["custom/menu"],
+    "modules-right": ["tray", "network", "wireplumber", "battery", "clock", "image#notifications", "image#power"],
+
+    "custom/menu": {
+      "format": "Sengi OS",
+      "tooltip": false,
+      "on-click": "fuzzel"
+    },
+    "tray": {
+      "icon-size": @{size.bar-icon},
+      "spacing": @{space.sm}
+    },
+    "network": {
+      "format-wifi": "{essid}",
+      "format-ethernet": "Wired",
+      "format-linked": "No address",
+      "format-disconnected": "Offline",
+      "tooltip-format": "{ifname}  {ipaddr}",
+      "on-click": "sengi-run foot -e iwctl"
+    },
+    "wireplumber": {
+      "format": "Vol {volume}%",
+      "format-muted": "Muted",
+      "tooltip": false,
+      "on-click": "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
+    },
+    "battery": {
+      "format": "{capacity}%",
+      "format-charging": "{capacity}% charging",
+      "states": { "warning": 20, "critical": 10 }
+    },
+    "clock": {
+      "format": "{:%a %e %b  %H:%M}",
+      "tooltip": false
+    },
+    "image#notifications": {
+      "path": "/usr/share/sengi-os/icons/bell.svg",
+      "size": @{size.bar-icon},
+      "tooltip": false,
+      "on-click": "makoctl restore",
+      "on-click-right": "makoctl dismiss --all"
+    },
+    "image#power": {
+      "path": "/usr/share/sengi-os/icons/power.svg",
+      "size": @{size.bar-icon},
+      "tooltip": false,
+      "on-click": "sengi-power"
+    }
+  },
+  {
+    "name": "dock",
+    "layer": "top",
+    "position": "bottom",
+    "margin-bottom": @{space.sm},
+    "spacing": @{space.xs},
+    "modules-center": ["image#launcher", "image#terminal", "wlr/taskbar"],
+
+    "image#launcher": {
+      "path": "/usr/share/sengi-os/icons/launcher.svg",
+      "size": @{size.dock-icon},
+      "tooltip": false,
+      "on-click": "fuzzel"
+    },
+    "image#terminal": {
+      "path": "/usr/share/sengi-os/icons/terminal.svg",
+      "size": @{size.dock-icon},
+      "tooltip": false,
+      "on-click": "sengi-run foot"
+    },
+    "wlr/taskbar": {
+      "format": "{icon}",
+      "icon-size": @{size.dock-icon},
+      "tooltip-format": "{title}",
+      "on-click": "activate",
+      "on-click-middle": "close"
+    }
+  }
+]

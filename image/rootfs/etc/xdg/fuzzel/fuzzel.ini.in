@@ -1,0 +1,29 @@
+# Sengi OS launcher. Rendered from tokens/sengi.toml.
+[main]
+font=@{type.family}:size=@{type.pt-lg}
+prompt="Search  "
+icons-enabled=no
+terminal=foot -e
+launch-prefix=/usr/bin/sengi-run
+anchor=center
+layer=overlay
+lines=@{size.launcher-lines}
+width=@{size.launcher-columns}
+horizontal-pad=@{space.lg}
+vertical-pad=@{space.md}
+inner-pad=@{space.sm}
+
+[colors]
+background=@{color.surface|hex8}
+text=@{color.text|hex8}
+prompt=@{color.text-muted|hex8}
+input=@{color.text|hex8}
+match=@{color.accent|hex8}
+selection=@{color.surface-hover|hex8}
+selection-text=@{color.text|hex8}
+selection-match=@{color.accent-hover|hex8}
+border=@{color.border|hex8}
+
+[border]
+width=@{border.width}
+radius=@{radius.base}

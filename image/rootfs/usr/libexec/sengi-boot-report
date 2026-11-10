@@ -1,0 +1,21 @@
+#!/bin/sh
+# Used by the QEMU boot test. Waits for the desktop, then writes the time it
+# took and the idle memory use to the serial port.
+port=/dev/ttyS0
+
+until [ -S /run/user/1000/wayland-0 ] && pidof waybar >/dev/null && pidof mako >/dev/null; do
+	sleep 0.1
+done
+read -r up _ </proc/uptime
+echo "SENGI-BOOT desktop_s=$up" >$port
+
+sleep "${SENGI_IDLE_WAIT:-30}"
+awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2}
+	END {printf "SENGI-IDLE ram_mb=%d\n", (t - a) / 1024}' /proc/meminfo >$port
+{
+	systemd-analyze time 2>&1
+	systemd-analyze blame 2>&1 | head -15
+	ps -eo rss,comm --sort=-rss | head -20
+	systemctl --failed --no-legend 2>&1
+} | sed 's/^/SENGI-INFO /' >$port
+echo "SENGI-DONE" >$port

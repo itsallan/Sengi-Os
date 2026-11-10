@@ -1,0 +1,6 @@
+# Started by labwc once the compositor is up.
+dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP >/dev/null 2>&1 &
+swaybg -c '@{color.desktop}' >/dev/null 2>&1 &
+waybar >/dev/null 2>&1 &
+mako -c /etc/xdg/mako/config >/dev/null 2>&1 &
+swayidle -w timeout @{timing.idle-lock} 'swaylock -f' before-sleep 'swaylock -f' >/dev/null 2>&1 &

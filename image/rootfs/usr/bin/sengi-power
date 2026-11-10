@@ -1,0 +1,9 @@
+#!/bin/sh
+# Session menu shown from the power button in the bar.
+choice=$(printf 'Lock\nLog out\nRestart\nShut down\n' | fuzzel --dmenu --lines 4 --prompt 'Session  ')
+case $choice in
+Lock) exec swaylock -f ;;
+"Log out") exec labwc --exit ;;
+Restart) exec systemctl reboot ;;
+"Shut down") exec systemctl poweroff ;;
+esac

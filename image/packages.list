@@ -1,0 +1,54 @@
+# Packages in the Sengi OS base image, one per line.
+# Recommends are off, so anything we rely on has to be listed here.
+
+# Base system
+systemd-sysv
+systemd-resolved
+systemd-timesyncd
+systemd-oomd
+systemd-zram-generator
+libpam-systemd
+libnss-systemd
+dbus-user-session
+udev
+kmod
+procps
+iproute2
+ca-certificates
+sudo
+less
+nano
+
+# Kernel and live boot
+linux-image-amd64
+live-boot
+live-boot-initramfs-tools
+zstd
+
+# Session
+greetd
+labwc
+xwayland
+waybar
+fuzzel
+mako-notifier
+swaylock
+swayidle
+swaybg
+foot
+libgl1-mesa-dri
+librsvg2-common
+hicolor-icon-theme
+fonts-inter
+fonts-dejavu-mono
+
+# Audio, network, bluetooth
+pipewire
+pipewire-pulse
+wireplumber
+iwd
+bluez
+
+# Apps
+flatpak
+xdg-desktop-portal-gtk
