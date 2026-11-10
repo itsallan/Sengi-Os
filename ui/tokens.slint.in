@@ -1,0 +1,55 @@
+// Generated from tokens/sengi.toml by scripts/render-tokens.sh.
+// Edit ui/tokens.slint.in or the tokens file, never ui/tokens.slint.
+
+export global Tokens {
+    out property <color> color-desktop: @{color.desktop};
+    out property <color> color-bg: @{color.bg};
+    out property <color> color-surface: @{color.surface};
+    out property <color> color-surface-raised: @{color.surface-raised};
+    out property <color> color-surface-hover: @{color.surface-hover};
+    out property <color> color-border: @{color.border};
+    out property <color> color-text: @{color.text};
+    out property <color> color-text-muted: @{color.text-muted};
+    out property <color> color-text-disabled: @{color.text-disabled};
+    out property <color> color-accent: @{color.accent};
+    out property <color> color-accent-hover: @{color.accent-hover};
+    out property <color> color-accent-text: @{color.accent-text};
+    out property <color> color-danger: @{color.danger};
+    out property <color> color-warning: @{color.warning};
+    out property <color> color-success: @{color.success};
+    out property <color> color-bar: @{color.bar};
+    out property <color> color-dock: @{color.dock};
+    out property <color> color-scrim: @{color.scrim};
+    out property <color> color-focus-ring: @{color.focus-ring};
+
+    out property <length> radius: @{radius.base}px;
+    out property <length> border-width: @{border.width}px;
+
+    out property <length> space-xxs: @{space.xxs}px;
+    out property <length> space-xs: @{space.xs}px;
+    out property <length> space-sm: @{space.sm}px;
+    out property <length> space-md: @{space.md}px;
+    out property <length> space-lg: @{space.lg}px;
+    out property <length> space-xl: @{space.xl}px;
+
+    out property <string> font-family: "@{type.family}";
+    out property <string> font-mono: "@{type.mono}";
+    out property <length> font-size-sm: @{type.size-sm}px;
+    out property <length> font-size-md: @{type.size-md}px;
+    out property <length> font-size-lg: @{type.size-lg}px;
+    out property <length> font-size-xl: @{type.size-xl}px;
+    out property <int> font-weight-regular: @{type.weight-regular};
+    out property <int> font-weight-medium: @{type.weight-medium};
+    out property <int> font-weight-bold: @{type.weight-bold};
+
+    out property <length> bar-height: @{size.bar-height}px;
+    out property <length> dock-icon: @{size.dock-icon}px;
+    out property <length> dock-padding: @{size.dock-padding}px;
+    out property <length> titlebar-height: @{size.titlebar-height}px;
+    out property <length> launcher-width: @{size.launcher-width}px;
+    out property <length> notification-width: @{size.notification-width}px;
+
+    out property <duration> motion-fast: @{motion.fast}ms;
+    out property <duration> motion-base: @{motion.base}ms;
+    out property <duration> motion-slow: @{motion.slow}ms;
+}

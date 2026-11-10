@@ -1,0 +1,91 @@
+// Sengi OS shared component library. Every Sengi OS UI builds on these.
+// Generated from ui/components.slint.in so the motion easing comes from the
+// tokens; edit the .in file.
+
+import { Tokens } from "tokens.slint";
+
+export { Tokens }
+
+export component SengiText inherits Text {
+    color: Tokens.color-text;
+    font-family: Tokens.font-family;
+    font-size: Tokens.font-size-md;
+    font-weight: Tokens.font-weight-regular;
+}
+
+export component SengiLabel inherits Text {
+    color: Tokens.color-text-muted;
+    font-family: Tokens.font-family;
+    font-size: Tokens.font-size-sm;
+    font-weight: Tokens.font-weight-medium;
+}
+
+export component SengiSurface inherits Rectangle {
+    in property <bool> raised: false;
+    background: root.raised ? Tokens.color-surface-raised : Tokens.color-surface;
+    border-radius: Tokens.radius;
+    border-width: Tokens.border-width;
+    border-color: Tokens.color-border;
+}
+
+export component SengiButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary: false;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    min-height: Tokens.bar-height;
+    border-radius: Tokens.radius;
+    background: !root.enabled ? Tokens.color-surface
+        : root.primary ? (touch.has-hover ? Tokens.color-accent-hover : Tokens.color-accent)
+        : (touch.has-hover ? Tokens.color-surface-hover : Tokens.color-surface-raised);
+    animate background { duration: Tokens.motion-fast; easing: @{motion.easing}; }
+
+    HorizontalLayout {
+        padding-left: Tokens.space-md;
+        padding-right: Tokens.space-md;
+        Text {
+            text: root.text;
+            color: !root.enabled ? Tokens.color-text-disabled
+                : root.primary ? Tokens.color-accent-text : Tokens.color-text;
+            font-family: Tokens.font-family;
+            font-size: Tokens.font-size-md;
+            font-weight: Tokens.font-weight-medium;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component SengiToggle inherits Rectangle {
+    in-out property <bool> checked: false;
+    callback toggled(bool);
+
+    width: Tokens.space-xl * 1.5;
+    height: Tokens.space-lg + Tokens.space-xs;
+    border-radius: self.height / 2;
+    background: root.checked ? Tokens.color-accent : Tokens.color-surface-raised;
+    animate background { duration: Tokens.motion-fast; easing: @{motion.easing}; }
+
+    knob := Rectangle {
+        width: parent.height - Tokens.space-xs;
+        height: self.width;
+        y: Tokens.space-xxs;
+        x: root.checked ? parent.width - self.width - Tokens.space-xxs : Tokens.space-xxs;
+        border-radius: self.height / 2;
+        background: Tokens.color-text;
+        animate x { duration: Tokens.motion-base; easing: @{motion.easing}; }
+    }
+
+    TouchArea {
+        clicked => {
+            root.checked = !root.checked;
+            root.toggled(root.checked);
+        }
+    }
+}

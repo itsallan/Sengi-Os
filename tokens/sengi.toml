@@ -1,0 +1,79 @@
+# Sengi OS design tokens. This is the only place colours, spacing, radius,
+# type and motion are defined. Everything else references these by name,
+# e.g. @{color.accent} in config templates or Tokens.color-accent in Slint.
+#
+# Colours are #rrggbb or #rrggbbaa. Sizes are in px, durations in ms.
+
+[color]
+desktop = "#121316"
+bg = "#16171b"
+surface = "#1f2126"
+surface-raised = "#2a2d33"
+surface-hover = "#33363d"
+border = "#3a3d44"
+text = "#eceef2"
+text-muted = "#9a9fa8"
+text-disabled = "#5f636b"
+accent = "#d9773a"
+accent-hover = "#e58a50"
+accent-text = "#16171b"
+danger = "#e5534b"
+warning = "#e0a23b"
+success = "#4cae6b"
+bar = "#16171be6"
+dock = "#1f2126e6"
+scrim = "#00000080"
+focus-ring = "#d9773a"
+
+[radius]
+base = 6
+
+[space]
+xxs = 2
+xs = 4
+sm = 8
+md = 12
+lg = 16
+xl = 24
+
+[border]
+width = 1
+
+[type]
+family = "Inter"
+mono = "DejaVu Sans Mono"
+size-sm = 11
+size-md = 13
+size-lg = 16
+size-xl = 22
+# Point sizes for programs that do not take px (labwc, fuzzel, mako, foot).
+pt-sm = 8
+pt-md = 10
+pt-lg = 12
+weight-regular = 400
+weight-medium = 500
+weight-bold = 600
+
+[size]
+bar-height = 28
+dock-icon = 40
+dock-padding = 6
+titlebar-height = 30
+launcher-width = 640
+notification-width = 360
+bar-icon = 16
+button = 26
+launcher-columns = 48
+launcher-lines = 8
+lock-indicator = 64
+lock-ring = 4
+
+[motion]
+fast = 120
+base = 200
+slow = 320
+easing = "cubic-bezier(0.2, 0, 0, 1)"
+
+[timing]
+notification-timeout = 5000
+idle-lock = 300

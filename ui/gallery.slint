@@ -1,0 +1,40 @@
+// Every shared component on one window, for visual review.
+
+import { Tokens, SengiText, SengiLabel, SengiSurface, SengiButton, SengiToggle } from "components.slint";
+
+export component Gallery inherits Window {
+    title: "Sengi OS components";
+    background: Tokens.color-bg;
+    default-font-family: Tokens.font-family;
+
+    VerticalLayout {
+        padding: Tokens.space-xl;
+        spacing: Tokens.space-lg;
+        alignment: start;
+
+        SengiLabel { text: "Text"; }
+        SengiText { text: "Sengi OS"; }
+
+        SengiLabel { text: "Buttons"; }
+        HorizontalLayout {
+            spacing: Tokens.space-sm;
+            alignment: start;
+            SengiButton { text: "Primary"; primary: true; }
+            SengiButton { text: "Default"; }
+            SengiButton { text: "Disabled"; enabled: false; }
+        }
+
+        SengiLabel { text: "Toggle"; }
+        HorizontalLayout {
+            alignment: start;
+            SengiToggle { checked: true; }
+        }
+
+        SengiLabel { text: "Surface"; }
+        SengiSurface {
+            height: Tokens.space-xl * 3;
+            raised: true;
+            SengiText { text: "Raised surface"; }
+        }
+    }
+}
