@@ -11,5 +11,12 @@ RUN rm -f /etc/apt/sources.list.d/* \
  && apt-get install -y --no-install-recommends \
       mmdebstrap squashfs-tools xorriso mtools dosfstools \
       grub-common grub-pc-bin grub-efi-amd64-bin \
-      ca-certificates zstd faketime cargo \
+      ca-certificates zstd faketime rustup gcc libc6-dev pkg-config libfontconfig-dev \
  && rm -rf /var/lib/apt/lists/*
+
+# Slint needs a newer Rust than Debian stable ships, so the compiler comes
+# from rustup at the exact version rust-toolchain.toml names.
+ARG RUST_VERSION
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo
+RUN rustup toolchain install "${RUST_VERSION}" --profile minimal \
+ && rustup default "${RUST_VERSION}"

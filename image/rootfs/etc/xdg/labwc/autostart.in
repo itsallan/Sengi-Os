@@ -7,12 +7,13 @@ if [ "${WLR_RENDERER:-}" = pixman ]; then
 else
 	swaybg -c '@{color.desktop}' >/dev/null 2>&1 &
 fi
+sengi-bar >/dev/null 2>&1 &
 waybar >/dev/null 2>&1 &
 # Waybar asks the desktop portal for the colour scheme as it starts, which
 # would wake about 50 MB of portal services on every login. The portal's
 # D-Bus activation file is diverted at build time and only put in place here,
 # once Waybar is up, so apps still get the portal on demand. This goes away
-# with Waybar in 0.2.
+# with Waybar in 0.3.
 (
 	sleep 5
 	mkdir -p "$XDG_RUNTIME_DIR/dbus-1/services"

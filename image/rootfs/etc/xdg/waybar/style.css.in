@@ -1,4 +1,4 @@
-/* Sengi OS 0.1 bar and dock. Rendered from tokens/sengi.toml. */
+/* The dock. Rendered from tokens/sengi.toml. */
 
 * {
     font-family: "@{type.family}";
@@ -9,37 +9,6 @@
     min-height: 0;
     box-shadow: none;
     text-shadow: none;
-}
-
-window#waybar.bar {
-    background: @{color.bar|rgba};
-    color: @{color.text};
-}
-
-window#waybar.bar .modules-left,
-window#waybar.bar .modules-right {
-    padding: 0 @{space.md}px;
-}
-
-#custom-menu {
-    font-weight: @{type.weight-bold};
-}
-
-#network.disconnected,
-#wireplumber.muted {
-    color: @{color.text-muted};
-}
-
-#battery.warning {
-    color: @{color.warning};
-}
-
-#battery.critical {
-    color: @{color.danger};
-}
-
-window#waybar.bar #image {
-    padding: 0 @{space.xxs}px;
 }
 
 window#waybar.dock {

@@ -22,8 +22,12 @@ mkdir -p "$work/iso/live" "$work/iso/boot/grub" "$out"
 # Our own programs, built against the same Debian the image is made of.
 export CARGO_HOME="$work/cargo" CARGO_TARGET_DIR="$work/target"
 export RUSTFLAGS="--remap-path-prefix=$src=. --remap-path-prefix=$work=/build"
-cargo build --release --locked --manifest-path "$src/Cargo.toml" -p sengi-focus
-install -D -m 0755 "$work/target/release/sengi-focus" "$work/overlay/usr/bin/sengi-focus"
+programs="sengi-bar sengi-focus"
+# shellcheck disable=SC2086
+cargo build --release --locked --manifest-path "$src/Cargo.toml" $(printf -- '-p %s ' $programs)
+for program in $programs; do
+	install -D -m 0755 "$work/target/release/$program" "$work/overlay/usr/bin/$program"
+done
 
 components=main
 packages=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$src/image/packages.list" | paste -sd, -)
