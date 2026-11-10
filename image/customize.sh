@@ -44,5 +44,15 @@ chroot "$root" systemctl mask systemd-networkd-wait-online.service \
 chroot "$root" ldconfig
 chroot "$root" systemctl mask ldconfig.service systemd-journal-catalog-update.service \
 	systemd-hwdb-update.service systemd-update-done.service
+# pipewire-pulse stays socket activated; the Bluetooth media proxy is not
+# needed until a Bluetooth audio device is in use.
+chroot "$root" systemctl --global disable pipewire-pulse.service
+chroot "$root" systemctl --global mask mpris-proxy.service
 chroot "$root" systemctl set-default graphical.target
+
+# See the note in /etc/xdg/labwc/autostart.
+mkdir -p "$root/usr/share/sengi-os/dbus"
+chroot "$root" dpkg-divert --quiet --rename \
+	--divert /usr/share/sengi-os/dbus/org.freedesktop.portal.Desktop.service \
+	--add /usr/share/dbus-1/services/org.freedesktop.portal.Desktop.service
 

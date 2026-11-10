@@ -65,6 +65,12 @@ rm -rf "$root"/var/lib/apt/lists/* "$root"/var/cache/apt/* "$root"/var/log/* \
 	"$root"/tmp/* "$root"/run/* "$root"/root/.[!.]*
 : >"$root/etc/machine-id"
 
+# Ship a font cache so the first program to draw text does not have to build
+# one. The cache is only trusted if it is newer than the font directories, and
+# the squashfs gives every file the same time, so set that time up front.
+find "$root/usr/share/fonts" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+chroot "$root" fc-cache -s -f
+
 env -u SOURCE_DATE_EPOCH mksquashfs "$root" "$work/iso/live/filesystem.squashfs" \
 	-noappend -no-progress -comp zstd -Xcompression-level 15 -b 1M \
 	-all-time "$SOURCE_DATE_EPOCH" -mkfs-time "$SOURCE_DATE_EPOCH" >/dev/null

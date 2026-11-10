@@ -82,6 +82,10 @@ grep SENGI-INFO "$out/serial.log" | sed 's/.*SENGI-INFO //' >"$out/guest-info.tx
 [ -s "$out/desktop.png" ] || { echo "no screenshot was saved" >&2; exit 1; }
 
 fail=0
+if grep -q SENGI-FAIL "$out/serial.log"; then
+	sed -n 's/.*SENGI-FAIL /FAIL: /p' "$out/serial.log" >&2
+	fail=1
+fi
 if [ "$ram_mb" -ge "$budget_ram_mb" ]; then
 	echo "FAIL: idle RAM ${ram_mb} MB is over the ${budget_ram_mb} MB budget" >&2
 	fail=1
