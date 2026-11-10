@@ -11,23 +11,23 @@ each `- [ ]` line is an issue.
 
 ## 0.1
 
-- [ ] Project rules, roadmap, changelog and design tokens
-- [ ] Slint component library generated from the tokens
-- [ ] Reproducible ISO build inside a container
-- [ ] CI with build, clippy, tests and a headless QEMU boot test
-- [ ] Minimal Debian stable base with live boot
-- [ ] labwc compositor themed from tokens with window buttons on the left
-- [ ] Waybar top bar with quick settings and notifications at top right
-- [ ] Centred dock
-- [ ] Centred search launcher (fuzzel)
-- [ ] Notifications (mako)
-- [ ] Lock screen (swaylock) and idle lock
-- [ ] greetd login with live autologin
-- [ ] PipeWire, iwd, BlueZ on demand
-- [ ] zram and systemd-oomd
-- [ ] cgroups v2 priority for compositor and focused app
-- [ ] Boot time tuning
-- [ ] Measured idle RAM and boot time within budget
+- [x] Project rules, roadmap, changelog and design tokens
+- [x] Slint component library generated from the tokens
+- [x] Reproducible ISO build inside a container
+- [x] CI with build, clippy, tests and a headless QEMU boot test
+- [x] Minimal Debian stable base with live boot
+- [x] labwc compositor themed from tokens with window buttons on the left
+- [x] Waybar top bar with quick settings and notifications at top right
+- [x] Centred dock
+- [x] Centred search launcher (fuzzel)
+- [x] Notifications (mako)
+- [x] Lock screen (swaylock) and idle lock
+- [x] greetd login with live autologin
+- [x] PipeWire, iwd, BlueZ on demand
+- [x] zram and systemd-oomd
+- [x] cgroups v2 priority for compositor and focused app
+- [x] Boot time tuning
+- [x] Measured idle RAM and boot time within budget
 
 ## 0.2
 
