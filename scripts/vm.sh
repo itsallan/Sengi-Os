@@ -43,10 +43,6 @@ up() {
 #cloud-config
 ssh_authorized_keys:
   - $(cat "$key.pub")
-package_update: true
-packages: [podman, uidmap, passt, fuse-overlayfs, rsync]
-runcmd:
-  - touch /var/lib/sengi-builder-ready
 SEED
 	genisoimage -quiet -output "$dir/seed.iso" -volid cidata -joliet -rock \
 		"$dir/seed/user-data" "$dir/seed/meta-data"
@@ -60,11 +56,24 @@ SEED
 		-daemonize -pidfile "$dir/qemu.pid"
 	echo "waiting for the vm"
 	i=0
-	until vm_ssh test -f /var/lib/sengi-builder-ready 2>/dev/null; do
+	until vm_ssh true 2>/dev/null; do
 		i=$((i + 1))
-		[ $i -lt 120 ] || { echo "vm did not come up, see $dir/console.txt" >&2; exit 1; }
+		[ $i -lt 60 ] || { echo "vm did not come up, see $dir/console.txt" >&2; exit 1; }
 		sleep 5
 	done
+	# Plain binary-only sources. The image's default deb-src entries make
+	# apt stall behind QEMU user networking.
+	vm_ssh 'command -v podman >/dev/null' 2>/dev/null || vm_ssh '
+		set -e
+		sudo cloud-init status --wait >/dev/null 2>&1 || true
+		sudo rm -f /etc/apt/sources.list.d/*
+		printf "deb http://deb.debian.org/debian trixie main\\ndeb http://security.debian.org/debian-security trixie-security main\\n" |
+			sudo tee /etc/apt/sources.list >/dev/null
+		sudo apt-get -q update
+		sudo DEBIAN_FRONTEND=noninteractive apt-get -q -y --no-install-recommends install \
+			podman uidmap passt fuse-overlayfs slirp4netns rsync ca-certificates \
+			dbus-user-session libpam-systemd
+		sudo loginctl enable-linger debian'
 	echo "vm ready"
 }
 
@@ -81,7 +90,7 @@ sync) sync_tree ;;
 run)
 	shift
 	sync_tree
-	vm_ssh "cd sengi-os && $*"
+	vm_ssh "export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/\$(id -u)/bus; cd sengi-os && $*"
 	;;
 fetch)
 	mkdir -p "$root/out"

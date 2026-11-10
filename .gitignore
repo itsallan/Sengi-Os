@@ -45,3 +45,5 @@ target/
 *~
 .DS_Store
 .directory
+.claude
+CLAUDE.md

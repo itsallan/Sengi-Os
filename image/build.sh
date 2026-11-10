@@ -59,7 +59,7 @@ rm -f "$root"/boot/vmlinuz-* "$root"/boot/initrd.img-* "$root"/vmlinuz* "$root"/
 
 # Anything that differs from one build to the next has to go.
 rm -rf "$root"/var/lib/apt/lists/* "$root"/var/cache/apt/* "$root"/var/log/* \
-	"$root"/var/cache/ldconfig/aux-cache "$root"/var/cache/fontconfig/* \
+	"$root"/var/cache/fontconfig/* \
 	"$root"/var/cache/debconf/*-old "$root"/var/lib/dpkg/*-old \
 	"$root"/var/lib/systemd/random-seed "$root"/etc/.pwd.lock \
 	"$root"/tmp/* "$root"/run/* "$root"/root/.[!.]*
@@ -72,8 +72,8 @@ env -u SOURCE_DATE_EPOCH mksquashfs "$root" "$work/iso/live/filesystem.squashfs"
 sed "s/@VERSION@/$VERSION/g" "$src/image/grub.cfg" >"$work/iso/boot/grub/grub.cfg"
 find "$work/iso" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 
-grub-mkrescue -o "$out/$name.iso" "$work/iso" -- \
-	-volid SENGIOS -volume_date uuid "$(date -u -d "@$SOURCE_DATE_EPOCH" +%Y%m%d%H%M%S00)" \
+grub-mkrescue -o "$out/$name.iso" "$work/iso" \
+	-volid SENGIOS \
 	2>"$work/xorriso.log" || { cat "$work/xorriso.log" >&2; exit 1; }
 
 (cd "$out" && sha256sum "$name.iso" >"$name.iso.sha256")

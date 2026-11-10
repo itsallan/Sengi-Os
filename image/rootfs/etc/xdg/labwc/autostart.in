@@ -1,6 +1,8 @@
 # Started by labwc once the compositor is up.
 dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP >/dev/null 2>&1 &
 swaybg -c '@{color.desktop}' >/dev/null 2>&1 &
-waybar >/dev/null 2>&1 &
+# Without this GTK wakes the desktop portal just to read settings, which
+# costs about 40 MB for nothing. Portals still start when an app asks.
+GTK_USE_PORTAL=0 GDK_DEBUG=no-portals waybar >/dev/null 2>&1 &
 mako -c /etc/xdg/mako/config >/dev/null 2>&1 &
 swayidle -w timeout @{timing.idle-lock} 'swaylock -f' before-sleep 'swaylock -f' >/dev/null 2>&1 &

@@ -39,5 +39,10 @@ chroot "$root" systemctl disable iwd bluetooth networking 2>/dev/null || true
 chroot "$root" systemctl mask systemd-networkd-wait-online.service \
 	apt-daily.timer apt-daily-upgrade.timer dpkg-db-backup.timer e2scrub_all.timer \
 	e2scrub_reap.service getty@tty1.service
+# The image is read-only and complete, so there is nothing for the
+# first-boot update services to do. ldconfig alone costs over a second.
+chroot "$root" ldconfig
+chroot "$root" systemctl mask ldconfig.service systemd-journal-catalog-update.service \
+	systemd-hwdb-update.service systemd-update-done.service
 chroot "$root" systemctl set-default graphical.target
 

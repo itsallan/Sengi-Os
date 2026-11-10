@@ -15,7 +15,10 @@ awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2}
 {
 	systemd-analyze time 2>&1
 	systemd-analyze blame 2>&1 | head -15
-	ps -eo rss,comm --sort=-rss | head -20
+	ps -eo rss,comm --sort=-rss | head -32
 	systemctl --failed --no-legend 2>&1
+	grep -E '^(MemTotal|MemAvailable|Shmem|Slab|SUnreclaim|KernelStack|PageTables|Cached|AnonPages):' /proc/meminfo
+	echo "labwc llvm maps: $(grep -c -i llvm "/proc/$(pidof labwc)/maps")"
+	df -h / /run /tmp 2>&1
 } | sed 's/^/SENGI-INFO /' >$port
 echo "SENGI-DONE" >$port
