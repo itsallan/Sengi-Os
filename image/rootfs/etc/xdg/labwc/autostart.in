@@ -1,6 +1,12 @@
 # Started by labwc once the compositor is up.
 dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP >/dev/null 2>&1 &
-swaybg -c '@{color.desktop}' >/dev/null 2>&1 &
+# The software renderer smears swaybg's one-pixel colour buffer into a
+# gradient, so give it a real image there.
+if [ "${WLR_RENDERER:-}" = pixman ]; then
+	swaybg -m tile -i /usr/share/sengi-os/wallpaper.svg >/dev/null 2>&1 &
+else
+	swaybg -c '@{color.desktop}' >/dev/null 2>&1 &
+fi
 waybar >/dev/null 2>&1 &
 # Waybar asks the desktop portal for the colour scheme as it starts, which
 # would wake about 50 MB of portal services on every login. The portal's

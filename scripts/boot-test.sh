@@ -18,7 +18,7 @@ timeout_s=${SENGI_BOOT_TIMEOUT_S:-300}
 
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
-rm -f "$out/serial.log" "$out/desktop.png" "$out/metrics.txt" "$out/mon.in"
+rm -f "$out/serial.log" "$out"/*.png "$out/metrics.txt" "$out/mon.in"
 : >"$out/serial.log"
 mkfifo "$out/mon.in"
 
@@ -33,6 +33,7 @@ qemu-system-x86_64 -machine q35,accel=$accel -cpu $cpu -smp 2 -m 4096 \
 	-device virtio-vga -display none \
 	-nic user,model=virtio-net-pci \
 	-smbios type=11,value=io.systemd.credential:sengi.test=1 \
+	${SENGI_TEST_DEBUG:+-smbios "type=11,value=io.systemd.credential:sengi.test.debug=$SENGI_TEST_DEBUG"} \
 	-serial file:"$out/serial.log" \
 	-monitor stdio <"$out/mon.in" >"$out/monitor.log" 2>&1 &
 qemu=$!
@@ -63,8 +64,25 @@ fi
 boot_s=$(echo "$(now) $start" | awk '{printf "%.1f", $1 - $2}')
 
 wait_for SENGI-DONE || { stop; exit 1; }
-echo "screendump $out/desktop.png -f png" >&3
-sleep 2
+
+# The measurements are in. Now drive the desktop a little so the reviewer has
+# more than an empty screen to look at.
+shot() {
+	echo "screendump $out/$1.png -f png" >&3
+	sleep 1
+}
+key() {
+	echo "sendkey $1" >&3
+	sleep "${2:-2}"
+}
+shot desktop
+key meta_l-ret 3
+shot terminal
+key meta_l-spc
+shot launcher
+key esc 1
+key meta_l-l
+shot lock
 stop
 
 guest_s=$(sed -n 's/.*SENGI-BOOT desktop_s=\([0-9.]*\).*/\1/p' "$out/serial.log" | head -1)

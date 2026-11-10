@@ -1,0 +1,13 @@
+#!/bin/sh
+# Make sure the initramfs carries what scripts/sengi needs.
+case $1 in
+prereqs)
+	echo
+	exit 0
+	;;
+esac
+
+. /usr/share/initramfs-tools/hook-functions
+
+manual_add_modules loop isofs squashfs overlay
+copy_exec /sbin/losetup /sbin

@@ -1,0 +1,49 @@
+# initramfs-tools boot script, selected with boot=sengi on the kernel command
+# line. Mounts the Sengi OS live medium: the squashfs from the ISO as a
+# read-only root with a tmpfs overlay on top for changes.
+#
+# live-boot does the same job but polls for the medium once a second and
+# runs a long tail of scripts we have no use for, which cost about three
+# seconds of boot.
+
+sengi_find_medium() {
+	for dev in /dev/disk/by-label/SENGIOS /dev/sd* /dev/vd* /dev/nvme*n* /dev/mmcblk* /dev/sr*; do
+		[ -b "$dev" ] || continue
+		mount -t iso9660 -o ro "$dev" "$1" 2>/dev/null || continue
+		[ -f "$1/live/filesystem.squashfs" ] && return 0
+		umount "$1"
+	done
+	return 1
+}
+
+mountroot() {
+	base=/run/sengi
+	mkdir -p $base/medium $base/rootfs $base/rw
+
+	modprobe -q loop
+	modprobe -q isofs
+	modprobe -q squashfs
+	modprobe -q overlay
+
+	# Try every block device until one mounts as our ISO. On a flashed
+	# USB stick the filesystem is on the whole disk, on a CD it is the
+	# drive itself, and a stick can take a moment to show up.
+	tries=0
+	while ! sengi_find_medium $base/medium; do
+		tries=$((tries + 1))
+		[ $tries -lt 300 ] || panic "Sengi OS: the boot medium was not found"
+		sleep 0.1
+	done
+
+	loopdev=$(losetup -f)
+	losetup -r "$loopdev" $base/medium/live/filesystem.squashfs
+	mount -t squashfs -o ro "$loopdev" $base/rootfs ||
+		panic "Sengi OS: could not mount the system image"
+
+	mount -t tmpfs -o mode=0755 tmpfs $base/rw
+	mkdir -p $base/rw/upper $base/rw/work
+	mount -t overlay \
+		-o lowerdir=$base/rootfs,upperdir=$base/rw/upper,workdir=$base/rw/work \
+		overlay "${rootmnt:?}" ||
+		panic "Sengi OS: could not set up the root overlay"
+}

@@ -50,6 +50,10 @@ chroot "$root" systemctl --global disable pipewire-pulse.service
 chroot "$root" systemctl --global mask mpris-proxy.service
 chroot "$root" systemctl set-default graphical.target
 
+# The initramfs was built when the kernel was installed, before our boot
+# script and hook were in place.
+chroot "$root" update-initramfs -u
+
 # See the note in /etc/xdg/labwc/autostart.
 mkdir -p "$root/usr/share/sengi-os/dbus"
 chroot "$root" dpkg-divert --quiet --rename \

@@ -19,10 +19,10 @@ sudo
 less
 nano
 
-# Kernel and live boot
+# Kernel and initramfs
 linux-image-amd64
-live-boot
-live-boot-initramfs-tools
+initramfs-tools
+busybox
 zstd
 
 # Session

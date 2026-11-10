@@ -24,6 +24,13 @@ awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2}
 	echo "labwc llvm maps: $(grep -c -i llvm "/proc/$(pidof labwc)/maps")"
 	df -h / /run /tmp 2>&1
 } | sed 's/^/SENGI-INFO /' >$port
+# Extra diagnostics can be asked for from the host without rebuilding:
+#   -smbios type=11,value=io.systemd.credential:sengi.test.debug=COMMANDS
+debug=/run/credentials/@system/sengi.test.debug
+if [ -r "$debug" ]; then
+	sh "$debug" 2>&1 | sed 's/^/SENGI-DEBUG /' >$port
+fi
+
 # A desktop that came up and then lost a piece is a failed boot.
 for prog in labwc waybar mako swayidle swaybg; do
 	pidof "$prog" >/dev/null || echo "SENGI-FAIL $prog is not running" >$port
