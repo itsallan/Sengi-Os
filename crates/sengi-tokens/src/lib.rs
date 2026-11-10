@@ -44,7 +44,10 @@ impl Tokens {
 
         for (index, raw) in source.lines().enumerate() {
             let line = raw.trim();
-            let err = |message| ParseError { line: index + 1, message };
+            let err = |message| ParseError {
+                line: index + 1,
+                message,
+            };
 
             if line.is_empty() || line.starts_with('#') {
                 continue;
@@ -57,10 +60,16 @@ impl Tokens {
                 continue;
             }
 
-            let (key, value) = line.split_once('=').ok_or_else(|| err("expected key = value"))?;
+            let (key, value) = line
+                .split_once('=')
+                .ok_or_else(|| err("expected key = value"))?;
             let value = value.trim();
             let value = match value.strip_prefix('"') {
-                Some(rest) => rest.split_once('"').ok_or_else(|| err("unterminated string"))?.0,
+                Some(rest) => {
+                    rest.split_once('"')
+                        .ok_or_else(|| err("unterminated string"))?
+                        .0
+                }
                 None => value.split('#').next().unwrap_or("").trim(),
             };
             if section.is_empty() {
@@ -136,7 +145,15 @@ mod tests {
     #[test]
     fn colours_carry_alpha() {
         let tokens = Tokens::parse("[color]\na = \"#10203040\"\nb = \"#102030\"\n").unwrap();
-        assert_eq!(tokens.color("color.a"), Some(Rgba { r: 0x10, g: 0x20, b: 0x30, a: 0x40 }));
+        assert_eq!(
+            tokens.color("color.a"),
+            Some(Rgba {
+                r: 0x10,
+                g: 0x20,
+                b: 0x30,
+                a: 0x40
+            })
+        );
         assert_eq!(tokens.color("color.b").unwrap().a, 0xff);
     }
 
