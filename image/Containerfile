@@ -11,5 +11,5 @@ RUN rm -f /etc/apt/sources.list.d/* \
  && apt-get install -y --no-install-recommends \
       mmdebstrap squashfs-tools xorriso mtools dosfstools \
       grub-common grub-pc-bin grub-efi-amd64-bin \
-      ca-certificates zstd faketime \
+      ca-certificates zstd faketime cargo \
  && rm -rf /var/lib/apt/lists/*

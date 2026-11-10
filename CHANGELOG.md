@@ -19,5 +19,7 @@ and the measured idle RAM and boot time.
 - Performance tuning: zram, systemd-oomd, cgroup weights that favour the
   compositor and shell over apps, on-demand Wi-Fi and Bluetooth daemons,
   trimmed first-boot services and a prebuilt font cache.
+- sengi-focus, a small daemon that raises the CPU and I/O weight of the
+  focused app and puts it back when focus moves on.
 - The boot test opens a terminal, the launcher and the lock screen and saves
   a screenshot of each.

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/sengi-tokens", "crates/sengi-ui"]
+members = ["crates/sengi-focus", "crates/sengi-tokens", "crates/sengi-ui"]
 
 [workspace.package]
 version = "0.1.0"

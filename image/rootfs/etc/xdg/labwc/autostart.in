@@ -22,4 +22,5 @@ waybar >/dev/null 2>&1 &
 		/org/freedesktop/DBus org.freedesktop.DBus.ReloadConfig
 ) >/dev/null 2>&1 &
 mako -c /etc/xdg/mako/config >/dev/null 2>&1 &
+sengi-focus >/dev/null 2>&1 &
 swayidle -w timeout @{timing.idle-lock} 'swaylock -f' before-sleep 'swaylock -f' >/dev/null 2>&1 &

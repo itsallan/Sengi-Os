@@ -14,10 +14,16 @@ name=sengi-os-$VERSION-amd64
 mirror=http://snapshot.debian.org/archive/debian/$SNAPSHOT
 security=http://snapshot.debian.org/archive/debian-security/$SNAPSHOT
 
-rm -rf "$work/root" "$work/iso" "$work/overlay"
+rm -rf "$work/root" "$work/iso" "$work/overlay" "$work/target"
 mkdir -p "$work/iso/live" "$work/iso/boot/grub" "$out"
 
 "$src/scripts/render-tokens.sh" --tree "$src/image/rootfs" "$work/overlay"
+
+# Our own programs, built against the same Debian the image is made of.
+export CARGO_HOME="$work/cargo" CARGO_TARGET_DIR="$work/target"
+export RUSTFLAGS="--remap-path-prefix=$src=. --remap-path-prefix=$work=/build"
+cargo build --release --locked --manifest-path "$src/Cargo.toml" -p sengi-focus
+install -D -m 0755 "$work/target/release/sengi-focus" "$work/overlay/usr/bin/sengi-focus"
 
 components=main
 packages=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$src/image/packages.list" | paste -sd, -)
