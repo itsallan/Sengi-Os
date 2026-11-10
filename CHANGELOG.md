@@ -15,5 +15,9 @@ and the measured idle RAM and boot time.
   headless QEMU boot test with screenshot, idle RAM and boot time.
 - Desktop for 0.1: labwc, Waybar top bar, Waybar dock, fuzzel launcher, mako
   notifications, swaylock, greetd, all themed from the tokens.
-- Performance tuning: zram, systemd-oomd, cgroup weights for the compositor
-  session, trimmed services and boot parameters.
+- Our own initramfs boot script for the live medium, in place of live-boot.
+- Performance tuning: zram, systemd-oomd, cgroup weights that favour the
+  compositor and shell over apps, on-demand Wi-Fi and Bluetooth daemons,
+  trimmed first-boot services and a prebuilt font cache.
+- The boot test opens a terminal, the launcher and the lock screen and saves
+  a screenshot of each.

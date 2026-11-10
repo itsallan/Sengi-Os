@@ -4,6 +4,8 @@
 #
 #   boot-test.sh ISO [OUTDIR]
 #
+# Set SENGI_UEFI to an OVMF firmware image to boot through UEFI instead of BIOS.
+#
 # The ISO is attached as a disk, the way a flashed USB stick shows up. The
 # guest reports through its serial port (see sengi-boot-report). Boot time is
 # wall clock from QEMU start to the desktop being up, so it includes the
@@ -27,9 +29,13 @@ if [ -w /dev/kvm ]; then accel=kvm cpu=host; fi
 
 now() { date +%s.%N; }
 
+# Read the ISO once so the host's disk cache does not count against the guest.
+cat "$iso" >/dev/null
+
 start=$(now)
 qemu-system-x86_64 -machine q35,accel=$accel -cpu $cpu -smp 2 -m 4096 \
 	-drive file="$iso",format=raw,if=virtio,readonly=on \
+	${SENGI_UEFI:+-bios "$SENGI_UEFI"} \
 	-device virtio-vga -display none \
 	-nic user,model=virtio-net-pci \
 	-smbios type=11,value=io.systemd.credential:sengi.test=1 \

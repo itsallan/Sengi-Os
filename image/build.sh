@@ -78,7 +78,11 @@ env -u SOURCE_DATE_EPOCH mksquashfs "$root" "$work/iso/live/filesystem.squashfs"
 sed "s/@VERSION@/$VERSION/g" "$src/image/grub.cfg" >"$work/iso/boot/grub/grub.cfg"
 find "$work/iso" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 
-grub-mkrescue -o "$out/$name.iso" "$work/iso" \
+# grub-mkrescue stamps the current time into the boot images and the FAT
+# volume it builds for UEFI, and has no switch to turn that off. Freezing the
+# clock for it is what makes two builds come out identical.
+faketime -f "$(date -u -d "@$SOURCE_DATE_EPOCH" '+%Y-%m-%d %H:%M:%S')" \
+	grub-mkrescue -o "$out/$name.iso" "$work/iso" \
 	-volid SENGIOS \
 	2>"$work/xorriso.log" || { cat "$work/xorriso.log" >&2; exit 1; }
 
