@@ -104,8 +104,7 @@ test result.
 - `tokens/sengi.toml`: the single source of design tokens.
 - `ui/`: Slint component library (`tokens.slint` is generated from the tokens).
 - `crates/`: Rust workspace members.
-- `config/`: token templates (`*.in`) for the desktop components of the image.
-- `image/`: live-build configuration for the ISO.
+- `image/`: ISO build (mmdebstrap, squashfs, GRUB) and the root filesystem overlay in `image/rootfs/`. Files ending in `.in` are token templates.
 - `scripts/`: POSIX shell build, render, lint and boot-test scripts.
 - `.github/workflows/`: CI, release and roadmap sync.
 
@@ -113,6 +112,6 @@ test result.
 
     scripts/render-tokens.sh --check     # generated files are current
     scripts/lint-styles.sh               # no one-off styles
-    scripts/build-iso.sh                 # ISO into out/, needs rootful podman
+    scripts/build-iso.sh                 # ISO into out/, needs podman
     scripts/boot-test.sh out/*.iso test-output
     cargo build --workspace && cargo clippy --workspace -- -D warnings && cargo test --workspace

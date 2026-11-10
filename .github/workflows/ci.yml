@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell scripts
+        run: |
+          shellcheck -s sh scripts/*.sh image/*.sh \
+            image/rootfs/usr/bin/* image/rootfs/usr/libexec/*
+      - name: Generated files are current
+        run: scripts/render-tokens.sh --check
+      - name: No one-off styles
+        run: scripts/lint-styles.sh
+
+  rust:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          rustup default stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ hashFiles('Cargo.lock') }}
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Build
+        run: cargo build --workspace --locked
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Tests
+        run: cargo test --workspace --locked
+
+  iso:
+    runs-on: ubuntu-24.04
+    needs: lint
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the ISO
+        run: scripts/build-iso.sh
+      - name: Install QEMU and allow KVM
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+            sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Boot test
+        run: scripts/boot-test.sh out/sengi-os-$(cat VERSION)-amd64.iso test-output
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '### Boot test'
+            echo '```'
+            cat test-output/metrics.txt 2>/dev/null || echo 'no metrics recorded'
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: boot-test
+          path: |
+            test-output/desktop.png
+            test-output/metrics.txt
+            test-output/guest-info.txt
+            test-output/serial.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iso
+          path: |
+            out/*.iso
+            out/*.sha256
+          retention-days: 7
+          compression-level: 0

@@ -9,7 +9,7 @@ and the measured idle RAM and boot time.
 
 - Project rules, roadmap and design tokens.
 - Slint component library generated from the tokens.
-- Container-based, reproducible ISO build on Debian trixie (live-build,
+- Container-based, reproducible ISO build on Debian trixie (mmdebstrap,
   pinned snapshot mirror, fixed SOURCE_DATE_EPOCH).
 - CI: shell lint, style lint, cargo build, clippy, tests, ISO build and a
   headless QEMU boot test with screenshot, idle RAM and boot time.

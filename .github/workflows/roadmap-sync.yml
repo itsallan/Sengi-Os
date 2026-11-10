@@ -1,0 +1,21 @@
+name: Roadmap sync
+
+on:
+  push:
+    branches: [main]
+    paths: [ROADMAP.md, scripts/roadmap-sync.sh]
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Mirror ROADMAP.md to milestones and issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/roadmap-sync.sh
