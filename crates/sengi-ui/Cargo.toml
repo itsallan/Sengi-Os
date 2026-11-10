@@ -1,0 +1,13 @@
+[package]
+name = "sengi-ui"
+description = "The Sengi OS shared Slint component library"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[dependencies]
+slint.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true
