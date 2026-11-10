@@ -1,0 +1,16 @@
+[package]
+name = "sengi-bar"
+description = "The Sengi OS top bar"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[dependencies]
+slint = { version = "1.8", default-features = false, features = ["compat-1-2", "std", "renderer-software", "software-renderer-systemfonts"] }
+smithay-client-toolkit = { version = "0.19", default-features = false, features = ["calloop"] }
+wayland-client = "0.31"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[build-dependencies]
+slint-build.workspace = true

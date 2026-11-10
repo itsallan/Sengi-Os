@@ -48,6 +48,8 @@ export global Tokens {
     out property <length> titlebar-height: @{size.titlebar-height}px;
     out property <length> launcher-width: @{size.launcher-width}px;
     out property <length> notification-width: @{size.notification-width}px;
+    out property <length> bar-icon: @{size.bar-icon}px;
+    out property <length> button: @{size.button}px;
 
     out property <duration> motion-fast: @{motion.fast}ms;
     out property <duration> motion-base: @{motion.base}ms;

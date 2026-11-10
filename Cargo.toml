@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/sengi-focus", "crates/sengi-tokens", "crates/sengi-ui"]
+members = ["crates/sengi-bar", "crates/sengi-focus", "crates/sengi-tokens", "crates/sengi-ui"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 repository = "https://github.com/itsallan/Sengi-Os"
 

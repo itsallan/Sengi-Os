@@ -17,7 +17,7 @@ report() {
 }
 
 # Generated Slint files are checked through their .in sources.
-files=$(find image/rootfs ui -type f \
+files=$(find image/rootfs ui crates/*/ui -type f \
 	! -name '*.png' ! -name tokens.slint ! -name components.slint ! -path '*/target/*' 2>/dev/null)
 
 # shellcheck disable=SC2086

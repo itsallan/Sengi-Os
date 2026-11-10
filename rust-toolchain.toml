@@ -1,0 +1,5 @@
+# One Rust for everyone: local builds, CI and the ISO builder all use this.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["clippy", "rustfmt"]
