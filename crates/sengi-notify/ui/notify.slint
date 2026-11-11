@@ -1,0 +1,504 @@
+// Sengi OS notifications: cards at the top right of the screen, and the
+// notification centre that lists what has come in.
+//
+// One window serves both. Showing cards, it is a strip as tall as they
+// are. With the centre open it covers the output, see-through around the
+// panel, so that a click anywhere else lands on it and closes the centre.
+
+import { Tokens, SengiText, SengiLabel, SengiSurface, SengiButton, SengiToggle } from "components.slint";
+
+export struct ActionItem {
+    key: string,
+    label: string,
+}
+
+export struct Card {
+    // Names the card in callbacks. Never reused, unlike the bus id.
+    serial: int,
+    app: string,
+    time: string,
+    summary: string,
+    body: string,
+    critical: bool,
+    actions: [ActionItem],
+    // On its way out: fading, and soon removed from the list.
+    leaving: bool,
+}
+
+export struct HistoryItem {
+    key: int,
+    app: string,
+    time: string,
+    summary: string,
+    body: string,
+    critical: bool,
+}
+
+// Stroked on a 16 unit grid, like the icons in the bar.
+component CloseButton inherits Rectangle {
+    callback clicked();
+
+    width: Tokens.bar-icon + Tokens.space-xs * 2;
+    height: self.width;
+    border-radius: Tokens.radius;
+    background: touch.has-hover ? Tokens.color-surface-hover : transparent;
+    animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+
+    Path {
+        width: Tokens.bar-icon;
+        height: Tokens.bar-icon;
+        viewbox-width: 16;
+        viewbox-height: 16;
+        commands: "M4.5 4.5l7 7 M11.5 4.5l-7 7";
+        stroke: touch.has-hover ? Tokens.color-text : Tokens.color-text-muted;
+        stroke-width: Tokens.icon-stroke;
+        stroke-line-cap: round;
+        fill: transparent;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+// Who sent it and when, with room at the right for the close button.
+component Heading inherits HorizontalLayout {
+    in property <string> app;
+    in property <string> time;
+    in property <bool> critical;
+
+    spacing: Tokens.space-sm;
+    padding-right: Tokens.bar-icon + Tokens.space-sm;
+
+    if root.critical: Rectangle {
+        width: Tokens.space-sm;
+        Rectangle {
+            width: Tokens.space-sm;
+            height: self.width;
+            border-radius: self.width / 2;
+            background: Tokens.color-danger;
+        }
+    }
+
+    SengiLabel {
+        horizontal-stretch: 1;
+        min-width: 0;
+        text: root.app;
+        overflow: elide;
+        vertical-alignment: center;
+    }
+
+    SengiLabel {
+        horizontal-stretch: 0;
+        text: root.time;
+        color: Tokens.color-text-disabled;
+        vertical-alignment: center;
+    }
+}
+
+// A few lines of wrapped text at most; the last one ends in an ellipsis.
+component Lines inherits Rectangle {
+    in property <string> text;
+    in property <int> lines;
+    in property <bool> strong: false;
+
+    height: Math.min(content.preferred-height, line.preferred-height * root.lines);
+    clip: true;
+
+    content := SengiText {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+        text: root.text;
+        color: root.strong ? Tokens.color-text : Tokens.color-text-muted;
+        font-weight: root.strong ? Tokens.font-weight-bold : Tokens.font-weight-regular;
+        vertical-alignment: top;
+        wrap: word-wrap;
+        overflow: elide;
+    }
+
+    // Measures one line of text; never drawn.
+    line := SengiText {
+        text: "Ag";
+        font-weight: content.font-weight;
+        visible: false;
+    }
+}
+
+// Summary and body, each cut off after a few lines.
+component Message inherits VerticalLayout {
+    in property <string> summary;
+    in property <string> body;
+    in property <int> body-lines: 4;
+
+    spacing: Tokens.space-xxs;
+
+    if root.summary != "": Lines {
+        text: root.summary;
+        lines: 2;
+        strong: true;
+    }
+
+    if root.body != "": Lines {
+        text: root.body;
+        lines: root.body-lines;
+    }
+}
+
+// SengiButton, except that a label too long for its share of the card is
+// cut short instead of pushing the other buttons out.
+component ActionButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    min-width: 0;
+    height: Tokens.bar-height;
+    border-radius: Tokens.radius;
+    background: !root.enabled ? Tokens.color-surface
+        : touch.has-hover ? Tokens.color-surface-hover : Tokens.color-surface-raised;
+    animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+
+    SengiText {
+        x: Tokens.space-sm;
+        width: parent.width - Tokens.space-sm * 2;
+        text: root.text;
+        color: root.enabled ? Tokens.color-text : Tokens.color-text-disabled;
+        font-weight: Tokens.font-weight-medium;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+component PopupCard inherits Rectangle {
+    in property <Card> data;
+    callback clicked();
+    callback closed();
+    callback action(string);
+
+    // 0 while entering and leaving, 1 at rest. The card fades, slides in
+    // from the screen edge and makes room for itself, all on this value.
+    private property <bool> entered: false;
+    private property <float> reveal: root.entered && !root.data.leaving ? 1 : 0;
+    animate reveal { duration: Tokens.motion-base; easing: Tokens.motion-easing; }
+
+    init => {
+        // Reading the value first gives the animation a place to start.
+        if self.reveal == 0 {
+            self.entered = true;
+        }
+    }
+
+    width: Tokens.notification-width;
+    // The gap to the next card is part of this one, so it closes smoothly.
+    height: (surface.preferred-height + Tokens.space-sm) * root.reveal;
+    opacity: root.reveal;
+
+    surface := SengiSurface {
+        x: (1 - root.reveal) * Tokens.space-xl;
+        y: 0;
+        width: root.width;
+        height: self.preferred-height;
+        border-color: root.data.critical ? Tokens.color-danger : Tokens.color-border;
+
+        TouchArea {
+            enabled: !root.data.leaving;
+            clicked => { root.clicked(); }
+        }
+
+        VerticalLayout {
+            padding: Tokens.space-md;
+            spacing: Tokens.space-xs;
+
+            Heading {
+                app: root.data.app;
+                time: root.data.time;
+                critical: root.data.critical;
+            }
+
+            Message {
+                summary: root.data.summary;
+                body: root.data.body;
+            }
+
+            if root.data.actions.length > 0: Rectangle {
+                height: buttons.preferred-height + Tokens.space-xs;
+                buttons := HorizontalLayout {
+                    y: Tokens.space-xs;
+                    height: self.preferred-height;
+                    spacing: Tokens.space-sm;
+                    for item in root.data.actions: ActionButton {
+                        horizontal-stretch: 1;
+                        text: item.label;
+                        enabled: !root.data.leaving;
+                        clicked => { root.action(item.key); }
+                    }
+                }
+            }
+        }
+
+        CloseButton {
+            x: parent.width - self.width - Tokens.space-xs;
+            y: Tokens.space-xs;
+            clicked => { root.closed(); }
+        }
+    }
+}
+
+component HistoryRow inherits SengiSurface {
+    in property <HistoryItem> data;
+    callback dismissed();
+
+    raised: true;
+    border-color: root.data.critical ? Tokens.color-danger : Tokens.color-border;
+    height: content.preferred-height;
+
+    content := VerticalLayout {
+        padding: Tokens.space-md;
+        spacing: Tokens.space-xs;
+
+        Heading {
+            app: root.data.app;
+            time: root.data.time;
+            critical: root.data.critical;
+        }
+
+        Message {
+            summary: root.data.summary;
+            body: root.data.body;
+            body-lines: 3;
+        }
+    }
+
+    CloseButton {
+        x: parent.width - self.width - Tokens.space-xs;
+        y: Tokens.space-xs;
+        clicked => { root.dismissed(); }
+    }
+}
+
+component CentrePanel inherits SengiSurface {
+    in property <[HistoryItem]> history;
+    in-out property <bool> dnd;
+    // The tallest the panel may be.
+    in property <length> available;
+    callback dismissed(int);
+    callback clear-all();
+    callback dnd-toggled(bool);
+
+    private property <bool> entered: false;
+    private property <float> reveal: root.entered ? 1 : 0;
+    animate reveal { duration: Tokens.motion-base; easing: Tokens.motion-easing; }
+
+    init => {
+        if self.reveal == 0 {
+            self.entered = true;
+        }
+    }
+
+    private property <length> list-height: Math.max(
+        Math.min(list.preferred-height, root.available - head.preferred-height),
+        0px);
+
+    width: Tokens.notification-width + Tokens.space-md * 2;
+    height: head.preferred-height + root.list-height;
+    opacity: root.reveal;
+
+    // Clicks on the panel itself are not clicks outside it.
+    TouchArea { }
+
+    head := VerticalLayout {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: self.preferred-height;
+        padding: Tokens.space-md;
+        spacing: Tokens.space-md;
+
+        HorizontalLayout {
+            spacing: Tokens.space-sm;
+
+            SengiText {
+                horizontal-stretch: 1;
+                text: "Notifications";
+                font-size: Tokens.font-size-lg;
+                font-weight: Tokens.font-weight-bold;
+                vertical-alignment: center;
+            }
+
+            SengiButton {
+                horizontal-stretch: 0;
+                text: "Clear all";
+                enabled: root.history.length > 0;
+                clicked => { root.clear-all(); }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: Tokens.space-sm;
+
+            SengiText {
+                horizontal-stretch: 1;
+                text: "Do not disturb";
+                vertical-alignment: center;
+            }
+
+            VerticalLayout {
+                alignment: center;
+                SengiToggle {
+                    checked <=> root.dnd;
+                    toggled(on) => { root.dnd-toggled(on); }
+                }
+            }
+        }
+
+        if root.history.length == 0: SengiText {
+            text: "No notifications";
+            color: Tokens.color-text-muted;
+            horizontal-alignment: center;
+        }
+    }
+
+    scroll := Flickable {
+        x: Tokens.space-md;
+        y: head.preferred-height;
+        width: Tokens.notification-width;
+        height: root.list-height;
+        content-width: self.width;
+        content-height: list.preferred-height;
+
+        list := VerticalLayout {
+            width: scroll.width;
+            height: self.preferred-height;
+            padding-bottom: Tokens.space-md;
+            spacing: Tokens.space-sm;
+
+            for item in root.history: HistoryRow {
+                data: item;
+                dismissed => { root.dismissed(item.key); }
+            }
+        }
+    }
+
+    // Scroll position, in the margin right of the list.
+    if scroll.content-height > scroll.height && scroll.height > 0: Rectangle {
+        x: parent.width - Tokens.space-sm + Tokens.space-xxs;
+        y: scroll.y - scroll.content-y * scroll.height / scroll.content-height;
+        width: Tokens.space-xxs;
+        height: scroll.height * scroll.height / scroll.content-height;
+        border-radius: Tokens.radius;
+        background: Tokens.color-border;
+    }
+}
+
+export component NotifyWindow inherits Window {
+    in property <[Card]> cards;
+    // Notifications waiting for a place on screen.
+    in property <int> queued: 0;
+    in property <[HistoryItem]> history;
+    in property <bool> centre-open: false;
+    in-out property <bool> dnd: false;
+
+    // What the program sizes the surface and its input region by.
+    out property <length> strip-width: Tokens.notification-width + Tokens.space-sm;
+    out property <length> strip-top: Tokens.space-sm;
+    out property <length> cards-width: Tokens.notification-width;
+    out property <length> cards-height: stack.preferred-height;
+    out property <duration> leave-time: Tokens.motion-base;
+
+    callback card-clicked(int);
+    callback card-closed(int);
+    callback card-action(int, string);
+    // The pointer came to rest on the cards, or left them.
+    callback hover-changed(bool);
+    callback cards-resized();
+    callback history-dismissed(int);
+    callback clear-all();
+    callback dnd-toggled(bool);
+    callback close-centre();
+
+    public function take-keyboard() {
+        keys.focus();
+    }
+
+    changed cards-height => { root.cards-resized(); }
+
+    title: "Sengi OS notifications";
+    no-frame: true;
+    background: transparent;
+    default-font-family: Tokens.font-family;
+    forward-focus: keys;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if root.centre-open && event.text == Key.Escape {
+                root.close-centre();
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+    }
+
+    // The cards sit inside this area so that it knows the pointer is over
+    // them even while a card or one of its buttons has it.
+    TouchArea {
+        x: 0;
+        y: root.strip-top;
+        width: root.cards-width;
+        height: root.cards-height;
+        visible: !root.centre-open;
+        changed has-hover => { root.hover-changed(self.has-hover); }
+
+        stack := VerticalLayout {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: self.preferred-height;
+
+            for card in root.cards: PopupCard {
+                data: card;
+                clicked => { root.card-clicked(card.serial); }
+                closed => { root.card-closed(card.serial); }
+                action(key) => { root.card-action(card.serial, key); }
+            }
+
+            if root.queued > 0: Rectangle {
+                height: pill.height;
+                pill := SengiSurface {
+                    x: parent.width - self.width;
+                    y: 0;
+                    width: more.preferred-width + Tokens.space-md * 2;
+                    height: more.preferred-height + Tokens.space-xs * 2;
+                    more := SengiLabel {
+                        text: "+" + root.queued + " more";
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+
+    // A click outside the panel closes it.
+    if root.centre-open: TouchArea {
+        clicked => { root.close-centre(); }
+    }
+
+    if root.centre-open: CentrePanel {
+        x: root.width - self.width - Tokens.space-sm;
+        y: Tokens.space-sm;
+        available: root.height - Tokens.space-sm * 2;
+        history: root.history;
+        dnd <=> root.dnd;
+        dismissed(key) => { root.history-dismissed(key); }
+        clear-all => { root.clear-all(); }
+        dnd-toggled(on) => { root.dnd-toggled(on); }
+    }
+}

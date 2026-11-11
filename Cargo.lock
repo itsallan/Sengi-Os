@@ -3562,6 +3562,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sengi-notify"
+version = "0.3.0"
+dependencies = [
+ "chrono",
+ "sengi-layer",
+ "sengi-tokens",
+ "serde",
+ "slint",
+ "slint-build",
+ "zbus",
+]
+
+[[package]]
 name = "sengi-tokens"
 version = "0.3.0"
 
