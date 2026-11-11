@@ -636,7 +636,8 @@ fn draw_if_ready(backend: &Shared, state: &mut State) {
             match screen.frame(renderer, state, epoch) {
                 Ok(Some(states)) => {
                     screen.failures = 0;
-                    shown.push((screen.output.clone(), states, epoch));
+                    screen.waiting = true;
+                    shown.push((screen.crtc, screen.output.clone(), states, epoch));
                 }
                 Ok(None) => screen.failures = 0,
                 Err(err) => {
@@ -701,9 +702,39 @@ fn draw_if_ready(backend: &Shared, state: &mut State) {
             }
         }
     }
-    // Nothing changed on these, so there is no flip to wait for.
-    for (output, states, epoch) in shown {
-        render::presented(state, &output, &states, epoch);
+    // Nothing changed on these, so there is no flip to wait for. Their
+    // clients are still only told to draw again one refresh later: a
+    // client that commits without damage would otherwise get its frame
+    // callback at once, commit again, and the two would spin.
+    for (crtc, output, states, epoch) in shown {
+        let again = backend.clone();
+        let mut frame = Some((output.clone(), states));
+        let timer = Timer::from_duration(refresh_interval(&output));
+        let armed = state.loop_handle.insert_source(timer, move |_, _, state| {
+            if let Some(screen) = again
+                .borrow_mut()
+                .screens
+                .iter_mut()
+                .find(|screen| screen.crtc == crtc)
+            {
+                screen.waiting = false;
+            }
+            if let Some((output, states)) = frame.take() {
+                render::presented(state, &output, &states, epoch);
+            }
+            draw_if_ready(&again, state);
+            TimeoutAction::Drop
+        });
+        if armed.is_err() {
+            if let Some(screen) = backend
+                .borrow_mut()
+                .screens
+                .iter_mut()
+                .find(|screen| screen.crtc == crtc)
+            {
+                screen.waiting = false;
+            }
+        }
     }
 }
 
