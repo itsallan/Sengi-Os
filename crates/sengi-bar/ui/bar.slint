@@ -28,6 +28,7 @@ component BarItem inherits Rectangle {
     // Items that do nothing on click do not light up on hover either.
     in property <bool> interactive: true;
     callback clicked();
+    callback middle-clicked();
 
     border-radius: Tokens.radius;
     background: root.interactive && touch.has-hover ? Tokens.color-surface-hover : transparent;
@@ -48,6 +49,11 @@ component BarItem inherits Rectangle {
     touch := TouchArea {
         enabled: root.interactive;
         clicked => { root.clicked(); }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.up && event.button == PointerEventButton.middle {
+                root.middle-clicked();
+            }
+        }
     }
 
     @children
@@ -184,7 +190,8 @@ export component Bar inherits Window {
     out property <length> tray-icon-size: Tokens.bar-icon;
 
     callback open-launcher();
-    callback open-network();
+    // The network, volume or battery item was clicked.
+    callback open-quick();
     callback toggle-mute();
     callback show-notifications();
     callback dismiss-notifications();
@@ -265,7 +272,7 @@ export component Bar inherits Window {
             BarItem {
                 text: root.wifi && root.wifi-name != "" ? root.wifi-name : root.network;
                 dim: !root.online;
-                clicked => { root.open-network(); }
+                clicked => { root.open-quick(); }
             }
         }
 
@@ -274,7 +281,8 @@ export component Bar inherits Window {
             BarItem {
                 text: root.volume;
                 dim: root.muted;
-                clicked => { root.toggle-mute(); }
+                clicked => { root.open-quick(); }
+                middle-clicked => { root.toggle-mute(); }
             }
         }
 
@@ -284,7 +292,7 @@ export component Bar inherits Window {
                 text: root.battery;
                 alert: root.battery-low;
                 caution: root.battery-warning;
-                interactive: false;
+                clicked => { root.open-quick(); }
             }
         }
 

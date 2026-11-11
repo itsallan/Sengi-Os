@@ -266,7 +266,9 @@ fn run() -> Result<(), sengi_layer::Error> {
         handle.set_exclusive_zone(height as i32);
 
         bar.on_open_launcher(|| spawn("sengi-launcher"));
-        bar.on_open_network(|| spawn("sengi-run foot -e iwctl"));
+        // The network, volume and battery items open the quick settings
+        // panel; the same command closes it again.
+        bar.on_open_quick(|| spawn("sengi-quick"));
         bar.on_show_notifications(|| spawn("sengi-notify --toggle-centre"));
         bar.on_dismiss_notifications(|| spawn("sengi-notify --dismiss-all"));
         bar.on_open_session(|| spawn("sengi-power"));
