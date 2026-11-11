@@ -37,6 +37,7 @@ pub fn forbid_core_dumps() {
 pub struct Secret(String);
 
 impl Secret {
+    /// Takes charge of `text`. From here on it is wiped when dropped.
     pub fn new(text: String) -> Secret {
         Secret(text)
     }
@@ -46,10 +47,12 @@ impl Secret {
         &self.0
     }
 
+    /// Its length in bytes.
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
+    /// Whether it is empty.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }

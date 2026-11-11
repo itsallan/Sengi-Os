@@ -35,26 +35,36 @@ const SIGNAL_QUEUE: usize = 16;
 /// A property value, of the few kinds the panel reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Prop {
+    /// A boolean.
     Bool(bool),
+    /// A string.
     Text(String),
+    /// An object path.
     Path(String),
+    /// Anything else. Its value is not kept.
     Other,
 }
 
+/// The properties of one interface of one object, by name.
 pub type Props = HashMap<String, Prop>;
 
+/// One object a service exports, as `GetManagedObjects` lists it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Object {
+    /// Its object path.
     pub path: String,
+    /// Its interfaces and their properties, by interface name.
     pub interfaces: HashMap<String, Props>,
 }
 
 impl Object {
+    /// The properties of interface `name`, if the object has it.
     pub fn interface(&self, name: &str) -> Option<&Props> {
         self.interfaces.get(name)
     }
 }
 
+/// The boolean property `name`, if it is there and is one.
 pub fn flag(props: &Props, name: &str) -> Option<bool> {
     match props.get(name)? {
         Prop::Bool(value) => Some(*value),
@@ -62,6 +72,7 @@ pub fn flag(props: &Props, name: &str) -> Option<bool> {
     }
 }
 
+/// The string property `name`, if it is there and is one.
 pub fn text<'a>(props: &'a Props, name: &str) -> Option<&'a str> {
     match props.get(name)? {
         Prop::Text(value) => Some(value),
@@ -69,6 +80,7 @@ pub fn text<'a>(props: &'a Props, name: &str) -> Option<&'a str> {
     }
 }
 
+/// The object path property `name`, if it is there and is one.
 pub fn path<'a>(props: &'a Props, name: &str) -> Option<&'a str> {
     match props.get(name)? {
         Prop::Path(value) => Some(value),
@@ -92,6 +104,7 @@ pub enum Listing {
     Absent,
     /// It is running and the bus will not let this user talk to it.
     Denied,
+    /// It answered with these objects.
     Objects(Vec<Object>),
 }
 
@@ -142,6 +155,8 @@ pub fn denied(error: &zbus::Error) -> bool {
         || error_name(error) == Some("org.freedesktop.DBus.Error.AccessDenied")
 }
 
+/// The system bus connection, made on first use and shared by the
+/// services.
 #[derive(Default)]
 pub struct Bus {
     connection: OnceLock<Option<Connection>>,
@@ -175,6 +190,8 @@ impl Bus {
         Some(owner.as_str().to_string())
     }
 
+    /// Calls a method and reads the reply as `R`. The call carries the
+    /// no-auto-start flag, so it fails rather than start `service`.
     pub fn call<B, R>(
         &self,
         service: &str,
@@ -222,6 +239,7 @@ impl Bus {
         }
     }
 
+    /// Sets a boolean property through `org.freedesktop.DBus.Properties`.
     pub fn set_flag(
         &self,
         service: &str,

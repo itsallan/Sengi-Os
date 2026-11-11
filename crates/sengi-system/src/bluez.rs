@@ -27,6 +27,8 @@ pub fn adapter(objects: &[Object]) -> Option<(&str, bool)> {
     })
 }
 
+/// What a program shows for these BlueZ objects: whether there is an
+/// adapter, whether it is on, and the names of the connected devices.
 pub fn reading(objects: &[Object]) -> Bluetooth {
     let Some((adapter, powered)) = adapter(objects) else {
         return Bluetooth::Absent;
@@ -52,11 +54,13 @@ pub fn reading(objects: &[Object]) -> Bluetooth {
     Bluetooth::On { devices }
 }
 
+/// Bluetooth through BlueZ on the system bus.
 pub struct Bluez {
     bus: Arc<Bus>,
 }
 
 impl Bluez {
+    /// A service over `bus`. Nothing is called until it is first used.
     pub fn new(bus: Arc<Bus>) -> Bluez {
         Bluez { bus }
     }

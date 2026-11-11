@@ -1,7 +1,7 @@
 //! The display backlight, read from `/sys/class/backlight`.
 //!
 //! Reading is open to everyone. Writing is not, so changes go through
-//! logind (see `system::logind`), which sets the brightness of a device on
+//! logind (see `machine`), which sets the brightness of a device on
 //! the caller's own seat.
 
 use std::fs;
@@ -11,14 +11,20 @@ use std::path::Path;
 /// the slider that would bring them back could no longer be seen.
 pub const MIN_PERCENT: u32 = 5;
 
+/// One backlight device and where it is set.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Backlight {
     /// The device's name under `/sys/class/backlight`.
     pub name: String,
+    /// The current setting, in the device's own units.
     pub brightness: u32,
+    /// The highest setting, in the device's own units. Never zero.
     pub max: u32,
 }
 
+/// Makes sense of a device's `brightness` and `max_brightness` files.
+/// `None` if either is not a number, the maximum is zero, or `name` does
+/// not look like a device name.
 pub fn parse(name: &str, brightness: &str, max: &str) -> Option<Backlight> {
     let max: u32 = max.trim().parse().ok()?;
     let brightness: u32 = brightness.trim().parse().ok()?;
@@ -46,6 +52,7 @@ impl Backlight {
             .max(1) as u32
     }
 
+    /// The current setting as a percentage of the maximum, rounded.
     pub fn percent(&self) -> u32 {
         ((u64::from(self.brightness) * 100 + u64::from(self.max) / 2) / u64::from(self.max)) as u32
     }

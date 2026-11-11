@@ -1,17 +1,20 @@
-//! Bluetooth as the panel sees it. `system::bluez` fills this in.
+//! Bluetooth as the panel sees it. [`bluez`](crate::bluez) fills this in.
 
 use sengi_text::isolate;
 
 /// More connected devices than this are counted, not named.
 pub const MAX_DEVICES: usize = 8;
 
+/// Bluetooth as a whole.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Bluetooth {
     /// BlueZ is not running or has no adapter.
     Absent,
     /// BlueZ is running and the bus policy keeps this user out.
     Denied,
+    /// There is an adapter and it is switched off.
     Off,
+    /// Switched on.
     On {
         /// Names of the connected devices, cleaned for display.
         devices: Vec<String>,

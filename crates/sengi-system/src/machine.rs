@@ -109,6 +109,7 @@ pub fn read(class: &Path) -> Hardware {
     }
 }
 
+/// The machine as `/sys/class` shows it, with logind to set the backlight.
 pub struct Sysfs {
     bus: Arc<Bus>,
     class: PathBuf,

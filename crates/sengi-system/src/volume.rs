@@ -4,9 +4,12 @@
 /// The slider's range. PipeWire can go louder; the panel does not.
 pub const MAX_PERCENT: u32 = 100;
 
+/// The default output's volume.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Volume {
+    /// In percent. PipeWire allows more than 100.
     pub percent: u32,
+    /// Whether the output is muted.
     pub muted: bool,
 }
 
@@ -37,6 +40,7 @@ pub fn set_volume_args(percent: u32) -> [String; 5] {
     ]
 }
 
+/// The arguments for `wpctl` that mute or unmute the output.
 pub fn set_mute_args(muted: bool) -> [String; 3] {
     [
         "set-mute".to_string(),
@@ -49,7 +53,9 @@ pub fn set_mute_args(muted: bool) -> [String; 3] {
 /// a stale one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Step {
+    /// Counts up with every change one slider asks for.
     pub sequence: u64,
+    /// The value asked for, in percent.
     pub value: u32,
 }
 

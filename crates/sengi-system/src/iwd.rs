@@ -33,16 +33,22 @@ const MAX_SCANNED: usize = 256;
 /// The device the panel controls and where it stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Device {
+    /// The device's object path.
     pub path: String,
+    /// The object path of the adapter it belongs to.
     pub adapter: Option<String>,
+    /// Whether the device is switched on.
     pub powered: bool,
     /// Present when the device is up and in station mode.
     pub station: Option<Station>,
 }
 
+/// What a device's station interface says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Station {
+    /// Where it stands with the network it is on.
     pub link: Link,
+    /// A scan is under way.
     pub scanning: bool,
 }
 
@@ -283,12 +289,15 @@ impl Agent {
     }
 }
 
+/// Wi-Fi through iwd on the system bus, with the agent that hands iwd a
+/// typed passphrase.
 pub struct Iwd {
     bus: Arc<Bus>,
     slot: Slot,
 }
 
 impl Iwd {
+    /// A service over `bus`. Nothing is called until it is first used.
     pub fn new(bus: Arc<Bus>) -> Iwd {
         Iwd {
             bus,
