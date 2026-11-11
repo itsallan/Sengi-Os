@@ -4,21 +4,33 @@ use std::{error::Error, time::Duration};
 
 use smithay::{
     backend::renderer::{
-        damage::OutputDamageTracker,
+        damage::{OutputDamageTracker, RenderOutputResult},
         element::{
+            default_primary_scanout_output_compare,
             memory::MemoryRenderBufferRenderElement,
             render_elements,
             solid::SolidColorRenderElement,
             surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
-            AsRenderElements, Kind,
+            AsRenderElements, Kind, RenderElementStates,
         },
         ImportAll, ImportMem, Renderer, Texture,
     },
-    desktop::{layer_map_for_output, utils::send_frames_surface_tree, Window},
+    desktop::{
+        layer_map_for_output,
+        utils::{
+            send_frames_surface_tree, surface_primary_scanout_output,
+            update_surface_primary_scanout_output, with_surfaces_surface_tree,
+        },
+        Window,
+    },
     input::pointer::{CursorImageStatus, CursorImageSurfaceData},
     output::Output,
-    utils::{Logical, Point, Scale},
-    wayland::{compositor::with_states, shell::wlr_layer::Layer},
+    reexports::wayland_server::protocol::wl_surface::WlSurface,
+    utils::{Logical, Physical, Point, Rectangle, Scale},
+    wayland::{
+        compositor::{with_states, SurfaceData},
+        shell::wlr_layer::Layer,
+    },
 };
 
 use crate::{state::State, window};
@@ -40,7 +52,7 @@ pub fn output<R>(
     target: &mut R::Framebuffer<'_>,
     age: usize,
     damage: &mut OutputDamageTracker,
-) -> Result<(), Box<dyn Error>>
+) -> Result<Rendered, Box<dyn Error>>
 where
     R: Renderer + ImportAll + ImportMem,
     R::TextureId: Clone + Send + Texture + 'static,
@@ -69,16 +81,8 @@ where
                 Kind::Unspecified,
             ));
         }
-        damage
-            .render_output(
-                renderer,
-                target,
-                age,
-                &elements,
-                state.color(state.theme.inactive),
-            )
-            .map_err(|err| format!("{err:?}"))?;
-        return Ok(());
+        let background = state.color(state.theme.inactive);
+        return finish(damage.render_output(renderer, target, age, &elements, background));
     }
 
     // Front to back: overlay and top layers, windows, bottom and background.
@@ -113,10 +117,7 @@ where
         &mut elements,
     );
 
-    damage
-        .render_output(renderer, target, age, &elements, state.desktop_color())
-        .map_err(|err| format!("{err:?}"))?;
-    Ok(())
+    finish(damage.render_output(renderer, target, age, &elements, state.desktop_color()))
 }
 
 fn layers<R>(
@@ -262,31 +263,92 @@ fn frame<R>(
     }
 }
 
-/// Tells every visible surface that a frame was shown, so clients that wait
-/// for frame callbacks draw their next one.
+/// How often a surface that is not visible still gets a frame callback, so
+/// a hidden client keeps ticking slowly instead of stalling or spinning.
+pub const HIDDEN_FRAME_INTERVAL: Duration = Duration::from_secs(1);
+
+/// What `output` produced: the regions that were repainted, `None` if
+/// nothing changed, and which elements ended up visible.
+pub struct Rendered {
+    pub damage: Option<Vec<Rectangle<i32, Physical>>>,
+    pub states: RenderElementStates,
+}
+
+fn finish<E: std::fmt::Debug>(
+    result: Result<RenderOutputResult<'_>, E>,
+) -> Result<Rendered, Box<dyn Error>> {
+    let result = result.map_err(|err| format!("{err:?}"))?;
+    Ok(Rendered {
+        damage: result.damage.cloned(),
+        states: result.states,
+    })
+}
+
+/// To be called once a frame is on its way to the screen: records which
+/// surfaces were visible in it and lets their clients draw the next one.
+pub fn presented(state: &mut State, output: &Output, states: &RenderElementStates) {
+    let seen = |surface: &WlSurface, data: &SurfaceData| {
+        update_surface_primary_scanout_output(
+            surface,
+            output,
+            data,
+            states,
+            default_primary_scanout_output_compare,
+        );
+    };
+    if state.is_locked() {
+        if let Some(surface) = state.lock_surface() {
+            with_surfaces_surface_tree(&surface, seen);
+        }
+    } else {
+        for window in state.space.elements() {
+            window.with_surfaces(seen);
+        }
+        for layer in layer_map_for_output(output).layers() {
+            layer.with_surfaces(seen);
+        }
+    }
+    if let CursorImageStatus::Surface(surface) = state.cursor() {
+        with_surfaces_surface_tree(&surface, seen);
+    }
+
+    send_frames(state, output);
+    state.frame_presented();
+}
+
+/// Sends frame callbacks: at once to surfaces that were visible on `output`
+/// in the last frame, and at most every `HIDDEN_FRAME_INTERVAL` to the rest.
 pub fn send_frames(state: &State, output: &Output) {
     let time = state.start_time.elapsed();
-    let throttle = Some(Duration::ZERO);
+    let throttle = Some(HIDDEN_FRAME_INTERVAL);
 
     if state.is_locked() {
         if let Some(surface) = state.lock_surface() {
-            send_frames_surface_tree(&surface, output, time, throttle, |_, _| {
-                Some(output.clone())
-            });
+            send_frames_surface_tree(
+                &surface,
+                output,
+                time,
+                throttle,
+                surface_primary_scanout_output,
+            );
         }
         return;
     }
 
     for window in state.space.elements() {
-        window.send_frame(output, time, throttle, |_, _| Some(output.clone()));
+        window.send_frame(output, time, throttle, surface_primary_scanout_output);
     }
     for layer in layer_map_for_output(output).layers() {
-        layer.send_frame(output, time, throttle, |_, _| Some(output.clone()));
+        layer.send_frame(output, time, throttle, surface_primary_scanout_output);
     }
     // Animated client cursors wait for frame callbacks like any surface.
     if let CursorImageStatus::Surface(surface) = state.cursor() {
-        send_frames_surface_tree(&surface, output, time, throttle, |_, _| {
-            Some(output.clone())
-        });
+        send_frames_surface_tree(
+            &surface,
+            output,
+            time,
+            throttle,
+            surface_primary_scanout_output,
+        );
     }
 }

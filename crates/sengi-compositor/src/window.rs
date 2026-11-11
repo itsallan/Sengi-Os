@@ -144,6 +144,7 @@ impl State {
     /// Hides a window without closing it, or brings it back where it was.
     /// The dock is how it comes back, through foreign-toplevel activate.
     pub fn set_minimised(&mut self, window: &Window, minimised: bool) {
+        self.request_redraw();
         let data = data(window);
         match (minimised, data.minimised.get()) {
             (true, None) => {
@@ -216,6 +217,7 @@ impl State {
             _ => return,
         }
         // Mapping at a new place also raises, so put the order back after.
+        self.request_redraw();
         let order: Vec<Window> = self.space.elements().cloned().collect();
         self.space.map_element(window.clone(), (x, y), false);
         for other in &order {

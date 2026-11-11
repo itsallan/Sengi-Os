@@ -20,7 +20,12 @@ use smithay::{
     },
     output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel},
     reexports::{
-        calloop::{generic::Generic, EventLoop, Interest, LoopSignal, Mode, PostAction},
+        calloop::{
+            generic::Generic,
+            ping::Ping,
+            timer::{TimeoutAction, Timer},
+            EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction,
+        },
         wayland_server::{
             backend::{ClientData, ClientId, DisconnectReason},
             protocol::{wl_buffer::WlBuffer, wl_surface::WlSurface},
@@ -41,7 +46,7 @@ use smithay::{
             },
             SelectionHandler,
         },
-        session_lock::SessionLockManagerState,
+        session_lock::{SessionLockManagerState, SessionLocker},
         shell::{
             wlr_layer::{KeyboardInteractivity, Layer, WlrLayerShellState},
             xdg::{decoration::XdgDecorationState, XdgShellState},
@@ -61,6 +66,7 @@ use crate::{
     keys::Swallowed,
     layout::FocusStack,
     lock::Lock,
+    render,
     text::Font,
 };
 
@@ -72,6 +78,16 @@ pub struct State {
     pub socket_name: OsString,
     pub display_handle: DisplayHandle,
     pub loop_signal: LoopSignal,
+    pub loop_handle: LoopHandle<'static, Self>,
+    /// Something visible changed since the last frame. Set through
+    /// `request_redraw`, cleared by the backend when it draws.
+    pub needs_redraw: bool,
+    /// Wakes the backend to draw; each backend installs its own.
+    redraw_ping: Option<Ping>,
+    /// The slow tick for surfaces nobody can see is already scheduled.
+    hidden_frames_armed: bool,
+    /// A lock that is confirmed once the first locked frame is out.
+    pub pending_lock: Option<SessionLocker>,
     pub tokens: Tokens,
     pub theme: Theme,
     /// The title bar typeface, if it is installed.
@@ -192,6 +208,11 @@ impl State {
             socket_name,
             display_handle: dh,
             loop_signal: event_loop.get_signal(),
+            loop_handle: event_loop.handle(),
+            needs_redraw: false,
+            redraw_ping: None,
+            hidden_frames_armed: false,
+            pending_lock: None,
             tokens,
             theme,
             font,
@@ -245,6 +266,51 @@ impl State {
             return Err("rendering failed".into());
         }
         Ok(())
+    }
+
+    pub fn set_redraw_ping(&mut self, ping: Ping) {
+        self.redraw_ping = Some(ping);
+    }
+
+    /// Asks for a frame. Everything that changes what is on screen calls
+    /// this; nothing is drawn otherwise.
+    pub fn request_redraw(&mut self) {
+        if self.needs_redraw {
+            return;
+        }
+        self.needs_redraw = true;
+        if let Some(ping) = &self.redraw_ping {
+            ping.ping();
+        }
+    }
+
+    /// A client committed: besides the redraw, make sure it gets its frame
+    /// callback eventually even if it turns out not to be visible.
+    pub fn surface_committed(&mut self) {
+        self.request_redraw();
+        if self.hidden_frames_armed {
+            return;
+        }
+        let timer = Timer::from_duration(render::HIDDEN_FRAME_INTERVAL);
+        let armed = self.loop_handle.insert_source(timer, |_, _, state| {
+            state.hidden_frames_armed = false;
+            let outputs: Vec<Output> = state.space.outputs().cloned().collect();
+            for output in outputs {
+                render::send_frames(state, &output);
+            }
+            TimeoutAction::Drop
+        });
+        self.hidden_frames_armed = armed.is_ok();
+    }
+
+    /// A frame went out. If it was the first one of a locked session, the
+    /// locker may now be told that the screen is covered.
+    pub fn frame_presented(&mut self) {
+        if let Some(locker) = self.pending_lock.take() {
+            if self.is_locked() {
+                locker.lock();
+            }
+        }
     }
 
     /// The colour behind all windows.
@@ -308,6 +374,7 @@ impl State {
         output.set_preferred(mode);
         layer_map_for_output(output).arrange();
         self.usable_area_changed();
+        self.request_redraw();
     }
 
     /// Raises `window`, marks it active and gives it the keyboard.
@@ -317,6 +384,7 @@ impl State {
                 set_activated(&old, false);
             }
         }
+        self.request_redraw();
         self.focus_stack.focus(window.clone());
         self.space.raise_element(window, true);
         set_activated(window, true);
@@ -328,6 +396,7 @@ impl State {
 
     /// Forgets `window` and hands focus to the one used before it.
     pub fn remove_window(&mut self, window: &Window) {
+        self.request_redraw();
         self.pending_windows.retain(|w| w != window);
         self.space.unmap_elem(window);
         self.minimised.retain(|w| w != window);
@@ -453,6 +522,8 @@ impl State {
     pub fn note_activity(&mut self) {
         let seat = self.seat.clone();
         self.idle_notifier_state.notify_activity(&seat);
+        // The cursor moved, a button lit up, a binding did something.
+        self.request_redraw();
     }
 
     /// The front-most layer surface asking for exclusive keyboard focus.
@@ -524,6 +595,7 @@ impl SeatHandler for State {
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
         self.client_cursor = image;
+        self.request_redraw();
     }
 }
 

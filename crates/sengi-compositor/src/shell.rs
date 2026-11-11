@@ -46,8 +46,13 @@ impl CompositorHandler for State {
             .compositor_state
     }
 
+    fn destroyed(&mut self, _surface: &WlSurface) {
+        self.request_redraw();
+    }
+
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
+        self.surface_committed();
 
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();
@@ -149,6 +154,14 @@ impl XdgShellHandler for State {
             }
             _ => {}
         }
+    }
+
+    fn title_changed(&mut self, _surface: ToplevelSurface) {
+        self.request_redraw();
+    }
+
+    fn popup_destroyed(&mut self, _surface: PopupSurface) {
+        self.request_redraw();
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {

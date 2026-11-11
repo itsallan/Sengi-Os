@@ -57,6 +57,7 @@ impl WlrLayerShellHandler for State {
         // bar closing gives its space back.
         self.update_keyboard_focus();
         self.usable_area_changed();
+        self.request_redraw();
     }
 }
 
