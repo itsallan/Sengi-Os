@@ -3,8 +3,9 @@
 The Wayland compositor that will replace labwc in Sengi OS. It is built on
 [Smithay](https://github.com/Smithay/smithay) 0.7. The programs the live
 session starts (sengi-bar, sengi-dock, sengi-launcher, mako, swaybg,
-swayidle, swaylock, sengi-focus) run on it, and it sleeps when nothing
-changes. It still cannot drive a real screen.
+swayidle, swaylock, sengi-focus) run on it, it sleeps when nothing changes,
+and it drives a screen through DRM/KMS with software rendering. It does not
+use the GPU yet.
 
 It is not part of the ISO. The crate is its own Cargo workspace, excluded from
 the main one, so the normal build does not compile Smithay.
@@ -32,8 +33,46 @@ XCursor theme named by `XCURSOR_THEME` (default `default`) at `XCURSOR_SIZE`
     sengi-compositor --backend headless --exit-after 5 --screenshot out.png \
         -s waybar -s 'sleep 2; foot'
 
+    # On a virtual terminal, as the session (what greetd would run)
+    sengi-compositor -s 'sh /etc/xdg/labwc/autostart'
+
 The socket name is printed on stdout. `-s` commands get `WAYLAND_DISPLAY` set
 to it. `--no-default-features` builds without winit and GLES, headless only.
+
+### As the session on a real screen
+
+With the `drm` feature (on by default) and started on a virtual terminal
+with no `WAYLAND_DISPLAY` or `DISPLAY` set, the compositor takes the seat
+through libseat (logind or seatd), opens the seat's primary display device,
+uses the first connected connector at its preferred mode, and reads
+keyboards, mice and touchpads through libinput.
+
+Build for the image, without the development window backend:
+
+    cargo build --release --locked --no-default-features --features drm
+
+Build-time packages (Debian): `build-essential pkg-config libseat-dev
+libinput-dev libudev-dev libgbm-dev libpixman-1-dev libxkbcommon-dev`.
+Run-time packages: `libseat1 libinput10 libudev1 libgbm1 libdrm2
+libpixman-1-0 libxkbcommon0`, `fonts-inter` for title text, a cursor theme
+such as `adwaita-icon-theme`, and a seat provider: systemd-logind (a greetd
+session with pam_systemd is enough) or seatd.
+
+Under greetd, point the session command at a script like the image's
+`sengi-session` with the last line replaced:
+
+    exec sengi-compositor \
+        -s 'LABWC_PID=$SENGI_COMPOSITOR_PID sh /etc/xdg/labwc/autostart'
+
+Started programs get `WAYLAND_DISPLAY` and `SENGI_COMPOSITOR_PID`. The
+start-up script's restart loops watch `LABWC_PID`, hence the assignment
+until the script learns the new name. `sengi-compositor --exit` from inside
+the session, or SIGTERM, logs out and gives the terminal back.
+Ctrl+Alt+F1..F12 switch virtual terminals. The keyboard layout follows
+`XKB_DEFAULT_LAYOUT` and the other `XKB_DEFAULT_*` variables.
+
+`--backend drm --exit-after SEC --screenshot PNG` saves what was drawn by
+rendering the same frame once more into memory.
 
 ### Scripted input
 
@@ -114,6 +153,24 @@ swaylock, swayidle, sengi-focus, wlrctl and gtk3-widget-factory:
   session is locked after the first locked frame is out. If the locker
   dies, the screen stays locked and plain; a new locker can take over, a
   second one is refused while the first lives.
+- DRM backend, checked on virtio-gpu in a nested QEMU guest booted from the
+  project's ISO, with the compositor in labwc's place in the live greetd
+  session: the image's start-up script brought up swaybg, sengi-bar,
+  sengi-dock, mako, swayidle and sengi-focus; Super+Return opened foot with
+  our title bar and typing reached it; Super+Space opened the launcher; the
+  pointer followed an absolute pointing device. QEMU's own screen dumps
+  show all of it, and a click on the title bar's close button closed the
+  window. 24 MB resident, no LLVM mapped, and no wakeups or CPU time in
+  ten idle seconds. SIGTERM ended the session and gave the console back.
+  Run as root on libseat's builtin backend, Ctrl+Alt+F2 switched to the
+  text login on tty2 and Ctrl+Alt+F7 came back to a repainted desktop,
+  and `--screenshot` saved the frame.
+- `sengi-compositor --exit` and SIGTERM end the session; started programs
+  get `SENGI_COMPOSITOR_PID`.
+- Only a locker the compositor started may take over the session of a
+  locker that died, and the compositor starts one itself; a foreign locker
+  was refused. A forged `xdg_toplevel.move` is ignored and a toplevel that
+  detaches its buffer unmaps cleanly (`examples/misbehave.rs`).
 - Headless backend: pixman rendering into memory, scripted input, PNG
   screenshots.
 - Winit backend: GLES rendering in a window with keyboard and pointer input.
@@ -123,10 +180,22 @@ swaylock, swayidle, sengi-focus, wlrctl and gtk3-widget-factory:
 
 ## What does not work
 
-- No DRM/KMS, libinput or session handling, so it cannot run on a TTY.
-- Any client may lock, and after a locker has died any client may take the
-  lock over and then unlock. Restricting the protocol to the real locker
-  needs a security-context or similar check that is not there.
+- No GPU rendering: the DRM backend composes with pixman on the CPU into
+  dumb buffers. No GLES/GBM path, no dmabuf import, no hardware cursor
+  plane (the cursor is composed like everything else), no direct scanout.
+  This is the right path for VMs and has not been tried on real hardware,
+  where full-screen updates at 1080p will cost CPU.
+- DRM: one output only, chosen at start. Connectors appearing or
+  disappearing later are not handled, a second display stays dark, and
+  there is no way to pick a mode. Relative pointer motion and the touchpad
+  settings are implemented but have not been seen working: the test
+  guest's only pointer is an absolute one.
+- In the 0.3.0 live image, Ctrl+Alt+Fn is refused by logind ("failed to
+  change vt") for the session user; it works when the compositor runs on
+  libseat's builtin backend. The image probably has the same limit under
+  labwc; polkit or seatd would lift it.
+- Any client may lock an unlocked session and later unlock it; only the
+  takeover of a dead locker's session is restricted.
 - The bottom corners of a window are square and there are no shadows.
 - Fullscreen requests are ignored (and `wm_capabilities` says so).
 - The bar's power icon starts `sengi-power`, which was not available to
@@ -135,7 +204,7 @@ swaylock, swayidle, sengi-focus, wlrctl and gtk3-widget-factory:
 - Windows are not re-placed when the usable area changes; they are only
   pulled out from under a bar.
 - Written but not exercised: moves and resizes started by the client
-  (`xdg_toplevel.move`/`.resize`, now checked against the press serial),
+  (`xdg_toplevel.move`/`.resize` with a valid serial),
   popup constraining at a screen edge, a decoration mode change on a mapped
   window, frame callback throttling for a fully covered window,
   unmapping a window by detaching its buffer, on-demand layer focus by
@@ -160,11 +229,12 @@ swaylock, swayidle, sengi-focus, wlrctl and gtk3-widget-factory:
 
 ## Next steps toward replacing labwc
 
-1. The DRM/KMS backend with libseat and libinput (udev hotplug, VT
-   switching), GLES on the GPU with pixman as fallback, frames driven by
-   vblank through the same redraw request the other backends use.
-2. Restrict session-lock and foreign-toplevel to the clients meant to use
-   them.
+1. GLES on GBM for machines with a GPU, chosen automatically and never
+   falling into llvmpipe, with dmabuf import and a hardware cursor plane.
+2. Connector hotplug, a second output, mode selection, and proof on real
+   hardware of VT switching, touchpads and suspend.
+3. Restrict foreign-toplevel and locking an unlocked session to the
+   clients meant to use them.
 3. screencopy (grim, and the CI screenshot), output management, primary
    selection, xdg-activation, dmabuf, fractional scale, idle-inhibit.
 4. Fullscreen, popup constraining, double-click to maximise, edge snapping,
@@ -196,5 +266,5 @@ swaylock, swayidle, sengi-focus, wlrctl and gtk3-widget-factory:
 - `src/device_input.rs`: backend device events, built only with a backend
   that has devices.
 - `src/render.rs`: drawing an output and frame callbacks.
-- `src/headless.rs`, `src/winit.rs`: the backends.
+- `src/headless.rs`, `src/winit.rs`, `src/drm.rs`: the backends.
 - `src/png.rs`: minimal PNG writer for screenshots.
