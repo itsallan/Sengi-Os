@@ -40,6 +40,8 @@ xl = 24
 width = 1
 # Line weight of drawn icons.
 icon-stroke = 1.5
+# Outline on the control that has keyboard focus.
+focus-ring = 2
 
 [type]
 family = "Inter"

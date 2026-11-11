@@ -1,4 +1,4 @@
-//! Keeps one talkative client from taking over the screen: each sender on
+//! Keeps talkative clients from taking over the screen: each sender on
 //! the bus gets a small allowance of notifications that refills slowly.
 
 use std::collections::HashMap;
@@ -13,12 +13,33 @@ pub struct Allowance {
     pub senders: usize,
 }
 
-impl Default for Allowance {
-    fn default() -> Allowance {
+impl Allowance {
+    /// What one connection may post: a burst, then ten a second.
+    pub fn per_sender() -> Allowance {
         Allowance {
             burst: 30,
             refill: 100,
             senders: 64,
+        }
+    }
+
+    /// What all connections may post between them, counted under a single
+    /// name. A fresh connection gets a fresh allowance of its own, so this
+    /// is the limit that a client reconnecting for every call meets.
+    pub fn everyone() -> Allowance {
+        Allowance {
+            burst: 60,
+            refill: 50,
+            senders: 1,
+        }
+    }
+
+    /// Commands for the centre and do-not-disturb, which come from clicks.
+    pub fn control() -> Allowance {
+        Allowance {
+            burst: 10,
+            refill: 200,
+            senders: 1,
         }
     }
 }
