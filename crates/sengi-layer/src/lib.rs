@@ -100,7 +100,7 @@ use backend::{Builder, Instance, Shared, State};
 use platform::{LayerPlatform, ProxyEvent, QuitGuard, Unclaimed};
 
 pub use config::{Anchor, Config, ConfigError, KeyboardMode, Layer, Margins, Outputs};
-pub use surface::{Output, SurfaceHandle};
+pub use surface::{Output, Rect, SurfaceHandle};
 /// The version of wayland-client the connection from [`Handle::connection`]
 /// belongs to. Use this instead of a dependency of your own so the types
 /// match.
@@ -265,6 +265,8 @@ impl App {
             revision: 1,
             size_stamp: 0,
             size_overridden: false,
+            input_region: None,
+            input_stamp: 0,
             quit: false,
         }));
         let handle = Handle {
@@ -480,6 +482,21 @@ impl Handle {
         }
     }
 
+    /// Limits where the surface takes pointer input to the given
+    /// rectangles; clicks and hover anywhere else pass through to whatever
+    /// is underneath. `None` goes back to the whole surface, and an empty
+    /// list makes it take no pointer input at all.
+    ///
+    /// A dock wider than its icons passes clicks through beside them this
+    /// way. The region is in logical pixels and does not follow a resize;
+    /// set it again when the layout changes.
+    pub fn set_input_region(&self, region: Option<&[Rect]>) {
+        let mut shared = self.shared.borrow_mut();
+        shared.input_region = region.map(<[Rect]>::to_vec);
+        shared.input_stamp += 1;
+        shared.revision += 1;
+    }
+
     /// Takes the surface off the screen. The component, its state and its
     /// timers stay alive, and an exclusive zone or keyboard grab is given
     /// up until [`Handle::show`].
@@ -651,7 +668,10 @@ mod tests {
         let mut visited = 0;
         instances.for_each(|_| visited += 1);
         assert_eq!(visited, 0);
-        assert!(events.try_recv().is_err(), "hiding it asked the loop to quit");
+        assert!(
+            events.try_recv().is_err(),
+            "hiding it asked the loop to quit"
+        );
 
         // A quit the app asks for still gets through.
         slint::quit_event_loop().expect("the proxy takes the request");

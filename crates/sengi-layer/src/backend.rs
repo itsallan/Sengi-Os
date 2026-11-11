@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use slint::platform::software_renderer::{MinimalSoftwareWindow, PremultipliedRgbaColor};
 use slint::platform::WindowEvent;
 use slint::{LogicalPosition, PhysicalSize, SharedString};
-use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState};
+use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState, Region};
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
@@ -41,7 +41,7 @@ use crate::convert::{
 };
 use crate::outputs::{plan, retry_delay};
 use crate::platform::QuitGuard;
-use crate::surface::{call_hook, Output, SurfaceHandle, SurfaceShared};
+use crate::surface::{call_hook, Output, Rect, SurfaceHandle, SurfaceShared};
 use crate::{Context, Error, Handle};
 
 /// How often to look again while something animates without drawing, so
@@ -62,6 +62,10 @@ pub(crate) struct Shared {
     pub size_stamp: u64,
     /// Some surface has asked for a size of its own.
     pub size_overridden: bool,
+    /// Where the surfaces take pointer input. None is everywhere.
+    pub input_region: Option<Vec<Rect>>,
+    /// Counts app-wide input region changes, like `size_stamp`.
+    pub input_stamp: u64,
     pub quit: bool,
 }
 
@@ -229,6 +233,24 @@ fn send_geometry(layer: &LayerSurface, config: &Config, size: (u32, u32)) {
     layer.set_keyboard_interactivity(config.keyboard.into());
 }
 
+/// Says where the surface takes pointer input. Clicks elsewhere pass
+/// through to whatever is below. It takes effect with the next commit.
+fn send_input_region(compositor: &CompositorState, layer: &LayerSurface, region: Option<&[Rect]>) {
+    let Some(rectangles) = region else {
+        layer.wl_surface().set_input_region(None);
+        return;
+    };
+    let Ok(region) = Region::new(compositor) else {
+        return;
+    };
+    for rectangle in rectangles {
+        region.add(rectangle.x, rectangle.y, rectangle.width, rectangle.height);
+    }
+    layer
+        .wl_surface()
+        .set_input_region(Some(region.wl_region()));
+}
+
 impl State {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -367,6 +389,11 @@ impl State {
         );
         let own = surface.own.borrow();
         send_geometry(&layer, config, own.wanted_size(&shared));
+        send_input_region(
+            &self.compositor,
+            &layer,
+            own.wanted_input_region(&shared).as_deref(),
+        );
         layer.commit();
         surface.layer = Some(layer);
         surface.sent = (shared.revision, own.revision);
@@ -538,6 +565,11 @@ impl State {
                 let latest = (shared.revision, own.revision);
                 if surface.sent != latest {
                     send_geometry(layer, &shared.config, own.wanted_size(&shared));
+                    send_input_region(
+                        &self.compositor,
+                        layer,
+                        own.wanted_input_region(&shared).as_deref(),
+                    );
                     layer.commit();
                     surface.sent = latest;
                 }

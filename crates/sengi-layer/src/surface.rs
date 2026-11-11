@@ -27,6 +27,26 @@ pub struct Output {
     pub scale: u32,
 }
 
+/// A rectangle on a surface, in logical pixels from its top left corner.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Rect {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+impl Rect {
+    pub const fn new(x: i32, y: i32, width: i32, height: i32) -> Rect {
+        Rect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+}
+
 /// A callback the app has set on a surface, if any.
 pub(crate) type Hook<A> = Option<Box<dyn FnMut(A)>>;
 
@@ -51,6 +71,7 @@ pub(crate) fn call_hook<A>(
 /// What one instance has asked for and what is known about its surface.
 pub(crate) struct SurfaceShared {
     pub size: Option<Stamped<(u32, u32)>>,
+    pub input_region: Option<Stamped<Option<Vec<Rect>>>>,
     pub visible: bool,
     /// Counts this surface's own changes, like `Shared::revision`.
     pub revision: u64,
@@ -67,6 +88,7 @@ impl SurfaceShared {
     pub(crate) fn new() -> SurfaceShared {
         SurfaceShared {
             size: None,
+            input_region: None,
             visible: true,
             revision: 0,
             configured: (0, 0),
@@ -75,6 +97,15 @@ impl SurfaceShared {
             on_output: None,
             focused: false,
             on_focus: None,
+        }
+    }
+
+    /// The part of the surface that takes pointer input, by the same rule
+    /// as the size. `None` is all of it.
+    pub(crate) fn wanted_input_region(&self, app: &Shared) -> Option<Vec<Rect>> {
+        match &self.input_region {
+            Some(own) if own.stamp == app.input_stamp => own.value.clone(),
+            _ => app.input_region.clone(),
         }
     }
 
@@ -124,6 +155,19 @@ impl SurfaceHandle {
             stamp: app.size_stamp,
         });
         Ok(())
+    }
+
+    /// Limits where this surface takes pointer input; see
+    /// [`Handle::set_input_region`](crate::Handle::set_input_region), which
+    /// does the same for every surface and replaces what is set here.
+    pub fn set_input_region(&self, region: Option<&[Rect]>) {
+        let app = self.app.borrow();
+        let mut own = self.own.borrow_mut();
+        own.input_region = Some(Stamped {
+            value: region.map(<[Rect]>::to_vec),
+            stamp: app.input_stamp,
+        });
+        own.revision += 1;
     }
 
     /// The size this surface has on screen, in logical pixels, as last
