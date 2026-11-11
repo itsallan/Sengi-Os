@@ -85,7 +85,9 @@ where
         // Nothing of the session may show: the lock surface if there is
         // one, on a plain background that also covers a locker that has
         // not drawn yet or has died.
-        if let Some(surface) = state.lock_surface() {
+        // There is one lock surface; further screens stay plain.
+        let first = state.output().is_some_and(|first| &first == output);
+        if let Some(surface) = state.lock_surface().filter(|_| first) {
             elements.extend(render_elements_from_surface_tree(
                 renderer,
                 &surface,

@@ -574,7 +574,9 @@ impl State {
     }
 
     fn click_layer(&mut self, surface: WlSurface) {
-        let Some(output) = self.output() else { return };
+        let Some(output) = self.output_for_layer(&surface) else {
+            return;
+        };
         let wants_keyboard = layer_map_for_output(&output)
             .layer_for_surface(&surface, WindowSurfaceType::ALL)
             .is_some_and(|layer| layer.can_receive_keyboard_focus());
@@ -652,7 +654,7 @@ impl State {
         location: Point<f64, Logical>,
         layers: &[Layer],
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
-        let output = self.output()?;
+        let output = self.output_at(location)?;
         let output_origin = self.space.output_geometry(&output)?.loc;
         let map = layer_map_for_output(&output);
         let local = location - output_origin.to_f64();

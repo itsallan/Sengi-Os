@@ -271,19 +271,28 @@ pub fn save(
     size: Size<i32, Buffer>,
     path: &Path,
 ) -> Result<(), Box<dyn Error>> {
+    let rgb = read_rgb(renderer, target, size)?;
+    let mut file = BufWriter::new(File::create(path)?);
+    png::write_rgb(&mut file, size.w as u32, size.h as u32, &rgb)?;
+    eprintln!("sengi-compositor: wrote {}", path.display());
+    Ok(())
+}
+
+/// What was drawn into `target`, as red, green and blue bytes.
+pub fn read_rgb(
+    renderer: &mut PixmanRenderer,
+    target: &PixmanTarget<'_>,
+    size: Size<i32, Buffer>,
+) -> Result<Vec<u8>, Box<dyn Error>> {
     let mapping =
         renderer.copy_framebuffer(target, Rectangle::from_size(size), Fourcc::Xrgb8888)?;
     let pixels = renderer.map_texture(&mapping)?;
 
     // XRGB8888 is stored little-endian: blue, green, red, padding.
-    let rgb: Vec<u8> = pixels
+    Ok(pixels
         .as_chunks::<4>()
         .0
         .iter()
         .flat_map(|px| [px[2], px[1], px[0]])
-        .collect();
-    let mut file = BufWriter::new(File::create(path)?);
-    png::write_rgb(&mut file, size.w as u32, size.h as u32, &rgb)?;
-    eprintln!("sengi-compositor: wrote {}", path.display());
-    Ok(())
+        .collect())
 }

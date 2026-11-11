@@ -10,7 +10,7 @@ use smithay::{
     utils::Point,
 };
 
-use crate::state::State;
+use crate::{layout::clamp_to_outputs, state::State};
 
 impl State {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
@@ -27,18 +27,11 @@ impl State {
                 self.pointer_motion(location, event.time_msec());
             }
             InputEvent::PointerMotion { event } => {
-                let Some(output) = self.output() else { return };
-                let Some(geometry) = self.space.output_geometry(&output) else {
-                    return;
-                };
                 let pointer = self.seat.get_pointer().expect("seat has a pointer");
                 let moved = pointer.current_location() + event.delta();
-                // The pointer stays on the output.
-                let area = geometry.to_f64();
-                let location = Point::from((
-                    moved.x.clamp(area.loc.x, area.loc.x + area.size.w - 1.0),
-                    moved.y.clamp(area.loc.y, area.loc.y + area.size.h - 1.0),
-                ));
+                // The pointer stays on the outputs.
+                let location =
+                    Point::from(clamp_to_outputs(&self.output_rects(), moved.x, moved.y));
                 self.pointer_motion(location, event.time_msec());
             }
             InputEvent::PointerButton { event } => {

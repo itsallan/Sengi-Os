@@ -281,7 +281,16 @@ impl State {
 
     /// The client area a maximised `window` gets.
     pub fn maximised_rect(&self, window: &Window) -> Rect {
-        let usable = self.usable_area();
+        // On the screen the middle of the window is on.
+        let usable = match self.frame_rect(window) {
+            Some(frame) => {
+                let middle = (frame.x + frame.w / 2, frame.y + frame.h / 2);
+                self.output_at((f64::from(middle.0), f64::from(middle.1)).into())
+                    .map(|output| self.usable_area_of(&output))
+                    .unwrap_or_else(|| self.usable_area())
+            }
+            None => self.usable_area(),
+        };
         let mut rect = if data(window).decorated.get() {
             self.theme.metrics.client(usable)
         } else {

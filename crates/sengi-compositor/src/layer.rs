@@ -94,7 +94,7 @@ impl State {
         }
     }
 
-    fn output_for_layer(&self, surface: &WlSurface) -> Option<Output> {
+    pub fn output_for_layer(&self, surface: &WlSurface) -> Option<Output> {
         self.space
             .outputs()
             .find(|output| {

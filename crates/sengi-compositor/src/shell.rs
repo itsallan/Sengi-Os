@@ -421,17 +421,22 @@ impl State {
         }
     }
 
-    /// The part of the output windows may cover.
+    /// The part of the first output windows may cover.
     pub fn usable_area(&self) -> Rect {
-        let Some(output) = self.output() else {
-            return Rect::new(0, 0, 0, 0);
-        };
+        match self.output() {
+            Some(output) => self.usable_area_of(&output),
+            None => Rect::new(0, 0, 0, 0),
+        }
+    }
+
+    /// The part of `output` windows may cover.
+    pub fn usable_area_of(&self, output: &smithay::output::Output) -> Rect {
         let origin = self
             .space
-            .output_geometry(&output)
+            .output_geometry(output)
             .map(|geo| geo.loc)
             .unwrap_or_default();
-        let zone = layer_map_for_output(&output).non_exclusive_zone();
+        let zone = layer_map_for_output(output).non_exclusive_zone();
         Rect::new(
             origin.x + zone.loc.x,
             origin.y + zone.loc.y,

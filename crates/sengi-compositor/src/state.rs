@@ -31,12 +31,13 @@ use smithay::{
             EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction,
         },
         wayland_server::{
+            backend::GlobalId,
             backend::{ClientData, ClientId, DisconnectReason},
             protocol::{wl_buffer::WlBuffer, wl_surface::WlSurface},
             Display, DisplayHandle, Resource,
         },
     },
-    utils::{Physical, Size, Transform, SERIAL_COUNTER},
+    utils::{Logical, Physical, Point, Size, Transform, SERIAL_COUNTER},
     wayland::{
         buffer::BufferHandler,
         compositor::{CompositorClientState, CompositorState},
@@ -69,7 +70,7 @@ use crate::{
     frame::Button,
     input::Drag,
     keys::{self, Swallowed},
-    layout::FocusStack,
+    layout::{self, FocusStack, Rect},
     lock::Lock,
     render,
     text::Font,
@@ -175,6 +176,8 @@ pub struct State {
     pub data_device_state: DataDeviceState,
     // Held so the xdg-output global stays alive.
     _output_manager_state: OutputManagerState,
+    /// What announces each output to clients, to take back when it goes.
+    output_globals: Vec<(Output, GlobalId)>,
 
     pub seat: Seat<Self>,
 }
@@ -218,9 +221,11 @@ impl State {
             .handle()
             .insert_source(signals, |event, _, state| match event.signal() {
                 Signal::SIGUSR1 => {
+                    let pointer = state.seat.get_pointer().expect("seat has a pointer");
+                    let at = pointer.current_location();
                     eprintln!(
-                        "sengi-compositor: {} page flips, {} with the cursor on its own plane, {} dmabufs imported",
-                        state.page_flips, state.cursor_plane_frames, state.dmabufs_imported
+                        "sengi-compositor: {} page flips, {} with the cursor on its own plane, {} dmabufs imported, pointer at {:.0},{:.0}",
+                        state.page_flips, state.cursor_plane_frames, state.dmabufs_imported, at.x, at.y
                     );
                 }
                 Signal::SIGUSR2 => {
@@ -318,6 +323,7 @@ impl State {
             seat_state,
             data_device_state,
             _output_manager_state: output_manager_state,
+            output_globals: Vec::new(),
             seat,
         })
     }
@@ -405,8 +411,30 @@ impl State {
         self.space.outputs().next().cloned()
     }
 
-    /// Announces an output of `size` pixels to clients and puts it at the
-    /// origin of the desktop.
+    /// Where every output is on the desktop.
+    pub fn output_rects(&self) -> Vec<Rect> {
+        self.space
+            .outputs()
+            .filter_map(|output| self.space.output_geometry(output))
+            .map(|geo| Rect::new(geo.loc.x, geo.loc.y, geo.size.w, geo.size.h))
+            .collect()
+    }
+
+    /// The output `location` is on, or the first one.
+    pub fn output_at(&self, location: Point<f64, Logical>) -> Option<Output> {
+        self.space
+            .outputs()
+            .find(|output| {
+                self.space
+                    .output_geometry(output)
+                    .is_some_and(|geo| geo.to_f64().contains(location))
+            })
+            .cloned()
+            .or_else(|| self.output())
+    }
+
+    /// Announces an output of `size` pixels to clients and puts it to the
+    /// right of the ones already there.
     pub fn add_output(
         &mut self,
         name: &str,
@@ -424,16 +452,54 @@ impl State {
                 model: model.into(),
             },
         );
-        // The global lives as long as the compositor does.
-        let _global = output.create_global::<Self>(&self.display_handle);
+        let global = output.create_global::<Self>(&self.display_handle);
+        self.output_globals.push((output.clone(), global));
+        let x = layout::next_output_x(&self.output_rects());
         let mode = OutputMode {
             size,
             refresh: refresh_mhz,
         };
-        output.change_current_state(Some(mode), Some(transform), None, Some((0, 0).into()));
+        output.change_current_state(Some(mode), Some(transform), None, Some((x, 0).into()));
         output.set_preferred(mode);
-        self.space.map_output(&output, (0, 0));
+        self.space.map_output(&output, (x, 0));
         output
+    }
+
+    /// Takes an output that was unplugged off the desktop. Its bars are
+    /// closed and its windows move to a screen that is still there.
+    #[cfg_attr(not(feature = "drm"), allow(dead_code))]
+    pub fn remove_output(&mut self, output: &Output) {
+        for layer in layer_map_for_output(output).layers() {
+            layer.layer_surface().send_close();
+        }
+        self.space.unmap_output(output);
+        if let Some(at) = self.output_globals.iter().position(|(o, _)| o == output) {
+            let (_, global) = self.output_globals.remove(at);
+            self.display_handle.remove_global::<Self>(global);
+        }
+
+        let remaining = self.output_rects();
+        let usable = self.usable_area();
+        let windows: Vec<Window> = self.space.elements().cloned().collect();
+        for window in windows {
+            let Some(frame) = self.frame_rect(&window) else {
+                continue;
+            };
+            if let Some((x, y)) = layout::rehome(frame, &remaining, usable) {
+                self.move_frame_to(&window, x, y);
+            }
+        }
+        self.usable_area_changed();
+
+        // The pointer may have been on the screen that went.
+        let pointer = self.seat.get_pointer().expect("seat has a pointer");
+        let at = pointer.current_location();
+        let (x, y) = layout::clamp_to_outputs(&remaining, at.x, at.y);
+        if (x, y) != (at.x, at.y) {
+            self.pointer_stale = true;
+        }
+        self.update_keyboard_focus();
+        self.request_redraw();
     }
 
     /// Applies a new size to `output`, for backends whose window can resize.
@@ -583,7 +649,7 @@ impl State {
         // and still wants it.
         let layer_focus_valid = self.layer_focus.as_ref().is_some_and(|surface| {
             surface.is_alive()
-                && self.output().is_some_and(|output| {
+                && self.output_for_layer(surface).is_some_and(|output| {
                     layer_map_for_output(&output)
                         .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
                         .is_some_and(|layer| layer.can_receive_keyboard_focus())
@@ -616,16 +682,19 @@ impl State {
     /// The front-most layer surface asking for exclusive keyboard focus.
     /// Only the layers above windows may do that.
     fn exclusive_layer(&self) -> Option<WlSurface> {
-        let output = self.output()?;
-        let map = layer_map_for_output(&output);
+        let outputs: Vec<Output> = self.space.outputs().cloned().collect();
         [Layer::Overlay, Layer::Top].into_iter().find_map(|kind| {
-            map.layers_on(kind)
-                .rev()
-                .find(|layer| {
-                    layer.cached_state().keyboard_interactivity == KeyboardInteractivity::Exclusive
-                        && has_buffer(layer.wl_surface())
-                })
-                .map(|layer| layer.wl_surface().clone())
+            outputs.iter().find_map(|output| {
+                layer_map_for_output(output)
+                    .layers_on(kind)
+                    .rev()
+                    .find(|layer| {
+                        layer.cached_state().keyboard_interactivity
+                            == KeyboardInteractivity::Exclusive
+                            && has_buffer(layer.wl_surface())
+                    })
+                    .map(|layer| layer.wl_surface().clone())
+            })
         })
     }
 }

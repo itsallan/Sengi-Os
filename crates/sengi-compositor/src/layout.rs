@@ -30,6 +30,45 @@ impl Rect {
     }
 }
 
+/// Where the next output goes: to the right of the ones already there.
+pub fn next_output_x(outputs: &[Rect]) -> i32 {
+    outputs.iter().map(Rect::right).max().unwrap_or(0)
+}
+
+/// The point nearest to `(x, y)` that lies on one of `outputs`, so the
+/// pointer can cross from one screen to the next but not leave them.
+pub fn clamp_to_outputs(outputs: &[Rect], x: f64, y: f64) -> (f64, f64) {
+    let mut best: Option<((f64, f64), f64)> = None;
+    for output in outputs.iter().filter(|output| output.w > 0 && output.h > 0) {
+        let nearest_x = x.clamp(f64::from(output.x), f64::from(output.right() - 1));
+        let nearest_y = y.clamp(f64::from(output.y), f64::from(output.bottom() - 1));
+        let distance = (nearest_x - x).powi(2) + (nearest_y - y).powi(2);
+        if best.is_none_or(|(_, least)| distance < least) {
+            best = Some(((nearest_x, nearest_y), distance));
+        }
+    }
+    best.map_or((x, y), |(point, _)| point)
+}
+
+/// Where a window frame goes when its screen is gone: `None` while the
+/// middle of its title bar is still on one of `outputs`, otherwise a place
+/// inside `usable`, as close to where it was as fits.
+pub fn rehome(frame: Rect, outputs: &[Rect], usable: Rect) -> Option<(i32, i32)> {
+    let handle = (frame.x + frame.w / 2, frame.y);
+    if outputs
+        .iter()
+        .any(|output| output.contains(handle.0, handle.1))
+    {
+        return None;
+    }
+    let max_x = usable.x + (usable.w - frame.w).max(0);
+    let max_y = usable.y + (usable.h - frame.h).max(0);
+    Some((
+        frame.x.clamp(usable.x, max_x),
+        frame.y.clamp(usable.y, max_y),
+    ))
+}
+
 /// How many windows are cascaded before the pattern starts over.
 const CASCADE_STEPS: usize = 8;
 
@@ -170,5 +209,46 @@ mod tests {
         assert_eq!(stack.current(), Some(&'b'));
         assert!(stack.remove(&'b'));
         assert_eq!(stack.current(), None);
+    }
+
+    #[test]
+    fn outputs_line_up_left_to_right() {
+        assert_eq!(next_output_x(&[]), 0);
+        let first = Rect::new(0, 0, 1920, 1080);
+        assert_eq!(next_output_x(&[first]), 1920);
+        // A gap left by an unplugged screen is not filled.
+        let third = Rect::new(3200, 0, 1280, 800);
+        assert_eq!(next_output_x(&[first, third]), 4480);
+    }
+
+    #[test]
+    fn the_pointer_crosses_between_outputs_but_stays_on_them() {
+        let outputs = [Rect::new(0, 0, 1920, 1080), Rect::new(1920, 0, 1280, 800)];
+        assert_eq!(clamp_to_outputs(&outputs, 2000.0, 400.0), (2000.0, 400.0));
+        assert_eq!(clamp_to_outputs(&outputs, -5.0, 400.0), (0.0, 400.0));
+        assert_eq!(clamp_to_outputs(&outputs, 4000.0, 400.0), (3199.0, 400.0));
+        // Below the smaller screen: back onto it, not across to the other.
+        assert_eq!(clamp_to_outputs(&outputs, 2500.0, 900.0), (2500.0, 799.0));
+        // Just right of the tall screen's lower part: stay on the tall one.
+        assert_eq!(clamp_to_outputs(&outputs, 1925.0, 1000.0), (1919.0, 1000.0));
+        assert_eq!(clamp_to_outputs(&[], 7.0, 8.0), (7.0, 8.0));
+    }
+
+    #[test]
+    fn a_window_whose_screen_went_away_comes_back() {
+        let left = Rect::new(0, 0, 1920, 1080);
+        let usable = Rect::new(0, 28, 1920, 1000);
+        // Still reachable where it is.
+        assert_eq!(rehome(Rect::new(100, 100, 700, 500), &[left], usable), None);
+        // Was on a screen to the right that is gone.
+        assert_eq!(
+            rehome(Rect::new(2100, 100, 700, 500), &[left], usable),
+            Some((1220, 100))
+        );
+        // Larger than what is left: top-left corner stays visible.
+        assert_eq!(
+            rehome(Rect::new(2100, 0, 2400, 1400), &[left], usable),
+            Some((0, 28))
+        );
     }
 }
