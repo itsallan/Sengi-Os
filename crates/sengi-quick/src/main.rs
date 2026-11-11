@@ -26,6 +26,8 @@ const TRACE_VARIABLE: &str = "SENGI_QUICK_TRACE";
 
 fn main() -> ExitCode {
     let started = Instant::now();
+    // First, before a passphrase can be anywhere in memory.
+    sengi_quick::secret::forbid_core_dumps();
     let action = match cli::parse(std::env::args().skip(1)) {
         Ok(action) => action,
         Err(message) => {

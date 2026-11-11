@@ -187,7 +187,8 @@ component PassphrasePrompt inherits Rectangle {
     callback submitted(string);
     callback cancelled();
 
-    // The typed text is handed over and wiped from the field at once.
+    // The typed text is handed over and the field emptied at once, so it
+    // is not left on show or in the field for longer than it must be.
     function submit() {
         if field.text != "" && !root.busy {
             root.submitted(field.text);

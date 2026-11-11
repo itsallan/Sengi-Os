@@ -14,5 +14,8 @@ slint = { version = "1.18", default-features = false, features = ["compat-1-2", 
 # The blocking API on zbus's own small executor. No tokio.
 zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
 
+# For prctl: the process is kept out of core dumps. See secret.rs.
+libc = "0.2"
+
 [build-dependencies]
 slint-build.workspace = true

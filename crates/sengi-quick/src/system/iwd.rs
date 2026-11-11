@@ -3,12 +3,14 @@
 //! iwd asks for passphrases through an agent: an object the client exports
 //! and registers, which iwd calls back in the middle of `Network.Connect`.
 //! The passphrase typed into the panel waits in a slot for that one call
-//! and is gone after it. iwd keeps what it needs to rejoin the network; the
-//! panel stores nothing. See iwd's `doc/agent-api.txt`.
+//! and is handed over once. iwd keeps what it needs to rejoin the network;
+//! the panel stores nothing. See iwd's `doc/agent-api.txt`, and `secret.rs`
+//! for what happens to the copies in memory.
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use zbus::zvariant::{ObjectPath, OwnedObjectPath};
+use zbus::export::serde::{Serialize, Serializer};
+use zbus::zvariant::{ObjectPath, OwnedObjectPath, Signature, Type};
 
 use super::bus::{self, Bus, Listing, Object};
 use crate::secret::Secret;
@@ -214,6 +216,22 @@ enum AgentError {
     Canceled(String),
 }
 
+/// A passphrase as the string of a D-Bus reply. zbus serialises it
+/// straight from here into the message, so no `String` of it is made on
+/// the way, and this copy is wiped when the reply has been built. The
+/// message buffer itself belongs to zbus and is only freed.
+struct Reply(Secret);
+
+impl Type for Reply {
+    const SIGNATURE: &'static Signature = <str as Type>::SIGNATURE;
+}
+
+impl Serialize for Reply {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.0.expose())
+    }
+}
+
 fn declined<T>() -> Result<T, AgentError> {
     Err(AgentError::Canceled("nothing to offer".to_string()))
 }
@@ -224,10 +242,10 @@ impl Agent {
         &self,
         network: ObjectPath<'_>,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> Result<String, AgentError> {
+    ) -> Result<Reply, AgentError> {
         let sender = header.sender().map(|name| name.as_str());
         match slot(&self.slot).answer(network.as_str(), sender) {
-            Some(passphrase) => Ok(passphrase.expose().to_string()),
+            Some(passphrase) => Ok(Reply(passphrase)),
             None => declined(),
         }
     }

@@ -178,7 +178,9 @@ pub fn attach(
     window.on_passphrase_submitted({
         let act = act.clone();
         move |typed| {
-            // From here on the passphrase is held only as a Secret.
+            // This copy is wiped when it is done with. The string Slint
+            // passed in, and the text field's own, are not ours to wipe;
+            // the field is cleared, which frees them.
             let mut secret = Some(Secret::new(typed.to_string()));
             act(&mut |panel| panel.submit_passphrase(secret.take()?));
         }
