@@ -26,6 +26,8 @@ pub enum Exit {
 
 fn item(row: &NetworkRow) -> NetworkItem {
     NetworkItem {
+        id: row.id.as_str().into(),
+        gone: row.gone,
         name: row.name.as_str().into(),
         secured: row.secured,
         known: row.known,
@@ -58,6 +60,7 @@ fn show(window: &QuickWindow, networks: &VecModel<NetworkItem>, view: &View) {
     window.set_wifi_on(view.wifi.on);
     window.set_wifi_detail(text(&view.wifi.detail));
     window.set_wifi_level(view.wifi.level);
+    window.set_network_current(view.wifi.current);
     window.set_wired(view.wifi.wired);
     sync(networks, &view.wifi.rows);
     window.set_wifi_note(text(&view.wifi.note));
@@ -141,13 +144,31 @@ pub fn attach(
     });
     window.on_network_chosen({
         let act = act.clone();
-        move |row| {
+        move |id| act(&mut |panel| panel.choose_network(id.as_str()))
+    });
+    window.on_list_held({
+        let act = act.clone();
+        move |held, focused| {
             act(&mut |panel| {
-                usize::try_from(row)
-                    .ok()
-                    .and_then(|row| panel.choose_network(row))
+                panel.hold_list(held, focused);
+                None
             })
         }
+    });
+    window.on_list_step({
+        let act = act.clone();
+        move |delta| {
+            let mut moved = false;
+            act(&mut |panel| {
+                moved = panel.move_selection(delta);
+                None
+            });
+            moved
+        }
+    });
+    window.on_list_activated({
+        let act = act.clone();
+        move || act(&mut |panel| panel.activate_selection())
     });
     window.on_passphrase_submitted({
         let act = act.clone();

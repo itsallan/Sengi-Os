@@ -10,6 +10,10 @@ import {
 } from "icons.slint";
 
 export struct NetworkItem {
+    // Names the network to the program. Not shown.
+    id: string,
+    // Out of range since the list was last free to change: an empty row.
+    gone: bool,
     name: string,
     secured: bool,
     // iwd has joined it before and needs nothing typed.
@@ -22,20 +26,37 @@ export struct NetworkItem {
 
 // The networks in range. The list is one stop for the Tab key; the arrow
 // keys move through its rows and out of it at either end.
+//
+// Which row the keyboard is on, and what order the rows are in, is kept by
+// the program and not here: rows are told apart by `id`, never by position,
+// because the list changes with every scan.
 component NetworkList inherits Rectangle {
     in property <[NetworkItem]> networks;
-    callback chosen(int);
-    // An arrow key was pressed at the first or last row: -1 up, 1 down.
+    // The keyboard's row, or -1.
+    in property <int> current: -1;
+    callback chosen(string);
+    // The pointer is over the list or the keyboard is in it (first), and
+    // whether it is the keyboard (second). While either holds, the program
+    // keeps every row where it is.
+    callback held(bool, bool);
+    // An arrow key: -1 up, 1 down. False when there is no row that way.
+    callback step(int) -> bool;
+    // Return or Space on the keyboard's row.
+    callback activated();
+    // An arrow key was pressed at the first or last row.
     callback leave(int);
 
     // Rows on show at once; the rest scroll.
     private property <int> shown: Math.min(root.networks.length, 5);
-    private property <int> current: 0;
     private property <length> label-gap: Tokens.space-sm;
     private property <length> icons: Tokens.bar-icon * 2 + Tokens.space-sm * 3;
+    private property <bool> hold: scope.has-focus || hover.has-hover;
 
     // Scroll so the keyboard's row can be seen.
     function reveal() {
+        if root.current < 0 {
+            return;
+        }
         if root.current * Metrics.row < -flick.content-y {
             flick.content-y = -root.current * Metrics.row;
         } else if (root.current + 1) * Metrics.row > flick.height - flick.content-y {
@@ -43,30 +64,33 @@ component NetworkList inherits Rectangle {
         }
     }
 
+    function arrow(direction: int) {
+        if root.step(direction) {
+            root.reveal();
+        } else {
+            root.leave(direction);
+        }
+    }
+
     height: root.shown * Metrics.row;
+
+    changed hold => {
+        root.held(root.hold, scope.has-focus);
+        root.reveal();
+    }
+
+    hover := TouchArea { }
 
     scope := FocusScope {
         focus-on-click: false;
 
         key-pressed(event) => {
             if event.text == Key.DownArrow {
-                if root.current + 1 < root.networks.length {
-                    root.current += 1;
-                    root.reveal();
-                } else {
-                    root.leave(1);
-                }
+                root.arrow(1);
             } else if event.text == Key.UpArrow {
-                if root.current > 0 {
-                    root.current = Math.min(root.current, root.networks.length) - 1;
-                    root.reveal();
-                } else {
-                    root.leave(-1);
-                }
+                root.arrow(-1);
             } else if event.text == " " || event.text == Key.Return {
-                if root.current < root.networks.length {
-                    root.chosen(root.current);
-                }
+                root.activated();
             } else {
                 return EventResult.reject;
             }
@@ -82,20 +106,22 @@ component NetworkList inherits Rectangle {
                 y: index * Metrics.row;
                 width: flick.width;
                 text: item.name;
+                enabled: !item.gone;
                 current: scope.has-focus && index == root.current;
                 trailing: root.icons + (note.text != "" ? note.preferred-width + root.label-gap : 0);
-                clicked => { root.chosen(index); }
+                clicked => { root.chosen(item.id); }
 
                 note := SengiLabel {
                     x: parent.width - root.icons - self.width;
                     width: self.preferred-width;
                     height: parent.height;
-                    text: item.busy ? "Connecting\u{2026}" : item.known ? "Saved" : "";
+                    text: item.gone ? "Out of range" : item.busy ? "Connecting\u{2026}" : item.known ? "Saved" : "";
+                    color: item.gone ? Tokens.color-text-disabled : Tokens.color-text-muted;
                     font-weight: Tokens.font-weight-regular;
                     vertical-alignment: center;
                 }
 
-                if item.secured: LockIcon {
+                if item.secured && !item.gone: LockIcon {
                     x: parent.width - Tokens.space-sm * 2 - Tokens.bar-icon * 2;
                     y: (parent.height - self.height) / 2;
                     ink: Tokens.color-text-muted;
@@ -104,7 +130,7 @@ component NetworkList inherits Rectangle {
                 SignalIcon {
                     x: parent.width - Tokens.space-sm - Tokens.bar-icon;
                     y: (parent.height - self.height) / 2;
-                    level: item.level;
+                    level: item.gone ? 0 : item.level;
                 }
             }
         }
@@ -244,6 +270,8 @@ export component QuickWindow inherits Window {
     // A cable is in: shown as a line of its own.
     in property <bool> wired: false;
     in property <[NetworkItem]> networks;
+    // The keyboard's row in networks, or -1.
+    in property <int> network-current: -1;
     // Shown in place of an empty list.
     in property <string> wifi-note;
     // Why the last attempt to join failed.
@@ -282,8 +310,14 @@ export component QuickWindow inherits Window {
     in property <bool> battery-warning: false;
 
     callback wifi-toggled(bool);
-    // A row of the network list, by index into networks.
-    callback network-chosen(int);
+    // A row of the network list was clicked, by its id.
+    callback network-chosen(string);
+    // The pointer or the keyboard is at the network list (first), and
+    // whether it is the keyboard (second).
+    callback list-held(bool, bool);
+    // Move the keyboard's row; false when there is none that way.
+    callback list-step(int) -> bool;
+    callback list-activated();
     callback passphrase-submitted(string);
     callback prompt-cancelled();
     callback bluetooth-toggled(bool);
@@ -424,7 +458,11 @@ export component QuickWindow inherits Window {
                             y: Tokens.space-xs;
                             width: parent.width - Tokens.space-xs * 2;
                             networks: root.networks;
-                            chosen(index) => { root.network-chosen(index); }
+                            current: root.network-current;
+                            chosen(id) => { root.network-chosen(id); }
+                            held(held, focused) => { root.list-held(held, focused); }
+                            step(direction) => { return root.list-step(direction); }
+                            activated => { root.list-activated(); }
                             leave(direction) => { root.move-focus(direction); }
                         }
                     }

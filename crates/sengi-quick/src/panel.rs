@@ -28,6 +28,12 @@ pub struct Panel {
     /// Where the Wi-Fi switch was last put, until the service catches up.
     wifi_wanted: Option<bool>,
     join: Join,
+    /// The network list as laid out. See [`Panel::relist`].
+    shown: Vec<Shown>,
+    /// The pointer is over the list or the keyboard is in it.
+    held: bool,
+    /// The keyboard's row, by network and not by position.
+    selected: Option<String>,
 
     bluetooth: Reading<Bluetooth>,
     bluetooth_wanted: Option<bool>,
@@ -41,8 +47,19 @@ pub struct Panel {
     dnd: Option<bool>,
 }
 
+/// A row of the network list.
+struct Shown {
+    network: Network,
+    /// Out of range since the list was last free to change. The row keeps
+    /// its place, empty, so that nothing moves up under the pointer.
+    gone: bool,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NetworkRow {
+    /// Names the network to [`Panel::choose_network`].
+    pub id: String,
+    pub gone: bool,
     pub name: String,
     pub secured: bool,
     pub known: bool,
@@ -68,6 +85,8 @@ pub struct WifiView {
     pub detail: String,
     /// Signal of the connected network, 1 to 4, or 0 for none.
     pub level: i32,
+    /// Index into `rows` of the keyboard's row, or -1.
+    pub current: i32,
     /// "Wired, connected", shown as a line of its own.
     pub wired: bool,
     pub rows: Vec<NetworkRow>,
@@ -135,6 +154,9 @@ impl Panel {
             wifi: Reading::Pending,
             wifi_wanted: None,
             join: Join::Idle,
+            shown: Vec::new(),
+            held: false,
+            selected: None,
             bluetooth: Reading::Pending,
             bluetooth_wanted: None,
             volume: Reading::Pending,
@@ -175,25 +197,105 @@ impl Panel {
             Event::Dnd(Some(on)) => self.dnd = Some(on),
             Event::Dnd(None) => {}
         }
+        self.relist();
+    }
+
+    /// Lay the network list out again from the latest reading.
+    ///
+    /// While the list is held, by the pointer being over it or the
+    /// keyboard being in it, rows stay where they are: a scan result must
+    /// not put a different network under a click or under Return. Networks
+    /// that have gone leave an empty row, new ones join at the end, and
+    /// the proper order comes back when the list is let go.
+    fn relist(&mut self) {
+        let mut fresh: Vec<Network> = match &self.wifi {
+            Reading::Known(Wifi::On { networks, .. }) => networks
+                .iter()
+                .filter(|network| !network.connected)
+                .cloned()
+                .collect(),
+            _ => Vec::new(),
+        };
+        if !self.held {
+            self.shown.clear();
+        }
+        for row in &mut self.shown {
+            match fresh
+                .iter()
+                .position(|network| network.id == row.network.id)
+            {
+                Some(index) => {
+                    row.network = fresh.remove(index);
+                    row.gone = false;
+                }
+                None => row.gone = true,
+            }
+        }
+        let room = (2 * wifi::MAX_NETWORKS).saturating_sub(self.shown.len());
+        self.shown
+            .extend(fresh.into_iter().take(room).map(|network| Shown {
+                network,
+                gone: false,
+            }));
+    }
+
+    /// The pointer came over the network list or left it, or the keyboard
+    /// focus did. `held` is whether either is there now.
+    pub fn hold_list(&mut self, held: bool, focused: bool) {
+        self.held = held;
+        self.relist();
+        let selected_row = self.selected_row();
+        if focused && selected_row.is_none() {
+            self.selected = self.shown.first().map(|row| row.network.id.clone());
+        }
+    }
+
+    fn selected_row(&self) -> Option<usize> {
+        let selected = self.selected.as_deref()?;
+        self.shown.iter().position(|row| row.network.id == selected)
+    }
+
+    /// Move the keyboard's row up (-1) or down (1). False at the end of
+    /// the list, where the key belongs to whatever is next.
+    pub fn move_selection(&mut self, delta: i32) -> bool {
+        let target = match self.selected_row() {
+            Some(row) => row as i64 + i64::from(delta.signum()),
+            None => 0,
+        };
+        match usize::try_from(target)
+            .ok()
+            .and_then(|row| self.shown.get(row))
+        {
+            Some(row) => {
+                self.selected = Some(row.network.id.clone());
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Return on the keyboard's row.
+    pub fn activate_selection(&mut self) -> Option<Command> {
+        let selected = self.selected.clone()?;
+        self.choose_network(&selected)
     }
 
     pub fn toggle_wifi(&mut self, on: bool) -> Option<Command> {
         self.wifi_wanted = Some(on);
         self.join.reset();
+        self.selected = None;
         Some(Command::WifiPower(on))
     }
 
-    /// The networks in the list, in the order of [`WifiView::rows`].
-    fn listed(&self) -> impl Iterator<Item = &Network> {
-        let networks = match &self.wifi {
-            Reading::Known(Wifi::On { networks, .. }) => networks.as_slice(),
-            _ => &[],
-        };
-        networks.iter().filter(|network| !network.connected)
-    }
-
-    pub fn choose_network(&mut self, row: usize) -> Option<Command> {
-        let network = self.listed().nth(row)?.clone();
+    /// A row was clicked. It is named by its network, so that whatever
+    /// the list did between the click and now, this is the network whose
+    /// name was under the pointer.
+    pub fn choose_network(&mut self, id: &str) -> Option<Command> {
+        let row = self
+            .shown
+            .iter()
+            .find(|row| row.network.id == id && !row.gone)?;
+        let network = row.network.clone();
         self.join.choose(&network).map(Command::Join)
     }
 
@@ -300,8 +402,11 @@ impl Panel {
                     _ => "Not connected".to_string(),
                 };
                 let rows: Vec<NetworkRow> = self
-                    .listed()
-                    .map(|network| NetworkRow {
+                    .shown
+                    .iter()
+                    .map(|Shown { network, gone }| NetworkRow {
+                        id: network.id.clone(),
+                        gone: *gone,
                         name: network.name.clone(),
                         secured: network.security != Security::Open,
                         known: network.known,
@@ -323,6 +428,7 @@ impl Panel {
                         (Link::Connected, Some(network)) => wifi::level(network.signal),
                         _ => 0,
                     },
+                    current: self.selected_row().map_or(-1, |row| row as i32),
                     wired,
                     rows,
                     note: note.to_string(),
@@ -498,6 +604,25 @@ mod tests {
         }
     }
 
+    /// Click the row at `row` of the list as it is shown.
+    fn pick(panel: &mut Panel, row: usize) -> Option<Command> {
+        let id = panel.view().wifi.rows.get(row)?.id.clone();
+        panel.choose_network(&id)
+    }
+
+    fn row_names(panel: &Panel) -> Vec<String> {
+        let rows = panel.view().wifi.rows;
+        rows.iter()
+            .map(|row| {
+                if row.gone {
+                    format!("({})", row.name)
+                } else {
+                    row.name.clone()
+                }
+            })
+            .collect()
+    }
+
     fn home_and_cafe() -> Vec<Network> {
         let mut home = network("Home", Security::Passphrase, true, -5200);
         home.connected = true;
@@ -593,7 +718,7 @@ mod tests {
         panel.apply(Event::Wifi(on(Link::Connected, home_and_cafe())));
 
         // Office is row 0 and needs a passphrase.
-        assert!(panel.choose_network(0).is_none());
+        assert!(pick(&mut panel, 0).is_none());
         let prompt = panel.view().wifi.prompt.unwrap();
         assert_eq!(prompt.name, "Office");
         assert!(!prompt.busy && prompt.problem.is_empty());
@@ -645,7 +770,7 @@ mod tests {
             network("Cafe", Security::Open, false, -6000),
         ];
         panel.apply(Event::Wifi(on(Link::Disconnected, networks)));
-        assert!(matches!(panel.choose_network(0), Some(Command::Join(_))));
+        assert!(matches!(pick(&mut panel, 0), Some(Command::Join(_))));
         let view = panel.view().wifi;
         assert!(view.rows[0].busy && !view.rows[1].busy);
         assert!(view.prompt.is_none());
@@ -662,7 +787,7 @@ mod tests {
         panel.cancel_prompt();
 
         // Anything else is reported and left at that.
-        panel.choose_network(0);
+        pick(&mut panel, 0);
         panel.apply(Event::Joined {
             id: "/Home".to_string(),
             result: Err(JoinError::Timeout),
@@ -674,19 +799,142 @@ mod tests {
     }
 
     #[test]
-    fn rows_that_do_not_exist_cannot_be_chosen() {
+    fn networks_that_are_not_listed_cannot_be_chosen() {
         let mut panel = Panel::new(laptop(), false);
-        assert!(panel.choose_network(0).is_none());
+        assert!(panel.choose_network("/Office").is_none());
         panel.apply(Event::Wifi(on(Link::Connected, home_and_cafe())));
-        assert!(panel.choose_network(2).is_none());
-        assert!(panel.choose_network(usize::MAX).is_none());
+        assert!(panel.choose_network("/Nowhere").is_none());
+        assert!(panel.choose_network("").is_none());
+        // The connected network is in the header, not the list.
+        assert!(panel.choose_network("/Home").is_none());
+    }
+
+    fn fresh(name: &str, signal: i16) -> Network {
+        network(name, Security::Passphrase, false, signal)
+    }
+
+    #[test]
+    fn the_list_follows_the_scans_while_nobody_is_at_it() {
+        let mut panel = Panel::new(laptop(), false);
+        panel.apply(Event::Wifi(on(
+            Link::Disconnected,
+            vec![fresh("Bakery", -5000), fresh("Cellar", -7500)],
+        )));
+        assert_eq!(row_names(&panel), ["Bakery", "Cellar"]);
+        panel.apply(Event::Wifi(on(
+            Link::Disconnected,
+            vec![fresh("Attic", -5000), fresh("Cellar", -5000)],
+        )));
+        assert_eq!(row_names(&panel), ["Attic", "Cellar"]);
+    }
+
+    #[test]
+    fn a_held_list_keeps_every_row_where_it_is() {
+        let mut panel = Panel::new(laptop(), false);
+        panel.apply(Event::Wifi(on(
+            Link::Disconnected,
+            vec![
+                fresh("Bakery", -5000),
+                fresh("Cellar", -7500),
+                fresh("Dairy", -8500),
+            ],
+        )));
+        // The pointer is over the list, aiming at Cellar in the second row.
+        panel.hold_list(true, false);
+        // A scan: a strong newcomer that sorts first, Bakery gone, and
+        // Dairy now the strongest of all.
+        panel.apply(Event::Wifi(on(
+            Link::Disconnected,
+            vec![
+                fresh("Aardvark", -3000),
+                fresh("Cellar", -7500),
+                fresh("Dairy", -4000),
+            ],
+        )));
+        assert_eq!(
+            row_names(&panel),
+            ["(Bakery)", "Cellar", "Dairy", "Aardvark"]
+        );
+        // The click lands on what was under it, and the signal is current.
+        assert_eq!(panel.view().wifi.rows[2].level, 4);
+        assert!(pick(&mut panel, 0).is_none(), "a network that has gone");
+        pick(&mut panel, 1);
+        assert_eq!(panel.view().wifi.prompt.unwrap().name, "Cellar");
+        panel.cancel_prompt();
+
+        // A network that comes back takes its old row.
+        panel.apply(Event::Wifi(on(
+            Link::Disconnected,
+            vec![fresh("Bakery", -5000), fresh("Cellar", -7500)],
+        )));
+        assert_eq!(
+            row_names(&panel),
+            ["Bakery", "Cellar", "(Dairy)", "(Aardvark)"]
+        );
+
+        // Let go, and the list is as a fresh one would be.
+        panel.hold_list(false, false);
+        assert_eq!(row_names(&panel), ["Bakery", "Cellar"]);
+    }
+
+    #[test]
+    fn the_keyboard_row_is_a_network_not_a_position() {
+        let mut panel = Panel::new(laptop(), false);
+        panel.apply(Event::Wifi(on(
+            Link::Disconnected,
+            vec![
+                fresh("Bakery", -5000),
+                fresh("Cellar", -7500),
+                fresh("Dairy", -8500),
+            ],
+        )));
+        assert_eq!(panel.view().wifi.current, -1);
+        // Tab into the list: the first row.
+        panel.hold_list(true, true);
+        assert_eq!(panel.view().wifi.current, 0);
+        assert!(panel.move_selection(1));
+        assert_eq!(panel.view().wifi.current, 1);
+
+        // The keyboard leaves, the list reorders, and comes back: still
+        // on Cellar, wherever that now is.
+        panel.hold_list(false, false);
+        panel.apply(Event::Wifi(on(
+            Link::Disconnected,
+            vec![
+                fresh("Aardvark", -5000),
+                fresh("Bakery", -5000),
+                fresh("Cellar", -5000),
+            ],
+        )));
+        panel.hold_list(true, true);
+        assert_eq!(panel.view().wifi.current, 2);
+        panel.activate_selection();
+        assert_eq!(panel.view().wifi.prompt.unwrap().name, "Cellar");
+        panel.cancel_prompt();
+
+        // The ends of the list hand the key on.
+        assert!(!panel.move_selection(1));
+        assert!(panel.move_selection(-1));
+        assert!(panel.move_selection(-1));
+        assert!(!panel.move_selection(-1));
+        assert_eq!(panel.view().wifi.current, 0);
+
+        // A selection whose network has left the list starts over.
+        panel.hold_list(false, false);
+        panel.apply(Event::Wifi(on(
+            Link::Disconnected,
+            vec![fresh("Zebra", -5000)],
+        )));
+        panel.hold_list(true, true);
+        assert_eq!(panel.view().wifi.current, 0);
+        assert_eq!(row_names(&panel), ["Zebra"]);
     }
 
     #[test]
     fn switching_wifi_off_closes_the_passphrase_prompt() {
         let mut panel = Panel::new(laptop(), false);
         panel.apply(Event::Wifi(on(Link::Connected, home_and_cafe())));
-        panel.choose_network(0);
+        pick(&mut panel, 0);
         assert!(panel.prompt_open());
         assert!(matches!(
             panel.toggle_wifi(false),

@@ -224,7 +224,12 @@ fn play(window: &QuickWindow, script: Vec<demo::Action>) {
         slint::Timer::single_shot(PAUSE * (index as u32 + 1), move || {
             let Some(window) = weak.upgrade() else { return };
             match action {
-                demo::Action::Choose(row) => window.invoke_network_chosen(row as i32),
+                demo::Action::Choose(row) => {
+                    use slint::Model;
+                    if let Some(item) = window.get_networks().row_data(row) {
+                        window.invoke_network_chosen(item.id);
+                    }
+                }
                 demo::Action::Submit(passphrase) => {
                     window.invoke_passphrase_submitted(passphrase.into())
                 }

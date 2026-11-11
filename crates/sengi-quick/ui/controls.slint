@@ -339,6 +339,8 @@ export component TextField inherits Rectangle {
 export component ListRow inherits Rectangle {
     in property <string> text;
     in property <bool> current: false;
+    // A row that is not enabled keeps its place but cannot be clicked.
+    in property <bool> enabled: true;
     in property <bool> strong: false;
     // Room kept free at the right for the children.
     in property <length> trailing;
@@ -346,7 +348,7 @@ export component ListRow inherits Rectangle {
 
     height: Metrics.row;
     border-radius: Tokens.radius;
-    background: touch.has-hover || root.current ? Tokens.color-surface-hover : transparent;
+    background: (touch.has-hover && root.enabled) || root.current ? Tokens.color-surface-hover : transparent;
     animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
 
     SengiText {
@@ -354,12 +356,14 @@ export component ListRow inherits Rectangle {
         width: parent.width - Tokens.space-sm * 2 - root.trailing;
         height: parent.height;
         text: root.text;
+        color: root.enabled ? Tokens.color-text : Tokens.color-text-disabled;
         font-weight: root.strong ? Tokens.font-weight-medium : Tokens.font-weight-regular;
         vertical-alignment: center;
         overflow: elide;
     }
 
     touch := TouchArea {
+        enabled: root.enabled;
         clicked => { root.clicked(); }
     }
 
