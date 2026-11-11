@@ -23,8 +23,11 @@ mkdir -p "$work/iso/live" "$work/iso/boot/grub" "$out"
 export CARGO_HOME="$work/cargo" CARGO_TARGET_DIR="$work/target"
 export RUSTFLAGS="--remap-path-prefix=$src=. --remap-path-prefix=$work=/build"
 programs="sengi-bar sengi-focus"
-# shellcheck disable=SC2086
-cargo build --release --locked --manifest-path "$src/Cargo.toml" $(printf -- '-p %s ' $programs)
+set --
+for program in $programs; do
+	set -- "$@" -p "$program"
+done
+cargo build --release --locked --manifest-path "$src/Cargo.toml" "$@"
 for program in $programs; do
 	install -D -m 0755 "$work/target/release/$program" "$work/overlay/usr/bin/$program"
 done
