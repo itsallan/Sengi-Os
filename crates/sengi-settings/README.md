@@ -232,6 +232,14 @@ given only until it exits; a kept mode is not written to a file yet).
 All of it is written for labwc as described under "Files written for
 other programs", and labwc is told to read its files again.
 
+### Mouse & Touchpad
+
+Pointer speed, natural scrolling and left-handed buttons for mice;
+speed, natural scrolling, tap to click and ignoring the touchpad while
+typing for touchpads. They are written as two `<libinput>` device
+categories, `non-touch` and `touchpad`, in the generated `rc.xml`, which
+labwc applies to the devices present when it reconfigures.
+
 ## Building and testing
 
     cargo build -p sengi-settings

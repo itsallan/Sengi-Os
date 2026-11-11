@@ -19,6 +19,7 @@ use sengi_settings::display::page::DisplayPage;
 use sengi_settings::instance::{self, Claim};
 use sengi_settings::keyboard::KeyboardPage;
 use sengi_settings::network::page::NetworkPage;
+use sengi_settings::pointer::PointerPage;
 use sengi_settings::power::PowerPage;
 use sengi_settings::services::{self, Services};
 use sengi_settings::settings::Settings;
@@ -216,4 +217,5 @@ fn register_pages(app: &std::rc::Rc<App>, services: Services) {
         DateTimePage::attach(app, services.bus.clone()),
     );
     app.register(Page::Keyboard, KeyboardPage::attach(app));
+    app.register(Page::Mouse, PointerPage::attach(app));
 }

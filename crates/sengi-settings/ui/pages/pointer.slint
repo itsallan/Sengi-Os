@@ -1,0 +1,141 @@
+// The Mouse & Touchpad page.
+
+import { Tokens, SengiToggle } from "components.slint";
+import { Page, PageColumn, Card, Divider, SettingRow, RowValue, SectionLabel, Gap, Metrics, Slider } from "../kit.slint";
+
+// The switches of one kind of pointing device. A mouse has no use for
+// the last two, nor a touchpad for the second.
+export struct PointerSide {
+    natural-scroll: bool,
+    left-handed: bool,
+    tap-to-click: bool,
+    disable-while-typing: bool,
+}
+
+export global PointerData {
+    in property <PointerSide> mouse;
+    in property <PointerSide> touchpad;
+    in-out property <int> mouse-speed: 0;
+    in-out property <int> touchpad-speed: 0;
+
+    // Section ("mouse" or "touchpad"), key, value.
+    callback set-flag(string, string, bool);
+    callback set-speed(string, int);
+}
+
+component SpeedRow inherits SettingRow {
+    in property <string> section;
+    in-out property <int> value;
+
+    title: "Pointer speed";
+
+    VerticalLayout {
+        alignment: center;
+        Slider {
+            width: Metrics.control;
+            minimum: -100;
+            maximum: 100;
+            step: 10;
+            value <=> root.value;
+            released(to) => { PointerData.set-speed(root.section, to); }
+        }
+    }
+
+    RowValue {
+        width: Tokens.dock-icon * 1.5;
+        text: root.value == 0 ? "Normal" : root.value > 0 ? "+" + root.value : "" + root.value;
+    }
+}
+
+component FlagRow inherits SettingRow {
+    in property <string> section;
+    in property <string> key;
+    in property <bool> on;
+
+    VerticalLayout {
+        alignment: center;
+        SengiToggle {
+            checked: root.on;
+            toggled(on) => { PointerData.set-flag(root.section, root.key, on); }
+        }
+    }
+}
+
+export component PointerPage inherits Page {
+    title: "Mouse & Touchpad";
+    content-height: column.preferred-height;
+
+    column := PageColumn {
+        SectionLabel {
+            text: "Mouse";
+        }
+
+        Card {
+            SpeedRow {
+                section: "mouse";
+                value <=> PointerData.mouse-speed;
+            }
+
+            Divider { }
+
+            FlagRow {
+                title: "Natural scrolling";
+                detail: "The page follows the wheel, as on a phone";
+                section: "mouse";
+                key: "natural-scroll";
+                on: PointerData.mouse.natural-scroll;
+            }
+
+            Divider { }
+
+            FlagRow {
+                title: "Left-handed";
+                detail: "Swap the left and right buttons";
+                section: "mouse";
+                key: "left-handed";
+                on: PointerData.mouse.left-handed;
+            }
+        }
+
+        Gap { }
+
+        SectionLabel {
+            text: "Touchpad";
+        }
+
+        Card {
+            SpeedRow {
+                section: "touchpad";
+                value <=> PointerData.touchpad-speed;
+            }
+
+            Divider { }
+
+            FlagRow {
+                title: "Natural scrolling";
+                detail: "The page follows your fingers";
+                section: "touchpad";
+                key: "natural-scroll";
+                on: PointerData.touchpad.natural-scroll;
+            }
+
+            Divider { }
+
+            FlagRow {
+                title: "Tap to click";
+                section: "touchpad";
+                key: "tap-to-click";
+                on: PointerData.touchpad.tap-to-click;
+            }
+
+            Divider { }
+
+            FlagRow {
+                title: "Ignore the touchpad while typing";
+                section: "touchpad";
+                key: "disable-while-typing";
+                on: PointerData.touchpad.disable-while-typing;
+            }
+        }
+    }
+}

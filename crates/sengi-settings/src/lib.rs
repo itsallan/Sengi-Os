@@ -17,6 +17,7 @@ pub mod held;
 pub mod instance;
 pub mod keyboard;
 pub mod network;
+pub mod pointer;
 pub mod power;
 pub mod screen;
 pub mod secret;
