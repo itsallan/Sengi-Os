@@ -7,11 +7,13 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::{self, Thread};
 
 use sengi_layer::wayland_client::backend::ObjectId;
+use sengi_layer::wayland_client::protocol::wl_callback::{self, WlCallback};
 use sengi_layer::wayland_client::protocol::wl_registry::{self, WlRegistry};
 use sengi_layer::wayland_client::protocol::wl_seat::WlSeat;
 use sengi_layer::wayland_client::{
@@ -230,10 +232,17 @@ impl Controller {
 
     /// Focuses the window, bringing it back first if it was minimised.
     pub fn activate(&self, id: u32) {
-        self.with(id, |handle, shared| {
-            if let Some(seat) = &shared.seat {
+        self.with(id, |handle, shared| match &shared.seat {
+            Some(seat) => {
                 handle.unset_minimized();
                 handle.activate(seat);
+            }
+            None => {
+                // Focusing a window needs a seat to focus it for.
+                static WARNED: AtomicBool = AtomicBool::new(false);
+                if !WARNED.swap(true, Ordering::Relaxed) {
+                    eprintln!("sengi-dock: cannot focus windows: the compositor offers no seat");
+                }
             }
         });
     }
@@ -275,6 +284,15 @@ impl<F: FnMut(&[Window])> Tracker<F> {
             (self.on_change)(&self.book.windows);
         }
     }
+
+    /// Forgets every window and tells the listener once.
+    fn stop(&mut self) {
+        self.book = Book::default();
+        self.ids.clear();
+        self.shared.lock().unwrap().handles.clear();
+        self.dirty = true;
+        self.notify();
+    }
 }
 
 impl<F: FnMut(&[Window]) + 'static> Dispatch<WlRegistry, ()> for Tracker<F> {
@@ -302,6 +320,26 @@ impl<F: FnMut(&[Window]) + 'static> Dispatch<WlRegistry, ()> for Tracker<F> {
             if shared.seat.is_none() {
                 shared.seat = Some(registry.bind::<WlSeat, _, _>(name, 1, queue, ()));
             }
+        }
+    }
+}
+
+/// Answers the sync sent after asking for the globals: by now every global
+/// has been announced, so a missing manager is missing for good.
+impl<F: FnMut(&[Window]) + 'static> Dispatch<WlCallback, ()> for Tracker<F> {
+    fn event(
+        state: &mut Self,
+        _: &WlCallback,
+        event: wl_callback::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if matches!(event, wl_callback::Event::Done { .. }) && !state.manager_found {
+            eprintln!(
+                "sengi-dock: windows are not tracked: {}",
+                Error::Unsupported
+            );
         }
     }
 }
@@ -402,29 +440,30 @@ impl Wake for Unpark {
     }
 }
 
-/// Handles events until the compositor goes away. With a shared connection
-/// another thread does the reading, so this one parks until that thread
-/// puts something on our queue.
-fn run<F: FnMut(&[Window]) + 'static>(
-    mut queue: EventQueue<Tracker<F>>,
-    mut tracker: Tracker<F>,
+/// Handles events until the compositor stops sending them, and says why
+/// it stopped. With a shared connection another thread does the reading, so
+/// this one parks until that thread puts something on our queue.
+fn dispatch<F: FnMut(&[Window]) + 'static>(
+    queue: &mut EventQueue<Tracker<F>>,
+    tracker: &mut Tracker<F>,
     shared_connection: bool,
-) {
+) -> String {
+    const FINISHED: &str = "the compositor stopped reporting windows";
     if !shared_connection {
         while !tracker.finished {
-            if queue.blocking_dispatch(&mut tracker).is_err() {
-                break;
+            if let Err(error) = queue.blocking_dispatch(tracker) {
+                return error.to_string();
             }
             tracker.notify();
         }
-        return;
+        return FINISHED.to_string();
     }
 
     let waker = Waker::from(Arc::new(Unpark(thread::current())));
     let mut context = Context::from_waker(&waker);
     while !tracker.finished {
-        match queue.poll_dispatch_pending(&mut context, &mut tracker) {
-            Poll::Ready(_) => break,
+        match queue.poll_dispatch_pending(&mut context, tracker) {
+            Poll::Ready(Err(error)) => return error.to_string(),
             Poll::Pending => {
                 tracker.notify();
                 let _ = queue.flush();
@@ -432,6 +471,20 @@ fn run<F: FnMut(&[Window]) + 'static>(
             }
         }
     }
+    FINISHED.to_string()
+}
+
+/// The tracker's thread. When tracking ends, for whatever reason, the
+/// listener is told there are no windows, so nothing stays marked as
+/// running on the strength of a list that will never be updated again.
+fn run<F: FnMut(&[Window]) + 'static>(
+    mut queue: EventQueue<Tracker<F>>,
+    mut tracker: Tracker<F>,
+    shared_connection: bool,
+) {
+    let reason = dispatch(&mut queue, &mut tracker, shared_connection);
+    eprintln!("sengi-dock: windows are no longer tracked: {reason}");
+    tracker.stop();
 }
 
 /// Starts tracking windows. `on_change` is called on the tracker's thread
@@ -464,7 +517,9 @@ where
 
     if shared_connection {
         // Somebody else reads the socket, so a blocking roundtrip here could
-        // wait forever. The thread binds the manager when the globals arrive.
+        // wait forever. The thread binds the manager when the globals arrive,
+        // and the sync's answer tells it when they all have.
+        connection.display().sync(&queue.handle(), ());
         connection
             .flush()
             .map_err(|e| Error::Protocol(e.to_string()))?;
@@ -602,6 +657,31 @@ mod tests {
         let before = book.windows.clone();
         book.commit(a);
         assert_eq!(book.windows, before);
+    }
+
+    #[test]
+    fn when_tracking_stops_the_listener_is_told_there_are_no_windows() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let mut tracker = Tracker {
+            book: Book::default(),
+            ids: HashMap::new(),
+            shared: Arc::new(Mutex::new(Shared::default())),
+            on_change: move |list: &[Window]| log.lock().unwrap().push(list.len()),
+            manager_found: true,
+            finished: false,
+            dirty: false,
+        };
+        let a = tracker.book.open();
+        tracker.book.commit(a);
+        tracker.dirty = true;
+        tracker.notify();
+        // Nothing new, nothing said.
+        tracker.notify();
+
+        tracker.stop();
+        assert_eq!(*seen.lock().unwrap(), [1, 0]);
+        assert!(tracker.book.windows.is_empty());
     }
 
     #[test]
