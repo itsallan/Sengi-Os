@@ -28,8 +28,9 @@ use crate::{
     window,
 };
 
-/// Evdev code of the left mouse button.
+/// Evdev codes of the left and right mouse buttons.
 const BTN_LEFT: u32 = 0x110;
+const BTN_RIGHT: u32 = 0x111;
 
 /// A pointer drag the compositor handles itself.
 pub enum Drag {
@@ -419,7 +420,42 @@ impl State {
             return;
         }
         let (x, y) = cell(location);
-        match self.target_at(location) {
+        let target = self.target_at(location);
+
+        // With Super held a window is moved by the left button and resized
+        // by the right one from anywhere on it, and the client is not told.
+        let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
+        let held = keyboard.modifier_state();
+        let only_logo = held.logo && !held.alt && !held.ctrl && !held.shift;
+        if only_logo && (button == BTN_LEFT || button == BTN_RIGHT) {
+            let window = match &target {
+                Some(Target::Surface {
+                    window: Some(window),
+                    ..
+                })
+                | Some(Target::Frame { window, .. }) => Some(window.clone()),
+                _ => None,
+            };
+            if let Some(window) = window {
+                self.focus_window(&window);
+                if button == BTN_LEFT {
+                    self.start_move(&window, (x, y));
+                } else if let Some(frame) = self.frame_rect(&window) {
+                    self.start_resize(&window, frame::nearest_corner(frame, x, y), (x, y));
+                }
+                if self.drag.is_some() {
+                    let start = GrabStartData {
+                        focus: None,
+                        button,
+                        location,
+                    };
+                    self.grab_for_drag(start, serial);
+                    return;
+                }
+            }
+        }
+
+        match target {
             Some(Target::Surface {
                 window: Some(window),
                 ..
@@ -435,7 +471,19 @@ impl State {
                     return;
                 }
                 match hit {
-                    Hit::Titlebar => self.start_move(&window, (x, y)),
+                    Hit::Titlebar => {
+                        let now = std::time::Instant::now();
+                        let again = self.titlebar_press.take().is_some_and(|(last, at, place)| {
+                            last == window
+                                && frame::is_double_click(now.duration_since(at), place, (x, y))
+                        });
+                        if again {
+                            self.toggle_maximise(&window);
+                        } else {
+                            self.titlebar_press = Some((window.clone(), now, (x, y)));
+                            self.start_move(&window, (x, y));
+                        }
+                    }
                     Hit::Resize(edges) => self.start_resize(&window, edges, (x, y)),
                     Hit::Button(button) => {
                         self.hovered_button = Some((window.clone(), button));

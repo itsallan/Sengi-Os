@@ -2,6 +2,8 @@
 //!
 //! All plain arithmetic on rectangles, so it is tested without a compositor.
 
+use std::time::Duration;
+
 use crate::layout::Rect;
 
 /// Sizes of the frame parts, all in pixels.
@@ -248,9 +250,65 @@ pub fn keep_reachable(usable: Rect, frame: Rect, titlebar: i32, grab: i32) -> (i
     (frame.x.clamp(min_x, max_x), frame.y.clamp(usable.y, max_y))
 }
 
+/// The corner of `frame` nearest to a point, as the edges a resize from
+/// there moves. Used when a window is resized from anywhere inside it.
+pub fn nearest_corner(frame: Rect, x: i32, y: i32) -> Edges {
+    let left = x < frame.x + frame.w / 2;
+    let top = y < frame.y + frame.h / 2;
+    Edges {
+        left,
+        right: !left,
+        top,
+        bottom: !top,
+    }
+}
+
+/// Two presses this close in time and place are a double click.
+pub const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+const DOUBLE_CLICK_SLOP: i32 = 4;
+
+pub fn is_double_click(elapsed: Duration, first: (i32, i32), second: (i32, i32)) -> bool {
+    elapsed <= DOUBLE_CLICK
+        && (first.0 - second.0).abs() <= DOUBLE_CLICK_SLOP
+        && (first.1 - second.1).abs() <= DOUBLE_CLICK_SLOP
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_resize_from_inside_takes_the_nearest_corner() {
+        let frame = Rect::new(100, 100, 400, 300);
+        assert_eq!(
+            nearest_corner(frame, 150, 120),
+            edges(true, false, true, false)
+        );
+        assert_eq!(
+            nearest_corner(frame, 450, 120),
+            edges(false, true, true, false)
+        );
+        assert_eq!(
+            nearest_corner(frame, 150, 380),
+            edges(true, false, false, true)
+        );
+        assert_eq!(
+            nearest_corner(frame, 300, 250),
+            edges(false, true, false, true)
+        );
+    }
+
+    #[test]
+    fn a_double_click_is_quick_and_stays_put() {
+        let quick = Duration::from_millis(200);
+        assert!(is_double_click(quick, (10, 10), (12, 9)));
+        assert!(!is_double_click(quick, (10, 10), (30, 10)));
+        assert!(!is_double_click(
+            Duration::from_millis(600),
+            (10, 10),
+            (10, 10)
+        ));
+    }
 
     const M: Metrics = Metrics {
         titlebar: 30,

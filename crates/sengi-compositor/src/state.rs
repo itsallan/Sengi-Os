@@ -156,6 +156,8 @@ pub struct State {
     pub hovered_button: Option<(Window, Button)>,
     /// A move, resize or button press the pointer is in the middle of.
     pub drag: Option<Drag>,
+    /// The last press on a title bar: a second one right after maximises.
+    pub titlebar_press: Option<(Window, Instant, (i32, i32))>,
     /// The pointer may be over something else than its focus says, and
     /// has to be looked at again even though it did not move.
     pub pointer_stale: bool,
@@ -333,6 +335,7 @@ impl State {
             layer_focus: None,
             hovered_button: None,
             drag: None,
+            titlebar_press: None,
             pointer_stale: false,
             swallowed_keys: Swallowed::default(),
             cycle: None,
@@ -682,6 +685,13 @@ impl State {
             .is_some_and(|(w, _)| w == window)
         {
             self.hovered_button = None;
+        }
+        if self
+            .titlebar_press
+            .as_ref()
+            .is_some_and(|(w, _, _)| w == window)
+        {
+            self.titlebar_press = None;
         }
         let dragged = match &self.drag {
             Some(Drag::Move { window: w, .. })
