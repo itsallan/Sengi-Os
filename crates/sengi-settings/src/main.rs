@@ -12,10 +12,11 @@ use std::time::Instant;
 use slint::ComponentHandle;
 
 use sengi_settings::app::{self, App};
+use sengi_settings::bluetooth::page::BluetoothPage;
 use sengi_settings::cli::{self, Action, Page};
+use sengi_settings::instance::{self, Claim};
 use sengi_settings::network::page::NetworkPage;
 use sengi_settings::services::{self, Services};
-use sengi_settings::instance::{self, Claim};
 use sengi_settings::settings::Settings;
 use sengi_settings::store::Dirs;
 use sengi_settings::ui::SettingsWindow;
@@ -186,4 +187,8 @@ fn main() -> ExitCode {
 /// The pages this build has.
 fn register_pages(app: &std::rc::Rc<App>, services: Services) {
     app.register(Page::Network, NetworkPage::attach(app, services.network));
+    app.register(
+        Page::Bluetooth,
+        BluetoothPage::attach(app, services.bluetooth),
+    );
 }

@@ -7,6 +7,7 @@
 //! file, `derive` the files other programs read from it.
 
 pub mod app;
+pub mod bluetooth;
 pub mod bus;
 pub mod cli;
 pub mod derive;

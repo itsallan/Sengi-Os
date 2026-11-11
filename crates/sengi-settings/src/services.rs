@@ -4,11 +4,13 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::bluetooth::{self, BluetoothService};
 use crate::bus::Bus;
 use crate::network::{self, NetworkService};
 
 pub struct Services {
     pub network: Arc<dyn NetworkService>,
+    pub bluetooth: Arc<dyn BluetoothService>,
 }
 
 /// Names a directory to read in place of `/sys/class`, in debug builds
@@ -34,12 +36,19 @@ pub fn real() -> Services {
     let class = sys_class();
     let bus = Arc::new(Bus::default());
     Services {
-        network: Arc::new(network::iwd::Iwd::new(bus, class)),
+        network: Arc::new(network::iwd::Iwd::new(bus.clone(), class.clone())),
+        bluetooth: Arc::new(bluetooth::bluez::Bluez::new(bus, class)),
     }
 }
 
 #[cfg(debug_assertions)]
-pub const DEMOS: &[&str] = &["network", "network-off", "network-none"];
+pub const DEMOS: &[&str] = &[
+    "network",
+    "network-off",
+    "network-none",
+    "bluetooth",
+    "bluetooth-off",
+];
 
 /// The services of a made-up machine, and the page that shows them off.
 #[cfg(debug_assertions)]
@@ -95,6 +104,32 @@ pub fn demo(name: &str) -> Option<(crate::cli::Page, Services)> {
             }
             services.network = fake;
             Page::Network
+        }
+        "bluetooth" | "bluetooth-off" => {
+            use bluetooth::testing::{device, Fake};
+            use bluetooth::{Kind, Question};
+            let fake = Fake::with(vec![
+                device("/d/head", "Trail headphones", Kind::Audio, true, true),
+                device("/d/keys", "Keyboard K3", Kind::Keyboard, true, false),
+            ]);
+            {
+                let mut state = fake.lock();
+                state.powered = name == "bluetooth";
+                state.delay = Duration::from_millis(1500);
+                state.hidden = vec![
+                    device("/d/mouse", "Travel mouse", Kind::Mouse, false, false),
+                    device("/d/phone", "Allan's phone", Kind::Other, false, false),
+                    device("/d/speaker", "Kitchen speaker", Kind::Audio, false, false),
+                    device("/d/old", "Old headset", Kind::Audio, false, false),
+                ];
+                state.asks = vec![
+                    ("/d/phone".into(), Question::ConfirmPasskey(482_913), None),
+                    ("/d/old".into(), Question::EnterPin, Some("0000".into())),
+                    ("/d/keys".into(), Question::ShowPasskey(271_828), None),
+                ];
+            }
+            services.bluetooth = fake;
+            Page::Bluetooth
         }
         _ => return None,
     };

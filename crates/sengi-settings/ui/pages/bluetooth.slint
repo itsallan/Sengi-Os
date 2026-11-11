@@ -1,0 +1,120 @@
+// The Bluetooth page: the switch, the devices that are paired, and the
+// ones nearby that could be.
+
+import { Tokens, SengiButton, SengiToggle } from "components.slint";
+import { Item, ItemList, Page, PageColumn, Card, SettingRow, SectionLabel, Note, Gap } from "../kit.slint";
+
+export global BluetoothData {
+    // Why Bluetooth cannot be used, when it cannot. Empty otherwise.
+    in property <string> note;
+    in property <bool> note-warning: false;
+    in property <bool> available: false;
+    in property <bool> powered: false;
+    in property <string> status;
+    in property <bool> searching: false;
+
+    in property <[Item]> mine;
+    in property <[Item]> nearby;
+    // The pointer or the keyboard is on the list.
+    in-out property <bool> engaged-mine: false;
+    in-out property <bool> engaged-nearby: false;
+
+    callback power(bool);
+    callback toggle(string);
+    callback remove(string);
+    callback pair(string);
+    callback search();
+    callback released();
+}
+
+export component BluetoothPage inherits Page {
+    title: "Bluetooth";
+    content-height: column.preferred-height;
+
+    column := PageColumn {
+        if BluetoothData.note != "": Note {
+            text: BluetoothData.note;
+            warning: BluetoothData.note-warning;
+        }
+
+        if BluetoothData.available: Card {
+            SettingRow {
+                title: "Bluetooth";
+                detail: BluetoothData.status;
+
+                VerticalLayout {
+                    alignment: center;
+                    SengiToggle {
+                        checked: BluetoothData.powered;
+                        toggled(on) => { BluetoothData.power(on); }
+                    }
+                }
+            }
+        }
+
+        if BluetoothData.powered: VerticalLayout {
+            spacing: Tokens.space-sm;
+
+            Gap { }
+
+            SectionLabel {
+                text: "My devices";
+            }
+
+            Card {
+                if BluetoothData.mine.length == 0: SettingRow {
+                    title: "No paired devices";
+                    enabled: false;
+                }
+
+                ItemList {
+                    items: BluetoothData.mine;
+                    activated(id) => { BluetoothData.toggle(id); }
+                    removed(id) => { BluetoothData.remove(id); }
+                    changed engaged => {
+                        BluetoothData.engaged-mine = self.engaged;
+                        if !self.engaged {
+                            BluetoothData.released();
+                        }
+                    }
+                }
+            }
+
+            Gap { }
+
+            HorizontalLayout {
+                spacing: Tokens.space-md;
+
+                SectionLabel {
+                    horizontal-stretch: 1;
+                    text: BluetoothData.searching ? "Nearby devices, searching…" : "Nearby devices";
+                    vertical-alignment: center;
+                }
+
+                SengiButton {
+                    text: BluetoothData.searching ? "Stop" : "Search";
+                    clicked => { BluetoothData.search(); }
+                }
+            }
+
+            Card {
+                if BluetoothData.nearby.length == 0: SettingRow {
+                    title: BluetoothData.searching ? "Searching for devices…"
+                        : "Put the device in pairing mode, then search";
+                    enabled: false;
+                }
+
+                ItemList {
+                    items: BluetoothData.nearby;
+                    activated(id) => { BluetoothData.pair(id); }
+                    changed engaged => {
+                        BluetoothData.engaged-nearby = self.engaged;
+                        if !self.engaged {
+                            BluetoothData.released();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

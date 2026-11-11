@@ -831,9 +831,9 @@ export component DialogLayer inherits Rectangle {
         field.clear();
     }
 
-    background: Tokens.color-scrim;
-
-    init => {
+    // Where the keyboard starts: in the field if there is one, else on
+    // the button that is safe to press without reading.
+    function settle() {
         if root.spec.input {
             field.take-focus();
         } else if root.spec.danger || root.spec.confirm == "" {
@@ -842,6 +842,12 @@ export component DialogLayer inherits Rectangle {
             confirm.focus();
         }
     }
+
+    background: Tokens.color-scrim;
+
+    init => { root.settle(); }
+    // The same dialog can go on to ask something else.
+    changed spec => { root.settle(); }
 
     // Nothing behind the dialog can be clicked.
     TouchArea { }
@@ -916,7 +922,7 @@ export component DialogLayer inherits Rectangle {
 
                 HorizontalLayout {
                     alignment: end;
-                    spacing: Tokens.space-sm;
+                    spacing: root.spec.confirm != "" ? Tokens.space-sm : 0;
 
                     cancel := SengiButton {
                         text: root.spec.cancel;

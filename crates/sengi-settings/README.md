@@ -125,6 +125,27 @@ Not done: hidden networks, enterprise (802.1X) networks without a
 provisioning file (listed, and say what they need), a second Wi-Fi
 adapter, static addresses and DNS.
 
+### Bluetooth
+
+BlueZ on the system bus (`org.bluez`).
+
+- The switch powers the first adapter. rfkill blocks are reported.
+- "My devices" are the paired ones: Return or a click connects or
+  disconnects, Delete removes after asking.
+- "Search" looks for devices for 30 seconds, or until stopped or the page
+  is left. Devices that announce no name are not listed.
+- Pairing registers an `org.bluez.Agent1` (capability `KeyboardDisplay`,
+  not the default agent) and shows what BlueZ asks in the dialog: a
+  number to compare, a PIN or passkey to type, a number to type on the
+  device. The agent answers only the BlueZ it registered with, and only
+  about the device being paired; anything else is refused unseen. A PIN is
+  masked, held like a passphrase, and never logged.
+- A paired device is marked trusted, so it can reconnect later without an
+  agent, and connected.
+
+Not done: more than one adapter, making this computer discoverable,
+renaming devices, battery levels of devices.
+
 ## Building and testing
 
     cargo build -p sengi-settings
