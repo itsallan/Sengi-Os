@@ -238,8 +238,10 @@ export component Dock inherits Window {
     // Also sent for a click with Ctrl or Shift held.
     callback middle-clicked(int);
 
-    property <length> slot-width: Tokens.dock-icon + Tokens.space-xxs * 2 + Tokens.space-xs;
-    property <length> side-padding: Tokens.dock-padding - Tokens.space-xxs;
+    // The width one item takes, and the padding at each end of the panel:
+    // what decides how many items fit across a screen.
+    out property <length> slot-width: Tokens.dock-icon + Tokens.space-xs * 2;
+    out property <length> side-padding: Tokens.dock-padding - Tokens.space-xxs;
     property <length> label-space: Tokens.font-size-sm + Tokens.space-sm * 2 + Tokens.space-xs;
     property <int> hovered: -1;
     property <string> hovered-name;

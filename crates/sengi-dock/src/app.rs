@@ -15,6 +15,10 @@ use crate::model::{self, Action, Button, Dock, Icon, Item, Launches, LAUNCHER_KE
 use crate::windows::{self, Controller, Source, Window};
 use crate::{config, desktop, launch, ui};
 
+/// The widest the dock may be until the output's real width is known: a
+/// width every laptop panel has.
+pub const DEFAULT_MAX_WIDTH: u32 = 1280;
+
 /// Long enough for a frame to be drawn at 60 Hz.
 const ONE_FRAME: Duration = Duration::from_millis(20);
 
@@ -55,6 +59,12 @@ struct State {
     dock: Dock,
     icon_dirs: IconDirs,
     scale: f32,
+    /// The windows last heard of, kept so the items can be worked out
+    /// again when the room for them changes.
+    windows: Vec<Window>,
+    /// The widest the dock may be, in logical pixels.
+    max_width: u32,
+    /// The items on show: those that fit.
     items: Vec<Item>,
     rows: Vec<Row>,
     /// Icons by item key.
@@ -159,6 +169,8 @@ impl App {
                     dock,
                     icon_dirs,
                     scale,
+                    windows: Vec::new(),
+                    max_width: DEFAULT_MAX_WIDTH,
                     items: Vec::new(),
                     rows: Vec::new(),
                     icons: HashMap::new(),
@@ -314,11 +326,36 @@ impl App {
         self.sync(items);
     }
 
+    /// Says how wide the dock may be: the output's width, less whatever
+    /// should stay clear at its sides. A layer surface wider than its
+    /// output is centred all the same, which would push the search button
+    /// off the screen, so items that do not fit are left off the end.
+    pub fn set_max_width(&self, width: u32) {
+        let windows = {
+            let mut state = self.inner.state.borrow_mut();
+            if state.max_width == width {
+                return;
+            }
+            state.max_width = width;
+            state.windows.clone()
+        };
+        self.set_windows(&windows);
+    }
+
+    /// How many items fit across the widest the dock may be.
+    fn capacity(&self) -> usize {
+        let ui = &self.inner.ui;
+        let room = self.inner.state.borrow().max_width as f32 - ui.get_side_padding() * 2.0;
+        (room / ui.get_slot_width().max(1.0)).floor().max(1.0) as usize
+    }
+
     /// Updates the dock for a new list of windows.
     pub fn set_windows(&self, windows: &[Window]) {
+        let capacity = self.capacity();
         let items = {
             let mut state = self.inner.state.borrow_mut();
-            let items = state.dock.items(windows);
+            state.windows = windows.to_vec();
+            let items = model::fit(state.dock.items(windows), capacity);
             // Apps were installed or removed: an icon that was missing may
             // exist now, and one that was found may have changed.
             let reloaded = state.generation != state.dock.generation();

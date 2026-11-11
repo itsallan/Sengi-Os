@@ -12,7 +12,7 @@ use sengi_dock::app::{App, Deliver, Message};
 use sengi_dock::model::Dock;
 use sengi_dock::windows::{self, Source, Window};
 use sengi_dock::{config, desktop, icons, ui};
-use sengi_layer::{Anchor, Config, KeyboardMode, Layer, Margins, Outputs};
+use sengi_layer::{Anchor, Config, KeyboardMode, Layer, Margins, Output, Outputs};
 use slint::ComponentHandle;
 
 const USAGE: &str = "usage: sengi-dock [--dump]
@@ -54,6 +54,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // for the label would swallow clicks meant for the window above.
         ui.set_show_labels(false);
         let handle = context.handle();
+        let surface = context.surface();
 
         let margin = ui.get_bottom_margin().round() as i32;
         handle.set_margins(Margins {
@@ -75,6 +76,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             },
         );
+
+        // The dock may be as wide as its output, less the gap it keeps from
+        // the bottom edge on either side. The output is often not known
+        // until the surface is on screen.
+        let fit_output = {
+            let app = app.clone();
+            move |output: Output| {
+                if let Some((width, _)) = output.size {
+                    app.set_max_width(width.saturating_sub(2 * margin.unsigned_abs()));
+                }
+            }
+        };
+        if let Some(output) = surface.output() {
+            fit_output(output);
+        }
+        surface.on_output_changed(fit_output);
+
         *dock.borrow_mut() = Some(app);
         Ok(ui)
     })?;

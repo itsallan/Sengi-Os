@@ -195,6 +195,27 @@ impl Launches {
     }
 }
 
+/// Cuts the items down to what fits in `capacity` slots.
+///
+/// The search button and the pins come first and so are the last to go.
+/// If the app that has focus would be cut, it takes the last slot, so the
+/// dock always shows where you are.
+pub fn fit(mut items: Vec<Item>, capacity: usize) -> Vec<Item> {
+    let capacity = capacity.max(1);
+    if items.len() <= capacity {
+        return items;
+    }
+    let focused = items
+        .iter()
+        .position(|item| item.focused())
+        .filter(|&at| at >= capacity);
+    if let Some(at) = focused {
+        items.swap(capacity - 1, at);
+    }
+    items.truncate(capacity);
+    items
+}
+
 /// The windows that stand on their own, oldest first, each carrying the
 /// focus of the dialogs that belong to it.
 fn fold_children(windows: &[Window]) -> Vec<Window> {
@@ -709,6 +730,38 @@ mod tests {
         let items = dock(&[]).items(&[orphan, own]);
         assert_eq!(keys(&items), ["", "vim"]);
         assert_eq!(items[1].window_count(), 2);
+    }
+
+    #[test]
+    fn items_that_do_not_fit_are_left_off_the_end() {
+        let mut dock = dock(&["foot"]);
+        let windows = [
+            window(1, "vim"),
+            window(2, "firefox-esr"),
+            window(3, "org.gnome.Nautilus"),
+        ];
+        let all = dock.items(&windows);
+        assert_eq!(all.len(), 5);
+        assert_eq!(fit(all.clone(), 5), all);
+        assert_eq!(fit(all.clone(), 9), all);
+        assert_eq!(keys(&fit(all.clone(), 3)), ["", "foot", "vim"]);
+        // There is always room for the search button.
+        assert_eq!(keys(&fit(all, 0)), [""]);
+    }
+
+    #[test]
+    fn the_focused_app_is_kept_when_the_dock_overflows() {
+        let mut dock = dock(&["foot"]);
+        let windows = [
+            window(1, "vim"),
+            window(2, "firefox-esr"),
+            focused(3, "org.gnome.Nautilus", 1),
+        ];
+        let shown = fit(dock.items(&windows), 3);
+        assert_eq!(keys(&shown), ["", "foot", "org.gnome.nautilus"]);
+        // Already in view: nothing moves.
+        let windows = [focused(1, "vim", 1), window(2, "firefox-esr")];
+        assert_eq!(keys(&fit(dock.items(&windows), 3)), ["", "foot", "vim"]);
     }
 
     #[test]
