@@ -48,6 +48,8 @@ export global Tokens {
     out property <length> dock-padding: @{size.dock-padding}px;
     out property <length> titlebar-height: @{size.titlebar-height}px;
     out property <length> launcher-width: @{size.launcher-width}px;
+    out property <length> menu-width: @{size.menu-width}px;
+    out property <int> launcher-lines: @{size.launcher-lines};
     out property <length> notification-width: @{size.notification-width}px;
     out property <length> bar-icon: @{size.bar-icon}px;
 
