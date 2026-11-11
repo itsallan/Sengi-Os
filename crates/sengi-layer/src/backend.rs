@@ -372,9 +372,9 @@ impl State {
             surface.width * surface.scale,
             surface.height * surface.scale,
         ));
-        if let Some(layer) = &surface.layer {
-            layer.wl_surface().set_buffer_scale(surface.scale as i32);
-        }
+        // The compositor is told the new scale in `draw`, together with
+        // the first buffer rendered at it.
+        surface.window.request_redraw();
     }
 
     /// Renders a frame if Slint has anything new to show.
@@ -411,7 +411,12 @@ impl State {
         };
         write_argb8888(&self.pixels, canvas);
 
+        // The scale goes out in the same commit as the buffer it describes.
+        // Sent on its own it could be committed against the previous
+        // buffer, whose size need not be a multiple of the new scale, and
+        // that is a protocol error.
         let wl_surface = layer.wl_surface();
+        wl_surface.set_buffer_scale(surface.scale as i32);
         wl_surface.damage_buffer(0, 0, width as i32, height as i32);
         if buffer.attach_to(wl_surface).is_ok() {
             layer.commit();
