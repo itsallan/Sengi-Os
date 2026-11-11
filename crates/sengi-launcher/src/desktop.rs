@@ -57,7 +57,7 @@ pub fn scan(dirs: &[PathBuf], env: &Env) -> Vec<DesktopEntry> {
 
 /// `scan`, looking at no more than `max_visited` directory entries in all.
 fn scan_limited(dirs: &[PathBuf], env: &Env, max_visited: usize) -> Vec<DesktopEntry> {
-    let locales = locale_variants(env.locale.as_deref());
+    let locales = locales(env);
     let mut seen = HashSet::new();
     let mut walk = Walk {
         visited: HashSet::new(),
@@ -137,7 +137,26 @@ impl Walk {
     }
 }
 
-/// The locale names to look for in `Key[locale]`, best match first.
+/// The locale names to look for in `Key[locale]` for this environment, best
+/// match first: the languages in `LANGUAGE`, then the message locale. As in
+/// gettext, `LANGUAGE` counts only when the locale is not plain C.
+pub fn locales(env: &Env) -> Vec<String> {
+    let own = locale_variants(env.locale.as_deref());
+    if own.is_empty() {
+        return own;
+    }
+    let mut all: Vec<String> = Vec::new();
+    let preferred = env.languages.iter().flat_map(|l| locale_variants(Some(l)));
+    for locale in preferred.chain(own) {
+        if !all.contains(&locale) {
+            all.push(locale);
+        }
+    }
+    all
+}
+
+/// The names one locale can be written as in `Key[locale]`, most specific
+/// first.
 pub fn locale_variants(locale: Option<&str>) -> Vec<String> {
     let Some(locale) = locale else {
         return Vec::new();
@@ -369,7 +388,7 @@ mod tests {
     }
 
     fn parse_str(text: &str, env: &Env) -> Parsed {
-        let locales = locale_variants(env.locale.as_deref());
+        let locales = locales(env);
         parse(
             "test.desktop",
             Path::new("/x/test.desktop"),
@@ -740,5 +759,34 @@ mod tests {
         // Four directory entries at the top, then six more below them.
         assert_eq!(scan_limited(&dirs, &plain_env(), 10).len(), 6);
         assert!(scan_limited(&dirs, &plain_env(), 0).is_empty());
+    }
+
+    #[test]
+    fn language_list_is_preferred_over_the_locale() {
+        let text = "[Desktop Entry]\nType=Application\nExec=files\n\
+                    Name=Files\nName[de]=Dateien\nName[fr]=Fichiers\nName[pt_BR]=Arquivos\n";
+        let name_with = |lang: &str, language: &str| {
+            let mut vars = vec![("HOME", "/nonexistent".to_string())];
+            for (key, value) in [("LANG", lang), ("LANGUAGE", language)] {
+                if !value.is_empty() {
+                    vars.push((key, value.to_string()));
+                }
+            }
+            visible(text, &env_with(&vars)).name
+        };
+        assert_eq!(name_with("de_DE.UTF-8", "fr"), "Fichiers");
+        assert_eq!(name_with("de_DE.UTF-8", "ja:pt_BR:fr"), "Arquivos");
+        assert_eq!(name_with("de_DE.UTF-8", "ja"), "Dateien");
+        assert_eq!(name_with("en_GB.UTF-8", "fr:de"), "Fichiers");
+        // No effect in the C locale or without one.
+        assert_eq!(name_with("C", "fr"), "Files");
+        assert_eq!(name_with("", "fr"), "Files");
+        assert_eq!(
+            locales(&env_with(&[
+                ("LANG", "de_AT.UTF-8".into()),
+                ("LANGUAGE", "de:en_GB".into())
+            ])),
+            vec!["de", "en_GB", "en", "de_AT"]
+        );
     }
 }

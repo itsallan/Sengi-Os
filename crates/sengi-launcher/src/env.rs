@@ -14,6 +14,8 @@ pub struct Env {
     pub path: Vec<PathBuf>,
     /// The message locale, e.g. `de_DE.UTF-8`, if one is set.
     pub locale: Option<String>,
+    /// Preferred languages from `LANGUAGE`, best first.
+    pub languages: Vec<String>,
     /// Desktop names from `XDG_CURRENT_DESKTOP`.
     pub desktops: Vec<String>,
 }
@@ -56,6 +58,16 @@ impl Env {
             .find_map(|name| set(name))
             .map(|v| v.to_string_lossy().into_owned());
 
+        let languages = set("LANGUAGE")
+            .map(|v| {
+                v.to_string_lossy()
+                    .split(':')
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let desktops = match set("XDG_CURRENT_DESKTOP") {
             Some(v) => v
                 .to_string_lossy()
@@ -74,6 +86,7 @@ impl Env {
             runtime_dir: dir("XDG_RUNTIME_DIR"),
             path,
             locale,
+            languages,
             desktops,
         }
     }
