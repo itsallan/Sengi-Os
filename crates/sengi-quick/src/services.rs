@@ -106,7 +106,11 @@ pub enum Command {
     Join(Request),
     BluetoothPower(bool),
     Volume(Step),
-    Mute(bool),
+    /// Numbered in the same series as the volume changes.
+    Mute {
+        sequence: u64,
+        muted: bool,
+    },
     Brightness(Step),
     Dnd(bool),
 }
@@ -142,7 +146,10 @@ pub enum BluetoothMessage {
 #[derive(Debug)]
 pub enum AudioMessage {
     Volume(Step),
-    Mute(bool),
+    Mute {
+        sequence: u64,
+        muted: bool,
+    },
     /// The panel is closing: apply what is queued and end.
     Stop,
 }
@@ -233,7 +240,10 @@ impl Workers {
             Command::Join(request) => self.wifi.send(WifiMessage::Join(request)).is_ok(),
             Command::BluetoothPower(on) => self.bluetooth.send(BluetoothMessage::Power(on)).is_ok(),
             Command::Volume(step) => self.audio.send(AudioMessage::Volume(step)).is_ok(),
-            Command::Mute(muted) => self.audio.send(AudioMessage::Mute(muted)).is_ok(),
+            Command::Mute { sequence, muted } => self
+                .audio
+                .send(AudioMessage::Mute { sequence, muted })
+                .is_ok(),
             Command::Brightness(step) => {
                 self.machine.send(MachineMessage::Brightness(step)).is_ok()
             }
@@ -357,11 +367,17 @@ pub fn settle(batch: impl IntoIterator<Item = AudioMessage>) -> Settled {
     for message in batch {
         match message {
             AudioMessage::Volume(step) => steps.push(step),
-            AudioMessage::Mute(muted) => settled.mute = Some(muted),
+            AudioMessage::Mute { sequence, muted } => {
+                settled.mute = Some(muted);
+                settled.sequence = settled.sequence.max(sequence);
+            }
             AudioMessage::Stop => settled.stop = true,
         }
     }
     settled.volume = volume::newest(steps);
+    if let Some(step) = settled.volume {
+        settled.sequence = settled.sequence.max(step.sequence);
+    }
     settled
 }
 
@@ -369,6 +385,8 @@ pub fn settle(batch: impl IntoIterator<Item = AudioMessage>) -> Settled {
 pub struct Settled {
     pub volume: Option<Step>,
     pub mute: Option<bool>,
+    /// The newest change in the batch, of either kind; 0 for none.
+    pub sequence: u64,
     /// The batch held the order to stop. What came with it still counts.
     pub stop: bool,
 }
@@ -421,8 +439,9 @@ pub fn audio_worker(
         }
         if let Some(step) = settled.volume {
             service.set_volume(step.value);
-            applied = step.sequence;
         }
+        // A reading taken from here on has seen all of these.
+        applied = applied.max(settled.sequence);
         if settled.stop || !listening {
             return;
         }
@@ -503,6 +522,10 @@ mod tests {
         Step { sequence, value }
     }
 
+    fn mute(sequence: u64, muted: bool) -> AudioMessage {
+        AudioMessage::Mute { sequence, muted }
+    }
+
     /// Events land in a channel the test reads.
     fn collector() -> (impl Emit + Clone, Receiver<Event>) {
         let (sender, events) = mpsc::channel();
@@ -520,20 +543,22 @@ mod tests {
         use AudioMessage::*;
         let batch = vec![
             Volume(step(1, 30)),
-            Mute(true),
-            Volume(step(2, 35)),
-            Volume(step(3, 41)),
-            Mute(false),
+            mute(2, true),
+            Volume(step(3, 35)),
+            Volume(step(4, 41)),
+            mute(5, false),
         ];
         let settled = settle(batch);
-        assert_eq!(settled.volume, Some(step(3, 41)));
+        assert_eq!(settled.volume, Some(step(4, 41)));
         assert_eq!(settled.mute, Some(false));
+        assert_eq!(settled.sequence, 5);
         assert!(!settled.stop);
-        assert_eq!(settle(vec![Mute(true)]).mute, Some(true));
+        assert_eq!(settle(vec![mute(9, true)]).mute, Some(true));
         assert_eq!(settle(Vec::new()), Settled::default());
         // Stopping does not discard what was asked for just before.
-        let last = settle(vec![Volume(step(4, 70)), Stop]);
-        assert_eq!((last.volume, last.stop), (Some(step(4, 70)), true));
+        let last = settle(vec![Volume(step(6, 70)), Stop]);
+        assert_eq!((last.volume, last.stop), (Some(step(6, 70)), true));
+        assert_eq!(last.sequence, 6);
     }
 
     #[derive(Default)]
@@ -624,7 +649,7 @@ mod tests {
                 .send(AudioMessage::Volume(step(i, 40 + i as u32)))
                 .unwrap();
         }
-        sender.send(AudioMessage::Mute(true)).unwrap();
+        sender.send(mute(21, true)).unwrap();
         sender.send(AudioMessage::Stop).unwrap();
         // And the panel is no longer listening for events.
         audio_worker(&audio, inbox, |_| false, Duration::from_secs(60));

@@ -347,7 +347,12 @@ impl Panel {
             return None;
         };
         volume.muted = !volume.muted;
-        Some(Command::Mute(volume.muted))
+        // Numbered like a move of the slider, so that a reading taken
+        // before the click cannot flip the button back for a moment.
+        Some(Command::Mute {
+            sequence: self.volume_echo.next(volume.percent).sequence,
+            muted: volume.muted,
+        })
     }
 
     pub fn set_brightness(&mut self, percent: i32) -> Option<Command> {
@@ -1106,10 +1111,28 @@ mod tests {
         let view = panel.view().volume;
         assert_eq!((view.value, view.label.as_str()), (100, "130%"));
 
-        assert!(matches!(panel.toggle_mute(), Some(Command::Mute(true))));
+        let Some(Command::Mute {
+            sequence,
+            muted: true,
+        }) = panel.toggle_mute()
+        else {
+            panic!("expected a mute command");
+        };
         let view = panel.view().volume;
         assert!(view.muted);
         assert_eq!(view.label, "Muted");
+        // A reading that was on its way when the button was clicked does
+        // not unmute it; the one taken after does.
+        panel.apply(Event::Volume {
+            sequence: sequence - 1,
+            volume: volume(130, false),
+        });
+        assert!(panel.view().volume.muted);
+        panel.apply(Event::Volume {
+            sequence,
+            volume: volume(130, true),
+        });
+        assert!(panel.view().volume.muted);
 
         let Some(Command::Volume(step)) = panel.set_volume(900) else {
             panic!("expected a volume command");
