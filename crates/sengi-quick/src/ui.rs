@@ -62,7 +62,7 @@ fn show(window: &QuickWindow, networks: &VecModel<NetworkItem>, view: &View) {
     window.set_wifi_detail(text(&view.wifi.detail));
     window.set_wifi_level(view.wifi.level);
     window.set_network_current(view.wifi.current);
-    window.set_wired(view.wifi.wired);
+    window.set_link_text(text(&view.wifi.link));
     sync(networks, &view.wifi.rows);
     window.set_wifi_note(text(&view.wifi.note));
     window.set_wifi_alert(text(&view.wifi.alert));

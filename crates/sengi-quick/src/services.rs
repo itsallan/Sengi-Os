@@ -76,6 +76,8 @@ pub struct Hardware {
     pub backlight: Option<Backlight>,
     /// A cable is in and the link is up.
     pub wired: bool,
+    /// Some other kind of hardware link is up: a phone's modem, say.
+    pub other_link: bool,
     pub wifi_device: bool,
     pub bluetooth_device: bool,
     pub wifi_block: Block,

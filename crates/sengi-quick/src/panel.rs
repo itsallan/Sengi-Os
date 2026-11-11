@@ -91,8 +91,10 @@ pub struct WifiView {
     pub level: i32,
     /// Index into `rows` of the keyboard's row, or -1.
     pub current: i32,
-    /// "Wired, connected", shown as a line of its own.
-    pub wired: bool,
+    /// A link that is not Wi-Fi, shown as a line of its own: "Wired,
+    /// connected", or just "Connected" for one that is not a cable. Empty
+    /// when there is none.
+    pub link: String,
     pub rows: Vec<NetworkRow>,
     /// Shown in place of an empty list.
     pub note: String,
@@ -403,12 +405,17 @@ impl Panel {
     }
 
     fn wifi_view(&self) -> WifiView {
-        let wired = self.hardware.wired;
+        let uplink = match (self.hardware.wired, self.hardware.other_link) {
+            (true, _) => "Wired, connected",
+            (false, true) => "Connected",
+            (false, false) => "",
+        }
+        .to_string();
         let off = |enabled: bool, detail: &str| WifiView {
             enabled,
             on: enabled && self.wifi_wanted == Some(true),
             detail: detail.to_string(),
-            wired,
+            link: uplink.clone(),
             ..WifiView::default()
         };
         match &self.wifi {
@@ -470,7 +477,7 @@ impl Panel {
                         _ => 0,
                     },
                     current: self.selected_row().map_or(-1, |row| row as i32),
-                    wired,
+                    link: uplink.clone(),
                     rows,
                     note: note.to_string(),
                     alert: self.alert(),
@@ -701,7 +708,7 @@ mod tests {
         let view = panel.view();
         assert!(!view.wifi.enabled);
         assert_eq!(view.wifi.detail, "No Wi-Fi adapter");
-        assert!(!view.wifi.wired);
+        assert_eq!(view.wifi.link, "");
         assert!(view.bluetooth.visible && !view.bluetooth.enabled);
         assert_eq!(view.bluetooth.detail, "No Bluetooth adapter");
         assert!(view.volume.visible && !view.volume.enabled);
@@ -717,11 +724,19 @@ mod tests {
             ..Hardware::default()
         };
         let mut panel = Panel::new(hardware, false);
-        assert!(panel.view().wifi.wired);
+        assert_eq!(panel.view().wifi.link, "Wired, connected");
         panel.apply(Event::Wifi(Wifi::Absent));
         let view = panel.view();
-        assert!(view.wifi.wired && !view.wifi.enabled);
+        assert!(!view.wifi.enabled);
+        assert_eq!(view.wifi.link, "Wired, connected");
         assert_eq!(view.wifi.detail, "No Wi-Fi adapter");
+
+        // A modem is a connection, but nobody would call it wired.
+        let modem = Hardware {
+            other_link: true,
+            ..Hardware::default()
+        };
+        assert_eq!(Panel::new(modem, false).view().wifi.link, "Connected");
     }
 
     #[test]

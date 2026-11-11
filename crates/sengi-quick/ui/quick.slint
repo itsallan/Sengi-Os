@@ -313,8 +313,9 @@ export component QuickWindow inherits Window {
     in property <string> wifi-detail;
     // Signal of the connected network, 1 to 4, or 0.
     in property <int> wifi-level: 0;
-    // A cable is in: shown as a line of its own.
-    in property <bool> wired: false;
+    // A link that is not Wi-Fi, shown as a line of its own: "Wired,
+    // connected". Empty for none.
+    in property <string> link-text;
     in property <[NetworkItem]> networks;
     // The keyboard's row in networks, or -1.
     in property <int> network-current: -1;
@@ -471,7 +472,7 @@ export component QuickWindow inherits Window {
                         }
                     }
 
-                    if root.wired: Rectangle {
+                    if root.link-text != "": Rectangle {
                         height: Metrics.row;
 
                         WiredIcon {
@@ -482,7 +483,7 @@ export component QuickWindow inherits Window {
                         SengiText {
                             x: wifi.text-x;
                             height: parent.height;
-                            text: "Wired, connected";
+                            text: root.link-text;
                             vertical-alignment: center;
                         }
                     }
