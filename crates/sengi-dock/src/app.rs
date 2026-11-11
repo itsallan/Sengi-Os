@@ -6,12 +6,12 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
 
 use crate::icons::{self, Decoder, IconDirs};
-use crate::model::{self, Action, Button, Dock, Icon, Item};
+use crate::model::{self, Action, Button, Dock, Icon, Item, Launches, LAUNCHER_KEY, LAUNCH_WAIT};
 use crate::windows::{self, Controller, Source, Window};
 use crate::{config, desktop, launch, ui};
 
@@ -62,6 +62,7 @@ struct State {
     /// Icons to start decoding: item key, icon name, pixels per side.
     wanted: Vec<(String, String, u32)>,
     decoder: Option<Decoder>,
+    launches: Launches,
     controller: Option<Controller>,
     size: (u32, u32),
     /// How many times the rows have been brought up to date.
@@ -127,6 +128,7 @@ impl State {
             running: item.running(),
             focused: item.focused(),
             windows: item.window_count() as i32,
+            launching: !item.running() && self.launches.pending(&item.key, Instant::now()),
             present,
         }
     }
@@ -160,6 +162,7 @@ impl App {
                     icons: HashMap::new(),
                     wanted: Vec::new(),
                     decoder: Decoder::for_this_program(),
+                    launches: Launches::default(),
                     controller: None,
                     size: (0, 0),
                     updates: 0,
@@ -329,6 +332,7 @@ impl App {
         let mut state = inner.state.borrow_mut();
         // Nothing slides when the dock first appears.
         let animate = state.updates > 0;
+        state.launches.settle(&items, Instant::now());
         state.updates += 1;
         let update = state.updates;
         let mut added = Vec::new();
@@ -472,10 +476,46 @@ impl App {
                 None => return,
             }
         };
-        self.perform(action);
+        // A launch that is still on its way is not repeated by another
+        // click. A secondary click asks for a new instance and always gets one.
+        let starting = match (&action, button) {
+            (Action::OpenLauncher, _) => Some(LAUNCHER_KEY.to_string()),
+            (Action::Launch(key), Button::Primary) => Some(key.clone()),
+            _ => None,
+        };
+        if let Some(key) = &starting {
+            let mut state = self.inner.state.borrow_mut();
+            if !state.launches.begin(key, Instant::now()) {
+                return;
+            }
+        }
+        let started = self.perform(action);
+        let Some(key) = starting else {
+            return;
+        };
+        if !started {
+            self.inner.state.borrow_mut().launches.cancel(&key);
+        } else if key != LAUNCHER_KEY {
+            // Show that the click was taken, and stop showing it if no
+            // window ever comes.
+            self.refresh();
+            let weak = Rc::downgrade(&self.inner);
+            slint::Timer::single_shot(LAUNCH_WAIT, move || {
+                if let Some(inner) = weak.upgrade() {
+                    App { inner }.refresh();
+                }
+            });
+        }
     }
 
-    fn perform(&self, action: Action) {
+    /// Redraws the rows from the items as they are.
+    fn refresh(&self) {
+        let items = self.inner.state.borrow().items.clone();
+        self.sync(items);
+    }
+
+    /// Carries out a click's action. False if it could not be done.
+    fn perform(&self, action: Action) -> bool {
         let state = self.inner.state.borrow();
         let result = match action {
             Action::OpenLauncher => launch::open_launcher(),
@@ -497,8 +537,9 @@ impl App {
             }
             Action::Nothing => Ok(()),
         };
-        if let Err(error) = result {
+        if let Err(error) = &result {
             eprintln!("sengi-dock: {error}");
         }
+        result.is_ok()
     }
 }

@@ -21,6 +21,8 @@ export struct DockItem {
     running: bool,
     focused: bool,
     windows: int,
+    // Clicked to start, and no window yet.
+    launching: bool,
     // False while the item slides in or out. The program adds a row with
     // this off and turns it on, and turns it off before removing the row.
     present: bool,
@@ -81,17 +83,19 @@ component LetterIcon inherits Tile {
 }
 
 // The mark under a running app: a dot, which widens into a bar for the app
-// that has focus.
+// that has focus. An app that has been clicked and is still starting gets
+// the dot in a muted colour, so the click is seen to have landed.
 component Indicator inherits Rectangle {
     in property <bool> running;
     in property <bool> focused;
+    in property <bool> launching;
 
     height: Tokens.space-xs;
-    width: root.focused ? Tokens.space-lg : root.running ? Tokens.space-xs : 0;
+    width: root.focused ? Tokens.space-lg : root.running || root.launching ? Tokens.space-xs : 0;
     border-radius: self.height / 2;
-    background: Tokens.color-accent;
-    opacity: root.running ? 1 : 0;
-    animate width, opacity {
+    background: root.running ? Tokens.color-accent : Tokens.color-text-muted;
+    opacity: root.running || root.launching ? 1 : 0;
+    animate width, opacity, background {
         duration: Tokens.motion-base;
         easing: Tokens.motion-easing;
     }
@@ -150,6 +154,7 @@ component Slot inherits Rectangle {
         y: root.icon-bottom + (root.height - root.icon-bottom - self.height) / 2;
         running: root.item.running;
         focused: root.item.focused;
+        launching: root.item.launching;
     }
 
     touch := TouchArea {

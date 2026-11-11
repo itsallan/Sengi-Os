@@ -3,6 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use crate::desktop::{Apps, Entry};
 use crate::icons;
@@ -133,6 +134,64 @@ pub fn on_click(item: &Item, button: Button) -> Action {
     {
         Some(next) => Action::Activate(next.id),
         None => Action::Minimize(focused.id),
+    }
+}
+
+/// How long a started app is given to show a window before another click
+/// may start it again.
+pub const LAUNCH_WAIT: Duration = Duration::from_secs(5);
+
+/// The same for the search launcher, which never shows up as a window: long
+/// enough to swallow a double click, short enough not to be noticed.
+pub const LAUNCHER_WAIT: Duration = Duration::from_millis(500);
+
+/// Launches that have been started and have not yet produced a window.
+///
+/// An app takes a second or more to map its first window, and until then
+/// its item still looks idle, so a double click, or an impatient second
+/// click, would start it twice.
+#[derive(Default)]
+pub struct Launches {
+    started: HashMap<String, Instant>,
+}
+
+impl Launches {
+    fn wait(key: &str) -> Duration {
+        if key == LAUNCHER_KEY {
+            LAUNCHER_WAIT
+        } else {
+            LAUNCH_WAIT
+        }
+    }
+
+    /// True while the item with this key is waiting for its window.
+    pub fn pending(&self, key: &str, now: Instant) -> bool {
+        self.started
+            .get(key)
+            .is_some_and(|&at| now.saturating_duration_since(at) < Self::wait(key))
+    }
+
+    /// Records a launch. False means one is already under way and this
+    /// click should do nothing.
+    pub fn begin(&mut self, key: &str, now: Instant) -> bool {
+        if self.pending(key, now) {
+            return false;
+        }
+        self.started.insert(key.to_string(), now);
+        true
+    }
+
+    /// Forgets a launch that failed, so the next click can try again.
+    pub fn cancel(&mut self, key: &str) {
+        self.started.remove(key);
+    }
+
+    /// Forgets launches whose app now has a window, or whose time is up.
+    pub fn settle(&mut self, items: &[Item], now: Instant) {
+        self.started.retain(|key, at| {
+            let running = items.iter().any(|item| item.key == *key && item.running());
+            !running && now.saturating_duration_since(*at) < Self::wait(key)
+        });
     }
 }
 
@@ -651,6 +710,64 @@ mod tests {
             on_click(&item(vec![]), Button::Secondary),
             Action::Launch("foot".into())
         );
+    }
+
+    #[test]
+    fn a_second_click_while_an_app_is_starting_is_ignored() {
+        let mut launches = Launches::default();
+        let start = Instant::now();
+        assert!(launches.begin("foot", start));
+        assert!(launches.pending("foot", start));
+        // The double click, and an impatient one a little later.
+        assert!(!launches.begin("foot", start + Duration::from_millis(150)));
+        assert!(!launches.begin("foot", start + Duration::from_secs(3)));
+        // Another app is not held up.
+        assert!(launches.begin("web", start + Duration::from_millis(200)));
+    }
+
+    #[test]
+    fn a_launch_is_over_once_the_window_appears() {
+        let mut launches = Launches::default();
+        let start = Instant::now();
+        launches.begin("foot", start);
+        let soon = start + Duration::from_secs(1);
+
+        launches.settle(&[item(vec![])], soon);
+        assert!(launches.pending("foot", soon));
+
+        launches.settle(&[item(vec![win(1, true, 1)])], soon);
+        assert!(!launches.pending("foot", soon));
+        // The window was closed again straight away: a click starts it.
+        assert!(launches.begin("foot", soon));
+    }
+
+    #[test]
+    fn an_app_that_never_shows_a_window_can_be_started_again_later() {
+        let mut launches = Launches::default();
+        let start = Instant::now();
+        launches.begin("foot", start);
+        let late = start + LAUNCH_WAIT;
+        assert!(!launches.pending("foot", late));
+        launches.settle(&[item(vec![])], late);
+        assert!(launches.begin("foot", late));
+    }
+
+    #[test]
+    fn a_failed_launch_does_not_block_the_next_try() {
+        let mut launches = Launches::default();
+        let start = Instant::now();
+        launches.begin("foot", start);
+        launches.cancel("foot");
+        assert!(launches.begin("foot", start));
+    }
+
+    #[test]
+    fn the_launcher_only_swallows_a_double_click() {
+        let mut launches = Launches::default();
+        let start = Instant::now();
+        assert!(launches.begin(LAUNCHER_KEY, start));
+        assert!(!launches.begin(LAUNCHER_KEY, start + Duration::from_millis(200)));
+        assert!(launches.begin(LAUNCHER_KEY, start + LAUNCHER_WAIT));
     }
 
     #[test]
