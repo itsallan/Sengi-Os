@@ -7,10 +7,14 @@
 //! file, `derive` the files other programs read from it.
 
 pub mod app;
+pub mod bus;
 pub mod cli;
 pub mod derive;
+pub mod held;
 pub mod instance;
+pub mod network;
 pub mod secret;
+pub mod services;
 pub mod settings;
 pub mod store;
 pub mod text;

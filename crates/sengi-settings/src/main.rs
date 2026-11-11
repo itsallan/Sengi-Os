@@ -13,6 +13,8 @@ use slint::ComponentHandle;
 
 use sengi_settings::app::{self, App};
 use sengi_settings::cli::{self, Action, Page};
+use sengi_settings::network::page::NetworkPage;
+use sengi_settings::services::{self, Services};
 use sengi_settings::instance::{self, Claim};
 use sengi_settings::settings::Settings;
 use sengi_settings::store::Dirs;
@@ -46,6 +48,8 @@ fn main() -> ExitCode {
         }
     };
     let dirs = Dirs::from_env();
+    #[allow(unused_mut)]
+    let mut services = services::real();
     let page = match action {
         Action::Help => {
             print!("{}", cli::USAGE);
@@ -81,10 +85,19 @@ fn main() -> ExitCode {
         }
         Action::Open(page) => page,
         #[cfg(debug_assertions)]
-        Action::Demo(name) => {
-            eprintln!("sengi-settings: no demo called {name}");
-            return ExitCode::from(2);
-        }
+        Action::Demo(name) => match services::demo(&name) {
+            Some((page, demo)) => {
+                services = demo;
+                Some(page)
+            }
+            None => {
+                eprintln!(
+                    "sengi-settings: no demo called {name}. There are: {}",
+                    services::DEMOS.join(", ")
+                );
+                return ExitCode::from(2);
+            }
+        },
     };
 
     // Before anything slow, so a second invocation finds this one.
@@ -109,7 +122,7 @@ fn main() -> ExitCode {
         eprintln!("sengi-settings: could not set the application id: {error}");
     }
     let app = App::new(window, dirs.clone(), load_settings(&dirs));
-    register_pages(&app);
+    register_pages(&app, services);
     if let Some(page) = page {
         app.show(page);
     }
@@ -171,6 +184,6 @@ fn main() -> ExitCode {
 }
 
 /// The pages this build has.
-fn register_pages(_app: &std::rc::Rc<App>) {
-    let _ = Page::ALL;
+fn register_pages(app: &std::rc::Rc<App>, services: Services) {
+    app.register(Page::Network, NetworkPage::attach(app, services.network));
 }

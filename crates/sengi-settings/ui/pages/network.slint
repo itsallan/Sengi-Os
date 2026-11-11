@@ -1,0 +1,175 @@
+// The Network page: the Wi-Fi switch and the network in use, the networks
+// in range, and the cabled interfaces.
+
+import { Tokens, SengiText, SengiButton, SengiToggle } from "components.slint";
+import { Item, ItemList, Page, PageColumn, Card, Divider, SettingRow, RowValue, SectionLabel, Note, Gap, Metrics } from "../kit.slint";
+
+export global NetworkData {
+    // Why Wi-Fi cannot be used, when it cannot. Empty otherwise.
+    in property <string> note;
+    in property <bool> note-warning: false;
+    // There is a Wi-Fi switch to show.
+    in property <bool> available: false;
+    in property <bool> powered: false;
+    in property <string> status;
+    in property <bool> scanning: false;
+
+    in property <bool> connected: false;
+    in property <string> name;
+    in property <string> signal;
+    in property <string> security;
+    in property <string> address;
+    in property <bool> saved: false;
+
+    in property <[Item]> networks;
+    in property <[Item]> wired;
+    // The pointer or the keyboard is on the list of networks.
+    in-out property <bool> engaged: false;
+
+    callback power(bool);
+    callback join(string);
+    callback forget(string);
+    callback forget-connected();
+    callback disconnect();
+    callback scan();
+    callback released();
+}
+
+export component NetworkPage inherits Page {
+    title: "Network";
+    content-height: column.preferred-height;
+
+    column := PageColumn {
+        if NetworkData.note != "": Note {
+            text: NetworkData.note;
+            warning: NetworkData.note-warning;
+        }
+
+        if NetworkData.available: Card {
+            SettingRow {
+                title: "Wi-Fi";
+                detail: NetworkData.status;
+
+                VerticalLayout {
+                    alignment: center;
+                    SengiToggle {
+                        checked: NetworkData.powered;
+                        toggled(on) => { NetworkData.power(on); }
+                    }
+                }
+            }
+
+            if NetworkData.connected: VerticalLayout {
+                Divider { }
+
+                SettingRow {
+                    title: NetworkData.name;
+                    detail: "Connected";
+
+                    VerticalLayout {
+                        alignment: center;
+                        HorizontalLayout {
+                            spacing: Tokens.space-sm;
+
+                            if NetworkData.saved: SengiButton {
+                                text: "Forget";
+                                clicked => { NetworkData.forget-connected(); }
+                            }
+
+                            SengiButton {
+                                text: "Disconnect";
+                                clicked => { NetworkData.disconnect(); }
+                            }
+                        }
+                    }
+                }
+
+                Divider { }
+
+                SettingRow {
+                    title: "Signal";
+                    RowValue { text: NetworkData.signal; }
+                }
+
+                Divider { }
+
+                SettingRow {
+                    title: "Security";
+                    RowValue { text: NetworkData.security; }
+                }
+
+                Divider { }
+
+                SettingRow {
+                    title: "IP address";
+                    RowValue { text: NetworkData.address; }
+                }
+            }
+        }
+
+        if NetworkData.powered: VerticalLayout {
+            spacing: Tokens.space-sm;
+
+            Gap { }
+
+            HorizontalLayout {
+                spacing: Tokens.space-md;
+
+                SectionLabel {
+                    horizontal-stretch: 1;
+                    text: NetworkData.scanning ? "Networks, looking for more…" : "Networks";
+                    vertical-alignment: center;
+                }
+
+                SengiButton {
+                    text: "Scan";
+                    enabled: !NetworkData.scanning;
+                    clicked => { NetworkData.scan(); }
+                }
+            }
+
+            Card {
+                if NetworkData.networks.length == 0: SettingRow {
+                    title: NetworkData.scanning ? "Looking for networks…" : "No networks in range";
+                    enabled: false;
+                }
+
+                list := ItemList {
+                    items: NetworkData.networks;
+                    activated(id) => { NetworkData.join(id); }
+                    removed(id) => { NetworkData.forget(id); }
+                    changed engaged => {
+                        NetworkData.engaged = self.engaged;
+                        if !self.engaged {
+                            NetworkData.released();
+                        }
+                    }
+                }
+            }
+        }
+
+        Gap { }
+
+        SectionLabel {
+            text: "Wired";
+        }
+
+        Card {
+            if NetworkData.wired.length == 0: SettingRow {
+                title: "No wired network adapter";
+                enabled: false;
+            }
+
+            for link[index] in NetworkData.wired: VerticalLayout {
+                if index > 0: Divider { }
+
+                SettingRow {
+                    title: link.title;
+                    detail: link.detail;
+                    enabled: link.enabled;
+                    RowValue { text: link.status; }
+                }
+            }
+        }
+    }
+}

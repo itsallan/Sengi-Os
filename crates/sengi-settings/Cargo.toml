@@ -13,7 +13,11 @@ build = "build.rs"
 # the icons, which are paths.
 slint = { workspace = true, features = ["software-renderer-systemfonts", "software-renderer-path"] }
 
-# For prctl: the process is kept out of core dumps. See secret.rs.
+# The blocking API on zbus's own small executor. No tokio.
+zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
+
+# For prctl: the process is kept out of core dumps. See secret.rs. And
+# getifaddrs, for the addresses on the Network page.
 libc = "0.2"
 
 [build-dependencies]

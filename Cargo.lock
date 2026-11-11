@@ -3599,6 +3599,7 @@ dependencies = [
  "libc",
  "slint",
  "slint-build",
+ "zbus",
 ]
 
 [[package]]

@@ -24,6 +24,8 @@ pub trait Controller {
     fn hide(&self, _app: &Rc<App>) {}
     /// The window is closing for good.
     fn shutdown(&self) {}
+    /// For finding the page again by its type; every page returns itself.
+    fn as_any(self: Rc<Self>) -> Rc<dyn std::any::Any>;
 }
 
 type Confirm = Box<dyn FnMut(&Rc<App>, String)>;
@@ -198,6 +200,14 @@ impl App {
             .map(|(_, controller)| controller.clone())
     }
 
+    /// The page of type `T`, if this build has it.
+    pub fn page<T: 'static>(&self) -> Option<Rc<T>> {
+        let pages: Vec<_> = self.pages.borrow().iter().map(|(_, c)| c.clone()).collect();
+        pages
+            .into_iter()
+            .find_map(|controller| controller.as_any().downcast::<T>().ok())
+    }
+
     /// The first page there is.
     pub fn first_page(&self) -> Option<Page> {
         self.pages.borrow().first().map(|(page, _)| *page)
@@ -281,6 +291,12 @@ impl App {
 
     pub fn set_dialog_busy(&self, busy: bool) {
         self.window.global::<DialogState>().set_busy(busy);
+    }
+
+    /// Empty the dialog's field and put the caret back in it.
+    pub fn wipe_dialog_field(&self) {
+        let state = self.window.global::<DialogState>();
+        state.set_wipe(state.get_wipe().wrapping_add(1));
     }
 
     pub fn set_dialog_countdown(&self, text: &str) {

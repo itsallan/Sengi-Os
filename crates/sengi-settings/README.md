@@ -84,9 +84,59 @@ After writing them Settings runs `labwc --reconfigure`. The generated
 file; running `sengi-settings --apply` before labwc starts writes it
 afresh.
 
+## Pages
+
+No page ever starts a service: a call on the bus that would start iwd or
+BlueZ on a machine without the hardware is made with the no-auto-start
+flag, and the page says the service is not running. A page is drawn at
+once and fills in as its service answers, from a worker thread that
+sleeps until the service signals a change.
+
+### Network
+
+Wi-Fi through iwd on the system bus (`net.connman.iwd`), with an agent for
+passphrases; cabled interfaces from `/sys/class/net`; addresses from the
+kernel (`getifaddrs`), whoever configured them.
+
+- The switch powers the adapter. A radio held off by rfkill is reported,
+  not unblocked.
+- The connected network has a card of its own with signal, security and
+  address, and buttons to disconnect and to forget.
+- Networks iwd has joined before come first, then by signal level, then
+  by name. The list does not move while the pointer is over it or the
+  keyboard is in it; a network that drops out of range meanwhile stays as
+  a row that cannot be used.
+- A known network joins at once. If its stored passphrase has stopped
+  working, the new one is asked for.
+- A new network with a passphrase asks for it. A wrong one is said to be
+  wrong and the field is emptied.
+- A new open network asks first, saying that it is not encrypted.
+- Forgetting a network asks first.
+- The passphrase is never logged, put on a command line or written to
+  disk by Settings; iwd stores it. `src/secret.rs` says which copies in
+  memory are overwritten and which are only freed. The process cannot be
+  core-dumped. The agent hands the passphrase only to the iwd it was
+  typed for, for the network it was typed for, once.
+- Names are chosen by strangers. They are stripped of control, direction
+  and invisible characters, cut to 32 characters, and wrapped in
+  directional isolates wherever they appear inside a sentence.
+
+Not done: hidden networks, enterprise (802.1X) networks without a
+provisioning file (listed, and say what they need), a second Wi-Fi
+adapter, static addresses and DNS.
+
 ## Building and testing
 
     cargo build -p sengi-settings
     cargo test -p sengi-settings
+
+Debug builds have two aids that release builds are compiled without, so
+that the shipped program can only ever show the real machine:
+
+- `sengi-settings --demo NAME` runs over made-up services, for looking at
+  states the machine at hand cannot produce. An unknown name lists them.
+- `SENGI_SETTINGS_SYS_CLASS=DIR` reads `DIR` in place of `/sys/class`.
+  With `DBUS_SYSTEM_BUS_ADDRESS` pointing at a private bus this lets the
+  real bus code be run against stand-ins for iwd, BlueZ and logind.
 
 `SENGI_SETTINGS_TRACE=1` prints how long the window took to come up.

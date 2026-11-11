@@ -250,11 +250,22 @@ export component TextField inherits Rectangle {
     }
 }
 
+// Page Up and Page Down pressed where there is nothing to scroll, such as
+// in the sidebar, are passed to the page through here: each press adds
+// one to the count for its direction.
+export global Nudge {
+    in-out property <int> down: 0;
+    in-out property <int> up: 0;
+}
+
 // A column that scrolls when it does not fit: by wheel, by dragging, and
 // by Page Up and Page Down from any control inside it that does not want
 // those keys itself. A bar at the right shows where the view is.
 export component Scroll inherits Rectangle {
     in property <length> content-height;
+    // See Nudge.
+    in property <int> nudged-down;
+    in property <int> nudged-up;
     out property <length> offset: -flick.content-y;
     out property <length> visible-width: self.width;
 
@@ -274,8 +285,15 @@ export component Scroll inherits Rectangle {
     }
 
     clip: true;
+    changed nudged-down => { root.page(1); }
+    changed nudged-up => { root.page(-1); }
 
+    // Not a stop for Tab or for a click: it only hears the keys its
+    // contents pass up.
     FocusScope {
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+
         key-pressed(event) => {
             if event.text == Key.PageDown {
                 root.page(1);
@@ -788,8 +806,17 @@ export component DialogLayer inherits Rectangle {
     // Counts down under the body, for a question that answers itself.
     in property <string> countdown;
     in property <bool> busy: false;
+    // Each change empties the field: what was typed was wrong.
+    in property <int> wipe: 0;
     callback confirmed(string);
     callback cancelled();
+
+    changed wipe => {
+        field.clear();
+        if root.spec.input {
+            field.take-focus();
+        }
+    }
 
     private property <bool> ready: !root.busy
         && (!root.spec.input || field.text.character-count >= root.spec.minimum);
@@ -824,22 +851,23 @@ export component DialogLayer inherits Rectangle {
             if event.text == Key.Escape {
                 root.cancelled();
             }
-            // Nothing typed here reaches the window behind.
-            return EventResult.accept;
+            // Tab is left for moving between the dialog's own controls.
+            // Nothing else typed here reaches the window behind.
+            return event.text == Key.Tab || event.text == Key.Backtab
+                ? EventResult.reject : EventResult.accept;
         }
 
         SengiSurface {
-            raised: true;
             width: Math.min(Metrics.dialog, root.width - Tokens.space-xl * 2);
             height: column.preferred-height;
+
+            FocusFence {
+                reached => { cancel.focus(); }
+            }
 
             column := VerticalLayout {
                 padding: Tokens.space-xl;
                 spacing: Tokens.space-md;
-
-                FocusFence {
-                    reached => { cancel.focus(); }
-                }
 
                 SengiText {
                     text: root.spec.title;
@@ -905,13 +933,14 @@ export component DialogLayer inherits Rectangle {
                     }
                 }
 
-                FocusFence {
-                    reached => {
-                        if root.spec.input && !root.busy {
-                            field.take-focus();
-                        } else {
-                            cancel.focus();
-                        }
+            }
+
+            FocusFence {
+                reached => {
+                    if root.spec.input && !root.busy {
+                        field.take-focus();
+                    } else {
+                        cancel.focus();
                     }
                 }
             }
@@ -971,11 +1000,11 @@ export component ChooserLayer inherits Rectangle {
             if event.text == Key.Escape {
                 root.cancelled();
             }
-            return EventResult.accept;
+            return event.text == Key.Tab || event.text == Key.Backtab
+                ? EventResult.reject : EventResult.accept;
         }
 
         SengiSurface {
-            raised: true;
             width: Math.min(Metrics.chooser, root.width - Tokens.space-xl * 2);
             height: Math.min(root.height - Tokens.space-xl * 2,
                 head.preferred-height + Math.max(root.items.length, 3) * list.row-height
@@ -984,22 +1013,22 @@ export component ChooserLayer inherits Rectangle {
             // Clicks on the surface are not clicks outside it.
             TouchArea { }
 
+            FocusFence {
+                reached => {
+                    if root.searchable {
+                        search.take-focus();
+                    } else {
+                        list.take-focus();
+                    }
+                }
+            }
+
             VerticalLayout {
                 padding: Tokens.space-lg;
                 spacing: Tokens.space-md;
 
                 head := VerticalLayout {
                     spacing: Tokens.space-md;
-
-                    FocusFence {
-                        reached => {
-                            if root.searchable {
-                                search.take-focus();
-                            } else {
-                                list.take-focus();
-                            }
-                        }
-                    }
 
                     SengiText {
                         text: root.title;
@@ -1042,13 +1071,14 @@ export component ChooserLayer inherits Rectangle {
                     }
                 }
 
-                FocusFence {
-                    reached => {
-                        if root.searchable {
-                            search.take-focus();
-                        } else {
-                            list.take-focus();
-                        }
+            }
+
+            FocusFence {
+                reached => {
+                    if root.searchable {
+                        search.take-focus();
+                    } else {
+                        list.take-focus();
                     }
                 }
             }
@@ -1072,6 +1102,8 @@ export component Page inherits Rectangle {
 
     scroll := Scroll {
         content-height: root.content-height + head.height + Tokens.space-xl;
+        nudged-down: Nudge.down;
+        nudged-up: Nudge.up;
 
         head := Rectangle {
             x: root.column-x;

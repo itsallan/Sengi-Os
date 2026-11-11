@@ -4,9 +4,10 @@
 
 import { Tokens, SengiText } from "components.slint";
 import { NamedIcon } from "icons.slint";
-import { Metrics, Item, DialogSpec, DialogLayer, ChooserLayer } from "kit.slint";
+import { Metrics, Nudge, Item, DialogSpec, DialogLayer, ChooserLayer } from "kit.slint";
+import { NetworkData, NetworkPage } from "pages/network.slint";
 
-export { Item, DialogSpec }
+export { Item, DialogSpec, NetworkData }
 
 export struct PageEntry {
     name: string,
@@ -20,6 +21,7 @@ export global DialogState {
     in property <DialogSpec> spec;
     in property <string> countdown;
     in property <bool> busy: false;
+    in property <int> wipe: 0;
     callback confirmed(string);
     callback cancelled();
 }
@@ -70,6 +72,10 @@ component Sidebar inherits Rectangle {
                 root.go(0);
             } else if event.text == Key.End {
                 root.go(root.pages.length - 1);
+            } else if event.text == Key.PageDown {
+                Nudge.down += 1;
+            } else if event.text == Key.PageUp {
+                Nudge.up += 1;
             } else {
                 return EventResult.reject;
             }
@@ -171,6 +177,8 @@ export component SettingsWindow inherits Window {
         y: 0;
         width: parent.width - Metrics.sidebar;
         height: parent.height;
+
+        if root.page == "network": NetworkPage { }
     }
 
     if ChooserState.open: ChooserLayer {
@@ -189,6 +197,7 @@ export component SettingsWindow inherits Window {
         spec: DialogState.spec;
         countdown: DialogState.countdown;
         busy: DialogState.busy;
+        wipe: DialogState.wipe;
         confirmed(text) => { DialogState.confirmed(text); }
         cancelled => { DialogState.cancelled(); }
     }
