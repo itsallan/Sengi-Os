@@ -19,7 +19,7 @@ use smithay::{
     },
 };
 
-use crate::state::{peer_pid, ClientState, State};
+use crate::state::{ClientState, State};
 
 /// Whether `client` may see the globals that are kept from sandboxes.
 pub fn trusted(client: &Client) -> bool {
@@ -31,11 +31,7 @@ pub fn trusted(client: &Client) -> bool {
 impl SecurityContextHandler for State {
     fn context_created(&mut self, source: SecurityContextListenerSource, _: SecurityContext) {
         let listening = self.loop_handle.insert_source(source, |stream, _, state| {
-            let data = ClientState {
-                pid: peer_pid(&stream),
-                sandboxed: true,
-                ..ClientState::default()
-            };
+            let data = ClientState::of(&stream, true);
             if let Err(err) = state.display_handle.insert_client(stream, Arc::new(data)) {
                 crate::say!("rejected a sandboxed client: {err}");
             }

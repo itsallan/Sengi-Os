@@ -3,6 +3,10 @@
 use std::{
     error::Error,
     ffi::OsString,
+    os::{
+        fd::{AsRawFd, FromRawFd, OwnedFd},
+        unix::net::UnixStream,
+    },
     process::{Child, Command},
     sync::Arc,
     time::Instant,
@@ -266,10 +270,7 @@ impl State {
         let socket_name = socket.socket_name().to_os_string();
         let handle = event_loop.handle();
         handle.insert_source(socket, |stream, _, state| {
-            let data = ClientState {
-                pid: peer_pid(&stream),
-                ..ClientState::default()
-            };
+            let data = ClientState::of(&stream, false);
             if let Err(err) = state.display_handle.insert_client(stream, Arc::new(data)) {
                 crate::say!("rejected a client: {err}");
             }
@@ -768,13 +769,61 @@ pub struct ClientState {
     pub sandboxed: bool,
     /// The process that connected, as the kernel reported it then.
     pub pid: Option<i32>,
+    /// A handle on that very process, where the kernel gives one. A pid
+    /// can be handed to another process later; this cannot.
+    pub process: Option<OwnedFd>,
 }
 
-/// The process at the other end of a client's socket.
-pub fn peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<i32> {
-    smithay::reexports::rustix::net::sockopt::socket_peercred(stream)
-        .ok()
-        .map(|credentials| credentials.pid.as_raw_nonzero().get())
+impl ClientState {
+    /// What is known of the client at the other end of `stream`.
+    pub fn of(stream: &UnixStream, sandboxed: bool) -> Self {
+        let pid = smithay::reexports::rustix::net::sockopt::socket_peercred(stream)
+            .ok()
+            .map(|credentials| credentials.pid.as_raw_nonzero().get());
+        Self {
+            sandboxed,
+            pid,
+            process: peer_pidfd(stream),
+            ..Self::default()
+        }
+    }
+
+    /// Whether the process that connected still exists. Without a handle
+    /// on it there is only the pid to go by, and the answer is yes.
+    pub fn still_running(&self) -> bool {
+        let Some(process) = &self.process else {
+            return true;
+        };
+        // The kernel shows the pid behind a pidfd, and -1 once the
+        // process is gone.
+        let info = format!("/proc/self/fdinfo/{}", process.as_raw_fd());
+        std::fs::read_to_string(info).is_ok_and(|info| {
+            info.lines()
+                .find_map(|line| line.strip_prefix("Pid:"))
+                .and_then(|pid| pid.trim().parse::<i32>().ok())
+                .is_some_and(|pid| Some(pid) == self.pid)
+        })
+    }
+}
+
+/// A pidfd for the process at the other end of `stream`, from
+/// SO_PEERPIDFD (Linux 6.5 and later).
+fn peer_pidfd(stream: &UnixStream) -> Option<OwnedFd> {
+    const SO_PEERPIDFD: libc::c_int = 77;
+    let mut fd: libc::c_int = -1;
+    let mut size = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // Safety: the kernel writes one int, which is what there is room for.
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            SO_PEERPIDFD,
+            (&raw mut fd).cast(),
+            &raw mut size,
+        )
+    };
+    // Safety: on success the descriptor is new and nobody else's.
+    (result == 0 && fd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
 impl ClientData for ClientState {

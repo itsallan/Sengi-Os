@@ -163,3 +163,55 @@ fn a_program_that_is_not_the_locker_cannot_ask_for_the_lock() {
     let client = compositor.connect();
     assert!(!client.has_global(LOCK_MANAGER));
 }
+
+/// Not a test of its own: `a_file_of_the_same_name_elsewhere_is_not_the_locker`
+/// runs this test binary again, in a mount namespace, with the variable
+/// set, to be the program that pretends.
+#[test]
+fn pretend_locker() {
+    let Some(socket) = std::env::var_os("SENGI_TEST_PRETEND_SOCKET") else {
+        return;
+    };
+    let client = common::Client::connect(Some(std::path::Path::new(&socket))).unwrap();
+    println!(
+        "PRETENDER sees the lock: {}",
+        client.has_global(LOCK_MANAGER)
+    );
+}
+
+#[test]
+fn a_file_of_the_same_name_elsewhere_is_not_the_locker() {
+    // The real locker is some file; in a mount namespace of its own, a
+    // program can make that very path name itself instead.
+    let scratch = std::env::temp_dir().join(format!("sengi-test-pretend-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch).unwrap();
+    let locker = scratch.join("locker");
+    std::fs::copy("/bin/true", &locker).unwrap();
+    let compositor = Compositor::start(Some(locker.to_str().unwrap()));
+
+    let me = std::env::current_exe().unwrap();
+    let script = format!(
+        "mount --bind '{}' '{}' && exec '{}' --exact pretend_locker --nocapture",
+        me.display(),
+        locker.display(),
+        locker.display()
+    );
+    let run = std::process::Command::new("unshare")
+        .args(["--user", "--map-root-user", "--mount", "sh", "-c", &script])
+        .env("SENGI_TEST_PRETEND_SOCKET", &compositor.socket)
+        .env_remove("SENGI_COMPOSITOR_PID")
+        .output();
+    let _ = std::fs::remove_dir_all(&scratch);
+    let said = match run {
+        Ok(output) => String::from_utf8_lossy(&output.stdout).into_owned(),
+        Err(err) => {
+            eprintln!("skipped, cannot run unshare: {err}");
+            return;
+        }
+    };
+    if !said.contains("PRETENDER sees the lock") {
+        eprintln!("skipped, no mount namespace to be had here: {said}");
+        return;
+    }
+    assert!(said.contains("sees the lock: false"), "{said}");
+}

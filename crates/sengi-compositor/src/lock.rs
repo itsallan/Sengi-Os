@@ -20,6 +20,7 @@
 //!   was drawn after the lock began, see `Covering`.
 
 use std::{
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
@@ -115,34 +116,82 @@ impl<O: PartialEq> Covering<O> {
 /// who sees the lock global.
 #[derive(Debug, Clone, Default)]
 pub struct Lockers {
-    program: Arc<Mutex<Option<PathBuf>>>,
+    known: Arc<Mutex<Known>>,
+}
+
+#[derive(Debug, Default)]
+struct Known {
+    program: Option<PathBuf>,
+    /// The device and inode of that file. Paths are no proof: in another
+    /// mount namespace the same path can name any file.
+    file: Option<(u64, u64)>,
+    /// The last program that was turned away although it is called like
+    /// the locker, so that this is said once and not for every global.
+    turned_away: Option<PathBuf>,
 }
 
 impl Lockers {
     pub fn set(&self, program: Option<PathBuf>) {
-        *self.program.lock().unwrap() = program;
+        let mut known = self.known.lock().unwrap();
+        known.file = program
+            .as_ref()
+            .and_then(|path| std::fs::metadata(path).ok())
+            .map(|meta| (meta.dev(), meta.ino()));
+        known.program = program;
     }
 
     pub fn program(&self) -> Option<PathBuf> {
-        self.program.lock().unwrap().clone()
+        self.known.lock().unwrap().program.clone()
     }
 
     /// Whether `client` runs the locker program and is not sandboxed.
     ///
-    /// This goes by the executable of the process that connected. It keeps
-    /// out everything that is confined and everything that merely asks; a
-    /// program of the same user that is free to start the locker and take
-    /// over its connection is not stopped by it, nor by anything else here.
+    /// This goes by the file the process that connected is executing. It
+    /// keeps out everything that is confined and everything that merely
+    /// asks; a program of the same user that is free to start the locker
+    /// and take over its connection is not stopped by it, nor by anything
+    /// else here.
     pub fn recognises(&self, client: &Client) -> bool {
         // Nothing here may ask the display: this also runs while it is
         // deciding which globals a client sees, and would wait on itself.
         let Some(data) = client.get_data::<ClientState>() else {
             return false;
         };
-        let (Some(pid), Some(program), false) = (data.pid, self.program(), data.sandboxed) else {
+        let Some(pid) = data.pid.filter(|_| !data.sandboxed) else {
             return false;
         };
-        std::fs::read_link(format!("/proc/{pid}/exe")).is_ok_and(|exe| exe == program)
+        let mut known = self.known.lock().unwrap();
+        let Some(file) = known.file else { return false };
+        // Through the link, so this is the file itself wherever the
+        // process sees it.
+        let link = format!("/proc/{pid}/exe");
+        let running = std::fs::metadata(&link)
+            .ok()
+            .map(|meta| (meta.dev(), meta.ino()));
+        // Only now is it certain whose executable that was: had the
+        // process gone and its number been given to another, the
+        // descriptor taken when it connected would say so.
+        if !data.still_running() {
+            return false;
+        }
+        if running == Some(file) {
+            return true;
+        }
+        let seen = std::fs::read_link(&link).unwrap_or_default();
+        let same_name = known
+            .program
+            .as_ref()
+            .is_some_and(|program| program.file_name() == seen.file_name());
+        if same_name && known.turned_away.as_ref() != Some(&seen) {
+            crate::say!(
+                "{} (pid {pid}) is not the locker {} and may not lock; --locker and the \
+                 session's idle command must name the same file",
+                seen.display(),
+                known.program.as_deref().unwrap_or(Path::new("")).display(),
+            );
+            known.turned_away = Some(seen);
+        }
+        false
     }
 }
 
@@ -208,7 +257,10 @@ impl State {
     pub fn watch_locker(&mut self) {
         let running = self.child_pids();
         self.locker_pids.retain(|pid| running.contains(pid));
-        let orphaned = self.lock_holder() == Holder::Dead && self.locker_pids.is_empty();
+        // Without a locker to start there is nothing to keep trying.
+        let orphaned = self.lock_holder() == Holder::Dead
+            && self.locker_pids.is_empty()
+            && self.lockers.program().is_some();
         if !orphaned || self.relock_armed {
             return;
         }

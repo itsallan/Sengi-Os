@@ -35,6 +35,8 @@ ab_glyph = "0.2"
 xcursor = "0.3"
 # The same calloop Smithay uses, with signal handling switched on.
 calloop = { version = "0.14", features = ["signals"] }
+# For SO_PEERPIDFD, which nothing wraps yet.
+libc = "0.2"
 sengi-tokens = { path = "../sengi-tokens" }
 # Smithay logs through this; src/log.rs prints what it says.
 tracing = { version = "0.1", default-features = false, features = ["std"] }
