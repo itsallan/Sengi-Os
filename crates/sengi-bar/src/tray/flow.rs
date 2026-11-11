@@ -68,44 +68,42 @@ impl Budget {
     }
 }
 
-/// Remembers when the tray last changed under the pointer, so that a
-/// click landing just afterwards is not taken for a click on whatever is
-/// there now. An app could otherwise time a change to its own icon, or
-/// the arrival of a new one, to catch a click meant for its neighbour.
+/// Remembers which icons have just moved, so that a click landing right
+/// afterwards is not taken for a click on whatever is under the pointer
+/// now. An app could otherwise time its own coming or going to catch a
+/// click meant for its neighbour.
+///
+/// Only icons that changed place are guarded. The tray is anchored at its
+/// right-hand end and new icons join on the left, so an arrival moves
+/// nothing, and a departure moves only what was to its left. An icon that
+/// merely looks different is still the same icon in the same place.
 #[derive(Debug, Default)]
 pub struct ClickGuard {
-    /// When the set of icons last changed.
-    set: Option<Instant>,
-    /// When each icon last changed its picture.
-    icons: Vec<(u32, Instant)>,
+    /// The icons that moved, and when.
+    moved: Vec<(u32, Instant)>,
 }
 
 impl ClickGuard {
-    /// The icons were added to, removed from or moved.
-    pub fn set_changed(&mut self, now: Instant) {
-        self.set = Some(now);
-    }
-
-    /// One icon now looks different.
-    pub fn icon_changed(&mut self, id: u32, now: Instant) {
-        self.icons.retain(|(held, _)| *held != id);
-        self.icons.push((id, now));
-    }
-
-    /// Forgets icons that are no longer shown.
-    pub fn keep(&mut self, shown: &[u32]) {
-        self.icons.retain(|(id, _)| shown.contains(id));
+    /// The icons were `old` and are now `new`, both leftmost first.
+    pub fn set_changed(&mut self, old: &[u32], new: &[u32], now: Instant) {
+        // Where an icon sits is how far it is from the right-hand end.
+        let place = |ids: &[u32], id: u32| ids.iter().rev().position(|held| *held == id);
+        self.moved.retain(|(id, _)| new.contains(id));
+        for id in new {
+            let was = place(old, *id);
+            if was.is_some() && was != place(new, *id) {
+                self.moved.retain(|(held, _)| held != id);
+                self.moved.push((*id, now));
+            }
+        }
     }
 
     /// Whether a click on icon `id` at `now` should be ignored, `guard`
-    /// being how long a change stays fresh.
+    /// being how long a move stays fresh.
     pub fn blocks(&self, id: u32, now: Instant, guard: Duration) -> bool {
-        let fresh = |at: Instant| now.saturating_duration_since(at) < guard;
-        self.set.is_some_and(fresh)
-            || self
-                .icons
-                .iter()
-                .any(|(held, at)| *held == id && fresh(*at))
+        self.moved
+            .iter()
+            .any(|(held, at)| *held == id && now.saturating_duration_since(*at) < guard)
     }
 }
 
@@ -125,38 +123,66 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_click_just_after_the_icons_moved_is_ignored() {
+    fn a_click_just_after_an_icon_moved_is_ignored() {
         let start = Instant::now();
         let guard = Duration::from_millis(400);
         let ms = Duration::from_millis;
         let mut clicks = ClickGuard::default();
         assert!(!clicks.blocks(1, start, guard));
-        // A new icon arrives: nothing in the tray is safe to click yet.
-        clicks.set_changed(start);
-        assert!(clicks.blocks(1, start + ms(50), guard));
-        assert!(clicks.blocks(2, start + ms(399), guard));
-        assert!(!clicks.blocks(1, start + ms(400), guard));
+        // Leftmost first: 3 is the newest, 1 the oldest. 2 leaves, and 3
+        // slides right into its place.
+        clicks.set_changed(&[3, 2, 1], &[3, 1], start);
+        assert!(clicks.blocks(3, start + ms(50), guard));
+        assert!(clicks.blocks(3, start + ms(399), guard));
+        assert!(!clicks.blocks(3, start + ms(400), guard));
+        // 1 was to the right of the gap and did not move.
+        assert!(!clicks.blocks(1, start + ms(50), guard));
     }
 
     #[test]
-    fn a_click_just_after_an_icon_changed_its_picture_is_ignored_for_that_icon() {
+    fn an_arrival_moves_nothing() {
+        let start = Instant::now();
+        let guard = Duration::from_millis(400);
+        let mut clicks = ClickGuard::default();
+        // New icons join on the left, at the outer end.
+        clicks.set_changed(&[2, 1], &[3, 2, 1], start);
+        for id in [1, 2, 3] {
+            assert!(!clicks.blocks(id, start, guard), "{id}");
+        }
+    }
+
+    #[test]
+    fn an_icon_going_and_coming_back_cannot_hold_the_tray_shut() {
         let start = Instant::now();
         let guard = Duration::from_millis(400);
         let ms = Duration::from_millis;
         let mut clicks = ClickGuard::default();
-        clicks.icon_changed(1, start);
-        assert!(clicks.blocks(1, start + ms(100), guard));
-        // Its neighbours did not change and are not held up.
-        assert!(!clicks.blocks(2, start + ms(100), guard));
-        assert!(!clicks.blocks(1, start + ms(500), guard));
-        // An icon that keeps changing keeps being guarded, and only one
-        // time is kept for it.
-        for n in 0..100 {
-            clicks.icon_changed(1, start + ms(n));
+        // 2 hides and shows every 300 ms, for ever. Only what is to its
+        // left moves; the icons to its right can be clicked all along.
+        let (with, without) = ([4, 3, 2, 1], [4, 3, 1]);
+        for n in 0..200u64 {
+            let now = start + ms(n * 300);
+            if n % 2 == 0 {
+                clicks.set_changed(&with, &without, now);
+            } else {
+                clicks.set_changed(&without, &with, now);
+            }
+            assert!(!clicks.blocks(1, now, guard));
+            assert!(!clicks.blocks(1, now + ms(150), guard));
+            assert!(clicks.blocks(3, now, guard));
         }
-        assert_eq!(clicks.icons.len(), 1);
-        clicks.keep(&[2, 3]);
-        assert!(clicks.icons.is_empty());
+        // And nothing piles up while it does.
+        assert!(clicks.moved.len() <= 4);
+    }
+
+    #[test]
+    fn icons_that_have_gone_are_forgotten() {
+        let start = Instant::now();
+        let mut clicks = ClickGuard::default();
+        clicks.set_changed(&[3, 2, 1], &[3, 1], start);
+        assert_eq!(clicks.moved.len(), 1);
+        clicks.set_changed(&[3, 1], &[1], start);
+        assert!(clicks.moved.is_empty());
     }
 
     #[test]

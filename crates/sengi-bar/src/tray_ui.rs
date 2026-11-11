@@ -88,14 +88,18 @@ impl Shown {
                 .any(|(_, icon)| Arc::ptr_eq(icon, held))
         });
         let ids: Vec<u32> = self.views.iter().map(|view| view.id).collect();
-        self.guard.keep(&ids);
 
         let mut set_changed = false;
         for index in 0..self.sizes.len() {
             let entries = self.entries(self.sizes[index].pixels);
             let model = self.sizes[index].model.clone();
-            let held: Vec<i32> = model.iter().map(|entry| entry.id).collect();
-            if held != entries.iter().map(|entry| entry.id).collect::<Vec<_>>() {
+            let held: Vec<u32> = model.iter().map(|entry| entry.id as u32).collect();
+            if held != ids {
+                // Every model holds the same items; the first to differ
+                // says which of them have moved.
+                if !set_changed {
+                    self.guard.set_changed(&held, &ids, now);
+                }
                 model.set_vec(entries);
                 set_changed = true;
                 continue;
@@ -103,19 +107,10 @@ impl Shown {
             // The same items in the same places: change rows in place, so
             // the icon under the pointer stays the icon under the pointer.
             for (row, entry) in entries.into_iter().enumerate() {
-                let Some(old) = model.row_data(row).filter(|old| *old != entry) else {
-                    continue;
-                };
-                if (&old.icon, old.has_icon, &old.letter)
-                    != (&entry.icon, entry.has_icon, &entry.letter)
-                {
-                    self.guard.icon_changed(entry.id as u32, now);
+                if model.row_data(row).as_ref() != Some(&entry) {
+                    model.set_row_data(row, entry);
                 }
-                model.set_row_data(row, entry);
             }
-        }
-        if set_changed {
-            self.guard.set_changed(now);
         }
         set_changed
     }
@@ -218,7 +213,7 @@ impl TrayUi {
                 let Ok(id) = u32::try_from(id) else {
                     return;
                 };
-                // The tray has just changed: the click may have been
+                // This icon has just moved here: the click may have been
                 // aimed at what was here a moment ago.
                 if ui.shown.borrow().guard.blocks(id, Instant::now(), ui.guard) {
                     return;
