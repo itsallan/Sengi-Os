@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/sengi-bar", "crates/sengi-focus", "crates/sengi-layer", "crates/sengi-tokens", "crates/sengi-ui"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 repository = "https://github.com/itsallan/Sengi-Os"
 

@@ -14,7 +14,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use sengi_layer::{Anchor, App, Config, Instances, Layer};
+use sengi_layer::{Anchor, App, Config, Instances, Layer, Outputs};
 use slint::{Timer, TimerMode};
 
 slint::include_modules!();
@@ -167,7 +167,9 @@ fn run() -> Result<(), sengi_layer::Error> {
 
     let config = Config::new("sengi-bar")
         .layer(Layer::Top)
-        .anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT);
+        .anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT)
+        // A bar on every monitor.
+        .outputs(Outputs::All);
 
     app.run(config, move |context| {
         let bar = Bar::new()?;
