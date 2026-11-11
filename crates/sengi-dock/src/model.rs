@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::desktop::{Apps, Entry};
 use crate::icons;
@@ -239,21 +239,59 @@ pub struct Dock {
     pinned: Vec<String>,
     /// app_id to item key, remembered so matching runs once per app.
     keys: HashMap<String, String>,
-    /// app_ids that matched nothing even after re-reading the entries.
-    unknown: HashSet<String>,
+    /// When each applications directory was last changed, as of the last
+    /// time the entries were read.
+    stamps: Vec<Option<SystemTime>>,
+    /// The newest window seen so far.
+    newest_window: u32,
+    /// Counts re-reads of the entries.
+    generation: u64,
+}
+
+/// When each data directory's `applications` was last modified. Installing
+/// or removing an app adds or removes a file there, which changes it.
+fn stamps(data_dirs: &[PathBuf]) -> Vec<Option<SystemTime>> {
+    data_dirs
+        .iter()
+        .map(|dir| {
+            std::fs::metadata(dir.join("applications"))
+                .and_then(|meta| meta.modified())
+                .ok()
+        })
+        .collect()
 }
 
 impl Dock {
     /// `pinned` holds desktop-file IDs from the config. `data_dirs` is where
-    /// desktop entries are re-read from when an unknown app shows up, which
-    /// is how an app installed while the dock runs gets its name and icon.
+    /// desktop entries are re-read from when apps have been installed or
+    /// removed while the dock runs.
     pub fn new(apps: Apps, pinned: Vec<String>, data_dirs: Vec<PathBuf>) -> Self {
         Self {
+            stamps: stamps(&data_dirs),
             data_dirs,
             apps,
             pinned,
             keys: HashMap::new(),
-            unknown: HashSet::new(),
+            newest_window: 0,
+            generation: 0,
+        }
+    }
+
+    /// Goes up each time the desktop entries are re-read. Names and icons
+    /// remembered from before may then be out of date.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Re-reads the desktop entries if an applications directory has changed
+    /// since they were last read.
+    fn reload_if_changed(&mut self) {
+        let now = stamps(&self.data_dirs);
+        if now != self.stamps {
+            self.stamps = now;
+            self.apps = Apps::load(&self.data_dirs);
+            self.keys.clear();
+            self.generation += 1;
         }
     }
 
@@ -270,15 +308,7 @@ impl Dock {
         if let Some(key) = self.keys.get(app_id) {
             return key.clone();
         }
-        let mut found = matching::find(app_id, &self.apps).map(|e| e.id.to_lowercase());
-        if found.is_none() && !self.data_dirs.is_empty() && self.unknown.insert(app_id.to_string())
-        {
-            // First sight of this app_id: it may have been installed since
-            // we started.
-            self.apps = Apps::load(&self.data_dirs);
-            self.keys.clear();
-            found = matching::find(app_id, &self.apps).map(|e| e.id.to_lowercase());
-        }
+        let found = matching::find(app_id, &self.apps).map(|e| e.id.to_lowercase());
         let key = found.unwrap_or_else(|| app_id.trim().to_lowercase());
         self.keys.insert(app_id.to_string(), key.clone());
         key
@@ -321,6 +351,13 @@ impl Dock {
     /// their focus. So an app with one window and an open dialog still has
     /// one window, and a portal's file chooser does not get a tile.
     pub fn items(&mut self, windows: &[Window]) -> Vec<Item> {
+        // A window opening is the moment a newly installed app matters, and
+        // the only time the directories are looked at: never on a timer.
+        let newest = windows.iter().map(|w| w.id).max().unwrap_or(0);
+        if newest > self.newest_window {
+            self.newest_window = newest;
+            self.reload_if_changed();
+        }
         let windows = fold_children(windows);
         // Group windows by app, remembering the order apps first appear in.
         let mut order: Vec<String> = Vec::new();
@@ -566,6 +603,73 @@ mod tests {
         assert_eq!(items[1].name, "Paint");
         assert!(items[1].launchable);
         assert_eq!(dock.entry("org.example.paint").unwrap().name, "Paint");
+        assert_eq!(dock.generation(), 1);
+    }
+
+    fn touch(dir: &std::path::Path, seconds: u64) {
+        let time = SystemTime::UNIX_EPOCH + Duration::from_secs(seconds);
+        std::fs::File::open(dir)
+            .unwrap()
+            .set_modified(time)
+            .unwrap();
+    }
+
+    #[test]
+    fn an_app_installed_after_its_window_was_first_seen_is_still_picked_up() {
+        let dir = temp_dir("later");
+        let apps_dir = dir.join("applications");
+        write(
+            &apps_dir.join("foot.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Foot\nExec=foot\n",
+        );
+        touch(&apps_dir, 1_000);
+        let mut dock = Dock::load(vec!["foot".into(), "paint".into()], vec![dir.clone()]);
+
+        // Seen once with nothing installed for it: a plain tile.
+        let items = dock.items(&[window(1, "paint")]);
+        assert_eq!(keys(&items), ["", "foot", "paint"]);
+        assert!(!items[2].launchable);
+        assert_eq!(dock.generation(), 0);
+
+        write(
+            &apps_dir.join("paint.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Paint\nExec=paint\nIcon=paint\n",
+        );
+        touch(&apps_dir, 2_000);
+
+        // Nothing is re-read until a window opens.
+        let items = dock.items(&[window(1, "paint")]);
+        assert_eq!(items[2].name, "paint");
+        assert_eq!(dock.generation(), 0);
+
+        // Any new window will do. The pin for it now resolves too.
+        let items = dock.items(&[window(1, "paint"), window(2, "foot")]);
+        assert_eq!(keys(&items), ["", "foot", "paint"]);
+        assert_eq!(items[2].kind, Kind::Pinned);
+        assert_eq!(items[2].name, "Paint");
+        assert!(items[2].launchable);
+        assert_eq!(dock.generation(), 1);
+
+        // An unchanged directory is not read again.
+        dock.items(&[window(1, "paint"), window(2, "foot"), window(3, "foot")]);
+        assert_eq!(dock.generation(), 1);
+    }
+
+    #[test]
+    fn a_removed_app_loses_its_pin_at_the_next_window() {
+        let dir = temp_dir("removed");
+        let apps_dir = dir.join("applications");
+        write(
+            &apps_dir.join("foot.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Foot\nExec=foot\n",
+        );
+        touch(&apps_dir, 1_000);
+        let mut dock = Dock::load(vec!["foot".into()], vec![dir]);
+        assert_eq!(keys(&dock.items(&[])), ["", "foot"]);
+
+        std::fs::remove_file(apps_dir.join("foot.desktop")).unwrap();
+        touch(&apps_dir, 2_000);
+        assert_eq!(keys(&dock.items(&[window(1, "vim")])), ["", "vim"]);
     }
 
     #[test]

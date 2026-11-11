@@ -63,6 +63,8 @@ struct State {
     wanted: Vec<(String, String, u32)>,
     decoder: Option<Decoder>,
     launches: Launches,
+    /// The dock's generation the icons were looked up in.
+    generation: u64,
     controller: Option<Controller>,
     size: (u32, u32),
     /// How many times the rows have been brought up to date.
@@ -163,6 +165,7 @@ impl App {
                     wanted: Vec::new(),
                     decoder: Decoder::for_this_program(),
                     launches: Launches::default(),
+                    generation: 0,
                     controller: None,
                     size: (0, 0),
                     updates: 0,
@@ -316,7 +319,14 @@ impl App {
         let items = {
             let mut state = self.inner.state.borrow_mut();
             let items = state.dock.items(windows);
-            if state.updates > 0 && items == state.items {
+            // Apps were installed or removed: an icon that was missing may
+            // exist now, and one that was found may have changed.
+            let reloaded = state.generation != state.dock.generation();
+            if reloaded {
+                state.generation = state.dock.generation();
+                state.icons.clear();
+            }
+            if state.updates > 0 && items == state.items && !reloaded {
                 return;
             }
             items
