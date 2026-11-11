@@ -5,6 +5,8 @@
 #   boot-test.sh ISO [OUTDIR]
 #
 # Set SENGI_UEFI to an OVMF firmware image to boot through UEFI instead of BIOS.
+# Set SENGI_PREVIEW=1 to boot the sengi-compositor preview entry instead of
+# the default one.
 #
 # The ISO is attached as a disk, the way a flashed USB stick shows up. The
 # guest reports through its serial port (see sengi-boot-report). Boot time is
@@ -71,8 +73,17 @@ stop() {
 	rm -f "$out/mon.in" "$out/qmp.in" "$out/qmp.out"
 }
 
+# The preview entry is reached the way a person reaches it: by its hotkey in
+# the boot menu. There is no telling from outside when GRUB is listening, so
+# the key is pressed over and over until the desktop reports in. The guest
+# says which compositor it was asked for, and that is checked at the end.
+preview=${SENGI_PREVIEW:-0}
+want=labwc
+if [ "$preview" = 1 ]; then want=sengi-compositor; fi
+
 wait_for() {
 	while ! grep -q "$1" "$out/serial.log"; do
+		if [ "$preview" = 1 ] && [ "$1" = SENGI-BOOT ]; then echo "sendkey p" >&3; fi
 		kill -0 "$qemu" 2>/dev/null || { echo "qemu exited early" >&2; return 1; }
 		elapsed=$(echo "$(now) $start" | awk '{printf "%d", $1 - $2}')
 		[ "$elapsed" -lt "$timeout_s" ] || { echo "timed out waiting for $1" >&2; return 1; }
@@ -147,12 +158,14 @@ stop
 
 guest_s=$(sed -n 's/.*SENGI-BOOT desktop_s=\([0-9.]*\).*/\1/p' "$out/serial.log" | head -1)
 ram_mb=$(sed -n 's/.*SENGI-IDLE ram_mb=\([0-9]*\).*/\1/p' "$out/serial.log" | head -1)
+got=$(sed -n 's/.*SENGI-INFO compositor: \([a-z-]*\).*/\1/p' "$out/serial.log" | head -1)
 
 {
 	echo "boot_s=$boot_s"
 	echo "boot_guest_s=$guest_s"
 	echo "idle_ram_mb=$ram_mb"
 	echo "accel=$accel"
+	echo "compositor=$got"
 } >"$out/metrics.txt"
 cat "$out/metrics.txt"
 grep SENGI-INFO "$out/serial.log" | sed 's/.*SENGI-INFO //' >"$out/guest-info.txt" || true
@@ -160,6 +173,10 @@ grep SENGI-INFO "$out/serial.log" | sed 's/.*SENGI-INFO //' >"$out/guest-info.tx
 [ -s "$out/desktop.png" ] || { echo "no screenshot was saved" >&2; exit 1; }
 
 fail=0
+if [ "$got" != "$want" ]; then
+	echo "FAIL: the guest booted for ${got:-an unknown compositor}, not $want" >&2
+	fail=1
+fi
 if grep -q SENGI-FAIL "$out/serial.log"; then
 	sed -n 's/.*SENGI-FAIL /FAIL: /p' "$out/serial.log" >&2
 	fail=1
