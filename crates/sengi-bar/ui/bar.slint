@@ -8,79 +8,54 @@ component BarItem inherits Rectangle {
     in property <bool> strong: false;
     in property <bool> dim: false;
     in property <bool> alert: false;
+    in property <bool> caution: false;
+    // Items that do nothing on click do not light up on hover either.
+    in property <bool> interactive: true;
     callback clicked();
 
     border-radius: Tokens.radius;
-    background: touch.has-hover ? Tokens.color-surface-hover : transparent;
+    background: root.interactive && touch.has-hover ? Tokens.color-surface-hover : transparent;
     animate background { duration: Tokens.motion-fast; }
     height: Tokens.bar-height - Tokens.space-xs;
     width: content.preferred-width + Tokens.space-sm * 2;
 
     content := SengiText {
         text: root.text;
-        color: root.alert ? Tokens.color-danger : root.dim ? Tokens.color-text-muted : Tokens.color-text;
+        color: root.alert ? Tokens.color-danger
+            : root.caution ? Tokens.color-warning
+            : root.dim ? Tokens.color-text-muted : Tokens.color-text;
         font-weight: root.strong ? Tokens.font-weight-bold : Tokens.font-weight-regular;
         horizontal-alignment: center;
         vertical-alignment: center;
     }
 
     touch := TouchArea {
+        enabled: root.interactive;
         clicked => { root.clicked(); }
     }
 
     @children
 }
 
-// Notifications: a card outline with a badge in the corner.
-component NotificationsIcon inherits Rectangle {
+// Icons are drawn as stroked paths on a 16 unit grid.
+component Icon inherits Path {
     width: Tokens.bar-icon;
     height: Tokens.bar-icon;
-    Rectangle {
-        x: Tokens.space-xxs;
-        y: Tokens.space-xs;
-        width: parent.width - Tokens.space-xs - Tokens.space-xxs;
-        height: parent.height - Tokens.space-xs - Tokens.space-xxs;
-        border-radius: Tokens.space-xxs;
-        border-width: Tokens.border-width;
-        border-color: Tokens.color-text;
-    }
-    Rectangle {
-        x: parent.width - self.width - Tokens.space-xxs;
-        y: Tokens.space-xxs;
-        width: Tokens.space-xs + Tokens.space-xxs;
-        height: self.width;
-        border-radius: self.width / 2;
-        background: Tokens.color-accent;
-    }
+    viewbox-width: 16;
+    viewbox-height: 16;
+    stroke: Tokens.color-text;
+    stroke-width: Tokens.icon-stroke;
+    stroke-line-cap: round;
+    stroke-line-join: round;
+    fill: transparent;
 }
 
-// Power: a ring with a bar through the top.
-component PowerIcon inherits Rectangle {
-    width: Tokens.bar-icon;
-    height: Tokens.bar-icon;
-    Rectangle {
-        x: Tokens.space-xxs;
-        y: Tokens.space-xxs + Tokens.border-width;
-        width: parent.width - Tokens.space-xs;
-        height: self.width;
-        border-radius: self.width / 2;
-        border-width: Tokens.border-width;
-        border-color: Tokens.color-text;
-    }
-    Rectangle {
-        x: (parent.width - self.width) / 2;
-        y: 0;
-        width: Tokens.space-xs + Tokens.border-width;
-        height: parent.height / 2;
-        background: Tokens.color-bg;
-    }
-    Rectangle {
-        x: (parent.width - self.width) / 2;
-        y: Tokens.border-width;
-        width: Tokens.border-width;
-        height: parent.height / 2 - Tokens.border-width;
-        background: Tokens.color-text;
-    }
+component NotificationsIcon inherits Icon {
+    commands: "M8 2a4 4 0 0 0-4 4v3l-1.5 2.5h11L12 9V6a4 4 0 0 0-4-4z M6.5 13.5a1.5 1.5 0 0 0 3 0";
+}
+
+component PowerIcon inherits Icon {
+    commands: "M5 4.2a5 5 0 1 0 6 0 M8 2v5.5";
 }
 
 component IconItem inherits Rectangle {
@@ -108,11 +83,15 @@ component IconItem inherits Rectangle {
 export component Bar inherits Window {
     in property <string> clock;
     in property <string> network: "Offline";
+    // Name of the connected Wi-Fi network, when it is known.
+    in property <string> wifi-name;
+    in property <bool> wifi: false;
     in property <bool> online: false;
     in property <string> volume;
     in property <bool> muted: false;
     in property <string> battery;
     in property <bool> battery-low: false;
+    in property <bool> battery-warning: false;
 
     // Read by the program to size the layer surface.
     out property <length> bar-height: Tokens.bar-height;
@@ -149,7 +128,7 @@ export component Bar inherits Window {
         VerticalLayout {
             alignment: center;
             BarItem {
-                text: root.network;
+                text: root.wifi && root.wifi-name != "" ? root.wifi-name : root.network;
                 dim: !root.online;
                 clicked => { root.open-network(); }
             }
@@ -169,6 +148,8 @@ export component Bar inherits Window {
             BarItem {
                 text: root.battery;
                 alert: root.battery-low;
+                caution: root.battery-warning;
+                interactive: false;
             }
         }
 
@@ -176,6 +157,7 @@ export component Bar inherits Window {
             alignment: center;
             BarItem {
                 text: root.clock;
+                interactive: false;
             }
         }
 

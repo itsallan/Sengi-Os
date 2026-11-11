@@ -24,6 +24,7 @@ export global Tokens {
 
     out property <length> radius: @{radius.base}px;
     out property <length> border-width: @{border.width}px;
+    out property <length> icon-stroke: @{border.icon-stroke}px;
 
     out property <length> space-xxs: @{space.xxs}px;
     out property <length> space-xs: @{space.xs}px;
@@ -49,7 +50,6 @@ export global Tokens {
     out property <length> launcher-width: @{size.launcher-width}px;
     out property <length> notification-width: @{size.notification-width}px;
     out property <length> bar-icon: @{size.bar-icon}px;
-    out property <length> button: @{size.button}px;
 
     out property <duration> motion-fast: @{motion.fast}ms;
     out property <duration> motion-base: @{motion.base}ms;

@@ -7,7 +7,13 @@ if [ "${WLR_RENDERER:-}" = pixman ]; then
 else
 	swaybg -c '@{color.desktop}' >/dev/null 2>&1 &
 fi
-sengi-bar >/dev/null 2>&1 &
+# Bring the bar back if it ever dies, for as long as the session is alive.
+(
+	while [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; do
+		sengi-bar
+		sleep 1
+	done
+) >/dev/null 2>&1 &
 waybar >/dev/null 2>&1 &
 # Waybar asks the desktop portal for the colour scheme as it starts, which
 # would wake about 50 MB of portal services on every login. The portal's

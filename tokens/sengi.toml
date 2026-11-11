@@ -38,6 +38,8 @@ xl = 24
 
 [border]
 width = 1
+# Line weight of drawn icons.
+icon-stroke = 1.5
 
 [type]
 family = "Inter"

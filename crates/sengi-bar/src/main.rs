@@ -11,19 +11,26 @@ mod status;
 use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 use std::rc::Rc;
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use slint::platform::software_renderer::{
     MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType,
 };
 use slint::platform::{Platform, PointerEventButton, WindowAdapter, WindowEvent};
-use slint::{ComponentHandle, LogicalPosition, PhysicalSize, PlatformError, Timer, TimerMode};
+use slint::{
+    ComponentHandle, LogicalPosition, PhysicalSize, PlatformError, Timer, TimerMode, Weak,
+};
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState};
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
+use smithay_client_toolkit::reexports::calloop::channel::{channel, Event as ChannelEvent};
 use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
-use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerEventKind, PointerHandler};
+use smithay_client_toolkit::seat::pointer::{
+    CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec, ThemedPointer,
+};
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 use smithay_client_toolkit::shell::wlr_layer::{
     Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
@@ -47,8 +54,20 @@ const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const BTN_MIDDLE: u32 = 0x112;
 
-/// How often the network, volume and battery readings are refreshed.
-const STATUS_INTERVAL: Duration = Duration::from_secs(5);
+/// How often the network and battery are read. Both are a few small files
+/// under /sys.
+const SYS_INTERVAL: Duration = Duration::from_secs(10);
+
+/// How often the volume and Wi-Fi name are read. These run other programs,
+/// so they are polled slowly on their own thread, away from drawing.
+const SLOW_INTERVAL: Duration = Duration::from_secs(15);
+
+/// Readings that take a subprocess to get.
+#[derive(Clone, PartialEq, Eq)]
+struct Slow {
+    volume: Option<status::Volume>,
+    wifi_name: Option<String>,
+}
 
 struct BarPlatform {
     window: Rc<MinimalSoftwareWindow>,
@@ -69,11 +88,14 @@ struct App {
     registry: RegistryState,
     seats: SeatState,
     outputs: OutputState,
+    compositor: CompositorState,
+    layer_shell: LayerShell,
     shm: Shm,
     pool: SlotPool,
     layer: LayerSurface,
-    pointer: Option<wl_pointer::WlPointer>,
+    pointer: Option<ThemedPointer>,
 
+    bar: Bar,
     window: Rc<MinimalSoftwareWindow>,
     pixels: Vec<PremultipliedRgbaColor>,
     /// Logical height from the design tokens.
@@ -82,7 +104,43 @@ struct App {
     width: u32,
     scale: u32,
     configured: bool,
-    closed: bool,
+}
+
+fn create_layer(
+    compositor: &CompositorState,
+    layer_shell: &LayerShell,
+    queue: &QueueHandle<App>,
+    height: u32,
+) -> LayerSurface {
+    let surface = compositor.create_surface(queue);
+    let layer =
+        layer_shell.create_layer_surface(queue, surface, Layer::Top, Some("sengi-bar"), None);
+    layer.set_anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT);
+    layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+    layer.set_size(0, height);
+    layer.set_exclusive_zone(height as i32);
+    layer.commit();
+    layer
+}
+
+/// Copies a rendered frame into a wl_shm Argb8888 buffer, which is stored
+/// little-endian: the bytes run B, G, R, A.
+fn write_argb8888(pixels: &[PremultipliedRgbaColor], canvas: &mut [u8]) {
+    for (out, pixel) in canvas.as_chunks_mut::<4>().0.iter_mut().zip(pixels) {
+        out[0] = pixel.blue;
+        out[1] = pixel.green;
+        out[2] = pixel.red;
+        out[3] = pixel.alpha;
+    }
+}
+
+fn pointer_button(code: u32) -> Option<PointerEventButton> {
+    match code {
+        BTN_LEFT => Some(PointerEventButton::Left),
+        BTN_RIGHT => Some(PointerEventButton::Right),
+        BTN_MIDDLE => Some(PointerEventButton::Middle),
+        _ => None,
+    }
 }
 
 impl App {
@@ -104,12 +162,11 @@ impl App {
         }
         let width = (self.width * self.scale) as usize;
         let height = (self.height * self.scale) as usize;
-        self.pixels.clear();
-        self.pixels
-            .resize(width * height, PremultipliedRgbaColor::default());
 
         let pixels = &mut self.pixels;
         let drawn = self.window.draw_if_needed(|renderer| {
+            pixels.clear();
+            pixels.resize(width * height, PremultipliedRgbaColor::default());
             renderer.render(pixels, width);
         });
         if !drawn {
@@ -126,13 +183,7 @@ impl App {
             eprintln!("sengi-bar: could not allocate a frame buffer");
             return;
         };
-        // Argb8888 is stored little-endian, so the bytes run B, G, R, A.
-        for (out, pixel) in canvas.chunks_exact_mut(4).zip(self.pixels.iter()) {
-            out[0] = pixel.blue;
-            out[1] = pixel.green;
-            out[2] = pixel.red;
-            out[3] = pixel.alpha;
-        }
+        write_argb8888(&self.pixels, canvas);
 
         let surface = self.layer.wl_surface();
         surface.damage_buffer(0, 0, width as i32, height as i32);
@@ -188,8 +239,12 @@ impl CompositorHandler for App {
 }
 
 impl LayerShellHandler for App {
-    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {
-        self.closed = true;
+    // The compositor closes the surface when its output goes away, for
+    // example when an external monitor is unplugged. Ask for a new one so
+    // the bar comes back on whichever output is left.
+    fn closed(&mut self, _: &Connection, queue: &QueueHandle<Self>, _: &LayerSurface) {
+        self.configured = false;
+        self.layer = create_layer(&self.compositor, &self.layer_shell, queue, self.height);
     }
 
     fn configure(
@@ -213,7 +268,7 @@ impl LayerShellHandler for App {
 impl PointerHandler for App {
     fn pointer_frame(
         &mut self,
-        _: &Connection,
+        connection: &Connection,
         _: &QueueHandle<Self>,
         _: &wl_pointer::WlPointer,
         events: &[PointerEvent],
@@ -223,23 +278,21 @@ impl PointerHandler for App {
                 continue;
             }
             let position = LogicalPosition::new(event.position.0 as f32, event.position.1 as f32);
-            let button = |code: u32| match code {
-                BTN_LEFT => Some(PointerEventButton::Left),
-                BTN_RIGHT => Some(PointerEventButton::Right),
-                BTN_MIDDLE => Some(PointerEventButton::Middle),
-                _ => None,
-            };
             let translated = match event.kind {
-                PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
+                PointerEventKind::Enter { .. } => {
+                    // A client has to say which cursor it wants each time
+                    // the pointer comes in, or the last one stays.
+                    if let Some(pointer) = &self.pointer {
+                        let _ = pointer.set_cursor(connection, CursorIcon::Default);
+                    }
                     Some(WindowEvent::PointerMoved { position })
                 }
+                PointerEventKind::Motion { .. } => Some(WindowEvent::PointerMoved { position }),
                 PointerEventKind::Leave { .. } => Some(WindowEvent::PointerExited),
-                PointerEventKind::Press { button: code, .. } => {
-                    button(code).map(|button| WindowEvent::PointerPressed { position, button })
-                }
-                PointerEventKind::Release { button: code, .. } => {
-                    button(code).map(|button| WindowEvent::PointerReleased { position, button })
-                }
+                PointerEventKind::Press { button, .. } => pointer_button(button)
+                    .map(|button| WindowEvent::PointerPressed { position, button }),
+                PointerEventKind::Release { button, .. } => pointer_button(button)
+                    .map(|button| WindowEvent::PointerReleased { position, button }),
                 PointerEventKind::Axis { .. } => None,
             };
             if let Some(translated) = translated {
@@ -264,7 +317,17 @@ impl SeatHandler for App {
         capability: Capability,
     ) {
         if capability == Capability::Pointer && self.pointer.is_none() {
-            self.pointer = self.seats.get_pointer(queue, &seat).ok();
+            let cursor_surface = self.compositor.create_surface(queue);
+            self.pointer = self
+                .seats
+                .get_pointer_with_theme(
+                    queue,
+                    &seat,
+                    self.shm.wl_shm(),
+                    cursor_surface,
+                    ThemeSpec::default(),
+                )
+                .ok();
         }
     }
 
@@ -277,7 +340,7 @@ impl SeatHandler for App {
     ) {
         if capability == Capability::Pointer {
             if let Some(pointer) = self.pointer.take() {
-                pointer.release();
+                pointer.pointer().release();
             }
         }
     }
@@ -334,28 +397,62 @@ fn spawn(command: &str) {
 
 fn refresh_clock(bar: &Bar) {
     let now = chrono::Local::now();
-    bar.set_clock(now.format("%a %e %b  %H:%M").to_string().into());
+    bar.set_clock(now.format("%a %-e %b  %H:%M").to_string().into());
 }
 
-fn refresh_status(bar: &Bar) {
+/// Shows the time now and again at the start of each minute, so the bar
+/// wakes once a minute for the clock instead of once a second.
+fn run_clock(timer: Rc<Timer>, bar: Weak<Bar>) {
+    let Some(strong) = bar.upgrade() else {
+        return;
+    };
+    refresh_clock(&strong);
+    let into_minute = u64::from(chrono::Timelike::second(&chrono::Local::now()));
+    let until_next = Duration::from_secs(60 - into_minute.min(59));
+    let again = timer.clone();
+    timer.start(TimerMode::SingleShot, until_next, move || {
+        run_clock(again.clone(), bar.clone())
+    });
+}
+
+fn refresh_sys(bar: &Bar) {
     let network = status::network(&status::read_interfaces(Path::new("/sys/class/net")));
     bar.set_network(network.label().into());
     bar.set_online(network != status::Network::Offline);
+    bar.set_wifi(network == status::Network::Wifi);
 
-    match status::read_volume() {
+    match status::read_battery(Path::new("/sys/class/power_supply")) {
+        Some(battery) => {
+            bar.set_battery(battery.label().into());
+            bar.set_battery_low(battery.low());
+            bar.set_battery_warning(battery.warning());
+        }
+        None => bar.set_battery("".into()),
+    }
+}
+
+fn apply_slow(bar: &Bar, slow: Slow) {
+    match slow.volume {
         Some(volume) => {
             bar.set_volume(volume.label().into());
             bar.set_muted(volume.muted);
         }
         None => bar.set_volume("".into()),
     }
+    bar.set_wifi_name(slow.wifi_name.unwrap_or_default().into());
+}
 
-    match status::read_battery(Path::new("/sys/class/power_supply")) {
-        Some(battery) => {
-            bar.set_battery(battery.label().into());
-            bar.set_battery_low(battery.low());
-        }
-        None => bar.set_battery("".into()),
+fn read_slow() -> Slow {
+    let wifi_up = status::read_interfaces(Path::new("/sys/class/net"))
+        .iter()
+        .any(|interface| interface.wireless && interface.up);
+    Slow {
+        volume: status::read_volume(),
+        wifi_name: if wifi_up {
+            status::read_wifi_name()
+        } else {
+            None
+        },
     }
 }
 
@@ -377,82 +474,90 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let bar = Bar::new()?;
     let height = (bar.get_bar_height().round() as u32).max(1);
-
-    let surface = compositor.create_surface(&handle);
-    let layer =
-        layer_shell.create_layer_surface(&handle, surface, Layer::Top, Some("sengi-bar"), None);
-    layer.set_anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT);
-    layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-    layer.set_size(0, height);
-    layer.set_exclusive_zone(height as i32);
-    layer.commit();
+    let layer = create_layer(&compositor, &layer_shell, &handle, height);
 
     // Big enough for one 4K-wide frame; the pool grows if it has to.
     let pool = SlotPool::new(3840 * height as usize * 4, &shm)?;
 
-    let mut app = App {
-        registry: RegistryState::new(&globals),
-        seats: SeatState::new(&globals, &handle),
-        outputs: OutputState::new(&globals, &handle),
-        shm,
-        pool,
-        layer,
-        pointer: None,
-        window,
-        pixels: Vec::new(),
-        height,
-        width: 0,
-        scale: 1,
-        configured: false,
-        closed: false,
-    };
+    // The slow readings come from a worker thread. Sending on `poke` makes
+    // it read again straight away, which the mute button uses.
+    let (slow_sender, slow_receiver) = channel::<Slow>();
+    let (poke, poked) = mpsc::channel::<()>();
+    thread::spawn(move || {
+        let mut last = None;
+        loop {
+            let slow = read_slow();
+            if last.as_ref() != Some(&slow) {
+                if slow_sender.send(slow.clone()).is_err() {
+                    return;
+                }
+                last = Some(slow);
+            }
+            if let Err(mpsc::RecvTimeoutError::Disconnected) = poked.recv_timeout(SLOW_INTERVAL) {
+                return;
+            }
+        }
+    });
 
     bar.on_open_launcher(|| spawn("fuzzel"));
     bar.on_open_network(|| spawn("sengi-run foot -e iwctl"));
     bar.on_show_notifications(|| spawn("makoctl restore"));
     bar.on_dismiss_notifications(|| spawn("makoctl dismiss --all"));
     bar.on_open_session(|| spawn("sengi-power"));
-    {
-        let weak = bar.as_weak();
-        bar.on_toggle_mute(move || {
-            let _ = Command::new("wpctl")
-                .args(["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"])
-                .stdin(Stdio::null())
-                .status();
-            if let Some(bar) = weak.upgrade() {
-                refresh_status(&bar);
-            }
+    bar.on_toggle_mute(move || {
+        spawn("wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle; true");
+        // Give wpctl a moment to apply the change before reading it back.
+        let poke = poke.clone();
+        Timer::single_shot(Duration::from_millis(150), move || {
+            let _ = poke.send(());
         });
-    }
+    });
 
-    refresh_clock(&bar);
-    refresh_status(&bar);
-
-    let clock_timer = Timer::default();
+    refresh_sys(&bar);
+    let clock_timer = Rc::new(Timer::default());
+    run_clock(clock_timer.clone(), bar.as_weak());
+    let sys_timer = Timer::default();
     {
         let weak = bar.as_weak();
-        clock_timer.start(TimerMode::Repeated, Duration::from_secs(1), move || {
+        sys_timer.start(TimerMode::Repeated, SYS_INTERVAL, move || {
             if let Some(bar) = weak.upgrade() {
-                refresh_clock(&bar);
-            }
-        });
-    }
-    let status_timer = Timer::default();
-    {
-        let weak = bar.as_weak();
-        status_timer.start(TimerMode::Repeated, STATUS_INTERVAL, move || {
-            if let Some(bar) = weak.upgrade() {
-                refresh_status(&bar);
+                refresh_sys(&bar);
             }
         });
     }
 
     bar.show()?;
 
+    let mut app = App {
+        registry: RegistryState::new(&globals),
+        seats: SeatState::new(&globals, &handle),
+        outputs: OutputState::new(&globals, &handle),
+        compositor,
+        layer_shell,
+        shm,
+        pool,
+        layer,
+        pointer: None,
+        bar,
+        window,
+        pixels: Vec::new(),
+        height,
+        width: 0,
+        scale: 1,
+        configured: false,
+    };
+
     let mut event_loop: EventLoop<App> = EventLoop::try_new()?;
     WaylandSource::new(connection, queue).insert(event_loop.handle())?;
+    event_loop
+        .handle()
+        .insert_source(slow_receiver, |event, _, app| {
+            if let ChannelEvent::Msg(slow) = event {
+                apply_slow(&app.bar, slow);
+            }
+        })?;
 
-    while !app.closed {
+    loop {
         slint::platform::update_timers_and_animations();
         app.draw();
 
@@ -463,7 +568,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         };
         event_loop.dispatch(timeout, &mut app)?;
     }
-    Ok(())
 }
 
 fn main() -> ExitCode {
@@ -473,5 +577,38 @@ fn main() -> ExitCode {
             eprintln!("sengi-bar: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frames_are_written_as_bgra_bytes() {
+        let pixels = [
+            PremultipliedRgbaColor {
+                red: 1,
+                green: 2,
+                blue: 3,
+                alpha: 4,
+            },
+            PremultipliedRgbaColor {
+                red: 10,
+                green: 20,
+                blue: 30,
+                alpha: 40,
+            },
+        ];
+        let mut canvas = [0u8; 8];
+        write_argb8888(&pixels, &mut canvas);
+        assert_eq!(canvas, [3, 2, 1, 4, 30, 20, 10, 40]);
+    }
+
+    #[test]
+    fn mouse_buttons_map_to_slint_buttons() {
+        assert_eq!(pointer_button(BTN_LEFT), Some(PointerEventButton::Left));
+        assert_eq!(pointer_button(BTN_RIGHT), Some(PointerEventButton::Right));
+        assert_eq!(pointer_button(0x115), None);
     }
 }

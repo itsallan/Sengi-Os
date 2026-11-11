@@ -7,7 +7,9 @@ repository.workspace = true
 build = "build.rs"
 
 [dependencies]
-slint = { version = "1.8", default-features = false, features = ["compat-1-2", "std", "renderer-software", "software-renderer-systemfonts"] }
+# Not the workspace entry: that one pulls in the winit backend, which the bar
+# replaces with its own.
+slint = { version = "1.8", default-features = false, features = ["compat-1-2", "std", "renderer-software", "software-renderer-systemfonts", "software-renderer-path"] }
 smithay-client-toolkit = { version = "0.19", default-features = false, features = ["calloop"] }
 wayland-client = "0.31"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

@@ -26,15 +26,17 @@ impl Network {
 
 /// One entry of `/sys/class/net`.
 pub struct Interface {
-    pub name: String,
     pub up: bool,
     pub wireless: bool,
+    /// Backed by real hardware. Bridges, veth pairs and tunnels are not, and
+    /// say nothing about whether the machine is online.
+    pub physical: bool,
 }
 
 /// A wired link wins over Wi-Fi when both are up, the same order the
 /// routing table prefers them in.
 pub fn network(interfaces: &[Interface]) -> Network {
-    let live = || interfaces.iter().filter(|i| i.up && i.name != "lo");
+    let live = || interfaces.iter().filter(|i| i.up && i.physical);
     if live().any(|i| !i.wireless) {
         Network::Wired
     } else if live().any(|i| i.wireless) {
@@ -50,15 +52,14 @@ pub fn read_interfaces(root: &Path) -> Vec<Interface> {
     };
     entries
         .flatten()
-        .filter_map(|entry| {
-            let name = entry.file_name().into_string().ok()?;
+        .map(|entry| {
             let path = entry.path();
             let state = fs::read_to_string(path.join("operstate")).unwrap_or_default();
-            Some(Interface {
-                name,
+            Interface {
                 up: state.trim() == "up",
                 wireless: path.join("wireless").exists() || path.join("phy80211").exists(),
-            })
+                physical: path.join("device").exists(),
+            }
         })
         .collect()
 }
@@ -109,8 +110,9 @@ pub struct Battery {
     pub charging: bool,
 }
 
-/// At or below this the bar draws the battery in the danger colour.
-const BATTERY_LOW: u32 = 15;
+/// Below these the bar draws the battery in the warning and danger colours.
+const BATTERY_WARNING: u32 = 20;
+const BATTERY_CRITICAL: u32 = 10;
 
 impl Battery {
     pub fn label(&self) -> String {
@@ -122,7 +124,11 @@ impl Battery {
     }
 
     pub fn low(&self) -> bool {
-        !self.charging && self.percent <= BATTERY_LOW
+        !self.charging && self.percent <= BATTERY_CRITICAL
+    }
+
+    pub fn warning(&self) -> bool {
+        !self.charging && self.percent <= BATTERY_WARNING && !self.low()
     }
 }
 
@@ -151,39 +157,156 @@ pub fn read_battery(root: &Path) -> Option<Battery> {
     )
 }
 
+/// Finds the connected Wi-Fi network in iwd's object list, as printed by
+/// `busctl --json=short`. iwd names a network object after its SSID in hex
+/// followed by the security type, so the name is read from the object path
+/// of the station's `ConnectedNetwork`.
+pub fn parse_wifi_name(objects: &str) -> Option<String> {
+    let marker = "\"ConnectedNetwork\":{\"type\":\"o\",\"data\":\"";
+    let rest = &objects[objects.find(marker)? + marker.len()..];
+    let path = &rest[..rest.find('"')?];
+    let (hex, _security) = path.rsplit('/').next()?.rsplit_once('_')?;
+    if hex.is_empty() || hex.len() % 2 != 0 || !hex.is_ascii() {
+        return None;
+    }
+    let bytes: Option<Vec<u8>> = (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
+        .collect();
+    let name = String::from_utf8_lossy(&bytes?).into_owned();
+    (!name.is_empty()).then_some(name)
+}
+
+/// Asks iwd which network is connected. Never starts iwd: on a machine with
+/// no Wi-Fi it is not running and should stay that way.
+pub fn read_wifi_name() -> Option<String> {
+    let output = Command::new("busctl")
+        .args([
+            "--system",
+            "--json=short",
+            "--auto-start=no",
+            "--timeout=2",
+            "call",
+        ])
+        .args(["net.connman.iwd", "/", "org.freedesktop.DBus.ObjectManager"])
+        .arg("GetManagedObjects")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_wifi_name(&String::from_utf8_lossy(&output.stdout))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn interface(name: &str, up: bool, wireless: bool) -> Interface {
+    fn wired(up: bool) -> Interface {
         Interface {
-            name: name.to_string(),
             up,
-            wireless,
+            wireless: false,
+            physical: true,
+        }
+    }
+
+    fn wifi(up: bool) -> Interface {
+        Interface {
+            up,
+            wireless: true,
+            physical: true,
+        }
+    }
+
+    fn virtual_link() -> Interface {
+        Interface {
+            up: true,
+            wireless: false,
+            physical: false,
         }
     }
 
     #[test]
     fn loopback_alone_is_offline() {
-        assert_eq!(network(&[interface("lo", true, false)]), Network::Offline);
+        assert_eq!(network(&[virtual_link()]), Network::Offline);
     }
 
     #[test]
     fn wired_wins_over_wifi() {
-        let both = [
-            interface("wlan0", true, true),
-            interface("enp1s0", true, false),
-        ];
-        assert_eq!(network(&both), Network::Wired);
+        assert_eq!(network(&[wifi(true), wired(true)]), Network::Wired);
     }
 
     #[test]
     fn wifi_when_the_cable_is_out() {
-        let links = [
-            interface("enp1s0", false, false),
-            interface("wlan0", true, true),
-        ];
-        assert_eq!(network(&links), Network::Wifi);
+        assert_eq!(network(&[wired(false), wifi(true)]), Network::Wifi);
+    }
+
+    #[test]
+    fn a_bridge_does_not_count_as_wired() {
+        assert_eq!(network(&[virtual_link(), wifi(true)]), Network::Wifi);
+        assert_eq!(network(&[virtual_link(), wifi(false)]), Network::Offline);
+    }
+
+    /// A throwaway directory laid out like a corner of /sys.
+    struct Sysfs(std::path::PathBuf);
+
+    impl Sysfs {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("sengi-bar-{name}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            Sysfs(dir)
+        }
+
+        fn file(&self, path: &str, contents: &str) {
+            let path = self.0.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, contents).unwrap();
+        }
+    }
+
+    impl Drop for Sysfs {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn interfaces_are_read_from_sysfs() {
+        let sys = Sysfs::new("net");
+        sys.file("lo/operstate", "unknown\n");
+        sys.file("enp1s0/operstate", "down\n");
+        sys.file("enp1s0/device/vendor", "0x8086\n");
+        sys.file("wlan0/operstate", "up\n");
+        sys.file("wlan0/device/vendor", "0x8086\n");
+        sys.file("wlan0/phy80211/name", "phy0\n");
+        sys.file("docker0/operstate", "up\n");
+        assert_eq!(network(&read_interfaces(&sys.0)), Network::Wifi);
+    }
+
+    #[test]
+    fn a_missing_sysfs_reads_as_offline() {
+        let nowhere = Path::new("/nonexistent/sengi-bar");
+        assert_eq!(network(&read_interfaces(nowhere)), Network::Offline);
+        assert_eq!(read_battery(nowhere), None);
+    }
+
+    #[test]
+    fn the_battery_is_found_among_other_supplies() {
+        let sys = Sysfs::new("power");
+        sys.file("AC0/type", "Mains\n");
+        sys.file("BAT0/type", "Battery\n");
+        sys.file("BAT0/capacity", "64\n");
+        sys.file("BAT0/status", "Charging\n");
+        assert_eq!(
+            read_battery(&sys.0),
+            Some(Battery {
+                percent: 64,
+                charging: true
+            })
+        );
     }
 
     #[test]
@@ -235,8 +358,39 @@ mod tests {
 
     #[test]
     fn battery_is_low_only_when_draining() {
-        assert!(parse_battery("12", "Discharging").unwrap().low());
-        assert!(!parse_battery("12", "Charging").unwrap().low());
+        assert!(parse_battery("8", "Discharging").unwrap().low());
+        assert!(!parse_battery("8", "Charging").unwrap().low());
         assert!(!parse_battery("60", "Discharging").unwrap().low());
+    }
+
+    #[test]
+    fn battery_warns_before_it_is_low() {
+        let battery = parse_battery("18", "Discharging").unwrap();
+        assert!(battery.warning() && !battery.low());
+        assert!(!parse_battery("8", "Discharging").unwrap().warning());
+    }
+
+    #[test]
+    fn odd_battery_readings() {
+        assert_eq!(parse_battery("", "Full"), None);
+        assert_eq!(parse_battery("250", "Full").unwrap().percent, 100);
+    }
+
+    #[test]
+    fn wifi_name_comes_from_the_connected_network_path() {
+        // "Home WiFi" in hex, WPA-PSK.
+        let objects = concat!(
+            r#"{"type":"a{oa{sa{sv}}}","data":[{"/net/connman/iwd/0/4":{"net.connman.iwd.Station":"#,
+            r#"{"State":{"type":"s","data":"connected"},"ConnectedNetwork":{"type":"o","data":"#,
+            r#""/net/connman/iwd/0/4/486f6d652057694669_psk"},"Scanning":{"type":"b","data":false}}}}]}"#
+        );
+        assert_eq!(parse_wifi_name(objects), Some("Home WiFi".to_string()));
+    }
+
+    #[test]
+    fn no_wifi_name_when_nothing_is_connected() {
+        let objects = r#"{"data":[{"/net/connman/iwd/0/4":{"net.connman.iwd.Station":{"State":{"type":"s","data":"disconnected"}}}}]}"#;
+        assert_eq!(parse_wifi_name(objects), None);
+        assert_eq!(parse_wifi_name(""), None);
     }
 }
