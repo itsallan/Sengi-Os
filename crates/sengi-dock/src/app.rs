@@ -4,9 +4,9 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use slint::{Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
+use slint::{ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
 
 use crate::icons::{self, IconDirs};
 use crate::model::{self, Action, Button, Dock, Icon, Item};
@@ -20,7 +20,8 @@ const ONE_FRAME: Duration = Duration::from_millis(20);
 /// they slide out.
 struct Row {
     key: String,
-    leaving: Option<Instant>,
+    /// Set when the row starts sliding out, to the count of updates so far.
+    leaving: Option<u64>,
 }
 
 struct State {
@@ -34,7 +35,8 @@ struct State {
     icons: HashMap<String, Option<Image>>,
     controller: Option<Controller>,
     size: (u32, u32),
-    started: bool,
+    /// How many times the rows have been brought up to date.
+    updates: u64,
 }
 
 struct Inner {
@@ -92,17 +94,16 @@ impl State {
 }
 
 impl App {
-    /// Wraps a freshly made Dock component. `scale` is the output's scale
-    /// factor, used to decode icons at their real pixel size. `on_resize` is
-    /// told the logical size the surface should have whenever it changes,
-    /// and once before this returns.
+    /// Wraps a freshly made Dock component. `on_resize` is told the logical
+    /// size the surface should have whenever it changes, and once before
+    /// this returns.
     pub fn new(
         ui: ui::Dock,
         dock: Dock,
         icon_dirs: IconDirs,
-        scale: f32,
         on_resize: impl Fn(u32, u32) + 'static,
     ) -> Self {
+        let scale = ui.window().scale_factor();
         let rows = Rc::new(VecModel::default());
         ui.set_items(ModelRc::from(rows.clone()));
         let app = Self {
@@ -118,7 +119,7 @@ impl App {
                     icons: HashMap::new(),
                     controller: None,
                     size: (0, 0),
-                    started: false,
+                    updates: 0,
                 }),
                 on_resize: Box::new(on_resize),
             }),
@@ -137,6 +138,14 @@ impl App {
             }
         });
 
+        let weak = Rc::downgrade(&app.inner);
+        app.inner.ui.on_rescaled(move || {
+            if let Some(inner) = weak.upgrade() {
+                let scale = inner.ui.window().scale_factor();
+                App { inner }.set_scale(scale);
+            }
+        });
+
         app.set_windows(&[]);
         app
     }
@@ -148,7 +157,6 @@ impl App {
     /// window tracking the dock still works as a plain launcher.
     pub fn start(
         ui: ui::Dock,
-        scale: f32,
         source: Source,
         mut deliver: impl FnMut(Vec<Window>) + Send + 'static,
         on_resize: impl Fn(u32, u32) + 'static,
@@ -157,7 +165,7 @@ impl App {
         let home = std::env::var("HOME").ok();
         let icon_dirs = IconDirs::from_data_dirs(home.as_deref(), &data_dirs);
         let dock = Dock::load(config::pinned(&config::paths()), data_dirs);
-        let app = Self::new(ui, dock, icon_dirs, scale, on_resize);
+        let app = Self::new(ui, dock, icon_dirs, on_resize);
 
         // Drop updates that change nothing the dock shows, so a terminal
         // retitling itself does not wake the UI thread.
@@ -187,9 +195,8 @@ impl App {
         self.inner.state.borrow().size
     }
 
-    /// Call when the output's scale factor changes. Icons are decoded again
-    /// at the new size.
-    pub fn set_scale(&self, scale: f32) {
+    /// Decodes the icons again for a new output scale.
+    fn set_scale(&self, scale: f32) {
         let items = {
             let mut state = self.inner.state.borrow_mut();
             if state.scale == scale {
@@ -207,7 +214,7 @@ impl App {
         let items = {
             let mut state = self.inner.state.borrow_mut();
             let items = state.dock.items(windows);
-            if state.started && items == state.items {
+            if state.updates > 0 && items == state.items {
                 return;
             }
             items
@@ -222,7 +229,9 @@ impl App {
         let icon_size = inner.ui.get_icon_size();
         let mut state = inner.state.borrow_mut();
         // Nothing slides when the dock first appears.
-        let animate = state.started;
+        let animate = state.updates > 0;
+        state.updates += 1;
+        let update = state.updates;
         let mut added = Vec::new();
         let mut cursor = 0;
 
@@ -265,7 +274,7 @@ impl App {
         let mut leaving = false;
         for (at, row) in state.rows.iter_mut().enumerate() {
             if row.leaving.is_none() && !items.iter().any(|item| item.key == row.key) {
-                row.leaving = Some(Instant::now());
+                row.leaving = Some(update);
                 leaving = true;
                 if let Some(mut data) = inner.rows.row_data(at) {
                     data.present = false;
@@ -275,7 +284,6 @@ impl App {
         }
 
         state.items = items;
-        state.started = true;
         drop(state);
 
         self.update_size();
@@ -294,7 +302,7 @@ impl App {
             let weak = Rc::downgrade(inner);
             slint::Timer::single_shot(wait, move || {
                 if let Some(inner) = weak.upgrade() {
-                    App { inner }.purge(wait);
+                    App { inner }.purge(update);
                 }
             });
         }
@@ -313,16 +321,13 @@ impl App {
         }
     }
 
-    /// Removes rows that have finished sliding out.
-    fn purge(&self, after: Duration) {
+    /// Removes the rows that began sliding out in update `until` or before.
+    fn purge(&self, until: u64) {
         {
             let mut state = self.inner.state.borrow_mut();
             let mut at = 0;
             while at < state.rows.len() {
-                if state.rows[at]
-                    .leaving
-                    .is_some_and(|since| since.elapsed() >= after)
-                {
+                if state.rows[at].leaving.is_some_and(|since| since <= until) {
                     let row = state.rows.remove(at);
                     self.inner.rows.remove(at);
                     // Its icon is not needed until the app runs again.

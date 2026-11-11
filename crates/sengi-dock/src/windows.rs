@@ -11,9 +11,12 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::{self, Thread};
 
-use wayland_client::protocol::wl_registry::{self, WlRegistry};
-use wayland_client::protocol::wl_seat::WlSeat;
-use wayland_client::{event_created_child, Connection, Dispatch, EventQueue, Proxy, QueueHandle};
+use sengi_layer::wayland_client::backend::ObjectId;
+use sengi_layer::wayland_client::protocol::wl_registry::{self, WlRegistry};
+use sengi_layer::wayland_client::protocol::wl_seat::WlSeat;
+use sengi_layer::wayland_client::{
+    event_created_child, Connection, Dispatch, EventQueue, Proxy, QueueHandle,
+};
 use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::{
     self as handle, ZwlrForeignToplevelHandleV1,
 };
@@ -78,7 +81,10 @@ pub enum Source {
     /// Open a connection of our own and read it here.
     Own,
     /// Use a connection that somebody else reads, such as the one the UI
-    /// runs on. The tracker then only handles the events routed to its queue.
+    /// runs on. The tracker then only handles the events routed to its
+    /// queue. It must not read the socket itself: `blocking_dispatch` on a
+    /// second thread can go to sleep on events the first thread has already
+    /// read and queued for it.
     Shared(Connection),
 }
 
@@ -199,7 +205,7 @@ impl Controller {
 
 struct Tracker<F> {
     book: Book,
-    ids: HashMap<wayland_client::backend::ObjectId, u32>,
+    ids: HashMap<ObjectId, u32>,
     shared: Arc<Mutex<Shared>>,
     on_change: F,
     manager_found: bool,

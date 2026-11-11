@@ -1,14 +1,19 @@
 //! sengi-dock, the Sengi OS dock.
 //!
 //! All the logic lives in the library. This file puts the Slint component
-//! on a layer surface, which is sengi-layer's job.
+//! on a layer surface through sengi-layer.
 
+use std::cell::RefCell;
 use std::process::ExitCode;
+use std::rc::Rc;
 use std::sync::mpsc;
 
+use sengi_dock::app::App;
 use sengi_dock::model::Dock;
 use sengi_dock::windows::{self, Source, Window};
-use sengi_dock::{config, desktop};
+use sengi_dock::{config, desktop, ui};
+use sengi_layer::{Anchor, Config, KeyboardMode, Layer, Margins, Outputs};
+use slint::ComponentHandle;
 
 const USAGE: &str = "usage: sengi-dock [--dump]
 
@@ -16,48 +21,63 @@ const USAGE: &str = "usage: sengi-dock [--dump]
            they change, instead of showing the dock";
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    // ------------------------------------------------------------------
-    // sengi-layer goes here.
-    //
-    // The dock is a layer surface in the top layer, anchored to the bottom
-    // edge and centred, sized to its content, with an exclusive zone so
-    // windows do not cover it and no keyboard focus. Roughly:
-    //
-    //     let (to_ui, from_tracker) = <sengi-layer's cross-thread channel>;
-    //     sengi_layer::run(config, move |ctx| {
-    //         let ui = sengi_dock::ui::Dock::new()?;
-    //         let resize = ctx.resizer();
-    //         let app = App::start(
-    //             ui,
-    //             ctx.scale_factor(),
-    //             Source::Shared(ctx.connection()),   // or Source::Own
-    //             move |windows| to_ui.send(windows),
-    //             move |width, height| resize.set_size(width, height),
-    //         );
-    //         ctx.on_message(from_tracker, {
-    //             let app = app.clone();
-    //             move |windows: Vec<Window>| app.set_windows(&windows)
-    //         });
-    //         ctx.on_scale_changed({
-    //             let app = app.clone();
-    //             move |scale| app.set_scale(scale)
-    //         });
-    //         Ok(app.ui().clone_strong())
-    //     })
-    //
-    // with, for the surface config, read from the component before the
-    // surface is made:
-    //
-    //     size            app.size()
-    //     margin bottom   ui.get_bottom_margin()
-    //     exclusive zone  ui.get_panel_height() + ui.get_bottom_margin()
-    //     namespace       "sengi-dock"
-    // ------------------------------------------------------------------
-    Err(
-        "the dock cannot be shown yet: this build has no layer-shell backend. \
-         Try --dump, or the preview example."
-            .into(),
-    )
+    let layer = sengi_layer::App::new()?;
+    let handle = layer.handle();
+
+    // The dock itself, once the component exists.
+    let dock: Rc<RefCell<Option<App>>> = Rc::default();
+    let to_ui = handle.channel({
+        let dock = dock.clone();
+        move |windows: Vec<Window>| {
+            if let Some(dock) = dock.borrow().as_ref() {
+                dock.set_windows(&windows);
+            }
+        }
+    })?;
+
+    // One dock, on the output the compositor picks. Anchored to the bottom
+    // edge only, which centres it. The real size, margin and exclusive zone
+    // come from the component, which does not exist yet.
+    let config = Config::new("sengi-dock")
+        .layer(Layer::Top)
+        .anchor(Anchor::BOTTOM)
+        .keyboard(KeyboardMode::None)
+        .outputs(Outputs::Primary);
+
+    layer.run(config, move |context| {
+        let ui = ui::Dock::new()?;
+        // Off until sengi-layer can limit a surface's input region: the room
+        // for the label would swallow clicks meant for the window above.
+        ui.set_show_labels(false);
+        let handle = context.handle();
+
+        let margin = ui.get_bottom_margin().round() as i32;
+        handle.set_margins(Margins {
+            bottom: margin,
+            ..Margins::default()
+        });
+        // The compositor adds the margin to this itself. The same gap again
+        // keeps windows as far from the dock as the dock is from the edge.
+        handle.set_exclusive_zone(ui.get_panel_height().round() as i32 + margin);
+
+        let to_ui = to_ui.clone();
+        let resize = handle.clone();
+        let app = App::start(
+            ui.clone_strong(),
+            Source::Shared(handle.connection()),
+            move |windows| {
+                let _ = to_ui.send(windows);
+            },
+            move |width, height| {
+                if let Err(error) = resize.set_size(width, height) {
+                    eprintln!("sengi-dock: {error}");
+                }
+            },
+        );
+        *dock.borrow_mut() = Some(app);
+        Ok(ui)
+    })?;
+    Ok(())
 }
 
 fn print(dock: &mut Dock, windows: &[Window]) {

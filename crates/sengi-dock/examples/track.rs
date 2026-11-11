@@ -12,7 +12,7 @@ use std::thread;
 use std::time::Duration;
 
 use sengi_dock::windows::{self, Source, Window};
-use wayland_client::Connection;
+use sengi_layer::wayland_client::Connection;
 
 struct Idle;
 

@@ -14,9 +14,9 @@ svg = ["dep:resvg"]
 
 [dependencies]
 # Not the workspace entry: that one pulls in the winit backend, and the dock
-# is drawn into a layer surface instead.
-slint = { version = "1.18", default-features = false, features = ["compat-1-2", "std", "renderer-software", "software-renderer-systemfonts", "software-renderer-path"] }
-wayland-client = "0.31"
+# is drawn into a layer surface instead. sengi-layer turns on the renderer.
+sengi-layer = { path = "../sengi-layer" }
+slint = { version = "1.18", default-features = false, features = ["compat-1-2", "std"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 libc = "0.2"
 # Icons are decoded here, straight to the size they are drawn at, rather than

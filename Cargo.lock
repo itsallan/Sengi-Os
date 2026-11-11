@@ -3529,9 +3529,9 @@ dependencies = [
  "libc",
  "png",
  "resvg",
+ "sengi-layer",
  "slint",
  "slint-build",
- "wayland-client",
  "wayland-protocols-wlr",
 ]
 

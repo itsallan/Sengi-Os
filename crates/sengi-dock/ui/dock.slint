@@ -188,16 +188,18 @@ component NameLabel inherits Rectangle {
 export component Dock inherits Window {
     // The rows, in dock order. Row indexes are what the callbacks report.
     in property <[DockItem]> items;
-    // Whether to show the app's name above the hovered icon. The space for
-    // it is part of dock-height, so turn it off to get a surface that
-    // is exactly as tall as the panel.
+    // Whether to show the app's name above the hovered icon. The room for
+    // it is part of dock-height all the time, not only while hovering: a
+    // surface that grows under the pointer shifts its own coordinates and
+    // loses the hover. So with labels on, the surface also takes the clicks
+    // in a strip above the panel.
     in property <bool> show-labels: true;
 
     // The size the layer surface should have. The width counts every row,
     // including rows still sliding out, so resize when it changes.
     out property <length> dock-width:
         root.items.length * root.slot-width + root.side-padding * 2;
-    out property <length> dock-height: root.panel-height + root.label-space;
+    out property <length> dock-height: root.panel-height + (root.show-labels ? root.label-space : 0);
     // The panel alone: what to reserve as the exclusive zone, plus the margin.
     out property <length> panel-height: Tokens.dock-icon + Tokens.space-xxs * 2 + Tokens.dock-padding * 2;
     // The panel's width at this moment, which moves while rows slide.
@@ -210,14 +212,18 @@ export component Dock inherits Window {
     // turning `present` off.
     out property <duration> slide-duration: Tokens.motion-base;
 
+    // One physical pixel in logical units, which follows the output's scale.
+    out property <length> physical-pixel: 1phx;
+
+    // The output's scale changed, so icons need decoding at another size.
+    callback rescaled();
     callback clicked(int);
     // Also sent for a click with Ctrl or Shift held.
     callback middle-clicked(int);
 
     property <length> slot-width: Tokens.dock-icon + Tokens.space-xxs * 2 + Tokens.space-xs;
     property <length> side-padding: Tokens.dock-padding - Tokens.space-xxs;
-    property <length> label-space:
-        root.show-labels ? Tokens.font-size-sm + Tokens.space-sm * 2 + Tokens.space-xs : 0;
+    property <length> label-space: Tokens.font-size-sm + Tokens.space-sm * 2 + Tokens.space-xs;
     property <int> hovered: -1;
     property <string> hovered-name;
     property <length> hovered-centre;
@@ -227,9 +233,11 @@ export component Dock inherits Window {
     preferred-width: self.dock-width;
     preferred-height: self.dock-height;
 
+    changed physical-pixel => { root.rescaled(); }
+
     panel := Rectangle {
         x: (parent.width - self.width) / 2;
-        y: root.label-space;
+        y: parent.height - self.height;
         width: row.preferred-width;
         height: root.panel-height;
         background: Tokens.color-dock;

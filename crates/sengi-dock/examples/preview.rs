@@ -164,7 +164,6 @@ fn main() {
 
     let dock_ui = ui::Dock::new().expect("the dock component");
     dock_ui.set_show_labels(labels);
-    let scale = dock_ui.window().scale_factor();
     let resize = {
         let weak = dock_ui.as_weak();
         move |width: u32, height: u32| {
@@ -178,7 +177,6 @@ fn main() {
     let app = if state == "live" {
         App::start(
             dock_ui.clone_strong(),
-            scale,
             Source::Own,
             |windows| {
                 let _ = slint::invoke_from_event_loop(move || {
@@ -215,7 +213,7 @@ fn main() {
             pinned.iter().map(|s| s.to_string()).collect(),
             Vec::new(),
         );
-        let app = App::new(dock_ui.clone_strong(), dock, icon_dirs, scale, resize);
+        let app = App::new(dock_ui.clone_strong(), dock, icon_dirs, resize);
         app.set_windows(&windows_for(&state));
         app
     };
