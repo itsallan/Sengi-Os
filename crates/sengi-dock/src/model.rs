@@ -136,6 +136,43 @@ pub fn on_click(item: &Item, button: Button) -> Action {
     }
 }
 
+/// The windows that stand on their own, oldest first, each carrying the
+/// focus of the dialogs that belong to it.
+fn fold_children(windows: &[Window]) -> Vec<Window> {
+    let root_of = |window: &Window| {
+        let mut root = window;
+        // Parents nest only a few deep; the limit guards against a loop.
+        for _ in 0..8 {
+            match root
+                .parent
+                .and_then(|parent| windows.iter().find(|w| w.id == parent))
+            {
+                Some(parent) => root = parent,
+                None => break,
+            }
+        }
+        root.id
+    };
+
+    let mut roots: Vec<Window> = windows
+        .iter()
+        .filter(|w| root_of(w) == w.id)
+        .cloned()
+        .collect();
+    roots.sort_by_key(|w| w.id);
+    for child in windows {
+        let root = root_of(child);
+        if root == child.id {
+            continue;
+        }
+        if let Some(root) = roots.iter_mut().find(|w| w.id == root) {
+            root.activated |= child.activated;
+            root.focus_seq = root.focus_seq.max(child.focus_seq);
+        }
+    }
+    roots
+}
+
 /// The dock's state: installed apps, pins, and how app_ids map onto them.
 pub struct Dock {
     data_dirs: Vec<PathBuf>,
@@ -219,13 +256,17 @@ impl Dock {
     /// The dock's items for the given windows: the search button, the pinned
     /// apps in config order, then other running apps in the order they
     /// first opened a window. Every window lands on exactly one item.
+    ///
+    /// Dialogs, file choosers and other windows with a parent are not
+    /// counted: they stand for the window they belong to, which takes over
+    /// their focus. So an app with one window and an open dialog still has
+    /// one window, and a portal's file chooser does not get a tile.
     pub fn items(&mut self, windows: &[Window]) -> Vec<Item> {
+        let windows = fold_children(windows);
         // Group windows by app, remembering the order apps first appear in.
         let mut order: Vec<String> = Vec::new();
         let mut groups: HashMap<String, Vec<&Window>> = HashMap::new();
-        let mut sorted: Vec<&Window> = windows.iter().collect();
-        sorted.sort_by_key(|w| w.id);
-        for window in sorted {
+        for window in &windows {
             let key = if window.app_id.trim().is_empty() {
                 format!("{NAMELESS}{}", window.id)
             } else {
@@ -466,6 +507,45 @@ mod tests {
         assert_eq!(items[1].name, "Paint");
         assert!(items[1].launchable);
         assert_eq!(dock.entry("org.example.paint").unwrap().name, "Paint");
+    }
+
+    #[test]
+    fn a_dialog_is_part_of_its_window() {
+        let mut dialog = focused(2, "foot", 5);
+        dialog.parent = Some(1);
+        let items = dock(&["foot"]).items(&[window(1, "foot"), dialog]);
+        assert_eq!(keys(&items), ["", "foot"]);
+        let foot = &items[1];
+        assert_eq!(foot.window_count(), 1);
+        assert_eq!(foot.windows[0].id, 1);
+        // The dialog has the focus, so the app does.
+        assert!(foot.focused());
+        // One window: a click minimises it rather than cycling to the dialog.
+        assert_eq!(on_click(foot, Button::Primary), Action::Minimize(1));
+    }
+
+    #[test]
+    fn a_file_chooser_from_another_process_gets_no_tile() {
+        // The portal's chooser has its own app_id but belongs to the app.
+        let mut chooser = focused(2, "xdg-desktop-portal-gtk", 3);
+        chooser.parent = Some(1);
+        let mut nested = window(3, "xdg-desktop-portal-gtk");
+        nested.parent = Some(2);
+        let items = dock(&["foot"]).items(&[window(1, "firefox-esr"), chooser, nested]);
+        assert_eq!(keys(&items), ["", "foot", "firefox-esr"]);
+        assert_eq!(items[2].window_count(), 1);
+        assert!(items[2].focused());
+    }
+
+    #[test]
+    fn a_window_whose_parent_is_unknown_stands_alone() {
+        let mut orphan = window(2, "vim");
+        orphan.parent = Some(99);
+        let mut own = window(3, "vim");
+        own.parent = Some(3);
+        let items = dock(&[]).items(&[orphan, own]);
+        assert_eq!(keys(&items), ["", "vim"]);
+        assert_eq!(items[1].window_count(), 2);
     }
 
     #[test]

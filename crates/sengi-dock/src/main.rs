@@ -84,8 +84,8 @@ fn print(dock: &mut Dock, windows: &[Window]) {
     println!("windows:");
     for w in windows {
         println!(
-            "  #{} app_id={:?} title={:?} activated={} minimized={} maximized={} focus_seq={}",
-            w.id, w.app_id, w.title, w.activated, w.minimized, w.maximized, w.focus_seq
+            "  #{} app_id={:?} title={:?} activated={} minimized={} maximized={} focus_seq={} parent={:?}",
+            w.id, w.app_id, w.title, w.activated, w.minimized, w.maximized, w.focus_seq, w.parent
         );
     }
     println!("dock:");

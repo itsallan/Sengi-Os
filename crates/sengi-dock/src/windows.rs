@@ -37,6 +37,8 @@ pub struct Window {
     /// Grows each time a window gains focus, so the largest value marks the
     /// window used most recently. Zero until the window is first focused.
     pub focus_seq: u64,
+    /// The window this one belongs to, for a dialog or a file chooser.
+    pub parent: Option<u32>,
 }
 
 /// True when two window lists differ in something the dock shows. Titles are
@@ -50,6 +52,7 @@ pub fn differs_for_dock(a: &[Window], b: &[Window]) -> bool {
                 || a.activated != b.activated
                 || a.minimized != b.minimized
                 || a.focus_seq != b.focus_seq
+                || a.parent != b.parent
         })
 }
 
@@ -117,6 +120,8 @@ struct Pending {
     app_id: Option<String>,
     title: Option<String>,
     flags: Option<Flags>,
+    /// `Some(None)` says the window has stopped having a parent.
+    parent: Option<Option<u32>>,
 }
 
 /// The bookkeeping behind the tracker, apart from the Wayland plumbing.
@@ -180,11 +185,20 @@ impl Book {
             window.minimized = flags.minimized;
             window.maximized = flags.maximized;
         }
+        if let Some(parent) = pending.parent {
+            window.parent = parent.filter(|&parent| parent != id);
+        }
     }
 
     fn close(&mut self, id: u32) {
         self.pending.remove(&id);
         self.windows.retain(|w| w.id != id);
+        // A dialog that outlives its window stands on its own.
+        for window in &mut self.windows {
+            if window.parent == Some(id) {
+                window.parent = None;
+            }
+        }
     }
 }
 
@@ -355,6 +369,12 @@ impl<F: FnMut(&[Window]) + 'static> Dispatch<ZwlrForeignToplevelHandleV1, ()> fo
             handle::Event::State { state: bytes } => {
                 if let Some(pending) = state.book.pending(id) {
                     pending.flags = Some(parse_state(&bytes));
+                }
+            }
+            handle::Event::Parent { parent } => {
+                let parent = parent.and_then(|parent| state.id_of(&parent));
+                if let Some(pending) = state.book.pending(id) {
+                    pending.parent = Some(parent);
                 }
             }
             // The compositor sends this after each batch of changes to one window.
@@ -585,6 +605,35 @@ mod tests {
     }
 
     #[test]
+    fn a_dialog_knows_its_parent_until_the_parent_closes() {
+        let mut book = Book::default();
+        let main = book.open();
+        let dialog = book.open();
+        book.commit(main);
+        book.pending(dialog).unwrap().parent = Some(Some(main));
+        book.commit(dialog);
+        assert_eq!(get(&book, dialog).parent, Some(main));
+        assert_eq!(get(&book, main).parent, None);
+
+        // Unrelated changes leave the parent alone.
+        book.pending(dialog).unwrap().title = Some("Open".into());
+        book.commit(dialog);
+        assert_eq!(get(&book, dialog).parent, Some(main));
+
+        book.close(main);
+        assert_eq!(get(&book, dialog).parent, None);
+
+        // The compositor can also take the parent away.
+        let other = book.open();
+        book.commit(other);
+        book.pending(dialog).unwrap().parent = Some(Some(other));
+        book.commit(dialog);
+        book.pending(dialog).unwrap().parent = Some(None);
+        book.commit(dialog);
+        assert_eq!(get(&book, dialog).parent, None);
+    }
+
+    #[test]
     fn focus_order_is_remembered() {
         let mut book = Book::default();
         let a = book.open();
@@ -647,6 +696,9 @@ mod tests {
         assert!(differs_for_dock(std::slice::from_ref(&a), &[]));
         b.activated = false;
         b.app_id = "other".into();
+        assert!(differ(&a, &b));
+        b.app_id = a.app_id.clone();
+        b.parent = Some(7);
         assert!(differ(&a, &b));
     }
 }
