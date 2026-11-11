@@ -93,7 +93,7 @@ component Indicator inherits Rectangle {
     opacity: root.running ? 1 : 0;
     animate width, opacity {
         duration: Tokens.motion-base;
-        easing: ease-out;
+        easing: Tokens.motion-easing;
     }
 }
 
@@ -105,24 +105,34 @@ component Slot inherits Rectangle {
 
     // A click with Ctrl or Shift held counts as a middle click.
     property <bool> modified: false;
-    property <length> cell: Tokens.dock-icon + Tokens.space-xxs * 2;
+    property <length> icon-bottom: icon.y + icon.height;
 
-    width: root.item.present ? root.cell + Tokens.space-xs : 0;
+    width: root.item.present ? Tokens.dock-icon + Tokens.space-xs * 2 : 0;
     opacity: root.item.present ? 1 : 0;
     clip: true;
     animate width, opacity {
         duration: Tokens.motion-base;
-        easing: ease-out;
+        easing: Tokens.motion-easing;
     }
 
-    highlight := Rectangle {
-        y: Tokens.dock-padding;
-        width: root.cell;
-        height: root.cell;
+    // Reaches around the icon and its indicator, so it shows as a clear
+    // band even behind an icon that is itself a solid tile.
+    Rectangle {
+        y: Tokens.space-xxs;
+        height: parent.height - Tokens.space-xxs * 2;
         border-radius: Tokens.radius;
         background: touch.pressed ? Tokens.color-surface-raised
             : touch.has-hover ? Tokens.color-surface-hover : transparent;
-        animate background { duration: Tokens.motion-fast; }
+        animate background {
+            duration: Tokens.motion-fast;
+            easing: Tokens.motion-easing;
+        }
+    }
+
+    icon := Rectangle {
+        y: Tokens.dock-padding + Tokens.space-xxs;
+        width: Tokens.dock-icon;
+        height: Tokens.dock-icon;
 
         if root.item.icon == DockIcon.search: SearchIcon { }
         if root.item.icon == DockIcon.terminal: TerminalIcon { }
@@ -137,7 +147,7 @@ component Slot inherits Rectangle {
     }
 
     Indicator {
-        y: highlight.y + highlight.height + (Tokens.dock-padding - self.height) / 2;
+        y: root.icon-bottom + (root.height - root.icon-bottom - self.height) / 2;
         running: root.item.running;
         focused: root.item.focused;
     }
@@ -201,7 +211,9 @@ export component Dock inherits Window {
         root.items.length * root.slot-width + root.side-padding * 2;
     out property <length> dock-height: root.panel-height + (root.show-labels ? root.label-space : 0);
     // The panel alone: what to reserve as the exclusive zone, plus the margin.
-    out property <length> panel-height: Tokens.dock-icon + Tokens.space-xxs * 2 + Tokens.dock-padding * 2;
+    // Below the icons there is a little more room than above, for the
+    // running indicator.
+    out property <length> panel-height: Tokens.dock-icon + Tokens.space-xxs * 4 + Tokens.dock-padding * 2;
     // The panel's width at this moment, which moves while rows slide.
     out property <length> panel-width: panel.width;
     // Gap between the panel and the bottom edge of the screen.
@@ -272,6 +284,9 @@ export component Dock inherits Window {
         x: clamp(root.hovered-centre - self.width / 2, 0, root.width - self.width);
         y: 0;
         opacity: root.hovered >= 0 ? 1 : 0;
-        animate opacity { duration: Tokens.motion-fast; }
+        animate opacity {
+            duration: Tokens.motion-fast;
+            easing: Tokens.motion-easing;
+        }
     }
 }
