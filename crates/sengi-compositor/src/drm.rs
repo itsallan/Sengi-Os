@@ -313,14 +313,18 @@ fn gles_renderer(fd: &DrmDeviceFd) -> Result<Renderer, Box<dyn Error>> {
 }
 
 pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
+    // The seat comes first. libseat's builtin backend forks a helper that
+    // waits for the kernel's SIGUSR1 and SIGUSR2 to switch terminals, and a
+    // helper forked after the state has blocked those for its own use never
+    // sees them: the switch then silently does not happen.
+    let (mut session, session_events) =
+        LibSeatSession::new().map_err(|err| format!("cannot open a seat session: {err}"))?;
+    let seat = session.seat();
+
     let mut event_loop: EventLoop<State> = EventLoop::try_new()?;
     let display = Display::new()?;
     let mut state = State::new(&mut event_loop, display)?;
     let handle = event_loop.handle();
-
-    let (mut session, session_events) =
-        LibSeatSession::new().map_err(|err| format!("cannot open a seat session: {err}"))?;
-    let seat = session.seat();
 
     let path = udev::primary_gpu(&seat)?
         .or_else(|| udev::all_gpus(&seat).ok()?.into_iter().next())
