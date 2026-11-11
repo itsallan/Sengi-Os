@@ -8,14 +8,15 @@
 #   cargo build -p sengi-notify
 #   crates/sengi-notify/tests/smoke.sh target/debug/sengi-notify
 #
-# Needs labwc, dbus-daemon, dbus-run-session, dbus-monitor and gdbus.
+# Needs labwc, dbus-daemon, dbus-run-session, dbus-monitor, gdbus and
+# notify-send.
 set -u
 
 if [ "${1:-}" != --inside ]; then
     bin=${1:?usage: smoke.sh path/to/sengi-notify}
     case $bin in /*) ;; *) bin=$PWD/$bin ;; esac
     [ -x "$bin" ] || { echo "smoke.sh: $bin is not a program" >&2; exit 2; }
-    for tool in labwc dbus-daemon dbus-run-session dbus-monitor gdbus; do
+    for tool in labwc dbus-daemon dbus-run-session dbus-monitor gdbus notify-send; do
         command -v "$tool" >/dev/null || { echo "smoke.sh: $tool is not installed" >&2; exit 2; }
     done
     work=$(mktemp -d)
@@ -93,11 +94,24 @@ export WAYLAND_DISPLAY=wayland-0
 status "a bad option is a usage error" 2 "$bin" --no-such-option
 status "no session bus is a failure" 1 env DBUS_SESSION_BUS_ADDRESS=unix:path="$work/none" "$bin"
 
+dbus-monitor --session "member='RequestName'" >"$work/request.log" 2>/dev/null &
+watcher=$!
+started="$started $watcher"
+sleep 0.5
 "$bin" 2>"$work/notify.err" &
 service=$!
 started="$started $service"
 wait_for owned && answers || { fail "the service did not answer on the bus"; cat "$work/notify.err"; finish; }
 ok "the service answers on the bus"
+
+# The name is asked for with DBUS_NAME_FLAG_DO_NOT_QUEUE (4) and nothing
+# else: not ALLOW_REPLACEMENT (1), which would let another program take
+# the name, and not REPLACE_EXISTING (2), which would take it from one.
+sleep 0.3
+kill $watcher 2>/dev/null
+flags=$(grep -A2 "member=RequestName" "$work/request.log" |
+    grep -A1 'string "org.freedesktop.Notifications"' | awk '/uint32/ { print $2 }')
+if [ "$flags" = 4 ]; then ok "the name is requested with DO_NOT_QUEUE alone"; else fail "RequestName flags were '$flags', expected 4"; fi
 
 # A second start loses the name, says so with its own status, and never
 # needs the compositor to find that out.
@@ -109,13 +123,27 @@ check "do-not-disturb starts off" test "$("$bin" --dnd status)" = off
 check "and reads on once it is set" test "$("$bin" --dnd status)" = on
 "$bin" --dnd off
 
-# Another client cannot take over a notification that is still open.
-first=$(id_of "$(notify Pairing 0 '' 'Pair with phone?' '' "['allow','Allow','deny','Deny']" '{}' 0)")
+# Another client cannot take over a notification whose sender is still on
+# the bus. notify-send --wait stays connected until its notification closes.
+notify-send --print-id --wait -t 0 -a Pairing 'Pair with phone?' >"$work/first" 2>/dev/null &
+started="$started $!"
+wait_for test -s "$work/first"
+first=$(head -n 1 "$work/first")
 other=$(id_of "$(notify Updates "$first" '' 'Update ready' '' "['allow','Later']" '{}' 0)")
 if [ -n "$first" ] && [ -n "$other" ] && [ "$first" != "$other" ]; then
     ok "a replace by another client gets an id of its own"
 else
     fail "a replace by another client kept id '$first' (got '$other')"
+fi
+"$bin" --dismiss-all
+
+# Once the sender has gone, its id can be reused, as notify-send -r does.
+gone=$(id_of "$(notify Volume 0 '' 'Volume 40%' '' '[]' '{}' 0)")
+again=$(id_of "$(notify Volume "$gone" '' 'Volume 45%' '' '[]' '{}' 0)")
+if [ -n "$gone" ] && [ "$gone" = "$again" ]; then
+    ok "a notification whose sender has left can be replaced"
+else
+    fail "replacing id '$gone' of a departed sender gave '$again'"
 fi
 "$bin" --dismiss-all
 

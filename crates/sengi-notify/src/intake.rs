@@ -57,6 +57,23 @@ impl Intake {
         Admitted { id, token }
     }
 
+    /// Who owns the open notification under `id`, if that is not `sender`.
+    pub fn other_owner(&self, sender: &str, id: u32) -> Option<&str> {
+        self.open
+            .get(&id)
+            .map(|owner| owner.sender.as_str())
+            .filter(|owner| *owner != sender)
+    }
+
+    /// The owner of `id` has left the bus. Its notification stays on
+    /// screen, but there is nobody left to hear what happens to it, so the
+    /// next client to ask for the id may have it. This is what lets
+    /// `notify-send --replace-id`, a new connection every time, update a
+    /// volume or progress card.
+    pub fn vacate(&mut self, id: u32) {
+        self.open.remove(&id);
+    }
+
     /// Ids count up from 1, skip 0 when they wrap, as the spec asks, and
     /// skip any that is still open.
     fn fresh(&mut self) -> u32 {
@@ -137,6 +154,23 @@ mod tests {
         assert_eq!(intake.open(), 2);
         // And the original is still its owner's to replace.
         assert_eq!(intake.admit(":1.1", theirs.id).id, theirs.id);
+    }
+
+    #[test]
+    fn the_notification_of_a_sender_that_has_left_can_be_taken_over() {
+        let mut intake = Intake::default();
+        let first = intake.admit(":1.1", 0);
+        assert_eq!(intake.other_owner(":1.1", first.id), None);
+        assert_eq!(intake.other_owner(":1.2", first.id), Some(":1.1"));
+        assert_eq!(intake.other_owner(":1.2", 999), None);
+
+        intake.vacate(first.id);
+        let taken = intake.admit(":1.2", first.id);
+        assert_eq!(taken.id, first.id);
+        assert_eq!(intake.open(), 1);
+        // The closure of the old content does not free the new owner's id.
+        intake.release(first.id, first.token);
+        assert_eq!(intake.other_owner(":1.3", first.id), Some(":1.2"));
     }
 
     #[test]

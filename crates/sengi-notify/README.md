@@ -38,8 +38,11 @@ notification in the session.
 
 - `GetCapabilities` answers `actions`, `body`, `body-markup`. Body markup
   is accepted and stripped to plain text; nothing is rendered as markup.
-- `replaces_id` replaces a notification only for the client that sent it.
-  From anyone else it is ignored and the notification gets a new id.
+- `replaces_id` replaces an open notification for the client that sent
+  it. From another client it does so only if the sender has left the bus,
+  which is what makes `notify-send --replace-id` work from one run to the
+  next; while the sender is still connected, a stranger asking for its id
+  gets a new notification under a new id instead.
 - `NotificationClosed` and `ActionInvoked` are sent to the client that
   sent the notification, not broadcast, and never before the reply to its
   `Notify` call.
@@ -116,7 +119,8 @@ is on, and Escape closes the centre.
     crates/sengi-notify/tests/smoke.sh target/debug/sengi-notify
 
 `smoke.sh` starts its own session bus and headless labwc, and needs
-`labwc`, `dbus-daemon`, `dbus-run-session`, `dbus-monitor` and `gdbus`.
+`labwc`, `dbus-daemon`, `dbus-run-session`, `dbus-monitor`, `gdbus` and
+`notify-send`.
 
 ## Building
 

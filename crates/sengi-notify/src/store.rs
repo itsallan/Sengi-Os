@@ -190,7 +190,9 @@ impl Store {
 
     /// Takes in a new notification, or new content for one that is still
     /// open under the same id. The bus side has already made sure that a
-    /// replacement comes from the sender of the original.
+    /// replacement comes from the sender of the original, or that the
+    /// original sender has left the bus; then the notification is the new
+    /// sender's from here on.
     pub fn add(&mut self, note: Notification, now: u64, closed: &mut Vec<Closed>) {
         let existing = self
             .open()
@@ -771,6 +773,27 @@ mod tests {
         store.expire(8_000, &mut out);
         assert!(shown(&store).is_empty());
         assert!(out.iter().all(|closed| closed.reason == Reason::Expired));
+    }
+
+    #[test]
+    fn a_card_taken_over_from_a_departed_sender_belongs_to_the_new_one() {
+        let mut store = store();
+        let mut out = Vec::new();
+        store.add(from("gone", 1), 0, &mut out);
+        store.add(
+            Notification {
+                token: 9,
+                ..from("here", 1)
+            },
+            0,
+            &mut out,
+        );
+        assert_eq!(shown(&store), [1]);
+        assert_eq!(remembered(&store), [1]);
+        store.close(1, Reason::Dismissed, 0, &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].sender, "here");
+        assert_eq!(out[0].token, 9);
     }
 
     #[test]

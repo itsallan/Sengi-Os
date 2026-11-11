@@ -157,17 +157,22 @@ impl Notifications {
     }
 
     /// `Notify`, with the sender's unique name already taken from the
-    /// message. `now` is in milliseconds.
+    /// message. `now` is in milliseconds. `owner_left` says that the id to
+    /// replace belongs to another client and that client has left the bus.
     fn accept(
         &mut self,
         sender: &str,
         replaces_id: u32,
+        owner_left: bool,
         request: Request<'_>,
         now: u64,
     ) -> zbus::fdo::Result<u32> {
         self.link.busy()?;
         if !self.per_sender.allow(sender, now) || !self.everyone.allow(EVERYONE, now) {
             return Err(too_many());
+        }
+        if owner_left {
+            self.intake.vacate(replaces_id);
         }
         let admitted = self.intake.admit(sender, replaces_id);
         let mut note = request.into_notification(admitted.id, self.default_timeout);
@@ -181,12 +186,31 @@ impl Notifications {
     }
 }
 
+/// Whether the client with this unique name has disconnected. If the bus
+/// cannot say, it has not: the owner keeps its notification.
+async fn has_left(connection: &zbus::Connection, name: &str) -> bool {
+    let reply = connection
+        .call_method(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            Some("org.freedesktop.DBus"),
+            "NameHasOwner",
+            &(name,),
+        )
+        .await;
+    matches!(
+        reply.and_then(|reply| reply.body().deserialize::<bool>()),
+        Ok(false)
+    )
+}
+
 #[zbus::interface(name = "org.freedesktop.Notifications")]
 impl Notifications {
     #[allow(clippy::too_many_arguments)]
-    fn notify(
+    async fn notify(
         &mut self,
         #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
         app_name: &str,
         replaces_id: u32,
         _app_icon: &str,
@@ -211,8 +235,18 @@ impl Notifications {
             hints: hints.0,
             expire_timeout,
         };
+        // Someone else's open notification can only be replaced once that
+        // someone is gone. The bus is asked, and only in this case.
+        let owner = self
+            .intake
+            .other_owner(sender.as_str(), replaces_id)
+            .map(str::to_string);
+        let owner_left = match owner {
+            Some(owner) => has_left(connection, &owner).await,
+            None => false,
+        };
         let now = self.started.elapsed().as_millis() as u64;
-        self.accept(sender.as_str(), replaces_id, request, now)
+        self.accept(sender.as_str(), replaces_id, owner_left, request, now)
     }
 
     fn close_notification(&self, id: u32) -> zbus::fdo::Result<()> {
@@ -578,12 +612,25 @@ mod tests {
             .collect()
     }
 
+    impl Notifications {
+        /// `accept` while everybody is still on the bus.
+        fn post(
+            &mut self,
+            sender: &str,
+            replaces_id: u32,
+            request: Request<'_>,
+            now: u64,
+        ) -> zbus::fdo::Result<u32> {
+            self.accept(sender, replaces_id, false, request, now)
+        }
+    }
+
     #[test]
     fn notify_hands_the_ui_a_cleaned_notification_with_its_sender() {
         let (link, receiver, _) = link();
         let mut service = Notifications::new(link, 5_000);
         let id = service
-            .accept(
+            .post(
                 ":1.5",
                 0,
                 request("Hello\u{202e}", vec!["default", "Open"]),
@@ -605,7 +652,7 @@ mod tests {
         let (link, receiver, _) = link();
         let mut service = Notifications::new(link, 5_000);
         let pairing = service
-            .accept(
+            .post(
                 ":1.5",
                 0,
                 request("Pair?", vec!["allow", "Allow", "deny", "Deny"]),
@@ -615,7 +662,7 @@ mod tests {
 
         // Another client dresses the same id up as something harmless.
         let intruder = service
-            .accept(
+            .post(
                 ":1.66",
                 pairing,
                 request("Update ready", vec!["allow", "Later"]),
@@ -626,7 +673,7 @@ mod tests {
 
         // The owner still can.
         let again = service
-            .accept(":1.5", pairing, request("Pair? (2)", vec![]), 2)
+            .post(":1.5", pairing, request("Pair? (2)", vec![]), 2)
             .expect("accepted");
         assert_eq!(again, pairing);
 
@@ -648,16 +695,51 @@ mod tests {
     }
 
     #[test]
+    fn a_notification_whose_sender_has_left_the_bus_can_be_replaced_by_another() {
+        // notify-send connects, posts and leaves; its next run is another
+        // connection asking to replace the id the first one printed.
+        let (link, receiver, _) = link();
+        let mut service = Notifications::new(link, 5_000);
+        let volume = service
+            .post(":1.5", 0, request("Volume 40%", vec![]), 0)
+            .expect("accepted");
+        let updated = service
+            .accept(":1.6", volume, true, request("Volume 45%", vec![]), 1)
+            .expect("accepted");
+        assert_eq!(updated, volume);
+        assert_eq!(service.intake.open(), 1);
+        let notes = notes(&receiver);
+        assert_eq!(notes[1].id, volume);
+        assert_eq!(notes[1].sender, ":1.6");
+        // It belongs to the new sender now, as long as that one stays.
+        let stranger = service
+            .post(":1.7", volume, request("Mine", vec![]), 2)
+            .expect("accepted");
+        assert_ne!(stranger, volume);
+    }
+
+    #[test]
+    fn saying_that_the_owner_left_changes_nothing_for_an_id_nobody_holds() {
+        let (link, _receiver, _) = link();
+        let mut service = Notifications::new(link, 5_000);
+        let id = service
+            .accept(":1.5", 77, true, request("x", vec![]), 0)
+            .expect("accepted");
+        assert_eq!(id, 77);
+        assert_eq!(service.intake.open(), 1);
+    }
+
+    #[test]
     fn an_id_is_free_again_once_its_notification_has_closed() {
         let (link, receiver, _) = link();
         let mut service = Notifications::new(link, 5_000);
         let id = service
-            .accept(":1.5", 0, request("a", vec![]), 0)
+            .post(":1.5", 0, request("a", vec![]), 0)
             .expect("accepted");
         let token = notes(&receiver)[0].token;
         service.intake.release(id, token);
         let reused = service
-            .accept(":1.6", id, request("b", vec![]), 1)
+            .post(":1.6", id, request("b", vec![]), 1)
             .expect("accepted");
         assert_eq!(reused, id);
     }
@@ -669,17 +751,17 @@ mod tests {
         let burst = Allowance::per_sender().burst;
         for _ in 0..burst {
             service
-                .accept(":1.5", 0, request("x", vec![]), 0)
+                .post(":1.5", 0, request("x", vec![]), 0)
                 .expect("accepted");
             pending.handled();
         }
-        let refused = service.accept(":1.5", 0, request("x", vec![]), 0);
+        let refused = service.post(":1.5", 0, request("x", vec![]), 0);
         assert!(matches!(refused, Err(zbus::fdo::Error::LimitsExceeded(_))));
         assert_eq!(notes(&receiver).len(), burst as usize);
         // A refused call holds no id.
         assert_eq!(service.intake.open(), burst as usize);
         // Someone else is not affected.
-        assert!(service.accept(":1.6", 0, request("x", vec![]), 0).is_ok());
+        assert!(service.post(":1.6", 0, request("x", vec![]), 0).is_ok());
     }
 
     #[test]
@@ -689,7 +771,7 @@ mod tests {
         let mut accepted = 0;
         for connection in 0..1_000 {
             let sender = format!(":1.{connection}");
-            if service.accept(&sender, 0, request("x", vec![]), 0).is_ok() {
+            if service.post(&sender, 0, request("x", vec![]), 0).is_ok() {
                 accepted += 1;
                 pending.handled();
             }
@@ -698,7 +780,7 @@ mod tests {
         // It refills with time.
         let later = Allowance::everyone().refill * 3;
         assert!(service
-            .accept(":1.5000", 0, request("x", vec![]), later)
+            .post(":1.5000", 0, request("x", vec![]), later)
             .is_ok());
     }
 
@@ -709,12 +791,12 @@ mod tests {
         for _ in 0..PENDING_MAX {
             pending.sent();
         }
-        let refused = service.accept(":1.5", 0, request("x", vec![]), 0);
+        let refused = service.post(":1.5", 0, request("x", vec![]), 0);
         assert!(matches!(refused, Err(zbus::fdo::Error::LimitsExceeded(_))));
         assert!(service.close_notification(1).is_err());
         assert!(notes(&receiver).is_empty());
         pending.handled();
-        assert!(service.accept(":1.5", 0, request("x", vec![]), 0).is_ok());
+        assert!(service.post(":1.5", 0, request("x", vec![]), 0).is_ok());
     }
 
     #[test]
@@ -722,7 +804,7 @@ mod tests {
         let (link, receiver, pending) = link();
         drop(receiver);
         let mut service = Notifications::new(link, 5_000);
-        assert!(service.accept(":1.5", 0, request("x", vec![]), 0).is_err());
+        assert!(service.post(":1.5", 0, request("x", vec![]), 0).is_err());
         assert_eq!(service.intake.open(), 0);
         assert!(!pending.full());
     }
