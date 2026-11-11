@@ -101,6 +101,7 @@ mod frames;
 mod outputs;
 mod platform;
 mod surface;
+mod worker;
 
 use std::cell::RefCell;
 use std::fmt;
@@ -127,6 +128,7 @@ use platform::{LayerPlatform, ProxyEvent, QuitGuard, Unclaimed};
 
 pub use config::{Anchor, Config, ConfigError, KeyboardMode, Layer, Margins, Outputs};
 pub use surface::{Output, Rect, SurfaceHandle};
+pub use worker::dispatch_queue;
 /// The version of wayland-client the connection from [`Handle::connection`]
 /// belongs to. Use this instead of a dependency of your own so the types
 /// match.
