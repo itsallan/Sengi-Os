@@ -106,17 +106,26 @@ pointer() {
 		$(($1 * 32767 / (screen_w - 1))) $(($2 * 32767 / (screen_h - 1))) >&4
 	sleep 1
 }
+click() {
+	echo "mouse_button 1" >&3
+	sleep 0.2
+	echo "mouse_button 0" >&3
+	sleep 2
+}
 shot desktop
 
-# Without an absolute pointer the hover shot would quietly show nothing.
+# Without an absolute pointer the next two shots would quietly show nothing.
 echo "info mice" >&3
 sleep 1
 grep -q '(absolute)' "$out/monitor.log" ||
-	echo "warning: guest has no absolute pointer, the hover shot will miss" >&2
+	echo "warning: guest has no absolute pointer, hover and click shots will miss" >&2
 
-# Rest on the power icon at the right end of the bar.
+# The power icon at the right end of the bar: hover it, then open its menu.
 pointer $((screen_w - 20)) 14
 shot hover
+click
+shot session-menu
+key esc 1
 # Park the pointer on empty desktop so the hover does not follow us around.
 pointer $((screen_w / 8)) $((screen_h / 2))
 
