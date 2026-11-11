@@ -11,7 +11,7 @@ RUN rm -f /etc/apt/sources.list.d/* \
  && apt-get install -y --no-install-recommends \
       mmdebstrap squashfs-tools xorriso mtools dosfstools \
       grub-common grub-pc-bin grub-efi-amd64-bin \
-      ca-certificates zstd faketime rustup gcc libc6-dev pkg-config libfontconfig-dev \
+      ca-certificates zstd faketime rustup gcc libc6-dev pkg-config libfontconfig-dev libxkbcommon-dev \
  && rm -rf /var/lib/apt/lists/*
 
 # Slint needs a newer Rust than Debian stable ships, so the compiler comes

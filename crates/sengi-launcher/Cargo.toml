@@ -7,12 +7,14 @@ repository.workspace = true
 build = "build.rs"
 
 [dependencies]
-# No windowing backend here: the surface comes from sengi-layer.
-slint = { version = "1.18", default-features = false, features = ["compat-1-2", "std", "renderer-software", "software-renderer-systemfonts"] }
+sengi-layer = { path = "../sengi-layer" }
+# Not the workspace entry: that one pulls in the winit backend. sengi-layer
+# is the backend here and turns on the software renderer.
+slint = { version = "1.18", default-features = false, features = ["compat-1-2", "std"] }
 
 [dev-dependencies]
 # Only examples/preview.rs opens a normal window.
-slint = { version = "1.18", default-features = false, features = ["compat-1-2", "std", "backend-winit", "renderer-software", "software-renderer-systemfonts"] }
+slint = { version = "1.18", default-features = false, features = ["compat-1-2", "std", "backend-winit"] }
 
 [build-dependencies]
 slint-build.workspace = true
