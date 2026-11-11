@@ -99,7 +99,7 @@ pub fn attach(
     finish: impl Fn(Outcome) + 'static,
 ) {
     // The length of a full list is a design token, so it is settled here.
-    let full = usize::try_from(window.global::<Tokens>().get_launcher_lines()).unwrap_or(1);
+    let full = usize::try_from(window.get_full_lines()).unwrap_or(1);
     session.set_lines(invocation.lines_for(session.candidate_count(), full));
 
     window.set_prompt(invocation.prompt().into());

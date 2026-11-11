@@ -3,9 +3,6 @@
 
 import { Tokens, SengiText, SengiSurface } from "components.slint";
 
-// The program reads the length of a full list from the tokens.
-export { Tokens }
-
 // A run of characters in a result name. Matched runs are highlighted.
 export struct Segment {
     text: string,
@@ -100,6 +97,8 @@ export component LauncherWindow inherits Window {
     in property <int> total-rows: 0;
     in property <int> first-row: 0;
     in property <int> max-lines: Tokens.launcher-lines;
+    // The length of a full list, for the program to size shorter ones by.
+    out property <int> full-lines: Tokens.launcher-lines;
     in property <string> empty-text: "No results";
     // Why the last choice could not be carried out. Shown under the list.
     in property <string> error;
