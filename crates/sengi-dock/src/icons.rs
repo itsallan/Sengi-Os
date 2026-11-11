@@ -4,12 +4,38 @@
 //! where apps install their own icons, then `/usr/share/pixmaps`. Icons are
 //! decoded straight to the size they are drawn at, so a 256 px PNG costs the
 //! dock a 40 px bitmap and nothing more.
+//!
+//! Icon files come from whatever the user installs, and the dock must
+//! survive any of them. So the dock itself never decodes one: [`Decoder`]
+//! starts this same program again as a short-lived child that decodes one
+//! file under tight limits and writes the pixels to its standard output. A
+//! file that crashes or stalls the decoder costs that child, and the app
+//! keeps its letter tile.
 
 use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode, Stdio};
+use std::time::{Duration, Instant};
 
 /// Largest source image we are willing to decode, in pixels per side.
 const MAX_SOURCE: u32 = 2048;
+
+/// Largest icon files we are willing to read. Real icons are far smaller.
+const MAX_PNG_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_SVG_BYTES: u64 = 1024 * 1024;
+
+/// Largest icon we are willing to produce, in pixels per side.
+const MAX_PIXELS: u32 = 512;
+
+/// How long a decode may take before it is given up on.
+pub const DECODE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// First argument of the child that decodes one icon.
+pub const DECODE_FLAG: &str = "--decode-icon";
+
+/// Address space the decoding child may use.
+const DECODE_MEMORY: u64 = 512 * 1024 * 1024;
 
 /// Where icons are looked for.
 #[derive(Clone, Debug, Default)]
@@ -148,12 +174,36 @@ pub struct Pixels {
     pub data: Vec<u8>,
 }
 
-/// Decodes an icon file into a square of `pixels` per side.
-pub fn load(path: &Path, pixels: u32) -> Option<Pixels> {
-    if pixels == 0 {
+/// Reads an icon file, refusing anything that is not a regular file of a
+/// believable size. A FIFO or `/dev/zero` under an icon's name would
+/// otherwise be read for ever.
+fn read_icon(path: &Path) -> Option<Vec<u8>> {
+    let limit = match path.extension().and_then(|e| e.to_str()) {
+        Some("png") => MAX_PNG_BYTES,
+        Some("svg") => MAX_SVG_BYTES,
+        _ => return None,
+    };
+    let meta = fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > limit {
         return None;
     }
-    let bytes = fs::read(path).ok()?;
+    // The size is checked again while reading, in case the file grows.
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    fs::File::open(path)
+        .ok()?
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() as u64 <= limit).then_some(bytes)
+}
+
+/// Decodes an icon file into a square of `pixels` per side, in this
+/// process. The dock goes through [`Decoder`] instead.
+pub fn load(path: &Path, pixels: u32) -> Option<Pixels> {
+    if pixels == 0 || pixels > MAX_PIXELS {
+        return None;
+    }
+    let bytes = read_icon(path)?;
     match path.extension().and_then(|e| e.to_str()) {
         Some("png") => {
             let (width, height, rgba) = decode_png(&bytes)?;
@@ -261,7 +311,16 @@ fn fit(rgba: &[u8], width: u32, height: u32, size: u32) -> Pixels {
 fn render_svg(bytes: &[u8], size: u32) -> Option<Pixels> {
     use resvg::{tiny_skia, usvg};
 
-    let tree = usvg::Tree::from_data(bytes, &usvg::Options::default()).ok()?;
+    // By default an <image> element may name any local file and usvg reads
+    // it whole. An icon has no business doing that, so nothing is resolved.
+    let options = usvg::Options {
+        image_href_resolver: usvg::ImageHrefResolver {
+            resolve_data: Box::new(|_, _, _| None),
+            resolve_string: Box::new(|_, _| None),
+        },
+        ..usvg::Options::default()
+    };
+    let tree = usvg::Tree::from_data(bytes, &options).ok()?;
     let (width, height) = (tree.size().width(), tree.size().height());
     let scale = size as f32 / width.max(height);
     let transform = tiny_skia::Transform::from_scale(scale, scale).post_translate(
@@ -274,6 +333,120 @@ fn render_svg(bytes: &[u8], size: u32) -> Option<Pixels> {
         size,
         data: pixmap.take(),
     })
+}
+
+/// The child's side: decodes one icon and writes its pixels to standard
+/// output. Returns None when the arguments are not a decode request, so
+/// `main` can call this first and carry on as usual otherwise.
+pub fn run_decoder(args: &[String]) -> Option<ExitCode> {
+    let [flag, path, pixels] = args else {
+        return None;
+    };
+    if flag != DECODE_FLAG {
+        return None;
+    }
+    // A decoder gone wrong is stopped by the kernel rather than left to
+    // eat the machine. The parent has its own clock as well.
+    for (resource, limit) in [
+        (libc::RLIMIT_AS, DECODE_MEMORY),
+        (libc::RLIMIT_CPU, DECODE_TIMEOUT.as_secs() + 1),
+    ] {
+        let limit = libc::rlimit {
+            rlim_cur: limit,
+            rlim_max: limit,
+        };
+        // SAFETY: setrlimit only reads the struct it is handed.
+        unsafe { libc::setrlimit(resource, &limit) };
+    }
+    let decoded = pixels
+        .parse()
+        .ok()
+        .and_then(|pixels| load(Path::new(path), pixels));
+    let written = decoded.is_some_and(|icon| {
+        let mut out = std::io::stdout().lock();
+        out.write_all(&icon.data).and_then(|()| out.flush()).is_ok()
+    });
+    Some(if written {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+/// Decodes icons in a child process, so that no icon file can crash or
+/// stall the program that asked.
+#[derive(Clone, Debug)]
+pub struct Decoder {
+    program: PathBuf,
+    timeout: Duration,
+}
+
+impl Decoder {
+    /// A decoder that runs `program`, which must answer [`DECODE_FLAG`] by
+    /// calling [`run_decoder`].
+    pub fn new(program: PathBuf, timeout: Duration) -> Self {
+        Self { program, timeout }
+    }
+
+    /// A decoder that runs the program we are part of.
+    pub fn for_this_program() -> Option<Self> {
+        let program = std::env::current_exe().ok()?;
+        Some(Self::new(program, DECODE_TIMEOUT))
+    }
+
+    /// Decodes `path` to `pixels` per side. Blocks for at most the timeout,
+    /// so call it away from the UI thread. None means the file is not a
+    /// usable icon, whatever the reason.
+    pub fn decode(&self, path: &Path, pixels: u32) -> Option<Pixels> {
+        if pixels == 0 || pixels > MAX_PIXELS {
+            return None;
+        }
+        let expected = (pixels * pixels * 4) as usize;
+        let mut child = Command::new(&self.program)
+            .arg(DECODE_FLAG)
+            .arg(path)
+            .arg(pixels.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let mut output = child.stdout.take()?;
+
+        // Someone has to watch the clock while the pipe is read.
+        let timeout = self.timeout;
+        let watchdog = std::thread::spawn(move || {
+            let started = Instant::now();
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => return status.success(),
+                    Ok(None) if started.elapsed() < timeout => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    _ => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return false;
+                    }
+                }
+            }
+        });
+
+        let mut data = Vec::with_capacity(expected);
+        let read = (&mut output)
+            .take(expected as u64 + 1)
+            .read_to_end(&mut data);
+        // Closing our end unblocks a child that has more to say.
+        drop(output);
+        let finished = watchdog.join().unwrap_or(false);
+        (finished && read.is_ok() && data.len() == expected)
+            .then_some(Pixels { size: pixels, data })
+    }
+
+    /// Finds and decodes in one step.
+    pub fn decode_named(&self, dirs: &IconDirs, icon: &str, pixels: u32) -> Option<Pixels> {
+        self.decode(&find(dirs, icon, pixels)?, pixels)
+    }
 }
 
 /// The letter shown on the fallback tile for an app with no usable icon.
@@ -540,6 +713,103 @@ mod tests {
         let grey_alpha = root.join("ga.png");
         write_png(&grey_alpha, 1, 1, png::ColorType::GrayscaleAlpha, &[255, 0]);
         assert_eq!(load(&grey_alpha, 2).unwrap().data, [0; 16]);
+    }
+
+    #[test]
+    fn oversized_and_irregular_files_are_refused_unread() {
+        let root = temp_dir("icons");
+        // Far too big to be an icon, though each would decode.
+        let big_svg = root.join("big.svg");
+        let padding = " ".repeat(MAX_SVG_BYTES as usize);
+        fs::write(
+            &big_svg,
+            format!(
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\">{padding}</svg>"
+            ),
+        )
+        .unwrap();
+        assert_eq!(load(&big_svg, 40), None);
+        let big_png = root.join("big.png");
+        fs::write(&big_png, vec![0u8; MAX_PNG_BYTES as usize + 1]).unwrap();
+        assert_eq!(read_icon(&big_png), None);
+
+        // Not regular files. Reading /dev/zero would never end.
+        std::os::unix::fs::symlink("/dev/zero", root.join("zero.png")).unwrap();
+        assert_eq!(load(&root.join("zero.png"), 40), None);
+        fs::create_dir(root.join("dir.png")).unwrap();
+        assert_eq!(load(&root.join("dir.png"), 40), None);
+
+        // An absurd output size is refused as well.
+        let small = root.join("small.png");
+        solid(&small, 4, [1, 2, 3, 255]);
+        assert_eq!(load(&small, MAX_PIXELS + 1), None);
+        assert!(load(&small, 40).is_some());
+    }
+
+    #[cfg(feature = "svg")]
+    #[test]
+    fn an_svg_cannot_pull_in_other_files() {
+        let root = temp_dir("icons");
+        let inner = root.join("inner.png");
+        solid(&inner, 8, [255, 0, 0, 255]);
+        for href in [inner.to_str().unwrap(), "/dev/zero"] {
+            let path = root.join("outer.svg");
+            fs::write(
+                &path,
+                format!(
+                    "<svg xmlns=\"http://www.w3.org/2000/svg\" \
+                     xmlns:xlink=\"http://www.w3.org/1999/xlink\" viewBox=\"0 0 8 8\">\
+                     <image width=\"8\" height=\"8\" xlink:href=\"{href}\"/></svg>"
+                ),
+            )
+            .unwrap();
+            // It renders, promptly, with nothing where the image would be.
+            let pixels = load(&path, 8).unwrap();
+            assert!(pixels.data.iter().all(|&byte| byte == 0));
+        }
+    }
+
+    #[test]
+    fn requests_that_are_not_for_the_decoder_are_passed_over() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(run_decoder(&args(&[])).is_none());
+        assert!(run_decoder(&args(&["--dump"])).is_none());
+        assert!(run_decoder(&args(&[DECODE_FLAG, "only-a-path"])).is_none());
+    }
+
+    #[test]
+    fn a_decoder_that_cannot_run_or_misbehaves_gives_nothing() {
+        let root = temp_dir("icons");
+        let icon = root.join("icon.png");
+        solid(&icon, 4, [1, 2, 3, 255]);
+        let quick = Duration::from_millis(300);
+
+        let missing = Decoder::new(root.join("no-such-program"), quick);
+        assert_eq!(missing.decode(&icon, 4), None);
+
+        let script = |name: &str, body: &str| {
+            use std::os::unix::fs::PermissionsExt;
+            let path = root.join(name);
+            fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        };
+        // Too little, too much, a failure, and one that never answers.
+        let short = Decoder::new(script("short", "printf abc"), quick);
+        assert_eq!(short.decode(&icon, 4), None);
+        let long = Decoder::new(script("long", "head -c 4096 /dev/zero"), quick);
+        assert_eq!(long.decode(&icon, 4), None);
+        let failing = Decoder::new(script("failing", "head -c 64 /dev/zero; exit 1"), quick);
+        assert_eq!(failing.decode(&icon, 4), None);
+        let stuck = Decoder::new(script("stuck", "exec sleep 30"), quick);
+        let started = Instant::now();
+        assert_eq!(stuck.decode(&icon, 4), None);
+        assert!(started.elapsed() < Duration::from_secs(5));
+
+        // And one that behaves.
+        let good = Decoder::new(script("good", "head -c 64 /dev/zero"), quick);
+        assert_eq!(good.decode(&icon, 4).unwrap().data, [0u8; 64]);
+        assert_eq!(good.decode(&icon, 0), None);
     }
 
     #[test]

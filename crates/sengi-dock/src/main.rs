@@ -6,12 +6,12 @@
 use std::cell::RefCell;
 use std::process::ExitCode;
 use std::rc::Rc;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 
-use sengi_dock::app::App;
+use sengi_dock::app::{App, Deliver, Message};
 use sengi_dock::model::Dock;
 use sengi_dock::windows::{self, Source, Window};
-use sengi_dock::{config, desktop, ui};
+use sengi_dock::{config, desktop, icons, ui};
 use sengi_layer::{Anchor, Config, KeyboardMode, Layer, Margins, Outputs};
 use slint::ComponentHandle;
 
@@ -28,12 +28,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let dock: Rc<RefCell<Option<App>>> = Rc::default();
     let to_ui = handle.channel({
         let dock = dock.clone();
-        move |windows: Vec<Window>| {
+        move |message: Message| {
             if let Some(dock) = dock.borrow().as_ref() {
-                dock.set_windows(&windows);
+                dock.receive(message);
             }
         }
     })?;
+    let to_ui = Mutex::new(to_ui);
+    let deliver: Deliver = Arc::new(move |message| {
+        let _ = to_ui.lock().unwrap().send(message);
+    });
 
     // One dock, on the output the compositor picks. Anchored to the bottom
     // edge only, which centres it. The real size, margin and exclusive zone
@@ -60,14 +64,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // keeps windows as far from the dock as the dock is from the edge.
         handle.set_exclusive_zone(ui.get_panel_height().round() as i32 + margin);
 
-        let to_ui = to_ui.clone();
         let resize = handle.clone();
         let app = App::start(
             ui.clone_strong(),
             Source::Shared(handle.connection()),
-            move |windows| {
-                let _ = to_ui.send(windows);
-            },
+            deliver.clone(),
             move |width, height| {
                 if let Err(error) = resize.set_size(width, height) {
                     eprintln!("sengi-dock: {error}");
@@ -120,6 +121,10 @@ fn dump() -> Result<(), Box<dyn std::error::Error>> {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // The dock decodes icons by running itself; see icons::Decoder.
+    if let Some(code) = icons::run_decoder(&args) {
+        return code;
+    }
     let result = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         [] => run(),
         ["--dump"] => dump(),
