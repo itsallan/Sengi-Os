@@ -4,13 +4,18 @@
 port=/dev/ttyS0
 
 # The compositor this boot was asked for, by the same rule as sengi-session.
+# labwc takes the socket name wayland-0; ours counts from wayland-1.
 compositor=labwc
+socket=/run/user/1000/wayland-0
 read -r cmdline </proc/cmdline
 case " $cmdline " in
-*" sengi.compositor=own "*) compositor=sengi-compositor ;;
+*" sengi.compositor=own "*)
+	compositor=sengi-compositor
+	socket=/run/user/1000/wayland-1
+	;;
 esac
 
-until [ -S /run/user/1000/wayland-0 ] && pidof sengi-bar >/dev/null && pidof sengi-dock >/dev/null; do
+until [ -S "$socket" ] && pidof sengi-bar >/dev/null && pidof sengi-dock >/dev/null; do
 	sleep 0.1
 done
 read -r up _ </proc/uptime
