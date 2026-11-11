@@ -1,0 +1,150 @@
+// Glyphs for Settings. Like the bar's and the quick settings panel's, they
+// are stroked paths on a 16 unit grid, drawn in token colours. Icon,
+// SignalIcon, SpeakerIcon and BatteryIcon are the same drawings sengi-quick
+// has; the others are new here.
+
+import { Tokens } from "components.slint";
+
+export component Icon inherits Path {
+    in property <brush> ink: Tokens.color-text;
+
+    width: Tokens.bar-icon;
+    height: Tokens.bar-icon;
+    viewbox-width: 16;
+    viewbox-height: 16;
+    stroke: root.ink;
+    stroke-width: Tokens.icon-stroke;
+    stroke-line-cap: round;
+    stroke-line-join: round;
+    fill: transparent;
+}
+
+// Wi-Fi: a dot and three arcs. `level` of them are lit, from the dot up;
+// the rest are drawn faint, so the shape stays the same at every strength.
+export component SignalIcon inherits Rectangle {
+    in property <int> level: 4;
+    in property <brush> ink: Tokens.color-text;
+    in property <brush> faint: Tokens.color-text-disabled;
+
+    width: Tokens.bar-icon;
+    height: Tokens.bar-icon;
+
+    Icon {
+        commands: "M1.65 6.15a9 9 0 0 1 12.7 0";
+        ink: root.level >= 4 ? root.ink : root.faint;
+    }
+
+    Icon {
+        commands: "M3.75 8.25a6 6 0 0 1 8.5 0";
+        ink: root.level >= 3 ? root.ink : root.faint;
+    }
+
+    Icon {
+        commands: "M5.9 10.4a3 3 0 0 1 4.2 0";
+        ink: root.level >= 2 ? root.ink : root.faint;
+    }
+
+    Icon {
+        commands: "M8 12.6h0.01";
+        ink: root.level >= 1 ? root.ink : root.faint;
+    }
+}
+
+export component SpeakerIcon inherits Rectangle {
+    in property <bool> muted: false;
+    in property <brush> ink: Tokens.color-text;
+
+    width: Tokens.bar-icon;
+    height: Tokens.bar-icon;
+
+    Icon {
+        commands: "M2.5 6.25h2.25L8 3.5v9L4.75 9.75H2.5z";
+        ink: root.ink;
+    }
+
+    if !root.muted: Icon {
+        commands: "M10.5 6a2.8 2.8 0 0 1 0 4 M12.2 4.2a5.4 5.4 0 0 1 0 7.6";
+        ink: root.ink;
+    }
+
+    if root.muted: Icon {
+        commands: "M10.75 6.25l3.5 3.5 M14.25 6.25l-3.5 3.5";
+        ink: root.ink;
+    }
+}
+
+// The outline, with a bar for the charge.
+export component BatteryIcon inherits Rectangle {
+    in property <int> percent: 100;
+    in property <brush> ink: Tokens.color-text;
+
+    // One unit of the 16 unit grid.
+    private property <length> unit: self.width / 16;
+
+    width: Tokens.bar-icon;
+    height: Tokens.bar-icon;
+
+    Icon {
+        commands: "M2.5 5h9.5a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H2.5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z M14.75 7v2";
+        ink: root.ink;
+    }
+
+    Rectangle {
+        x: root.unit * 3;
+        y: root.unit * 6.5;
+        width: root.unit * 8.5 * Math.clamp(root.percent, 0, 100) / 100;
+        height: root.unit * 3;
+        background: root.ink;
+    }
+}
+
+// An icon by its name, so that a list row or a sidebar entry can carry
+// one as plain data. A name nobody knows draws nothing.
+export component NamedIcon inherits Rectangle {
+    in property <string> name;
+    in property <int> level: 4;
+    in property <brush> ink: Tokens.color-text;
+
+    pure function path(name: string) -> string {
+        name == "wired" ? "M6 2.5h4v3.5H6z M2.5 10.5h4V14h-4z M9.5 10.5h4V14h-4z M8 6v2.25 M4.5 10.5V8.25h7v2.25"
+        : name == "bluetooth" ? "M4.5 5l7 6L8 14V2l3.5 3-7 6"
+        : name == "lock" ? "M4.5 7.5h7v6h-7z M6 7.5V5.5a2 2 0 0 1 4 0v2"
+        : name == "display" ? "M2 3h12v8.5H2z M5.5 14h5 M8 11.5V14"
+        : name == "clock" ? "M8 2a6 6 0 1 0 0 12a6 6 0 1 0 0-12z M8 4.75V8l2.25 1.5"
+        : name == "keyboard" ? "M1.5 4.5h13v7.5h-13z M4 7h0.01 M6.67 7h0.01 M9.33 7h0.01 M12 7h0.01 M5 9.75h6"
+        : name == "mouse" ? "M8 2a3.5 3.5 0 0 1 3.5 3.5v5a3.5 3.5 0 0 1-7 0v-5A3.5 3.5 0 0 1 8 2z M8 4.5v2.25"
+        : name == "bell" ? "M4 11.5V7.5a4 4 0 0 1 8 0v4l1.25 1.25H2.75z M6.75 14.25h2.5"
+        : name == "info" ? "M8 2a6 6 0 1 0 0 12a6 6 0 1 0 0-12z M8 7.25v3.75 M8 5h0.01"
+        : name == "warning" ? "M8 2.5l6 10.5H2z M8 6.5v3 M8 11.25h0.01"
+        : name == "check" ? "M3.5 8.5l3 3 6-6.5"
+        : name == "chevrons" ? "M5.5 6.25L8 3.75l2.5 2.5 M5.5 9.75L8 12.25l2.5-2.5"
+        : name == "microphone" ? "M8 2a2 2 0 0 1 2 2v4a2 2 0 0 1-4 0V4a2 2 0 0 1 2-2z M4 7.75a4 4 0 0 0 8 0 M8 11.75V14"
+        : name == "headphones" ? "M3 12V8a5 5 0 0 1 10 0v4 M3 9.5h2v4H3z M11 9.5h2v4h-2z"
+        : name == "device" ? "M4.5 2.5h7v11h-7z M8 11h0.01"
+        : name == "sun" ? "M8 5.25a2.75 2.75 0 1 0 0 5.5a2.75 2.75 0 1 0 0-5.5z M8 1.5v1.25 M8 13.25v1.25 M1.5 8h1.25 M13.25 8h1.25 M3.4 3.4l.9.9 M11.7 11.7l.9.9 M3.4 12.6l.9-.9 M11.7 4.3l.9-.9"
+        : ""
+    }
+
+    width: Tokens.bar-icon;
+    height: Tokens.bar-icon;
+
+    if root.name == "signal": SignalIcon {
+        level: root.level;
+        ink: root.ink;
+    }
+
+    if root.name == "speaker" || root.name == "muted": SpeakerIcon {
+        muted: root.name == "muted";
+        ink: root.ink;
+    }
+
+    if root.name == "battery": BatteryIcon {
+        percent: root.level;
+        ink: root.ink;
+    }
+
+    if root.path(root.name) != "": Icon {
+        commands: root.path(root.name);
+        ink: root.ink;
+    }
+}

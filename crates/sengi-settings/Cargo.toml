@@ -1,0 +1,20 @@
+[package]
+name = "sengi-settings"
+description = "The Sengi OS settings application"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[dependencies]
+# The workspace entry is the winit backend with the software renderer:
+# this is an ordinary window, not a layer-shell surface. The two extra
+# features are what the software renderer needs to find Inter and to draw
+# the icons, which are paths.
+slint = { workspace = true, features = ["software-renderer-systemfonts", "software-renderer-path"] }
+
+# For prctl: the process is kept out of core dumps. See secret.rs.
+libc = "0.2"
+
+[build-dependencies]
+slint-build.workspace = true

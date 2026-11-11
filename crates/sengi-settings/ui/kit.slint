@@ -1,0 +1,1114 @@
+// Controls the shared library does not have yet. They are built from the
+// tokens alone and know nothing about Settings, so they can move to
+// ui/components.slint as they are. IconButton, Slider and TextField are
+// the ones sengi-quick has in its own controls.slint; the rest are new.
+//
+// Focus is shown the way SengiButton and SengiToggle show it: a border in
+// the focus colour, inside the control.
+
+import { Tokens, SengiText, SengiLabel, SengiSurface, SengiButton } from "components.slint";
+import { Icon, NamedIcon } from "icons.slint";
+
+// Sizes the tokens do not name, derived from the ones they do.
+export global Metrics {
+    // A row of a card or list: two lines of text, or one control.
+    out property <length> row: Tokens.button + Tokens.space-lg;
+    out property <length> slider-knob: Tokens.space-lg;
+    out property <length> slider-track: Tokens.space-xs;
+    out property <length> sidebar: Tokens.dock-icon * 5;
+    out property <length> sidebar-row: Tokens.button + Tokens.space-sm;
+    // The widest a page's column of cards grows.
+    out property <length> page: Tokens.launcher-width;
+    out property <length> dialog: Tokens.notification-width;
+    out property <length> chooser: Tokens.menu-width * 1.5;
+    out property <length> scrollbar: Tokens.space-xs;
+    // A slider or field at the right of a row.
+    out property <length> control: Tokens.dock-icon * 5;
+}
+
+// A square button around an icon, which is its child.
+export component IconButton inherits Rectangle {
+    in property <bool> enabled: true;
+    callback clicked();
+
+    width: Tokens.button;
+    height: Tokens.button;
+    border-radius: Tokens.radius;
+    border-width: scope.has-focus ? Tokens.focus-ring-width : 0;
+    border-color: Tokens.color-focus-ring;
+    background: root.enabled && touch.has-hover ? Tokens.color-surface-hover : transparent;
+    animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+
+    scope := FocusScope {
+        focus-on-click: false;
+        enabled: root.enabled;
+
+        key-pressed(event) => {
+            if event.text == " " || event.text == Key.Return {
+                root.clicked();
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+
+        touch := TouchArea {
+            enabled: root.enabled;
+            clicked => { root.clicked(); }
+        }
+    }
+
+    @children
+}
+
+// A horizontal slider over whole numbers. `changed` is called for every
+// position the user moves it through, `released` once when a drag or a
+// key press ends on a value; whoever listens picks the one that suits.
+export component Slider inherits Rectangle {
+    in-out property <int> value: 0;
+    in property <int> minimum: 0;
+    in property <int> maximum: 100;
+    // What one press of an arrow key moves it by.
+    in property <int> step: 5;
+    in property <bool> enabled: true;
+    // Drawn without the accent: the value is kept but is not in effect,
+    // as with the volume while muted.
+    in property <bool> dim: false;
+    out property <bool> pressed: touch.pressed;
+    out property <bool> has-focus: scope.has-focus;
+    callback changed(int);
+    callback released(int);
+
+    private property <length> travel: self.width - Metrics.slider-knob;
+    private property <float> fraction: root.maximum > root.minimum
+        ? Math.clamp((root.value - root.minimum) / (root.maximum - root.minimum), 0, 1) : 0;
+
+    function move(to: int) {
+        if Math.clamp(to, root.minimum, root.maximum) != root.value {
+            root.value = Math.clamp(to, root.minimum, root.maximum);
+            root.changed(root.value);
+        }
+    }
+
+    function key(to: int) {
+        root.move(to);
+        root.released(root.value);
+    }
+
+    // The value under a pointer at `x`, with the knob centred on it.
+    pure function at(x: length) -> int {
+        Math.round(root.minimum
+            + (root.maximum - root.minimum) * (x - Metrics.slider-knob / 2) / root.travel)
+    }
+
+    height: Metrics.slider-knob;
+    min-width: Metrics.slider-knob * 4;
+
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: Metrics.slider-track;
+        border-radius: self.height / 2;
+        background: Tokens.color-surface-raised;
+    }
+
+    Rectangle {
+        x: 0;
+        y: (parent.height - self.height) / 2;
+        width: Metrics.slider-knob / 2 + root.travel * root.fraction;
+        height: Metrics.slider-track;
+        border-radius: self.height / 2;
+        background: !root.enabled ? Tokens.color-border
+            : root.dim ? Tokens.color-text-muted : Tokens.color-accent;
+        animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+    }
+
+    scope := FocusScope {
+        focus-on-click: false;
+        enabled: root.enabled;
+
+        key-pressed(event) => {
+            if event.text == Key.LeftArrow {
+                root.key(root.value - root.step);
+            } else if event.text == Key.RightArrow {
+                root.key(root.value + root.step);
+            } else if event.text == Key.Home {
+                root.key(root.minimum);
+            } else if event.text == Key.End {
+                root.key(root.maximum);
+            } else {
+                return EventResult.reject;
+            }
+            return EventResult.accept;
+        }
+
+        touch := TouchArea {
+            enabled: root.enabled;
+            pointer-event(event) => {
+                if event.button == PointerEventButton.left {
+                    if event.kind == PointerEventKind.down {
+                        root.move(root.at(self.mouse-x));
+                    } else if event.kind == PointerEventKind.up {
+                        root.released(root.value);
+                    }
+                }
+            }
+            moved => {
+                if self.pressed {
+                    root.move(root.at(self.mouse-x));
+                }
+            }
+        }
+    }
+
+    if root.enabled: Rectangle {
+        x: root.travel * root.fraction;
+        y: 0;
+        width: Metrics.slider-knob;
+        height: Metrics.slider-knob;
+        border-radius: self.height / 2;
+        border-width: scope.has-focus ? Tokens.focus-ring-width : 0;
+        border-color: Tokens.color-focus-ring;
+        background: Tokens.color-text;
+    }
+}
+
+// A single-line text field. With `masked` it shows dots, for passphrases.
+export component TextField inherits Rectangle {
+    in-out property <string> text <=> input.text;
+    in property <string> placeholder;
+    in property <bool> masked: false;
+    in property <bool> enabled: true;
+    out property <bool> has-focus: input.has-focus;
+    // Return was pressed.
+    callback accepted(string);
+    // Escape was pressed.
+    callback cancelled();
+    callback edited(string);
+    // Up or down was pressed: -1 or 1. For a field that filters a list.
+    callback stepped(int);
+
+    public function take-focus() {
+        input.focus();
+    }
+
+    public function clear() {
+        input.text = "";
+    }
+
+    forward-focus: input;
+    height: Tokens.button;
+    border-radius: Tokens.radius;
+    border-width: input.has-focus && root.enabled ? Tokens.focus-ring-width : Tokens.border-width;
+    border-color: input.has-focus && root.enabled ? Tokens.color-focus-ring : Tokens.color-border;
+    background: Tokens.color-bg;
+    animate border-color { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+
+    // Starts clear of the caret, which sits at the left edge of an empty
+    // field and would otherwise cut through the first letter.
+    if input.text == "": SengiText {
+        x: Tokens.space-sm + Tokens.space-xs;
+        width: parent.width - Tokens.space-sm * 2 - Tokens.space-xs;
+        height: parent.height;
+        text: root.placeholder;
+        color: Tokens.color-text-disabled;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    input := TextInput {
+        x: Tokens.space-sm;
+        width: parent.width - Tokens.space-sm * 2;
+        height: parent.height;
+        enabled: root.enabled;
+        single-line: true;
+        input-type: root.masked ? InputType.password : InputType.text;
+        color: root.enabled ? Tokens.color-text : Tokens.color-text-muted;
+        font-family: Tokens.font-family;
+        font-size: Tokens.font-size-md;
+        vertical-alignment: center;
+        selection-background-color: Tokens.color-accent;
+        selection-foreground-color: Tokens.color-accent-text;
+        text-cursor-width: Tokens.space-xxs;
+
+        accepted => { root.accepted(self.text); }
+        edited => { root.edited(self.text); }
+
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.cancelled();
+                return EventResult.accept;
+            }
+            if event.text == Key.UpArrow {
+                root.stepped(-1);
+                return EventResult.accept;
+            }
+            if event.text == Key.DownArrow {
+                root.stepped(1);
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+    }
+}
+
+// A column that scrolls when it does not fit: by wheel, by dragging, and
+// by Page Up and Page Down from any control inside it that does not want
+// those keys itself. A bar at the right shows where the view is.
+export component Scroll inherits Rectangle {
+    in property <length> content-height;
+    out property <length> offset: -flick.content-y;
+    out property <length> visible-width: self.width;
+
+    private property <length> overflow: Math.max(root.content-height - root.height, 0);
+
+    // Bring the band from `top` to `top + height` of the content into view.
+    public function reveal(top: length, height: length) {
+        if top < root.offset {
+            flick.content-y = -Math.max(top, 0);
+        } else if top + height > root.offset + root.height {
+            flick.content-y = -Math.min(top + height - root.height, root.overflow);
+        }
+    }
+
+    function page(direction: int) {
+        flick.content-y = -Math.clamp(root.offset + direction * root.height * 0.8, 0, root.overflow);
+    }
+
+    clip: true;
+
+    FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.PageDown {
+                root.page(1);
+                return EventResult.accept;
+            }
+            if event.text == Key.PageUp {
+                root.page(-1);
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+
+        flick := Flickable {
+            content-height: Math.max(root.content-height, root.height);
+            content-width: root.width;
+
+            @children
+        }
+    }
+
+    if root.overflow > 0: Rectangle {
+        x: parent.width - self.width - Tokens.space-xxs;
+        y: Tokens.space-xxs + (parent.height - Tokens.space-xs - self.height)
+            * Math.min(root.offset, root.overflow) / root.overflow;
+        width: Metrics.scrollbar;
+        height: Math.max(parent.height * parent.height / root.content-height, Tokens.space-xl);
+        border-radius: self.width / 2;
+        background: Tokens.color-border;
+    }
+}
+
+// A heading over a group of cards.
+export component SectionLabel inherits SengiLabel {
+    font-size: Tokens.font-size-md;
+    font-weight: Tokens.font-weight-medium;
+    color: Tokens.color-text-muted;
+    overflow: elide;
+}
+
+// A bordered group of rows, stacked from the top.
+export component Card inherits SengiSurface {
+    VerticalLayout {
+        padding: Tokens.border-width;
+        @children
+    }
+}
+
+// The line between two rows of a card.
+export component Divider inherits Rectangle {
+    height: Tokens.border-width;
+    background: Tokens.color-border;
+}
+
+// A row of a card: a title with an optional second line at the left, and
+// whatever its children are at the right.
+export component SettingRow inherits Rectangle {
+    in property <string> title;
+    in property <string> detail;
+    in property <bool> enabled: true;
+    // Drawn in the danger colour: something is wrong.
+    in property <bool> alert: false;
+
+    min-height: Metrics.row;
+
+    HorizontalLayout {
+        padding-left: Tokens.space-md;
+        padding-right: Tokens.space-md;
+        padding-top: Tokens.space-sm;
+        padding-bottom: Tokens.space-sm;
+        spacing: Tokens.space-md;
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: Tokens.space-xxs;
+
+            SengiText {
+                text: root.title;
+                color: root.enabled ? Tokens.color-text : Tokens.color-text-disabled;
+                overflow: elide;
+            }
+
+            if root.detail != "": SengiLabel {
+                text: root.detail;
+                color: !root.enabled ? Tokens.color-text-disabled
+                    : root.alert ? Tokens.color-danger : Tokens.color-text-muted;
+                font-weight: Tokens.font-weight-regular;
+                wrap: word-wrap;
+            }
+        }
+
+        @children
+    }
+}
+
+// A value shown at the right of a row, for things that cannot be changed.
+export component RowValue inherits SengiText {
+    color: Tokens.color-text-muted;
+    horizontal-alignment: right;
+    vertical-alignment: center;
+    overflow: elide;
+}
+
+// A few lines of explanation in a card of their own.
+export component Note inherits SengiSurface {
+    in property <string> text;
+    in property <bool> warning: false;
+
+    background: Tokens.color-bg;
+
+    HorizontalLayout {
+        padding: Tokens.space-md;
+        spacing: Tokens.space-md;
+
+        VerticalLayout {
+            alignment: start;
+            NamedIcon {
+                name: root.warning ? "warning" : "info";
+                ink: root.warning ? Tokens.color-warning : Tokens.color-text-muted;
+            }
+        }
+
+        SengiText {
+            horizontal-stretch: 1;
+            text: root.text;
+            color: Tokens.color-text-muted;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// One of a few choices, side by side. For settings with two or three
+// values, where a list would be more ceremony than the choice deserves.
+export component Segmented inherits Rectangle {
+    in property <[string]> labels;
+    in-out property <int> current: 0;
+    in property <bool> enabled: true;
+    callback selected(int);
+
+    function pick(index: int) {
+        if index >= 0 && index < root.labels.length && index != root.current {
+            root.current = index;
+            root.selected(index);
+        }
+    }
+
+    height: Tokens.button;
+    border-radius: Tokens.radius;
+    border-width: scope.has-focus ? Tokens.focus-ring-width : Tokens.border-width;
+    border-color: scope.has-focus ? Tokens.color-focus-ring : Tokens.color-border;
+    background: Tokens.color-bg;
+
+    scope := FocusScope {
+        focus-on-click: false;
+        enabled: root.enabled;
+
+        key-pressed(event) => {
+            if event.text == Key.LeftArrow {
+                root.pick(root.current - 1);
+                return EventResult.accept;
+            }
+            if event.text == Key.RightArrow {
+                root.pick(root.current + 1);
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+    }
+
+    HorizontalLayout {
+        padding: Tokens.space-xxs;
+        spacing: Tokens.space-xxs;
+
+        for label[index] in root.labels: Rectangle {
+            min-width: text.preferred-width + Tokens.space-md * 2;
+            border-radius: Tokens.radius - Tokens.space-xxs;
+            background: index == root.current
+                ? (root.enabled ? Tokens.color-surface-hover : Tokens.color-surface)
+                : touch.has-hover && root.enabled ? Tokens.color-surface : transparent;
+            animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+
+            text := SengiText {
+                text: label;
+                color: !root.enabled ? Tokens.color-text-disabled
+                    : index == root.current ? Tokens.color-text : Tokens.color-text-muted;
+                font-weight: index == root.current
+                    ? Tokens.font-weight-medium : Tokens.font-weight-regular;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            touch := TouchArea {
+                enabled: root.enabled;
+                clicked => { root.pick(index); }
+            }
+        }
+    }
+}
+
+// A button that shows the current choice and opens a list of the others.
+export component ChoiceButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: Tokens.button;
+    min-width: Tokens.dock-icon * 2;
+    border-radius: Tokens.radius;
+    border-width: scope.has-focus ? Tokens.focus-ring-width : Tokens.border-width;
+    border-color: scope.has-focus ? Tokens.color-focus-ring : Tokens.color-border;
+    background: touch.has-hover && root.enabled ? Tokens.color-surface-hover : Tokens.color-surface-raised;
+    animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+
+    HorizontalLayout {
+        padding-left: Tokens.space-md;
+        padding-right: Tokens.space-sm;
+        spacing: Tokens.space-sm;
+
+        SengiText {
+            horizontal-stretch: 1;
+            text: root.text;
+            color: root.enabled ? Tokens.color-text : Tokens.color-text-disabled;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        VerticalLayout {
+            alignment: center;
+            NamedIcon {
+                name: "chevrons";
+                ink: root.enabled ? Tokens.color-text-muted : Tokens.color-text-disabled;
+            }
+        }
+    }
+
+    scope := FocusScope {
+        focus-on-click: false;
+        enabled: root.enabled;
+
+        key-pressed(event) => {
+            if event.text == " " || event.text == Key.Return {
+                root.clicked();
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+// What a list shows for one thing: a network, a device, a layout, a zone.
+export struct Item {
+    // Handed back when the row is used. Never shown.
+    id: string,
+    title: string,
+    detail: string,
+    // The name of an icon in icons.slint, or nothing.
+    icon: string,
+    // For the icons that have levels: signal bars, battery charge.
+    level: int,
+    // The label of what Return and a click do, or nothing if they do
+    // nothing.
+    action: string,
+    // The label of what Delete does, or nothing.
+    remove: string,
+    // Shown at the right in place of the buttons: "Connected", "Joining…".
+    status: string,
+    checked: bool,
+    enabled: bool,
+}
+
+// A small button inside a list row.
+component RowButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> danger: false;
+    callback clicked();
+
+    height: Tokens.button;
+    width: label.preferred-width + Tokens.space-md * 2;
+    border-radius: Tokens.radius;
+    border-width: Tokens.border-width;
+    border-color: Tokens.color-border;
+    background: touch.has-hover ? Tokens.color-surface-raised : Tokens.color-surface;
+    animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+
+    label := SengiText {
+        text: root.text;
+        color: root.danger ? Tokens.color-danger : Tokens.color-text;
+        font-weight: Tokens.font-weight-medium;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+// A list the keyboard can walk. It is one stop for Tab; inside it the
+// arrow keys move, Return or Space runs the row's action and Delete its
+// removal. The buttons a row shows are for the pointer and say what the
+// keys do.
+//
+// `engaged` is true while the pointer is over the list or the keyboard is
+// in it. Whoever fills the list should not reorder it then: a row must
+// not move out from under a click.
+export component ItemList inherits Rectangle {
+    in property <[Item]> items;
+    in-out property <int> current: 0;
+    out property <bool> engaged: scope.has-focus || root.hovered >= 0;
+    out property <bool> has-focus: scope.has-focus;
+    out property <length> row-height: Metrics.row;
+    callback activated(string);
+    callback removed(string);
+    // The keyboard moved to another row.
+    callback moved(int);
+
+    private property <int> hovered: -1;
+
+    public function take-focus() {
+        scope.focus();
+    }
+
+    function go(to: int) {
+        if root.items.length > 0 {
+            root.current = Math.clamp(to, 0, root.items.length - 1);
+            root.moved(root.current);
+        }
+    }
+
+    function act(index: int) {
+        if index >= 0 && index < root.items.length
+            && root.items[index].enabled && root.items[index].action != "" {
+            root.activated(root.items[index].id);
+        }
+    }
+
+    function drop(index: int) {
+        if index >= 0 && index < root.items.length
+            && root.items[index].enabled && root.items[index].remove != "" {
+            root.removed(root.items[index].id);
+        }
+    }
+
+    forward-focus: scope;
+    height: root.items.length * Metrics.row;
+
+    scope := FocusScope {
+        focus-on-click: false;
+
+        key-pressed(event) => {
+            if event.text == Key.UpArrow {
+                root.go(root.current - 1);
+            } else if event.text == Key.DownArrow {
+                root.go(root.current + 1);
+            } else if event.text == Key.Home {
+                root.go(0);
+            } else if event.text == Key.End {
+                root.go(root.items.length - 1);
+            } else if event.text == Key.Return || event.text == " " {
+                root.act(root.current);
+            } else if event.text == Key.Delete || event.text == Key.Backspace {
+                root.drop(root.current);
+            } else {
+                return EventResult.reject;
+            }
+            return EventResult.accept;
+        }
+    }
+
+    for item[index] in root.items: Rectangle {
+        private property <bool> lit: root.hovered == index
+            || (scope.has-focus && root.current == index);
+
+        y: index * Metrics.row;
+        height: Metrics.row;
+        border-radius: Tokens.radius;
+        border-width: scope.has-focus && root.current == index ? Tokens.focus-ring-width : 0;
+        border-color: Tokens.color-focus-ring;
+        background: self.lit && item.enabled ? Tokens.color-surface-hover : transparent;
+        animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+
+        touch := TouchArea {
+            changed has-hover => {
+                if self.has-hover {
+                    root.hovered = index;
+                } else if root.hovered == index {
+                    root.hovered = -1;
+                }
+            }
+            clicked => {
+                scope.focus();
+                root.current = index;
+                root.act(index);
+            }
+        }
+
+        HorizontalLayout {
+            padding-left: Tokens.space-md;
+            padding-right: Tokens.space-md;
+            spacing: Tokens.space-md;
+
+            if item.icon != "": VerticalLayout {
+                alignment: center;
+                NamedIcon {
+                    name: item.icon;
+                    level: item.level;
+                    ink: item.enabled ? Tokens.color-text : Tokens.color-text-disabled;
+                }
+            }
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                spacing: Tokens.space-xxs;
+
+                SengiText {
+                    text: item.title;
+                    color: item.enabled ? Tokens.color-text : Tokens.color-text-disabled;
+                    font-weight: item.checked ? Tokens.font-weight-medium : Tokens.font-weight-regular;
+                    overflow: elide;
+                }
+
+                if item.detail != "": SengiLabel {
+                    text: item.detail;
+                    color: item.enabled ? Tokens.color-text-muted : Tokens.color-text-disabled;
+                    font-weight: Tokens.font-weight-regular;
+                    overflow: elide;
+                }
+            }
+
+            if item.status != "": SengiText {
+                text: item.status;
+                color: Tokens.color-text-muted;
+                vertical-alignment: center;
+            }
+
+            if parent.lit && item.enabled && item.remove != "": VerticalLayout {
+                alignment: center;
+                RowButton {
+                    text: item.remove;
+                    danger: true;
+                    clicked => { root.drop(index); }
+                }
+            }
+
+            if parent.lit && item.enabled && item.action != "": VerticalLayout {
+                alignment: center;
+                RowButton {
+                    text: item.action;
+                    clicked => { root.act(index); }
+                }
+            }
+
+            if item.checked: VerticalLayout {
+                alignment: center;
+                NamedIcon {
+                    name: "check";
+                    ink: Tokens.color-accent;
+                }
+            }
+        }
+    }
+}
+
+// Takes the focus that Tab carries past the last control of a dialog and
+// hands it back to the first, so the keyboard cannot wander off into the
+// window behind.
+component FocusFence inherits FocusScope {
+    callback reached();
+
+    width: 0;
+    height: 0;
+    changed has-focus => {
+        if self.has-focus {
+            root.reached();
+        }
+    }
+}
+
+// What a dialog says and asks. Filled in by whoever opens it.
+export struct DialogSpec {
+    title: string,
+    body: string,
+    // A passkey or PIN to compare or type elsewhere, shown large.
+    code: string,
+    // With a field to type into.
+    input: bool,
+    masked: bool,
+    placeholder: string,
+    // Under the field: what was wrong with the last try.
+    problem: string,
+    confirm: string,
+    cancel: string,
+    // The confirm button does something that cannot be taken back.
+    danger: bool,
+    // The confirm button waits for the field to hold this many characters.
+    minimum: int,
+}
+
+// A question over the whole window. Escape cancels; Return confirms when
+// there is a field, and otherwise presses whichever button has the focus,
+// which to begin with is Cancel for a dangerous question.
+export component DialogLayer inherits Rectangle {
+    in property <DialogSpec> spec;
+    // Counts down under the body, for a question that answers itself.
+    in property <string> countdown;
+    in property <bool> busy: false;
+    callback confirmed(string);
+    callback cancelled();
+
+    private property <bool> ready: !root.busy
+        && (!root.spec.input || field.text.character-count >= root.spec.minimum);
+
+    function confirm() {
+        if root.ready {
+            root.confirmed(field.text);
+        }
+    }
+
+    public function clear() {
+        field.clear();
+    }
+
+    background: Tokens.color-scrim;
+
+    init => {
+        if root.spec.input {
+            field.take-focus();
+        } else if root.spec.danger || root.spec.confirm == "" {
+            cancel.focus();
+        } else {
+            confirm.focus();
+        }
+    }
+
+    // Nothing behind the dialog can be clicked.
+    TouchArea { }
+
+    FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.cancelled();
+            }
+            // Nothing typed here reaches the window behind.
+            return EventResult.accept;
+        }
+
+        SengiSurface {
+            raised: true;
+            width: Math.min(Metrics.dialog, root.width - Tokens.space-xl * 2);
+            height: column.preferred-height;
+
+            column := VerticalLayout {
+                padding: Tokens.space-xl;
+                spacing: Tokens.space-md;
+
+                FocusFence {
+                    reached => { cancel.focus(); }
+                }
+
+                SengiText {
+                    text: root.spec.title;
+                    font-size: Tokens.font-size-lg;
+                    font-weight: Tokens.font-weight-bold;
+                    wrap: word-wrap;
+                }
+
+                if root.spec.body != "": SengiText {
+                    text: root.spec.body;
+                    color: Tokens.color-text-muted;
+                    wrap: word-wrap;
+                }
+
+                if root.spec.code != "": SengiText {
+                    text: root.spec.code;
+                    font-family: Tokens.font-mono;
+                    font-size: Tokens.font-size-xl;
+                    font-weight: Tokens.font-weight-bold;
+                    letter-spacing: Tokens.space-xs;
+                    horizontal-alignment: center;
+                }
+
+                if root.countdown != "": SengiText {
+                    text: root.countdown;
+                    color: Tokens.color-warning;
+                    wrap: word-wrap;
+                }
+
+                field := TextField {
+                    visible: root.spec.input;
+                    height: root.spec.input ? Tokens.button : 0;
+                    masked: root.spec.masked;
+                    placeholder: root.spec.placeholder;
+                    enabled: root.spec.input && !root.busy;
+                    accepted => { root.confirm(); }
+                    cancelled => { root.cancelled(); }
+                }
+
+                if root.spec.problem != "": SengiLabel {
+                    text: root.spec.problem;
+                    color: Tokens.color-danger;
+                    font-weight: Tokens.font-weight-regular;
+                    wrap: word-wrap;
+                }
+
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: Tokens.space-sm;
+
+                    cancel := SengiButton {
+                        text: root.spec.cancel;
+                        clicked => { root.cancelled(); }
+                    }
+
+                    confirm := SengiButton {
+                        visible: root.spec.confirm != "";
+                        width: root.spec.confirm != "" ? self.preferred-width : 0;
+                        text: root.spec.confirm;
+                        primary: !root.spec.danger;
+                        enabled: root.ready && root.spec.confirm != "";
+                        clicked => { root.confirm(); }
+                    }
+                }
+
+                FocusFence {
+                    reached => {
+                        if root.spec.input && !root.busy {
+                            field.take-focus();
+                        } else {
+                            cancel.focus();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A list to pick one thing from, over the whole window, with a field to
+// narrow it when it is long. The arrow keys move through the list from
+// the field; Return picks, Escape leaves.
+export component ChooserLayer inherits Rectangle {
+    in property <string> title;
+    in property <bool> searchable: false;
+    in property <string> placeholder;
+    in property <[Item]> items;
+    in-out property <int> current: 0;
+    // What to say when nothing matches.
+    in property <string> empty;
+    callback chosen(string);
+    callback cancelled();
+    callback filtered(string);
+
+    function step(by: int) {
+        if root.items.length > 0 {
+            root.current = Math.clamp(root.current + by, 0, root.items.length - 1);
+            scroll.reveal(root.current * list.row-height, list.row-height);
+        }
+    }
+
+    function choose-current() {
+        if root.current >= 0 && root.current < root.items.length {
+            root.chosen(root.items[root.current].id);
+        }
+    }
+
+    public function reveal-current() {
+        scroll.reveal(root.current * list.row-height, list.row-height);
+    }
+
+    background: Tokens.color-scrim;
+
+    init => {
+        if root.searchable {
+            search.take-focus();
+        } else {
+            list.take-focus();
+        }
+        root.reveal-current();
+    }
+
+    TouchArea {
+        clicked => { root.cancelled(); }
+    }
+
+    FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.cancelled();
+            }
+            return EventResult.accept;
+        }
+
+        SengiSurface {
+            raised: true;
+            width: Math.min(Metrics.chooser, root.width - Tokens.space-xl * 2);
+            height: Math.min(root.height - Tokens.space-xl * 2,
+                head.preferred-height + Math.max(root.items.length, 3) * list.row-height
+                    + Tokens.space-lg);
+
+            // Clicks on the surface are not clicks outside it.
+            TouchArea { }
+
+            VerticalLayout {
+                padding: Tokens.space-lg;
+                spacing: Tokens.space-md;
+
+                head := VerticalLayout {
+                    spacing: Tokens.space-md;
+
+                    FocusFence {
+                        reached => {
+                            if root.searchable {
+                                search.take-focus();
+                            } else {
+                                list.take-focus();
+                            }
+                        }
+                    }
+
+                    SengiText {
+                        text: root.title;
+                        font-size: Tokens.font-size-lg;
+                        font-weight: Tokens.font-weight-bold;
+                        overflow: elide;
+                    }
+
+                    search := TextField {
+                        visible: root.searchable;
+                        height: root.searchable ? Tokens.button : 0;
+                        enabled: root.searchable;
+                        placeholder: root.placeholder;
+                        edited(text) => { root.filtered(text); }
+                        stepped(by) => { root.step(by); }
+                        accepted => { root.choose-current(); }
+                        cancelled => { root.cancelled(); }
+                    }
+                }
+
+                scroll := Scroll {
+                    vertical-stretch: 1;
+                    content-height: list.height;
+
+                    list := ItemList {
+                        width: scroll.visible-width - Tokens.space-sm;
+                        items: root.items;
+                        current <=> root.current;
+                        activated(id) => { root.chosen(id); }
+                        moved(index) => { scroll.reveal(index * self.row-height, self.row-height); }
+                    }
+
+                    if root.items.length == 0: SengiText {
+                        width: scroll.visible-width;
+                        height: list.row-height;
+                        text: root.empty;
+                        color: Tokens.color-text-muted;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                FocusFence {
+                    reached => {
+                        if root.searchable {
+                            search.take-focus();
+                        } else {
+                            list.take-focus();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A page: a title, then cards down a column that scrolls and stays a
+// readable width however wide the window gets.
+export component Page inherits Rectangle {
+    in property <string> title;
+    // The height of the content below the title, which the page states
+    // itself: a layout inside a scrolling area cannot be asked.
+    in property <length> content-height;
+    out property <length> column-width: Math.min(self.width - Tokens.space-xl * 2, Metrics.page);
+    out property <length> column-x: (self.width - self.column-width) / 2;
+
+    public function reveal(top: length, height: length) {
+        scroll.reveal(top, height);
+    }
+
+    scroll := Scroll {
+        content-height: root.content-height + head.height + Tokens.space-xl;
+
+        head := Rectangle {
+            x: root.column-x;
+            y: 0;
+            width: root.column-width;
+            height: Tokens.font-size-xl + Tokens.space-xl * 2;
+
+            SengiText {
+                x: 0;
+                width: parent.width;
+                text: root.title;
+                font-size: Tokens.font-size-xl;
+                font-weight: Tokens.font-weight-bold;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        Rectangle {
+            x: root.column-x;
+            y: head.height;
+            width: root.column-width;
+            height: root.content-height;
+
+            @children
+        }
+    }
+}
+
+// The body of a page: sections stacked with even gaps. Its preferred
+// height is what the page scrolls over.
+export component PageColumn inherits VerticalLayout {
+    alignment: start;
+    spacing: Tokens.space-sm;
+}
+
+// Space between two sections of a page.
+export component Gap inherits Rectangle {
+    height: Tokens.space-md;
+}

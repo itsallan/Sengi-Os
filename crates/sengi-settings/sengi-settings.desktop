@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Settings
+GenericName=System Settings
+Comment=Network, sound, display and the rest of Sengi OS
+Exec=sengi-settings
+Icon=preferences-system
+Terminal=false
+StartupWMClass=sengi-settings
+Categories=Settings;System;
+Keywords=preferences;wifi;network;bluetooth;sound;display;power;keyboard;mouse;time;

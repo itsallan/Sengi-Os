@@ -1,0 +1,195 @@
+// The Settings window: categories down the left, the chosen one's page
+// at the right, and over both a dialog or a chooser when one is open.
+// The compositor draws the title bar.
+
+import { Tokens, SengiText } from "components.slint";
+import { NamedIcon } from "icons.slint";
+import { Metrics, Item, DialogSpec, DialogLayer, ChooserLayer } from "kit.slint";
+
+export { Item, DialogSpec }
+
+export struct PageEntry {
+    name: string,
+    title: string,
+    icon: string,
+}
+
+// The one dialog. Rust opens it and hears the answer.
+export global DialogState {
+    in property <bool> open: false;
+    in property <DialogSpec> spec;
+    in property <string> countdown;
+    in property <bool> busy: false;
+    callback confirmed(string);
+    callback cancelled();
+}
+
+// The one chooser.
+export global ChooserState {
+    in property <bool> open: false;
+    in property <string> title;
+    in property <bool> searchable: false;
+    in property <string> placeholder;
+    in property <string> empty;
+    in property <[Item]> items;
+    in-out property <int> current: 0;
+    callback chosen(string);
+    callback cancelled();
+    callback filtered(string);
+}
+
+component Sidebar inherits Rectangle {
+    in property <[PageEntry]> pages;
+    in property <string> current;
+    callback selected(string);
+
+    private property <int> index: 0;
+
+    public function take-focus() {
+        scope.focus();
+    }
+
+    function go(to: int) {
+        if to >= 0 && to < root.pages.length {
+            root.selected(root.pages[to].name);
+        }
+    }
+
+    forward-focus: scope;
+    background: Tokens.color-surface;
+
+    scope := FocusScope {
+        focus-on-click: false;
+
+        key-pressed(event) => {
+            if event.text == Key.UpArrow {
+                root.go(root.index - 1);
+            } else if event.text == Key.DownArrow {
+                root.go(root.index + 1);
+            } else if event.text == Key.Home {
+                root.go(0);
+            } else if event.text == Key.End {
+                root.go(root.pages.length - 1);
+            } else {
+                return EventResult.reject;
+            }
+            return EventResult.accept;
+        }
+    }
+
+    for page[index] in root.pages: Rectangle {
+        private property <bool> chosen: page.name == root.current;
+
+        x: Tokens.space-sm;
+        y: Tokens.space-sm + index * (Metrics.sidebar-row + Tokens.space-xxs);
+        width: parent.width - Tokens.space-sm * 2;
+        height: Metrics.sidebar-row;
+        border-radius: Tokens.radius;
+        border-width: self.chosen && scope.has-focus ? Tokens.focus-ring-width : 0;
+        border-color: Tokens.color-focus-ring;
+        background: self.chosen ? Tokens.color-surface-hover
+            : touch.has-hover ? Tokens.color-surface-raised : transparent;
+        animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+
+        changed chosen => {
+            if self.chosen {
+                root.index = index;
+            }
+        }
+
+        init => {
+            if self.chosen {
+                root.index = index;
+            }
+        }
+
+        NamedIcon {
+            x: Tokens.space-md;
+            y: (parent.height - self.height) / 2;
+            name: page.icon;
+            ink: parent.chosen ? Tokens.color-accent : Tokens.color-text-muted;
+        }
+
+        SengiText {
+            x: Tokens.space-md * 2 + Tokens.bar-icon;
+            width: parent.width - self.x - Tokens.space-sm;
+            height: parent.height;
+            text: page.title;
+            font-weight: parent.chosen ? Tokens.font-weight-medium : Tokens.font-weight-regular;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        touch := TouchArea {
+            clicked => {
+                scope.focus();
+                root.selected(page.name);
+            }
+        }
+    }
+
+    // The edge against the page.
+    Rectangle {
+        x: parent.width - self.width;
+        width: Tokens.border-width;
+        background: Tokens.color-border;
+    }
+}
+
+export component SettingsWindow inherits Window {
+    in property <[PageEntry]> pages;
+    in property <string> page;
+    callback page-selected(string);
+    // Another invocation has left a request with this one.
+    callback request-pending();
+
+    public function focus-sidebar() {
+        sidebar.take-focus();
+    }
+
+    title: "Settings";
+    preferred-width: Metrics.sidebar + Metrics.page + Tokens.space-xl * 2;
+    preferred-height: Tokens.dock-icon * 15;
+    min-width: Tokens.dock-icon * 18;
+    min-height: Tokens.dock-icon * 12;
+    background: Tokens.color-bg;
+    default-font-family: Tokens.font-family;
+    default-font-size: Tokens.font-size-md;
+
+    sidebar := Sidebar {
+        x: 0;
+        y: 0;
+        width: Metrics.sidebar;
+        height: parent.height;
+        pages: root.pages;
+        current: root.page;
+        selected(name) => { root.page-selected(name); }
+    }
+
+    Rectangle {
+        x: Metrics.sidebar;
+        y: 0;
+        width: parent.width - Metrics.sidebar;
+        height: parent.height;
+    }
+
+    if ChooserState.open: ChooserLayer {
+        title: ChooserState.title;
+        searchable: ChooserState.searchable;
+        placeholder: ChooserState.placeholder;
+        empty: ChooserState.empty;
+        items: ChooserState.items;
+        current <=> ChooserState.current;
+        chosen(id) => { ChooserState.chosen(id); }
+        cancelled => { ChooserState.cancelled(); }
+        filtered(text) => { ChooserState.filtered(text); }
+    }
+
+    if DialogState.open: DialogLayer {
+        spec: DialogState.spec;
+        countdown: DialogState.countdown;
+        busy: DialogState.busy;
+        confirmed(text) => { DialogState.confirmed(text); }
+        cancelled => { DialogState.cancelled(); }
+    }
+}
