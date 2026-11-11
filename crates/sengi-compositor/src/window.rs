@@ -2,6 +2,7 @@
 
 use std::{
     cell::{Cell, RefCell},
+    rc::Rc,
     time::{Duration, Instant},
 };
 
@@ -23,7 +24,7 @@ use smithay::{
 };
 
 use crate::{
-    decoration::{self, Theme, Titlebar},
+    decoration::{self, TextBitmap, Theme, Titlebar},
     frame::{self, Edges},
     layout::Rect,
     state::{set_activated, State},
@@ -44,6 +45,8 @@ pub struct WindowData {
     /// long as it is hidden.
     pub minimised: Cell<Option<(i32, i32)>>,
     pub frame: RefCell<Option<FrameBuffers>>,
+    /// The title last rasterised and its pixels, if the typeface is there.
+    pub title: RefCell<Option<(String, Option<Rc<TextBitmap>>)>>,
 }
 
 /// The textures of a frame, kept until the frame looks different.
@@ -105,17 +108,25 @@ pub fn wants_server_decoration(window: &Window) -> bool {
         .is_some_and(|t| t.current_state().decoration_mode == Some(Mode::ServerSide))
 }
 
-pub fn title(window: &Window) -> String {
+/// Looks at the window's title without copying it.
+pub fn with_title<T>(window: &Window, f: impl FnOnce(&str) -> T) -> T {
     let Some(toplevel) = window.toplevel() else {
-        return String::new();
+        return f("");
     };
     with_states(toplevel.wl_surface(), |states| {
-        states
+        let data = states
             .data_map
             .get::<XdgToplevelSurfaceData>()
-            .and_then(|data| data.lock().unwrap().title.clone())
-            .unwrap_or_default()
+            .map(|data| data.lock().unwrap());
+        f(data
+            .as_ref()
+            .and_then(|data| data.title.as_deref())
+            .unwrap_or(""))
     })
+}
+
+pub fn title(window: &Window) -> String {
+    with_title(window, str::to_string)
 }
 
 pub fn app_id(window: &Window) -> String {
@@ -345,8 +356,24 @@ impl State {
             .max(self.theme.metrics.min_frame_width())
     }
 
+    /// The title of `window` as pixels. Text is rasterised once per title,
+    /// not once per repaint of the bar.
+    fn title_bitmap(&self, window: &Window) -> (String, Option<Rc<TextBitmap>>) {
+        let mut cache = data(window).title.borrow_mut();
+        let fresh = cache
+            .as_ref()
+            .is_some_and(|(text, _)| with_title(window, |title| title == text));
+        if !fresh {
+            let text = with_title(window, str::to_string);
+            let bitmap = self.font.as_ref().map(|font| Rc::new(font.render(&text)));
+            *cache = Some((text, bitmap));
+        }
+        cache.clone().unwrap_or_default()
+    }
+
     /// Makes sure the frame textures of `window` match how it should look
-    /// now. `width` and `height` are the client size.
+    /// now. `width` and `height` are the client size. Nothing is painted or
+    /// allocated while the look stays the same.
     pub fn refresh_frame(&self, window: &Window, width: i32, height: i32) {
         let theme: &Theme = &self.theme;
         let border = theme.metrics.border;
@@ -367,43 +394,41 @@ impl State {
             square: data(window).restore.get().is_some(),
             cut: painted < full,
         };
-        let look = (bar, title(window));
         let fill = self.color(if active { theme.active } else { theme.inactive });
+        let line = self.color(theme.border);
         let rest_size = (full - painted, theme.metrics.titlebar);
 
         let mut slot = data(window).frame.borrow_mut();
-        match slot.as_mut() {
-            Some(buffers) if buffers.look == look => {}
-            _ => {
-                let text = self.font.as_ref().map(|font| font.render(&look.1));
-                let canvas = decoration::draw_titlebar(theme, &look.0, text.as_ref());
-                let size = (look.0.width.max(1), theme.metrics.titlebar.max(1));
-                let titlebar = MemoryRenderBuffer::from_slice(
-                    &canvas.into_pixels(),
-                    Fourcc::Argb8888,
-                    size,
-                    1,
-                    Transform::Normal,
-                    None,
-                );
-                let color = self.color(theme.border);
-                let side = || SolidColorBuffer::new((border, height), color);
-                *slot = Some(FrameBuffers {
-                    look,
-                    titlebar,
-                    rest: SolidColorBuffer::new(rest_size, fill),
-                    left: side(),
-                    right: side(),
-                    bottom: SolidColorBuffer::new((width + 2 * border, border), color),
-                });
-            }
+        let unchanged = slot.as_ref().is_some_and(|buffers| {
+            buffers.look.0 == bar && with_title(window, |title| title == buffers.look.1)
+        });
+        if !unchanged {
+            let (title, text) = self.title_bitmap(window);
+            let canvas = decoration::draw_titlebar(theme, &bar, text.as_deref());
+            let size = (bar.width.max(1), theme.metrics.titlebar.max(1));
+            let titlebar = MemoryRenderBuffer::from_slice(
+                &canvas.into_pixels(),
+                Fourcc::Argb8888,
+                size,
+                1,
+                Transform::Normal,
+                None,
+            );
+            let side = || SolidColorBuffer::new((border, height), line);
+            *slot = Some(FrameBuffers {
+                look: (bar, title),
+                titlebar,
+                rest: SolidColorBuffer::new(rest_size, fill),
+                left: side(),
+                right: side(),
+                bottom: SolidColorBuffer::new((full, border), line),
+            });
         }
         if let Some(buffers) = slot.as_mut() {
-            let color = self.color(theme.border);
             buffers.rest.update(rest_size, fill);
-            buffers.left.update((border, height), color);
-            buffers.right.update((border, height), color);
-            buffers.bottom.update((width + 2 * border, border), color);
+            buffers.left.update((border, height), line);
+            buffers.right.update((border, height), line);
+            buffers.bottom.update((full, border), line);
         }
     }
 }
