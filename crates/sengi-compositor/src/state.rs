@@ -10,10 +10,10 @@ use std::{
 
 use sengi_tokens::{Rgba, Tokens};
 use smithay::{
-    backend::renderer::Color32F,
+    backend::renderer::{utils::with_renderer_surface_state, Color32F},
     delegate_cursor_shape, delegate_data_device, delegate_idle_notify, delegate_output,
     delegate_seat, delegate_shm,
-    desktop::{layer_map_for_output, PopupManager, Space, Window},
+    desktop::{layer_map_for_output, PopupManager, Space, Window, WindowSurfaceType},
     input::{
         pointer::{CursorIcon, CursorImageStatus},
         Seat, SeatHandler, SeatState,
@@ -419,7 +419,21 @@ impl State {
             }
             return;
         }
-        if self.layer_focus.as_ref().is_some_and(|s| !s.is_alive()) {
+        // An open menu holds the keyboard until it is dismissed.
+        if keyboard.is_grabbed() {
+            return;
+        }
+        // An on-demand layer keeps the keyboard only while it still exists
+        // and still wants it.
+        let layer_focus_valid = self.layer_focus.as_ref().is_some_and(|surface| {
+            surface.is_alive()
+                && self.output().is_some_and(|output| {
+                    layer_map_for_output(&output)
+                        .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
+                        .is_some_and(|layer| layer.can_receive_keyboard_focus())
+                })
+        });
+        if !layer_focus_valid {
             self.layer_focus = None;
         }
         let target = self
@@ -451,10 +465,16 @@ impl State {
                 .rev()
                 .find(|layer| {
                     layer.cached_state().keyboard_interactivity == KeyboardInteractivity::Exclusive
+                        && has_buffer(layer.wl_surface())
                 })
                 .map(|layer| layer.wl_surface().clone())
         })
     }
+}
+
+/// Whether a surface is mapped, that is, has content to show.
+pub fn has_buffer(surface: &WlSurface) -> bool {
+    with_renderer_surface_state(surface, |state| state.buffer().is_some()).unwrap_or(false)
 }
 
 pub fn set_activated(window: &Window, active: bool) {

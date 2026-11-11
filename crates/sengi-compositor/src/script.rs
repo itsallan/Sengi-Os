@@ -139,7 +139,9 @@ pub fn parse(text: &str) -> Result<Vec<Step>, String> {
             "move" => {
                 let mut numbers = argument.split_whitespace().map(str::parse::<f64>);
                 match (numbers.next(), numbers.next(), numbers.next()) {
-                    (Some(Ok(x)), Some(Ok(y)), None) => push(Action::Move { x, y }),
+                    (Some(Ok(x)), Some(Ok(y)), None) if x.is_finite() && y.is_finite() => {
+                        push(Action::Move { x, y })
+                    }
                     _ => return Err(err("move needs X and Y")),
                 }
             }
@@ -313,6 +315,7 @@ mod tests {
         assert!(parse("soon exit").is_err());
         assert!(parse("10").is_err());
         assert!(parse("10 move 1").is_err());
+        assert!(parse("10 move nan 5").is_err());
         assert!(parse("10 key hyper").is_err());
         assert!(parse("10 type \u{e9}").is_err());
         assert!(parse("10 screenshot").is_err());

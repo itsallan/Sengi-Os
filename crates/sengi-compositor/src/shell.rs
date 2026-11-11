@@ -3,7 +3,11 @@
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
     delegate_compositor, delegate_xdg_decoration, delegate_xdg_shell,
-    desktop::{layer_map_for_output, PopupKind, Window},
+    desktop::{
+        find_popup_root_surface, layer_map_for_output, PopupKeyboardGrab, PopupKind,
+        PopupPointerGrab, PopupUngrabStrategy, Window,
+    },
+    input::pointer::Focus,
     reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
     reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge,
     reexports::wayland_server::{
@@ -26,7 +30,7 @@ use smithay::{
 use crate::{
     frame::Edges,
     layout::{self, Rect},
-    state::{ClientState, State},
+    state::{has_buffer, ClientState, State},
     window,
 };
 
@@ -137,8 +141,13 @@ impl XdgShellHandler for State {
     }
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
-        if let Some(window) = self.window_for_surface(surface.wl_surface()) {
-            self.set_maximised(&window, false);
+        // Before the window is on screen there is nothing to undo, and an
+        // early configure here would beat the client's first commit.
+        match self.window_for_surface(surface.wl_surface()) {
+            Some(window) if self.space.element_location(&window).is_some() => {
+                self.set_maximised(&window, false);
+            }
+            _ => {}
         }
     }
 
@@ -161,8 +170,39 @@ impl XdgShellHandler for State {
         surface.send_repositioned(token);
     }
 
-    // Popup grabs need pointer input, which no backend delivers yet.
-    fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: Serial) {}
+    /// A menu wants to be dismissed by a click elsewhere and to take the
+    /// keyboard: hand both to Smithay's popup grabs.
+    fn grab(&mut self, surface: PopupSurface, _seat: WlSeat, serial: Serial) {
+        if self.is_locked() || self.drag.is_some() {
+            return;
+        }
+        let seat = self.seat.clone();
+        let kind = PopupKind::Xdg(surface);
+        let Ok(root) = find_popup_root_surface(&kind) else {
+            return;
+        };
+        let Ok(mut grab) = self.popups.grab_popup(root, kind, &seat, serial) else {
+            return;
+        };
+
+        let previous = grab.previous_serial().unwrap_or(serial);
+        let keyboard = seat.get_keyboard().expect("seat has a keyboard");
+        let pointer = seat.get_pointer().expect("seat has a pointer");
+        // Something else already holds the keyboard or pointer and it is
+        // not the menu this one hangs off: refuse.
+        let keyboard_taken =
+            keyboard.is_grabbed() && !(keyboard.has_grab(serial) || keyboard.has_grab(previous));
+        let pointer_taken =
+            pointer.is_grabbed() && !(pointer.has_grab(serial) || pointer.has_grab(previous));
+        if keyboard_taken || pointer_taken {
+            grab.ungrab(PopupUngrabStrategy::All);
+            return;
+        }
+
+        keyboard.set_focus(self, grab.current_grab(), serial);
+        keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
+        pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
+    }
 }
 
 impl State {
@@ -206,6 +246,10 @@ impl State {
         else {
             // Already mapped: the client may have switched decoration mode.
             if let Some(window) = self.window_for_surface(surface) {
+                if !has_buffer(surface) {
+                    self.unmap_window(&window);
+                    return;
+                }
                 let decorated = window::wants_server_decoration(&window);
                 window::data(&window).decorated.set(decorated);
                 self.apply_resize_anchor(&window);
@@ -250,6 +294,20 @@ impl State {
         self.space
             .map_element(window.clone(), (x - outline.x, y - outline.y), true);
         self.focus_window(&window);
+    }
+
+    /// The client detached the window's buffer: it leaves the screen and
+    /// starts over, as if newly created, until it commits a buffer again.
+    fn unmap_window(&mut self, window: &Window) {
+        self.remove_window(window);
+        let data = window::data(window);
+        data.restore.set(None);
+        data.minimised.set(None);
+        data.resize_anchor.set(None);
+        if let Some(toplevel) = window.toplevel() {
+            toplevel.reset_initial_configure_sent();
+        }
+        self.pending_windows.push(window.clone());
     }
 
     fn popup_commit(&mut self, surface: &WlSurface) {

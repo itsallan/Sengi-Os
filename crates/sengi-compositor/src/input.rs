@@ -9,9 +9,9 @@ use smithay::{
     desktop::{layer_map_for_output, Window, WindowSurfaceType},
     input::{
         keyboard::FilterResult,
-        pointer::{AxisFrame, ButtonEvent, MotionEvent},
+        pointer::{AxisFrame, ButtonEvent, CursorImageStatus, MotionEvent},
     },
-    reexports::wayland_server::protocol::wl_surface::WlSurface,
+    reexports::wayland_server::{protocol::wl_surface::WlSurface, Resource},
     utils::{Logical, Point, SERIAL_COUNTER},
     wayland::shell::wlr_layer::Layer,
 };
@@ -271,6 +271,16 @@ impl State {
         self.pointer_seen = true;
 
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
+        // The cursor a client set is its own; the next client under the
+        // pointer starts from the default until it sets one.
+        let same_client = match (pointer.current_focus(), &focus) {
+            (Some(old), Some((new, _))) => old.id().same_client_as(&new.id()),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same_client {
+            self.client_cursor = CursorImageStatus::default_named();
+        }
         pointer.motion(
             self,
             focus,
@@ -345,7 +355,10 @@ impl State {
                     Hit::Client => {}
                 }
             }
-            None => {}
+            None => {
+                self.layer_focus = None;
+                self.update_keyboard_focus();
+            }
         }
     }
 
@@ -445,10 +458,8 @@ impl State {
         let wants_keyboard = layer_map_for_output(&output)
             .layer_for_surface(&surface, WindowSurfaceType::ALL)
             .is_some_and(|layer| layer.can_receive_keyboard_focus());
-        if wants_keyboard {
-            self.layer_focus = Some(surface);
-            self.update_keyboard_focus();
-        }
+        self.layer_focus = wants_keyboard.then_some(surface);
+        self.update_keyboard_focus();
     }
 
     /// What is at `location`, front to back: overlay and top layers,

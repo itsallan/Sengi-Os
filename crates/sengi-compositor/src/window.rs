@@ -299,6 +299,8 @@ impl State {
         };
 
         data.resize_anchor.set(None);
+        // A drag of this window cannot go on from a different geometry.
+        self.forget_pointer_state(window);
         toplevel.with_pending_state(|state| {
             state.size = Some((target.w, target.h).into());
             if maximised {

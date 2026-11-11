@@ -101,7 +101,9 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
                     .ok()
                     .filter(|s: &f64| s.is_finite() && *s >= 0.0)
                     .ok_or_else(|| format!("invalid duration: {text}"))?;
-                options.exit_after = Some(Duration::from_secs_f64(seconds));
+                let after = Duration::try_from_secs_f64(seconds)
+                    .map_err(|_| format!("invalid duration: {text}"))?;
+                options.exit_after = Some(after);
             }
             other => return Err(format!("unknown option: {other}")),
         }
@@ -186,6 +188,7 @@ mod tests {
         assert!(run(&["--size", "-5x720"]).is_err());
         assert!(run(&["--exit-after", "soon"]).is_err());
         assert!(run(&["--exit-after", "-1"]).is_err());
+        assert!(run(&["--exit-after", "1e30"]).is_err());
         assert!(run(&["--frobnicate"]).is_err());
         assert!(run(&["--backend", "drm"]).is_err());
     }
