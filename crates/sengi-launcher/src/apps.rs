@@ -52,10 +52,11 @@ impl Apps {
             .collect()
     }
 
-    /// Start entry `index` and remember that it was used.
+    /// Start entry `index` and remember that it was used. Nothing is
+    /// remembered unless the program exists and the start went through.
     pub fn launch(&mut self, index: usize, env: &Env, now: u64) -> Result<(), LaunchError> {
         let entry = &self.entries[index];
-        let argv = exec::command_line(entry, env).map_err(LaunchError::Exec)?;
+        let argv = exec::launchable(entry, env).map_err(LaunchError::Exec)?;
         exec::spawn(&argv, entry.working_dir.as_deref()).map_err(LaunchError::Spawn)?;
         self.usage.record(&entry.id, now);
         // Losing the history is not worth failing a launch that worked.
@@ -63,6 +64,32 @@ impl Apps {
         Ok(())
     }
 }
+
+/// Programs that only start the real one. As search words they would match
+/// every app launched through them.
+const WRAPPERS: &[&str] = &[
+    "env",
+    "sh",
+    "bash",
+    "dash",
+    "flatpak",
+    "snap",
+    "gtk-launch",
+    "xdg-open",
+    "gio",
+    "pkexec",
+    "sudo",
+    "nice",
+    "systemd-run",
+    "dbus-launch",
+    "dbus-run-session",
+    "python",
+    "python3",
+    "perl",
+    "java",
+    "wine",
+    "sengi-run",
+];
 
 fn candidate(entry: &DesktopEntry, usage: &Usage, now: u64) -> Candidate {
     let mut keywords = entry.keywords.clone();
@@ -88,7 +115,7 @@ fn program_name(exec: &str) -> Option<String> {
         .file_name()?
         .to_string_lossy()
         .into_owned();
-    (!name.is_empty()).then_some(name)
+    (!name.is_empty() && !WRAPPERS.contains(&name.as_str())).then_some(name)
 }
 
 #[cfg(test)]
@@ -221,5 +248,58 @@ mod tests {
             assert!(apps.launch(index, &env, 100).is_err());
         }
         assert!(!env.usage_file().exists());
+    }
+
+    #[test]
+    fn wrapper_commands_are_not_search_words() {
+        let tmp = TempDir::new();
+        write_entry(
+            &tmp,
+            "org.example.Paint.desktop",
+            "Name=Paint\nExec=/usr/bin/flatpak run --branch=stable org.example.Paint\n",
+        );
+        write_entry(
+            &tmp,
+            "notes.desktop",
+            "Name=Notes\nExec=env GDK_BACKEND=wayland notes\n",
+        );
+        write_entry(
+            &tmp,
+            "script.desktop",
+            "Name=Script\nExec=sh -c \"script\"\n",
+        );
+        write_entry(&tmp, "gimp.desktop", "Name=Image Editor\nExec=gimp %U\n");
+        let apps = Apps::load(&env_in(&tmp));
+        for wrapper in ["flatpak", "env", "sh"] {
+            assert!(order(&apps, wrapper, 0).is_empty(), "{wrapper}");
+        }
+        assert_eq!(order(&apps, "gimp", 0), vec!["Image Editor"]);
+    }
+
+    #[test]
+    fn a_missing_program_fails_even_when_the_runner_would_start() {
+        let tmp = TempDir::new();
+        tmp.write("bin/sengi-run", "#!/bin/sh\nexec \"$@\"\n");
+        tmp.make_executable("bin/sengi-run");
+        write_entry(
+            &tmp,
+            "gone.desktop",
+            "Name=Gone\nExec=/no/such/binary --flag\n",
+        );
+        write_entry(
+            &tmp,
+            "bare.desktop",
+            "Name=Bare\nExec=uninstalled-program\n",
+        );
+        let env = env_in(&tmp);
+        assert!(env.find_program("sengi-run").is_some());
+
+        let mut apps = Apps::load(&env);
+        assert_eq!(apps.entries().len(), 2);
+        for index in 0..2 {
+            let error = apps.launch(index, &env, 100).unwrap_err();
+            assert!(error.to_string().ends_with("is not installed"), "{error}");
+        }
+        assert!(!env.usage_file().exists(), "a failed launch was counted");
     }
 }

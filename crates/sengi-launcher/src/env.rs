@@ -14,6 +14,8 @@ pub struct Env {
     pub path: Vec<PathBuf>,
     /// The message locale, e.g. `de_DE.UTF-8`, if one is set.
     pub locale: Option<String>,
+    /// Preferred languages from `LANGUAGE`, best first.
+    pub languages: Vec<String>,
     /// Desktop names from `XDG_CURRENT_DESKTOP`.
     pub desktops: Vec<String>,
 }
@@ -56,6 +58,16 @@ impl Env {
             .find_map(|name| set(name))
             .map(|v| v.to_string_lossy().into_owned());
 
+        let languages = set("LANGUAGE")
+            .map(|v| {
+                v.to_string_lossy()
+                    .split(':')
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let desktops = match set("XDG_CURRENT_DESKTOP") {
             Some(v) => v
                 .to_string_lossy()
@@ -74,6 +86,7 @@ impl Env {
             runtime_dir: dir("XDG_RUNTIME_DIR"),
             path,
             locale,
+            languages,
             desktops,
         }
     }
@@ -101,14 +114,16 @@ impl Env {
         self.state_home.join("sengi-launcher/usage")
     }
 
-    /// Find a program the way a shell would, without running one.
+    /// Find a program given as an absolute path or as a bare name to look up
+    /// in PATH. The Desktop Entry spec allows nothing else, and a relative
+    /// path would depend on where the launcher happened to be started.
     pub fn find_program(&self, name: &str) -> Option<PathBuf> {
         if name.is_empty() {
             return None;
         }
         if name.contains('/') {
             let path = PathBuf::from(name);
-            return is_executable(&path).then_some(path);
+            return (path.is_absolute() && is_executable(&path)).then_some(path);
         }
         self.path
             .iter()
@@ -223,5 +238,17 @@ mod tests {
             Some(absolute.clone())
         );
         assert_eq!(e.find_program(bin.to_str().unwrap()), None);
+    }
+
+    #[test]
+    fn find_program_refuses_relative_paths() {
+        let tmp = TempDir::new();
+        tmp.write("bin/tool", "");
+        tmp.make_executable("bin/tool");
+        let e = env(&[("PATH", tmp.path().to_str().unwrap())]);
+        // Even where it would resolve against PATH or the working directory.
+        assert_eq!(e.find_program("bin/tool"), None);
+        assert_eq!(e.find_program("./tool"), None);
+        assert_eq!(e.find_program("../bin/tool"), None);
     }
 }

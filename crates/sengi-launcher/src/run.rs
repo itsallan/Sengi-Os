@@ -8,13 +8,17 @@ use crate::env::Env;
 use crate::matcher::TieBreak;
 use crate::session::Session;
 use crate::ui::{segments, Outcome};
-use crate::{menu, usage};
+use crate::{exec, menu, usage};
 
 /// Exit status after a choice was made and carried out.
 pub const CHOSEN: u8 = 0;
 /// Exit status when the panel was dismissed, as dmenu-style tools use.
 pub const DISMISSED: u8 = 1;
 pub const FAILED: u8 = 2;
+
+/// Rows of a session before a panel has sized it. How many fit is a matter
+/// of the design tokens, which only the panel knows.
+const UNSIZED: usize = 1;
 
 /// Where the candidates of a session came from. Candidate indices are indices
 /// into the application entries or the menu lines.
@@ -33,18 +37,35 @@ pub fn load(
         Mode::Apps => {
             let apps = Apps::load(env);
             let candidates = apps.candidates(usage::now());
-            let lines = invocation.lines_for(candidates.len());
-            let session = Session::new(candidates, TieBreak::Alphabetical, lines);
+            let session = Session::new(candidates, TieBreak::Alphabetical, UNSIZED);
             (Source::Apps(apps), session)
         }
         Mode::Menu => {
             let items = menu::read_items(input)?;
             let candidates = menu::candidates(&items);
-            let lines = invocation.lines_for(candidates.len());
-            let session = Session::new(candidates, TieBreak::InputOrder, lines);
+            let session = Session::new(candidates, TieBreak::InputOrder, UNSIZED);
             (Source::Menu(items), session)
         }
     })
+}
+
+/// The check a choice must pass before the panel closes on it. For an
+/// application that is whether it can be started at all; the answer is the
+/// message to show in the panel if not. Menu lines always pass.
+pub fn checker(source: &Source, env: &Env) -> Box<dyn Fn(usize) -> Result<(), String>> {
+    match source {
+        Source::Apps(apps) => {
+            let entries = apps.entries().to_vec();
+            let env = env.clone();
+            Box::new(move |index| {
+                let entry = entries.get(index).ok_or("That application is gone")?;
+                exec::launchable(entry, &env)
+                    .map(drop)
+                    .map_err(|error| format!("Cannot start {}: {error}", entry.name))
+            })
+        }
+        Source::Menu(_) => Box::new(|_| Ok(())),
+    }
 }
 
 /// Act on how the panel was closed: start the application, or write the menu
@@ -139,17 +160,6 @@ mod tests {
     }
 
     #[test]
-    fn a_menu_without_lines_shows_all_its_entries() {
-        let tmp = TempDir::new();
-        let env = env_in(&tmp);
-        let invocation = cli::parse(["--menu"]).unwrap();
-        let (_source, session) = load(&invocation, &env, SESSION_MENU).unwrap();
-        assert_eq!(session.lines(), 4);
-        let (_source, session) = load(&invocation, &env, &b"only\n"[..]).unwrap();
-        assert_eq!(session.lines(), 1);
-    }
-
-    #[test]
     fn menu_dismissed_prints_nothing_and_exits_one() {
         let (source, _session, env, _tmp) = menu(SESSION_MENU);
         let mut out = Vec::new();
@@ -232,5 +242,33 @@ mod tests {
             complete(Outcome::Accepted(3), source, &env, Vec::new()),
             FAILED
         );
+    }
+
+    #[test]
+    fn the_checker_explains_why_an_application_cannot_start() {
+        let tmp = TempDir::new();
+        tmp.write("bin/present", "#!/bin/sh\n");
+        tmp.make_executable("bin/present");
+        tmp.write(
+            "system/applications/a.desktop",
+            "[Desktop Entry]\nType=Application\nName=Alpha\nExec=present --go\n",
+        );
+        tmp.write(
+            "system/applications/b.desktop",
+            "[Desktop Entry]\nType=Application\nName=Beta\nExec=/no/such/binary\n",
+        );
+        let env = env_in(&tmp);
+        let invocation = cli::parse(Vec::<String>::new()).unwrap();
+        let (source, _session) = load(&invocation, &env, &b""[..]).unwrap();
+        let check = checker(&source, &env);
+        assert_eq!(check(0), Ok(()));
+        assert_eq!(
+            check(1),
+            Err("Cannot start Beta: /no/such/binary is not installed".to_string())
+        );
+        assert!(check(7).is_err());
+
+        let (source, _session, env, _tmp) = menu(SESSION_MENU);
+        assert_eq!(checker(&source, &env)(2), Ok(()));
     }
 }

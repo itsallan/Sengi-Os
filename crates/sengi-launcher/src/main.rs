@@ -73,8 +73,14 @@ fn show(invocation: &Invocation) -> u8 {
     let Some((source, session)) = load(invocation, &env) else {
         return run::FAILED;
     };
+    // Loading can be slow when a menu's lines come from a slow command. If
+    // the key was pressed again meanwhile, the panel is already unwanted.
+    if instance.close_requested() {
+        return run::DISMISSED;
+    }
 
-    match open(invocation, &env, instance, session) {
+    let check = run::checker(&source, &env);
+    match open(invocation, &instance, session, check) {
         Ok(outcome) => run::complete(outcome, source, &env, std::io::stdout()),
         Err(error) => {
             eprintln!("sengi-launcher: {error}");
@@ -83,71 +89,54 @@ fn show(invocation: &Invocation) -> u8 {
     }
 }
 
-fn pixels(length: f32) -> u32 {
-    length.round().max(1.0) as u32
-}
-
 /// Show the panel and run until a result is picked or it is dismissed.
 fn open(
     invocation: &Invocation,
-    env: &Env,
-    instance: Instance,
+    instance: &Instance,
     session: Session,
+    check: Box<dyn Fn(usize) -> Result<(), String>>,
 ) -> Result<Outcome, sengi_layer::Error> {
     let app = App::new()?;
     let handle = app.handle();
 
     // A later invocation asks us to close through the instance socket.
-    let replaced = Rc::new(Cell::new(false));
     let close = handle.channel({
-        let (handle, replaced) = (handle.clone(), replaced.clone());
-        move |()| {
-            replaced.set(true);
-            handle.quit();
-        }
+        let handle = handle.clone();
+        move |()| handle.quit()
     })?;
     instance.on_close_request(move || {
         let _ = close.send(());
     });
 
-    // Centred, above everything, and typing goes nowhere else.
+    // Above everything, typing goes nowhere else, and the surface covers the
+    // whole output (bar and dock included) so that a click anywhere outside
+    // the panel reaches us and closes it. The component draws the panel in
+    // the middle and leaves the rest transparent.
     let config = Config::new("sengi-launcher")
         .layer(Layer::Overlay)
-        .anchor(Anchor::NONE)
+        .anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT)
+        .size(0, 0)
+        .exclusive_zone(-1)
         .keyboard(KeyboardMode::Exclusive);
 
     let outcome = Rc::new(Cell::new(Outcome::Dismissed));
-    let prompt = invocation.prompt().to_owned();
-    let compact = invocation.compact();
-    let mut session = Some(session);
-    let result = app.run(config, {
+    let invocation = invocation.clone();
+    let mut parts = Some((session, check));
+    app.run(config, {
         let outcome = outcome.clone();
         move |context| {
-            let session = session.take().ok_or("the launcher has a single surface")?;
+            let (session, check) = parts.take().ok_or("the launcher has a single surface")?;
             let window = LauncherWindow::new()?;
-            window.set_compact(compact);
             let handle = context.handle();
-            ui::attach(&window, session, &prompt, {
+            ui::attach(&window, session, &invocation, check, {
                 let (handle, outcome) = (handle.clone(), outcome.clone());
                 move |result| {
                     outcome.set(result);
                     handle.quit();
                 }
             });
-            // Tall enough for a full list and see-through below a short one,
-            // so the search field does not move as the results change.
-            handle.set_size(
-                pixels(window.get_panel_width()),
-                pixels(window.get_full_height()),
-            )?;
             Ok(window)
         }
-    });
-
-    // If we were asked to close, the socket may already be someone else's.
-    if !replaced.get() {
-        instance::release(env.runtime_dir.as_deref());
-    }
-    result?;
+    })?;
     Ok(outcome.get())
 }

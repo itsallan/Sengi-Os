@@ -7,11 +7,14 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::files::read_limited;
 use crate::matcher::Weight;
 
 /// Applications remembered; the least used are forgotten beyond this.
 const MAX_ENTRIES: usize = 256;
 const DAY: u64 = 24 * 60 * 60;
+/// Far above what MAX_ENTRIES lines can come to.
+const MAX_FILE_BYTES: u64 = 1 << 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Record {
@@ -34,7 +37,7 @@ pub fn now() -> u64 {
 impl Usage {
     /// Read the file. A missing or damaged file just means no history.
     pub fn load(path: &Path) -> Self {
-        let Ok(bytes) = std::fs::read(path) else {
+        let Some(bytes) = read_limited(path, MAX_FILE_BYTES) else {
             return Usage::default();
         };
         let mut records = HashMap::new();
@@ -206,5 +209,14 @@ mod tests {
         let blocker = tmp.write("file", "");
         let usage = Usage::default();
         assert!(usage.save(&blocker.join("sub/usage"), NOW).is_err());
+    }
+
+    #[test]
+    fn an_oversized_file_is_ignored() {
+        let tmp = TempDir::new();
+        let path = tmp.path().join("usage");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(4 << 30).unwrap();
+        assert!(Usage::load(&path).records.is_empty());
     }
 }

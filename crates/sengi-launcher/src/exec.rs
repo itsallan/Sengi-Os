@@ -18,6 +18,10 @@ pub const RUNNER: &str = "sengi-run";
 pub enum ExecError {
     Empty,
     UnclosedQuote,
+    /// The program is a path that does not start at the root.
+    RelativePath,
+    /// The named program is not installed.
+    NotFound(String),
 }
 
 impl fmt::Display for ExecError {
@@ -25,6 +29,8 @@ impl fmt::Display for ExecError {
         match self {
             ExecError::Empty => write!(f, "the Exec line has no command"),
             ExecError::UnclosedQuote => write!(f, "the Exec line has an unclosed quote"),
+            ExecError::RelativePath => write!(f, "the Exec line names a relative path"),
+            ExecError::NotFound(program) => write!(f, "{program} is not installed"),
         }
     }
 }
@@ -144,14 +150,24 @@ fn is_only_field_codes(arg: &str) -> bool {
     any
 }
 
-/// The full command for an entry: its Exec line, inside a terminal if it asks
-/// for one, started through `sengi-run` when that is installed.
-pub fn command_line(entry: &DesktopEntry, env: &Env) -> Result<Vec<String>, ExecError> {
+/// The entry's own command: its Exec line split and expanded.
+fn own_command(entry: &DesktopEntry) -> Result<Vec<String>, ExecError> {
     let command = expand(&split(&entry.exec)?, entry);
     if command.first().is_none_or(|program| program.is_empty()) {
         return Err(ExecError::Empty);
     }
+    // Absolute paths and bare names only, as the spec says: anything else
+    // would run whatever sits at that path under the working directory.
+    if command[0].contains('/') && !Path::new(&command[0]).is_absolute() {
+        return Err(ExecError::RelativePath);
+    }
+    Ok(command)
+}
 
+/// The full command for an entry: its Exec line, inside a terminal if it asks
+/// for one, started through `sengi-run` when that is installed.
+pub fn command_line(entry: &DesktopEntry, env: &Env) -> Result<Vec<String>, ExecError> {
+    let command = own_command(entry)?;
     let mut argv = Vec::with_capacity(command.len() + 3);
     if let Some(runner) = env.find_program(RUNNER) {
         argv.push(runner.to_string_lossy().into_owned());
@@ -161,6 +177,25 @@ pub fn command_line(entry: &DesktopEntry, env: &Env) -> Result<Vec<String>, Exec
     }
     argv.extend(command);
     Ok(argv)
+}
+
+/// `command_line`, after making sure the program it names exists.
+///
+/// Starting goes through `sengi-run` and perhaps a terminal, and those start
+/// fine whatever they are asked to run. Without this check a desktop file
+/// pointing at a removed program would look like a successful launch.
+pub fn launchable(entry: &DesktopEntry, env: &Env) -> Result<Vec<String>, ExecError> {
+    let command = own_command(entry)?;
+    let mut needed = vec![command[0].as_str()];
+    if entry.terminal {
+        needed.push(TERMINAL[0]);
+    }
+    for program in needed {
+        if env.find_program(program).is_none() {
+            return Err(ExecError::NotFound(program.to_owned()));
+        }
+    }
+    command_line(entry, env)
 }
 
 /// Start `argv` detached from the launcher. Does not wait for it.
@@ -422,5 +457,68 @@ mod tests {
     fn spawn_reports_missing_programs() {
         assert!(spawn(&["/no/such/program".to_string()], None).is_err());
         assert!(spawn(&[], None).is_err());
+    }
+
+    #[test]
+    fn relative_program_paths_are_refused() {
+        for exec in ["./app", "bin/app --flag", "../app", "\"sub dir/app\""] {
+            assert_eq!(
+                command_line(&entry(exec), &no_runner()),
+                Err(ExecError::RelativePath),
+                "{exec}"
+            );
+        }
+        // Slashes in later arguments are none of our business.
+        assert!(command_line(&entry("app ./file a/b"), &no_runner()).is_ok());
+        assert!(command_line(&entry("/usr/bin/app"), &no_runner()).is_ok());
+    }
+
+    #[test]
+    fn launchable_needs_the_program_and_the_terminal_to_exist() {
+        let tmp = TempDir::new();
+        for program in ["sengi-run", "app"] {
+            tmp.write(&format!("bin/{program}"), "#!/bin/sh\n");
+            tmp.make_executable(&format!("bin/{program}"));
+        }
+        tmp.write("bin/not-executable", "");
+        let bin = tmp.path().join("bin");
+        let env = env_with_path(bin.to_str().unwrap());
+        let runner = bin.join("sengi-run").display().to_string();
+        let absolute = bin.join("app").display().to_string();
+
+        assert_eq!(
+            launchable(&entry("app --x %U"), &env).unwrap(),
+            [runner.as_str(), "app", "--x"]
+        );
+        assert_eq!(
+            launchable(&entry(&absolute), &env).unwrap(),
+            [runner.as_str(), absolute.as_str()]
+        );
+        // The runner being there does not make a missing program startable.
+        for (exec, missing) in [
+            ("gone --x", "gone"),
+            ("/no/such/binary", "/no/such/binary"),
+            ("not-executable", "not-executable"),
+        ] {
+            assert_eq!(
+                launchable(&entry(exec), &env),
+                Err(ExecError::NotFound(missing.into())),
+                "{exec}"
+            );
+        }
+        let mut in_terminal = entry("app");
+        in_terminal.terminal = true;
+        assert_eq!(
+            launchable(&in_terminal, &env),
+            Err(ExecError::NotFound("foot".into()))
+        );
+        assert_eq!(
+            launchable(&entry("\"open"), &env),
+            Err(ExecError::UnclosedQuote)
+        );
+        assert_eq!(
+            launchable(&entry("./app"), &env),
+            Err(ExecError::RelativePath)
+        );
     }
 }
