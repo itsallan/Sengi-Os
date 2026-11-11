@@ -223,6 +223,10 @@ impl Ui {
         self.refresh(closed);
     }
 
+    pub fn close_centre(&mut self) {
+        self.set_centre(false);
+    }
+
     fn set_centre(&mut self, open: bool) {
         if self.centre == open {
             return;

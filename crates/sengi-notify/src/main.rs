@@ -76,7 +76,26 @@ fn serve() -> Result<ExitCode, Box<dyn std::error::Error>> {
         .anchor(Anchor::TOP | Anchor::RIGHT);
     app.run(config, move |context| {
         let window = ui::NotifyWindow::new()?;
-        *ui.borrow_mut() = Some(ui::Ui::attach(&window, context.handle(), signals.clone()));
+        let attached = ui::Ui::attach(&window, context.handle(), signals.clone());
+        // The centre holds the keyboard while it is open. If something
+        // takes it away, a screen locker for one, the centre closes.
+        context.surface().on_focus_changed({
+            let attached = Rc::downgrade(&attached);
+            move |focused| {
+                let Some(attached) = attached.upgrade() else {
+                    return;
+                };
+                if focused {
+                    return;
+                }
+                // Hiding the surface ourselves also ends up here, with the
+                // UI already at work; then there is nothing to add.
+                if let Ok(mut ui) = attached.try_borrow_mut() {
+                    ui.close_centre();
+                };
+            }
+        });
+        *ui.borrow_mut() = Some(attached);
         Ok(window)
     })?;
     Ok(ExitCode::SUCCESS)
