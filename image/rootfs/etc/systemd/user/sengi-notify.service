@@ -1,0 +1,11 @@
+[Unit]
+Description=Sengi OS notifications
+
+# Started over D-Bus the first time something sends a notification or opens
+# the notification centre, so it costs nothing until then.
+[Service]
+Type=dbus
+BusName=org.freedesktop.Notifications
+ExecStart=/usr/bin/sengi-notify
+Restart=on-failure
+RestartSec=2

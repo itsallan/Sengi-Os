@@ -3,7 +3,7 @@
 # took and the idle memory use to the serial port.
 port=/dev/ttyS0
 
-until [ -S /run/user/1000/wayland-0 ] && pidof sengi-bar >/dev/null && pidof sengi-dock >/dev/null && pidof sengi-notify >/dev/null; do
+until [ -S /run/user/1000/wayland-0 ] && pidof sengi-bar >/dev/null && pidof sengi-dock >/dev/null; do
 	sleep 0.1
 done
 read -r up _ </proc/uptime
@@ -32,7 +32,7 @@ if [ -r "$debug" ]; then
 fi
 
 # A desktop that came up and then lost a piece is a failed boot.
-for prog in labwc sengi-bar sengi-dock sengi-notify swayidle swaybg sengi-focus; do
+for prog in labwc sengi-bar sengi-dock swayidle swaybg sengi-focus; do
 	pidof "$prog" >/dev/null || echo "SENGI-FAIL $prog is not running" >$port
 done
 echo "SENGI-DONE" >$port
