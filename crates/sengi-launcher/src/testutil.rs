@@ -10,8 +10,15 @@ pub struct TempDir(PathBuf);
 impl TempDir {
     pub fn new() -> Self {
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("sengi-launcher-test-{}-{n}", std::process::id()));
+        // Beside the test binary, under the build's target directory: tests
+        // run scripts from here, and a guessable path in a shared /tmp could
+        // be prepared by someone else. The name is short because socket
+        // paths have little room.
+        let base = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf))
+            .expect("the test binary has a directory");
+        let path = base.join(format!("slt-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("create temporary directory");
         TempDir(path)
