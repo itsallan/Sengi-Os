@@ -206,8 +206,8 @@ export component Dock inherits Window {
     // Whether to show the app's name above the hovered icon. The room for
     // it is part of dock-height all the time, not only while hovering: a
     // surface that grows under the pointer shifts its own coordinates and
-    // loses the hover. So with labels on, the surface also takes the clicks
-    // in a strip above the panel.
+    // loses the hover. So with labels on, limit the surface's input region
+    // to the panel, or it takes the clicks in a strip above it as well.
     in property <bool> show-labels: true;
 
     // The size the layer surface should have. The width counts every row,

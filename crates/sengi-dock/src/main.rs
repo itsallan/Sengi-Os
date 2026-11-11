@@ -12,7 +12,7 @@ use sengi_dock::app::{App, Deliver, Message};
 use sengi_dock::model::Dock;
 use sengi_dock::windows::{self, Source, Window};
 use sengi_dock::{config, desktop, icons, ui};
-use sengi_layer::{Anchor, Config, KeyboardMode, Layer, Margins, Output, Outputs};
+use sengi_layer::{Anchor, Config, KeyboardMode, Layer, Margins, Output, Outputs, Rect};
 use slint::ComponentHandle;
 
 const USAGE: &str = "usage: sengi-dock [--dump]
@@ -50,9 +50,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     layer.run(config, move |context| {
         let ui = ui::Dock::new()?;
-        // Off until sengi-layer can limit a surface's input region: the room
-        // for the label would swallow clicks meant for the window above.
-        ui.set_show_labels(false);
+        // The name of the app under the pointer, shown above the panel. Set
+        // this to false for a surface that is exactly the panel.
+        ui.set_show_labels(true);
         let handle = context.handle();
         let surface = context.surface();
 
@@ -65,7 +65,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // keeps windows as far from the dock as the dock is from the edge.
         handle.set_exclusive_zone(ui.get_panel_height().round() as i32 + margin);
 
-        let resize = handle.clone();
+        let panel_height = ui.get_panel_height().round() as i32;
+        let resize = surface.clone();
         let app = App::start(
             ui.clone_strong(),
             Source::Shared(handle.connection()),
@@ -74,6 +75,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if let Err(error) = resize.set_size(width, height) {
                     eprintln!("sengi-dock: {error}");
                 }
+                // The surface is taller than the panel, to have room for
+                // the label. Only the panel takes the pointer, or the strip
+                // above it would swallow clicks meant for the window there.
+                // The region does not follow a resize, so it is set each time.
+                let (width, height) = (width as i32, height as i32);
+                let panel = Rect::new(0, height - panel_height, width, panel_height);
+                resize.set_input_region(Some(&[panel]));
             },
         );
 
