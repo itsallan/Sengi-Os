@@ -2,8 +2,9 @@
 
 The Wayland compositor that will replace labwc in Sengi OS. It is built on
 [Smithay](https://github.com/Smithay/smithay) 0.7. The programs the live
-session starts (sengi-bar, the waybar dock, fuzzel, mako, swaybg, swayidle,
-swaylock, sengi-focus) run on it. It still cannot drive a real screen.
+session starts (sengi-bar, sengi-dock, sengi-launcher, mako, swaybg,
+swayidle, swaylock, sengi-focus) run on it, and it sleeps when nothing
+changes. It still cannot drive a real screen.
 
 It is not part of the ISO. The crate is its own Cargo workspace, excluded from
 the main one, so the normal build does not compile Smithay.
@@ -71,10 +72,24 @@ swaylock, swayidle, sengi-focus, wlrctl and gtk3-widget-factory:
   sizes and colours are read from `tokens/sengi.toml`.
 - Drag the title bar to move. Drag an edge or corner to resize; the opposite
   edges stay put, a window never gets narrower than its buttons, and the
-  title bar cannot be pushed under the bar.
+  title bar cannot be pushed under the bar. Drags are Smithay pointer
+  grabs, like popup grabs and client clicks.
 - Close, minimise and maximise buttons. Maximise again restores the old size
-  and place; a minimised window comes back when the dock activates it.
-- Key bindings as labwc has them in the image: Super+Space runs fuzzel,
+  and place; a minimised window comes back when the dock activates it. A
+  client that asks to be maximised before it maps (`foot --maximized`)
+  starts maximised.
+- The image's own start-up script (`autostart.in`, with `LABWC_PID` set to
+  the compositor's pid) brings up swaybg, sengi-bar and sengi-dock; the
+  dock's Terminal item starts foot and shows it as running, its search item
+  and Super+Space open sengi-launcher, which takes the keyboard and closes
+  on a click outside.
+- It draws only when something changed. With swaybg, sengi-bar, a dock,
+  mako and foot running and no input, the compositor made 0 wakeups in ten
+  seconds (566 before); with a blinking terminal cursor, about two per
+  blink. Frame callbacks go to visible surfaces, hidden ones get one a
+  second. Measured on the headless backend, debug build.
+- Key bindings as labwc has them in the image: Super+Space runs
+  sengi-launcher (fuzzel where that is missing),
   Super+Return a terminal (`sengi-run foot`, or `foot`), Super+L
   `swaylock -f`, Super+Q closes the window that has the keyboard, Alt+Tab
   and Alt+Shift+Tab step through windows by recent use.
@@ -95,7 +110,10 @@ swaylock, swayidle, sengi-focus, wlrctl and gtk3-widget-factory:
 - ext-session-lock and ext-idle-notify: swaylock locks, swayidle locks
   after its timeout. While locked only the lock surface is drawn and gets
   input; keys typed and clicks made on the lock screen did not reach the
-  terminal behind it, and bindings did not fire.
+  terminal behind it, and bindings did not fire. The locker is told the
+  session is locked after the first locked frame is out. If the locker
+  dies, the screen stays locked and plain; a new locker can take over, a
+  second one is refused while the first lives.
 - Headless backend: pixman rendering into memory, scripted input, PNG
   screenshots.
 - Winit backend: GLES rendering in a window with keyboard and pointer input.
@@ -106,24 +124,20 @@ swaylock, swayidle, sengi-focus, wlrctl and gtk3-widget-factory:
 ## What does not work
 
 - No DRM/KMS, libinput or session handling, so it cannot run on a TTY.
-- It redraws at a fixed 60 Hz whether or not anything changed, and sends
-  frame callbacks to every surface on every tick. This must be replaced by
-  damage-driven scheduling before a DRM backend.
-- If the locker crashes the session stays locked and blank until another
-  locker takes over, as the protocol requires; nothing restarts one.
-- The lock is confirmed to the client when it is requested, one frame
-  before the first locked frame is drawn.
+- Any client may lock, and after a locker has died any client may take the
+  lock over and then unlock. Restricting the protocol to the real locker
+  needs a security-context or similar check that is not there.
 - The bottom corners of a window are square and there are no shadows.
-- Fullscreen requests are ignored. `wm_capabilities` is not sent.
+- Fullscreen requests are ignored (and `wm_capabilities` says so).
+- The bar's power icon starts `sengi-power`, which was not available to
+  test; the click reaches the bar.
 - Clients that do not speak xdg-decoration (GTK) keep their own title bars.
-- Popups are placed where the client asks, without keeping them on screen.
-- A maximise request before a window's first map is dropped. A decoration
-  mode change after mapping does not re-place the window. Maximise ignores
-  the client's maximum size.
-- Among overlapping layer surfaces of one layer only the top one is hit
-  tested.
+- Windows are not re-placed when the usable area changes; they are only
+  pulled out from under a bar.
 - Written but not exercised: moves and resizes started by the client
   (`xdg_toplevel.move`/`.resize`, now checked against the press serial),
+  popup constraining at a screen edge, a decoration mode change on a mapped
+  window, frame callback throttling for a fully covered window,
   unmapping a window by detaching its buffer, on-demand layer focus by
   click, client maximum sizes, scroll events, winit window resize, animated
   cursors.
@@ -146,11 +160,11 @@ swaylock, swayidle, sengi-focus, wlrctl and gtk3-widget-factory:
 
 ## Next steps toward replacing labwc
 
-1. Render only when something changed, with proper frame callback
-   throttling; then the DRM/KMS backend with libseat and libinput (udev
-   hotplug, VT switching), GLES on the GPU with pixman as fallback.
-2. Port move and resize from the compositor's own drag state to Smithay
-   pointer grabs.
+1. The DRM/KMS backend with libseat and libinput (udev hotplug, VT
+   switching), GLES on the GPU with pixman as fallback, frames driven by
+   vblank through the same redraw request the other backends use.
+2. Restrict session-lock and foreign-toplevel to the clients meant to use
+   them.
 3. screencopy (grim, and the CI screenshot), output management, primary
    selection, xdg-activation, dmabuf, fractional scale, idle-inhibit.
 4. Fullscreen, popup constraining, double-click to maximise, edge snapping,
@@ -178,7 +192,9 @@ swaylock, swayidle, sengi-focus, wlrctl and gtk3-widget-factory:
 - `src/foreign_toplevel.rs`: wlr-foreign-toplevel-management.
 - `src/lock.rs`: session lock.
 - `src/cursor.rs`: cursor theme loading and the fallback arrow.
-- `src/input.rs`: keyboard and pointer events, drags, hit testing.
+- `src/input.rs`: keyboard and pointer events, the drag grab, hit testing.
+- `src/device_input.rs`: backend device events, built only with a backend
+  that has devices.
 - `src/render.rs`: drawing an output and frame callbacks.
 - `src/headless.rs`, `src/winit.rs`: the backends.
 - `src/png.rs`: minimal PNG writer for screenshots.
