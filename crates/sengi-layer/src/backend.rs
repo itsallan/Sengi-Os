@@ -43,7 +43,8 @@ use crate::outputs::plan;
 use crate::platform::QuitGuard;
 use crate::{Context, Error, Handle};
 
-/// How long to sleep between frames while something is animating.
+/// How often to look again while something animates without drawing, so
+/// that no frame callback is on its way to wake the loop.
 const FRAME: Duration = Duration::from_millis(16);
 
 /// What the app has asked for through its [`Handle`]. Slint callbacks run
@@ -95,6 +96,10 @@ struct Surface {
     configured: bool,
     /// The `Shared::revision` the compositor was last told about.
     sent: u64,
+    /// A frame was committed and the compositor has not yet said it is
+    /// time for the next. Nothing is drawn meanwhile, which paces drawing
+    /// to the display and stops it while the surface cannot be seen.
+    frame_pending: bool,
 }
 
 struct Repeat {
@@ -265,6 +270,7 @@ impl State {
             scale: 1,
             configured: false,
             sent: 0,
+            frame_pending: false,
         });
         Ok(self.surfaces.len() - 1)
     }
@@ -288,6 +294,7 @@ impl State {
         surface.sent = shared.revision;
         // A new surface starts at scale 1 until the compositor says more.
         surface.scale = 1;
+        surface.frame_pending = false;
     }
 
     /// Takes the instance off the screen but keeps its component.
@@ -379,11 +386,14 @@ impl State {
 
     /// Renders a frame if Slint has anything new to show.
     fn draw(&mut self, index: usize) {
-        let surface = &self.surfaces[index];
+        let surface = &mut self.surfaces[index];
         let Some(layer) = &surface.layer else {
             return;
         };
         if !surface.configured || surface.width == 0 || surface.height == 0 {
+            return;
+        }
+        if surface.frame_pending {
             return;
         }
         let width = (surface.width * surface.scale) as usize;
@@ -419,6 +429,8 @@ impl State {
         wl_surface.set_buffer_scale(surface.scale as i32);
         wl_surface.damage_buffer(0, 0, width as i32, height as i32);
         if buffer.attach_to(wl_surface).is_ok() {
+            wl_surface.frame(&self.queue, wl_surface.clone());
+            surface.frame_pending = true;
             layer.commit();
         }
     }
@@ -520,11 +532,15 @@ impl State {
 
     /// How long the loop may sleep before something needs doing.
     fn timeout(&self) -> Option<Duration> {
-        let animating = self
-            .surfaces
-            .iter()
-            .any(|surface| surface.layer.is_some() && surface.window.has_active_animations());
-        let timers = if animating {
+        // An animating surface that has just drawn is woken by its frame
+        // callback. One that has not, because the animation changed nothing
+        // visible yet, has to be looked at again.
+        let polling = self.surfaces.iter().any(|surface| {
+            surface.layer.is_some()
+                && !surface.frame_pending
+                && surface.window.has_active_animations()
+        });
+        let timers = if polling {
             Some(FRAME)
         } else {
             slint::platform::duration_until_next_timer_update()
@@ -601,7 +617,17 @@ impl CompositorHandler for State {
     ) {
     }
 
-    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {}
+    fn frame(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        surface: &wl_surface::WlSurface,
+        _: u32,
+    ) {
+        if let Some(index) = self.index_of(surface) {
+            self.surfaces[index].frame_pending = false;
+        }
+    }
 
     fn surface_enter(
         &mut self,
@@ -657,6 +683,8 @@ impl LayerShellHandler for State {
         surface.width = if width != 0 { width } else { requested.0 };
         surface.height = if height != 0 { height } else { requested.1 };
         surface.configured = true;
+        // A new size is drawn at once rather than after the next callback.
+        surface.frame_pending = false;
         self.resize(index);
         self.surfaces[index].window.request_redraw();
     }
