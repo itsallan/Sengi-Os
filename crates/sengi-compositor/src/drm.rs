@@ -186,6 +186,22 @@ struct Drm {
     libinput: Libinput,
     /// False while another virtual terminal has the display.
     active: bool,
+    /// A screen was switched off because it could not show the lock, and
+    /// is to be lit again once the session is unlocked.
+    switched_off: bool,
+}
+
+/// Names an output whose frames are made to fail while the session is
+/// locked, to exercise what happens then. Needs the test-hooks feature.
+const FAIL_SCREEN_VARIABLE: &str = "SENGI_COMPOSITOR_FAIL_SCREEN";
+
+fn made_to_fail(output: &Output) -> bool {
+    static NAME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    cfg!(feature = "test-hooks")
+        && NAME
+            .get_or_init(|| std::env::var(FAIL_SCREEN_VARIABLE).ok())
+            .as_ref()
+            .is_some_and(|name| *name == output.name())
 }
 
 type Shared = Rc<RefCell<Drm>>;
@@ -462,6 +478,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         screens: Vec::new(),
         libinput: libinput.clone(),
         active: true,
+        switched_off: false,
     };
     backend.rescan(&mut state);
     if backend.screens.is_empty() && matches!(backend.renderer, Renderer::Gles { .. }) {
@@ -660,8 +677,17 @@ fn draw_if_ready(backend: &Shared, state: &mut State) {
         if !backend.active {
             return;
         }
+        if backend.switched_off && !state.is_locked() {
+            // The lock is over; whatever was switched off for it may
+            // show the session again.
+            backend.switched_off = false;
+            backend.rescan(state);
+        }
         let Drm {
-            renderer, screens, ..
+            renderer,
+            screens,
+            switched_off,
+            ..
         } = &mut *backend;
         if state.needs_redraw {
             state.needs_redraw = false;
@@ -728,13 +754,20 @@ fn draw_if_ready(backend: &Shared, state: &mut State) {
         }
         for crtc in hopeless {
             if let Some(at) = screens.iter().position(|screen| screen.crtc == crtc) {
-                // Dropping the screen turns its CRTC off.
-                let screen = screens.remove(at);
+                let mut screen = screens.remove(at);
                 crate::say!(
-                    "{} cannot be drawn while locked, switched off",
+                    "{} cannot be drawn while locked, switched off until unlocked",
                     screen.output.name()
                 );
+                // Off for certain, not only by the screen being dropped.
+                let cleared = on_compositor!(&mut screen.compositor, |compositor| {
+                    compositor.clear().map_err(|err| err.to_string())
+                });
+                if let Err(err) = cleared {
+                    crate::say!("{}: cannot switch off: {err}", screen.output.name());
+                }
                 state.remove_output(&screen.output);
+                *switched_off = true;
             }
         }
     }
@@ -879,6 +912,9 @@ impl Screen {
             Renderer::Gles { .. } => FrameFlags::DEFAULT,
         };
         let output = &self.output;
+        if state.is_locked() && made_to_fail(output) {
+            return Err("made to fail by the test switch".into());
+        }
         let (changed, states) =
             on_screen!(renderer, &mut self.compositor, |renderer, compositor| {
                 let (elements, background) = render::elements(state, output, renderer);
