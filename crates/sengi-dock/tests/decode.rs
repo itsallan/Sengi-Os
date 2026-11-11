@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use sengi_apps::icons::{Decoder, DECODE_TIMEOUT};
+use sengi_apps::icons::{self, Contexts, Decoder, IconDirs, DECODE_TIMEOUT};
 
 fn decoder() -> Decoder {
     Decoder::new(env!("CARGO_BIN_EXE_sengi-dock").into())
@@ -110,4 +110,30 @@ fn a_missing_file_gives_nothing() {
     assert!(decoder()
         .decode_file(Path::new("/nonexistent/icon.png"), 40, DECODE_TIMEOUT)
         .is_none());
+}
+
+#[test]
+fn an_icon_that_links_to_a_file_with_another_name_is_decoded() {
+    // What the dock does for `Icon=/path/app.png`: find it here, then have
+    // the child decode what was found.
+    let dir = temp_dir("linked");
+    let target = dir.join("store/3f2a.bin");
+    fs::create_dir_all(target.parent().unwrap()).unwrap();
+    write_png(&target, 64, [10, 20, 30, 255]);
+    let link = dir.join("app.png");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+
+    let dirs = IconDirs::default();
+    let found = icons::find(&dirs, None, link.to_str().unwrap(), 40, Contexts::Apps).unwrap();
+    let icon = decoder()
+        .decode_file(&found, 40, DECODE_TIMEOUT)
+        .expect("the linked icon is decoded");
+    assert_eq!(icon.size, 40);
+    assert_eq!(&icon.data[..4], [10, 20, 30, 255]);
+
+    // The child's own refusals still go by where a link leads.
+    let zero = dir.join("zero.png");
+    std::os::unix::fs::symlink("/dev/zero", &zero).unwrap();
+    assert!(icons::find(&dirs, None, zero.to_str().unwrap(), 40, Contexts::Apps).is_none());
+    assert!(decoder().decode_file(&zero, 40, DECODE_TIMEOUT).is_none());
 }

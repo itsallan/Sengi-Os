@@ -252,7 +252,11 @@ pub fn find(
         if !supported(Path::new(icon)) {
             return None;
         }
-        return resolve(icon).filter(|path| path.is_file());
+        // The path is returned as it was given. Whoever reads it resolves
+        // it again, and has the name to judge the extension by.
+        return resolve(icon)
+            .filter(|path| path.is_file())
+            .map(|_| PathBuf::from(icon));
     }
     // Some entries wrongly include the extension in the name.
     let name = [".png", ".svg", ".xpm"]
@@ -804,7 +808,12 @@ mod tray_tests {
         let link = root.join("app.png");
         std::os::unix::fs::symlink(&target, &link).unwrap();
         let found = find(&dirs, None, link.to_str().unwrap(), 16).unwrap();
-        assert_eq!(found, fs::canonicalize(&target).unwrap());
+        assert_eq!(found, link);
+        // Found again from what was found, as the decoder child does.
+        assert_eq!(
+            find(&dirs, None, found.to_str().unwrap(), 16),
+            Some(link.clone())
+        );
         assert_eq!(&load(&found, 16).unwrap().data[..4], [10, 20, 30, 255]);
         // Named by icon name, in a theme.
         let themed = root.join("home/icons/hicolor/32x32/apps/linked.png");
