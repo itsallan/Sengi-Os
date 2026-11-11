@@ -3515,6 +3515,9 @@ checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 [[package]]
 name = "sengi-apps"
 version = "0.5.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "sengi-bar"
@@ -3540,6 +3543,7 @@ dependencies = [
  "libc",
  "png",
  "resvg",
+ "sengi-apps",
  "sengi-layer",
  "slint",
  "slint-build",

@@ -102,8 +102,9 @@ impl Env {
         }
     }
 
-    /// Where desktop files live, most important first.
-    pub fn application_dirs(&self) -> Vec<PathBuf> {
+    /// The data directories applications install into, most important
+    /// first: the user's, the system's, then Flatpak's exports.
+    pub fn data_roots(&self) -> Vec<PathBuf> {
         let mut roots = vec![self.data_home.clone()];
         roots.extend(self.data_dirs.iter().cloned());
         // Flatpak normally adds these to XDG_DATA_DIRS itself, but only for
@@ -111,14 +112,21 @@ impl Env {
         roots.push(self.home.join(".local/share/flatpak/exports/share"));
         roots.push("/var/lib/flatpak/exports/share".into());
 
-        let mut dirs: Vec<PathBuf> = Vec::new();
+        let mut unique: Vec<PathBuf> = Vec::new();
         for root in roots {
-            let dir = root.join("applications");
-            if !dirs.contains(&dir) {
-                dirs.push(dir);
+            if !unique.contains(&root) {
+                unique.push(root);
             }
         }
-        dirs
+        unique
+    }
+
+    /// Where desktop files live, most important first.
+    pub fn application_dirs(&self) -> Vec<PathBuf> {
+        self.data_roots()
+            .into_iter()
+            .map(|root| root.join("applications"))
+            .collect()
     }
 
     /// Find a program given as an absolute path or as a bare name to look up

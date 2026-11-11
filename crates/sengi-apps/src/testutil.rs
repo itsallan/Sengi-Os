@@ -1,6 +1,8 @@
 //! A throwaway directory for tests that touch the file system.
 
 use std::path::{Path, PathBuf};
+
+use crate::desktop::DesktopEntry;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -47,4 +49,11 @@ impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+/// An entry as tests want it: the icon is named after the ID.
+pub fn entry(id: &str, name: &str, exec: &str) -> DesktopEntry {
+    let mut entry = DesktopEntry::named(id, name, exec);
+    entry.icon = id.into();
+    entry
 }

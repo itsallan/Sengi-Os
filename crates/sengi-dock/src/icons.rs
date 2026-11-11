@@ -460,7 +460,7 @@ pub fn initial(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::desktop::testing::temp_dir;
+    use crate::testing::temp_dir;
 
     fn write_png(path: &Path, width: u32, height: u32, color: png::ColorType, data: &[u8]) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();

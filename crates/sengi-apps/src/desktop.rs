@@ -30,6 +30,53 @@ pub struct DesktopEntry {
     pub terminal: bool,
     /// `Path`, when it is absolute: the directory to start the program in.
     pub working_dir: Option<PathBuf>,
+    /// `StartupWMClass`: the window class or app_id the program's windows
+    /// carry when that is not the desktop file ID.
+    pub wm_class: Option<String>,
+    /// `NoDisplay=true`: installed, but not for menus. Only [`scan_all`]
+    /// returns such entries.
+    pub no_display: bool,
+}
+
+impl DesktopEntry {
+    /// An entry made by hand rather than read from a file, for previews and
+    /// tests. `app_id` is the desktop file ID without `.desktop`.
+    pub fn named(app_id: &str, name: &str, exec: &str) -> Self {
+        DesktopEntry {
+            id: format!("{app_id}.desktop"),
+            path: PathBuf::from(format!("/usr/share/applications/{app_id}.desktop")),
+            name: name.into(),
+            generic_name: String::new(),
+            comment: String::new(),
+            keywords: Vec::new(),
+            exec: exec.into(),
+            icon: String::new(),
+            terminal: false,
+            working_dir: None,
+            wm_class: None,
+            no_display: false,
+        }
+    }
+
+    /// The desktop file ID without its `.desktop` suffix, which is what a
+    /// window's app_id is supposed to be.
+    pub fn app_id(&self) -> &str {
+        strip_suffix(&self.id)
+    }
+}
+
+/// Removes `.desktop` from a desktop file ID if it is there.
+pub fn strip_suffix(id: &str) -> &str {
+    id.strip_suffix(".desktop").unwrap_or(id)
+}
+
+/// Which entries a scan keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    /// What a menu shows.
+    Menu,
+    /// Every installed application, shown in menus or not.
+    Installed,
 }
 
 /// What one desktop file turned out to be.
@@ -64,11 +111,26 @@ pub fn load(env: &Env) -> Vec<DesktopEntry> {
 /// [`load`], from the given `applications` directories, most important
 /// first.
 pub fn scan(dirs: &[PathBuf], env: &Env) -> Vec<DesktopEntry> {
-    scan_limited(dirs, env, MAX_VISITED)
+    scan_limited(dirs, env, MAX_VISITED, Scope::Menu)
+}
+
+/// Every installed application in the given `applications` directories,
+/// most important first, including the ones menus leave out: `NoDisplay`
+/// entries, entries for other desktops, entries whose `TryExec` is missing
+/// and entries with nothing to run. This is the list to match windows
+/// against. `Hidden=true` still removes an application, here and in later
+/// directories.
+pub fn scan_all(dirs: &[PathBuf], env: &Env) -> Vec<DesktopEntry> {
+    scan_limited(dirs, env, MAX_VISITED, Scope::Installed)
 }
 
 /// `scan`, looking at no more than `max_visited` directory entries in all.
-fn scan_limited(dirs: &[PathBuf], env: &Env, max_visited: usize) -> Vec<DesktopEntry> {
+fn scan_limited(
+    dirs: &[PathBuf],
+    env: &Env,
+    max_visited: usize,
+    scope: Scope,
+) -> Vec<DesktopEntry> {
     let locales = locales(env);
     let mut seen = HashSet::new();
     let mut walk = Walk {
@@ -87,7 +149,7 @@ fn scan_limited(dirs: &[PathBuf], env: &Env, max_visited: usize) -> Vec<DesktopE
             let Some(bytes) = read_limited(path, MAX_FILE_BYTES) else {
                 continue;
             };
-            match parse(id, path, &bytes, &locales, env) {
+            match parse_scoped(id, path, &bytes, &locales, env, scope) {
                 Parsed::Invalid => {}
                 Parsed::Hidden => {
                     seen.insert(id.clone());
@@ -325,6 +387,17 @@ fn split_list(value: &str) -> Vec<String> {
 /// Read one desktop file. `locales` is what [`locales`] returned; `env`
 /// decides the `OnlyShowIn`, `NotShowIn` and `TryExec` rules.
 pub fn parse(id: &str, path: &Path, bytes: &[u8], locales: &[String], env: &Env) -> Parsed {
+    parse_scoped(id, path, bytes, locales, env, Scope::Menu)
+}
+
+fn parse_scoped(
+    id: &str,
+    path: &Path,
+    bytes: &[u8],
+    locales: &[String],
+    env: &Env,
+    scope: Scope,
+) -> Parsed {
     let text = String::from_utf8_lossy(bytes);
     let Some(fields) = read_group(&text, locales) else {
         return Parsed::Invalid;
@@ -338,27 +411,37 @@ pub fn parse(id: &str, path: &Path, bytes: &[u8], locales: &[String], env: &Env)
     // Hidden=true or NoDisplay=true, so anything with the group takes the ID,
     // and what cannot be shown is hidden rather than ignored.
     let name = text("Name");
-    if flag("Hidden") || flag("NoDisplay") || get("Type") != "Application" || name.is_empty() {
+    if flag("Hidden") || get("Type") != "Application" || name.is_empty() {
         return Parsed::Hidden;
     }
-
-    let only = split_list(get("OnlyShowIn"));
-    let not = split_list(get("NotShowIn"));
-    let ours = |list: &[String]| list.iter().any(|d| env.desktops.contains(d));
-    if (fields.contains_key("OnlyShowIn") && !ours(&only)) || ours(&not) {
-        return Parsed::Hidden;
-    }
-
-    let try_exec = string("TryExec");
-    if !try_exec.is_empty() && env.find_program(&try_exec).is_none() {
-        return Parsed::Hidden;
-    }
-
+    let no_display = flag("NoDisplay");
     let exec = string("Exec");
-    if exec.is_empty() {
-        // D-Bus activation is the only other way to start it, and we do not
-        // speak that.
-        return Parsed::Hidden;
+
+    // The rest of the rules decide what a menu shows. An application left
+    // out of menus is still installed, and its windows still need a name
+    // and an icon.
+    if scope == Scope::Menu {
+        if no_display {
+            return Parsed::Hidden;
+        }
+
+        let only = split_list(get("OnlyShowIn"));
+        let not = split_list(get("NotShowIn"));
+        let ours = |list: &[String]| list.iter().any(|d| env.desktops.contains(d));
+        if (fields.contains_key("OnlyShowIn") && !ours(&only)) || ours(&not) {
+            return Parsed::Hidden;
+        }
+
+        let try_exec = string("TryExec");
+        if !try_exec.is_empty() && env.find_program(&try_exec).is_none() {
+            return Parsed::Hidden;
+        }
+
+        if exec.is_empty() {
+            // D-Bus activation is the only other way to start it, and we do
+            // not speak that.
+            return Parsed::Hidden;
+        }
     }
 
     let working_dir = Some(string("Path"))
@@ -377,6 +460,8 @@ pub fn parse(id: &str, path: &Path, bytes: &[u8], locales: &[String], env: &Env)
         icon: string("Icon"),
         terminal: flag("Terminal"),
         working_dir,
+        wm_class: Some(string("StartupWMClass")).filter(|class| !class.is_empty()),
+        no_display,
     }))
 }
 
@@ -771,8 +856,8 @@ mod tests {
         let dirs = vec![tmp.path().join("apps")];
         assert_eq!(scan(&dirs, &plain_env()).len(), 40);
         // Four directory entries at the top, then six more below them.
-        assert_eq!(scan_limited(&dirs, &plain_env(), 10).len(), 6);
-        assert!(scan_limited(&dirs, &plain_env(), 0).is_empty());
+        assert_eq!(scan_limited(&dirs, &plain_env(), 10, Scope::Menu).len(), 6);
+        assert!(scan_limited(&dirs, &plain_env(), 0, Scope::Menu).is_empty());
     }
 
     #[test]
@@ -802,5 +887,79 @@ mod tests {
             ])),
             vec!["de", "en_GB", "en", "de_AT"]
         );
+    }
+
+    // The tests below came with the dock's parser, which kept every
+    // installed application.
+
+    fn installed(text: &str) -> Parsed {
+        let env = plain_env();
+        parse_scoped(
+            "test.desktop",
+            Path::new("/x/test.desktop"),
+            text.as_bytes(),
+            &locales(&env),
+            &env,
+            Scope::Installed,
+        )
+    }
+
+    const FOOT: &str = "[Desktop Entry]\nType=Application\nExec=foot\nIcon=foot\n\
+        Terminal=false\nName=Foot\nName[de]=Fuss\nGenericName=Terminal\n";
+
+    #[test]
+    fn an_application_is_parsed() {
+        let Parsed::Visible(entry) = installed(FOOT) else {
+            panic!("not an app");
+        };
+        assert_eq!(entry.name, "Foot");
+        assert_eq!(entry.icon, "foot");
+        assert_eq!(entry.exec, "foot");
+        assert_eq!(entry.app_id(), "test");
+        assert!(!entry.terminal);
+        assert!(!entry.no_display);
+    }
+
+    #[test]
+    fn only_the_main_group_is_read() {
+        let text = "[Desktop Entry]\nType=Application\nName=Web\nExec=web %u\n\
+            [Desktop Action private]\nName=Private window\nExec=web --private\n";
+        let Parsed::Visible(entry) = installed(text) else {
+            panic!("not an app");
+        };
+        assert_eq!(entry.name, "Web");
+        assert_eq!(entry.exec, "web %u");
+    }
+
+    #[test]
+    fn comments_spaces_and_flags_are_handled() {
+        let text = "# made by hand\n\n[Desktop Entry]\nType = Application\nName = Mail \n\
+            Terminal=true\nNoDisplay=true\nStartupWMClass=mail-client\n";
+        let Parsed::Visible(entry) = installed(text) else {
+            panic!("not an app");
+        };
+        assert_eq!(entry.name, "Mail");
+        assert!(entry.terminal);
+        assert!(entry.no_display);
+        assert_eq!(entry.wm_class.as_deref(), Some("mail-client"));
+        assert_eq!(entry.exec, "");
+        // A menu shows none of it.
+        assert_eq!(parse_str(text, &plain_env()), Parsed::Hidden);
+    }
+
+    #[test]
+    fn hidden_wins_over_everything_else() {
+        assert_eq!(
+            installed("[Desktop Entry]\nType=Application\nName=Gone\nHidden=true\n"),
+            Parsed::Hidden
+        );
+    }
+
+    #[test]
+    fn string_escapes_are_undone() {
+        assert_eq!(unescape(r"a\sb\\c\td"), "a b\\c\td");
+        // Unknown escapes are left for the Exec parser.
+        assert_eq!(unescape(r#"sh -c "echo \"hi\"""#), r#"sh -c "echo \"hi\"""#);
+        assert_eq!(unescape("end\\"), "end\\");
     }
 }

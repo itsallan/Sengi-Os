@@ -5,8 +5,9 @@
 //! least certain, so a window lands on its app's dock icon rather than
 //! getting a second one.
 
-use crate::desktop::{Apps, Entry};
+use crate::desktop::DesktopEntry;
 use crate::exec;
+use crate::index::AppIndex;
 
 fn same(a: &str, b: &str) -> bool {
     a.eq_ignore_ascii_case(b) || a.to_lowercase() == b.to_lowercase()
@@ -20,7 +21,7 @@ fn last_component(id: &str) -> Option<&str> {
 
 /// Entries shown in menus are preferred over hidden helpers such as
 /// `foot-server` when a loose rule matches several.
-fn pick(apps: &Apps, matches: impl Fn(&Entry) -> bool) -> Option<&Entry> {
+fn pick(apps: &AppIndex, matches: impl Fn(&DesktopEntry) -> bool) -> Option<&DesktopEntry> {
     let mut hidden = None;
     for entry in apps.entries().iter().filter(|e| matches(e)) {
         if !entry.no_display {
@@ -35,9 +36,9 @@ fn pick(apps: &Apps, matches: impl Fn(&Entry) -> bool) -> Option<&Entry> {
 /// Two apps that both fit are a coin toss, and a window on the wrong icon is
 /// worse than a window with an icon of its own. Hidden helpers only count
 /// when no visible entry matches.
-fn only(apps: &Apps, matches: impl Fn(&Entry) -> bool) -> Option<&Entry> {
-    let found: Vec<&Entry> = apps.entries().iter().filter(|e| matches(e)).collect();
-    let visible: Vec<&Entry> = found.iter().copied().filter(|e| !e.no_display).collect();
+fn only(apps: &AppIndex, matches: impl Fn(&DesktopEntry) -> bool) -> Option<&DesktopEntry> {
+    let found: Vec<&DesktopEntry> = apps.entries().iter().filter(|e| matches(e)).collect();
+    let visible: Vec<&DesktopEntry> = found.iter().copied().filter(|e| !e.no_display).collect();
     match (visible.as_slice(), found.as_slice()) {
         ([entry], _) => Some(entry),
         ([], [entry]) => Some(entry),
@@ -98,7 +99,7 @@ fn is_wrapper(program: &str) -> bool {
 }
 
 /// Finds the desktop entry for a window's app_id.
-pub fn find<'a>(app_id: &str, apps: &'a Apps) -> Option<&'a Entry> {
+pub fn find<'a>(app_id: &str, apps: &'a AppIndex) -> Option<&'a DesktopEntry> {
     let app_id = app_id.trim();
     if app_id.is_empty() {
         return None;
@@ -122,10 +123,7 @@ pub fn find<'a>(app_id: &str, apps: &'a Apps) -> Option<&'a Entry> {
     //    that program is only a way of starting something else.
     if !is_wrapper(app_id) {
         if let Some(entry) = only(apps, |e| {
-            e.exec
-                .as_deref()
-                .and_then(exec::program_name)
-                .is_some_and(|program| same(&program, app_id))
+            exec::program_name(&e.exec).is_some_and(|program| same(&program, app_id))
         }) {
             return Some(entry);
         }
@@ -136,18 +134,20 @@ pub fn find<'a>(app_id: &str, apps: &'a Apps) -> Option<&'a Entry> {
     //    `firefox` with `org.mozilla.firefox.desktop`. Two reverse-DNS names
     //    that merely end in the same word are different apps.
     match last_component(app_id) {
-        Some(short) => apps.get(short).filter(|entry| !entry.id.contains('.')),
+        Some(short) => apps
+            .get(short)
+            .filter(|entry| !entry.app_id().contains('.')),
         None => only(apps, |e| {
-            last_component(&e.id).is_some_and(|last| same(last, app_id))
+            last_component(e.app_id()).is_some_and(|last| same(last, app_id))
         }),
     }
 }
 
-/// The key the dock groups windows under: the matched entry's ID, or the
+/// The key to group windows under: the matched entry's ID, or the
 /// app_id itself for a window that belongs to no installed app.
-pub fn app_key(app_id: &str, apps: &Apps) -> String {
+pub fn app_key(app_id: &str, apps: &AppIndex) -> String {
     match find(app_id, apps) {
-        Some(entry) => entry.id.to_lowercase(),
+        Some(entry) => entry.app_id().to_lowercase(),
         None => app_id.trim().to_lowercase(),
     }
 }
@@ -155,16 +155,16 @@ pub fn app_key(app_id: &str, apps: &Apps) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::desktop::testing::entry;
+    use crate::testutil::entry;
 
-    fn apps() -> Apps {
+    fn apps() -> AppIndex {
         let mut server = entry("foot-server", "Foot Server", "foot --server");
         server.no_display = true;
         let mut code = entry("code-oss", "Code", "/usr/bin/code-oss --unity-launch %F");
         code.wm_class = Some("Code - OSS".into());
         let mut gimp = entry("gimp", "GIMP", "gimp-3.0 %U");
         gimp.wm_class = Some("gimp-3.0".into());
-        Apps::from_entries(vec![
+        AppIndex::from_entries(vec![
             code,
             entry(
                 "firefox-esr",
@@ -191,7 +191,7 @@ mod tests {
     }
 
     fn id(app_id: &str) -> Option<String> {
-        find(app_id, &apps()).map(|e| e.id.clone())
+        find(app_id, &apps()).map(|e| e.app_id().to_string())
     }
 
     #[test]
@@ -245,7 +245,7 @@ mod tests {
     #[test]
     fn two_reverse_dns_names_ending_alike_are_different_apps() {
         assert_eq!(id("io.example.Thunderbird"), None);
-        let apps = Apps::from_entries(vec![
+        let apps = AppIndex::from_entries(vec![
             entry(
                 "io.elementary.calculator",
                 "Calculator",
@@ -263,7 +263,7 @@ mod tests {
 
     #[test]
     fn a_short_app_id_shared_by_two_reverse_dns_entries_matches_neither() {
-        let apps = Apps::from_entries(vec![
+        let apps = AppIndex::from_entries(vec![
             entry(
                 "io.elementary.terminal",
                 "Terminal",
@@ -273,17 +273,20 @@ mod tests {
         ]);
         assert!(find("terminal", &apps).is_none());
         // With only one of them installed there is no doubt.
-        let apps = Apps::from_entries(vec![entry(
+        let apps = AppIndex::from_entries(vec![entry(
             "org.gnome.Terminal",
             "Terminal",
             "gnome-terminal",
         )]);
-        assert_eq!(find("terminal", &apps).unwrap().id, "org.gnome.Terminal");
+        assert_eq!(
+            find("terminal", &apps).unwrap().app_id(),
+            "org.gnome.Terminal"
+        );
     }
 
     #[test]
     fn interpreters_and_launchers_are_not_program_names() {
-        let apps = Apps::from_entries(vec![
+        let apps = AppIndex::from_entries(vec![
             entry("backup", "Backup", "python3 /opt/backup/main.py"),
             entry("chat", "Chat", "electron34 /usr/lib/chat/app.asar"),
             entry("game", "Game", "steam steam://rungameid/70"),
@@ -312,16 +315,16 @@ mod tests {
 
     #[test]
     fn a_wrapper_with_an_entry_of_its_own_still_matches_by_id() {
-        let apps = Apps::from_entries(vec![
+        let apps = AppIndex::from_entries(vec![
             entry("game", "Game", "steam steam://rungameid/70"),
             entry("steam", "Steam", "/usr/bin/steam %U"),
         ]);
-        assert_eq!(find("steam", &apps).unwrap().id, "steam");
+        assert_eq!(find("steam", &apps).unwrap().app_id(), "steam");
     }
 
     #[test]
     fn a_program_started_by_two_entries_matches_neither() {
-        let apps = Apps::from_entries(vec![
+        let apps = AppIndex::from_entries(vec![
             entry("editor-a", "Editor", "edit --profile a"),
             entry("editor-b", "Editor (B)", "edit --profile b"),
         ]);
@@ -331,14 +334,14 @@ mod tests {
     #[test]
     fn env_wrappers_are_seen_through() {
         let mut list = apps().entries().to_vec();
-        list.retain(|e| e.id != "signal-desktop");
+        list.retain(|e| e.app_id() != "signal-desktop");
         list.push(entry(
             "signal",
             "Signal",
             "env LANG=C /opt/Signal/signal-desktop %U",
         ));
-        let apps = Apps::from_entries(list);
-        assert_eq!(find("signal-desktop", &apps).unwrap().id, "signal");
+        let apps = AppIndex::from_entries(list);
+        assert_eq!(find("signal-desktop", &apps).unwrap().app_id(), "signal");
     }
 
     #[test]
@@ -353,7 +356,7 @@ mod tests {
     fn visible_entries_are_preferred_over_hidden_ones() {
         let mut helper = entry("a-helper", "Helper", "tool --daemon");
         helper.no_display = true;
-        let apps = Apps::from_entries(vec![helper, entry("z-tool", "Tool", "tool")]);
-        assert_eq!(find("tool", &apps).unwrap().id, "z-tool");
+        let apps = AppIndex::from_entries(vec![helper, entry("z-tool", "Tool", "tool")]);
+        assert_eq!(find("tool", &apps).unwrap().app_id(), "z-tool");
     }
 }

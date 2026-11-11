@@ -6,3 +6,5 @@ edition.workspace = true
 repository.workspace = true
 
 [dependencies]
+# For fork and setsid when a program is started and let go of.
+libc = "0.2"

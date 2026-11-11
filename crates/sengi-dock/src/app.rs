@@ -10,10 +10,12 @@ use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
 
+use sengi_apps::Env;
+
 use crate::icons::{self, Decoder, IconDirs};
 use crate::model::{self, Action, Button, Dock, Icon, Item, Launches, LAUNCHER_KEY, LAUNCH_WAIT};
 use crate::windows::{self, Controller, Source, Window};
-use crate::{config, desktop, launch, ui};
+use crate::{config, launch, ui};
 
 /// The widest the dock may be until the output's real width is known: a
 /// width every laptop panel has.
@@ -221,10 +223,11 @@ impl App {
         deliver: Deliver,
         on_resize: impl Fn(u32, u32) + 'static,
     ) -> Self {
-        let data_dirs = desktop::data_dirs();
+        let env = Env::from_process();
+        let data_dirs = env.data_roots();
         let home = std::env::var("HOME").ok();
         let icon_dirs = IconDirs::from_data_dirs(home.as_deref(), &data_dirs);
-        let dock = Dock::load(config::pinned(&config::paths()), data_dirs);
+        let dock = Dock::load(config::pinned(&config::paths()), data_dirs, env);
         let app = Self::new(ui, dock, icon_dirs, deliver.clone(), on_resize);
 
         // Drop updates that change nothing the dock shows, so a terminal

@@ -8,10 +8,11 @@ use std::process::ExitCode;
 use std::rc::Rc;
 use std::sync::{mpsc, Arc, Mutex};
 
+use sengi_apps::Env;
 use sengi_dock::app::{App, Deliver, Message};
 use sengi_dock::model::Dock;
 use sengi_dock::windows::{self, Source, Window};
-use sengi_dock::{config, desktop, icons, ui};
+use sengi_dock::{config, icons, ui};
 use sengi_layer::{Anchor, Config, KeyboardMode, Layer, Margins, Output, Outputs, Rect};
 use slint::ComponentHandle;
 
@@ -132,8 +133,8 @@ fn print(dock: &mut Dock, windows: &[Window]) {
 }
 
 fn dump() -> Result<(), Box<dyn std::error::Error>> {
-    let data_dirs = desktop::data_dirs();
-    let mut dock = Dock::load(config::pinned(&config::paths()), data_dirs);
+    let env = Env::from_process();
+    let mut dock = Dock::load(config::pinned(&config::paths()), env.data_roots(), env);
     let (sender, receiver) = mpsc::channel::<Vec<Window>>();
     let _controller = windows::spawn(Source::Own, move |list| {
         let _ = sender.send(list.to_vec());
