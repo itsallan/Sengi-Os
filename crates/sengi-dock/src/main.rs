@@ -42,7 +42,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .layer(Layer::Top)
         .anchor(Anchor::BOTTOM)
         .keyboard(KeyboardMode::None)
-        .outputs(Outputs::Primary);
+        .outputs(Outputs::Auto);
 
     layer.run(config, move |context| {
         let ui = ui::Dock::new()?;

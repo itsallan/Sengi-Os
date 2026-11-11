@@ -56,4 +56,5 @@ export global Tokens {
     out property <duration> motion-fast: @{motion.fast}ms;
     out property <duration> motion-base: @{motion.base}ms;
     out property <duration> motion-slow: @{motion.slow}ms;
+    out property <easing> motion-easing: @{motion.easing};
 }

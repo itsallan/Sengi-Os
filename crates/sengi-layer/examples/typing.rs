@@ -93,18 +93,23 @@ fn main() -> Result<(), sengi_layer::Error> {
     sengi_layer::run(config, |context| {
         let typing = Typing::new()?;
         let handle = context.handle();
+        let surface = context.surface();
         let width = pixels(typing.get_surface_width());
-        handle.set_size(width, pixels(typing.get_surface_height()))?;
+        surface.set_size(width, pixels(typing.get_surface_height()))?;
 
         typing.on_edited({
-            let handle = handle.clone();
+            let surface = surface.clone();
             let weak = typing.as_weak();
             move || {
                 if let Some(typing) = weak.upgrade() {
-                    let _ = handle.set_size(width, pixels(typing.get_surface_height()));
+                    let _ = surface.set_size(width, pixels(typing.get_surface_height()));
                 }
             }
         });
+
+        // Said on stderr so a test can follow along.
+        surface.on_focus_changed(|focused| eprintln!("typing: focus {focused}"));
+        surface.on_output_changed(|output| eprintln!("typing: on {output:?}"));
 
         typing.on_blinked({
             let handle = handle.clone();
