@@ -31,8 +31,8 @@ each `- [ ]` line is an issue.
 
 ## 0.2
 
-- [ ] sengi-bar replaces Waybar
-- [ ] sengi-compositor branch opened (Rust + Smithay, long-lived)
+- [x] sengi-bar replaces Waybar
+- [x] sengi-compositor branch opened (Rust + Smithay, long-lived)
 
 ## 0.3
 
