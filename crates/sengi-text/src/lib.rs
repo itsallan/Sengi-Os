@@ -37,6 +37,9 @@ pub fn invisible(c: char) -> bool {
         // Hangul fillers and the blank Braille pattern, which are letters
         // and a symbol that draw as blanks.
         | '\u{115f}' | '\u{1160}' | '\u{3164}' | '\u{ffa0}' | '\u{2800}'
+        // The Khmer inherent vowels, which draw nothing and which Unicode
+        // says not to use.
+        | '\u{17b4}' | '\u{17b5}'
         // Variation selectors.
         | '\u{fe00}'..='\u{fe0f}' | '\u{e0100}'..='\u{e01ef}'
         // Byte order mark, interlinear annotation marks, tag characters.
@@ -116,6 +119,11 @@ pub fn keep(previous: Option<char>, c: char, next: Option<char>) -> bool {
     let Some(next) = next else {
         return false;
     };
+    // What follows has to be shown itself: the Hangul fillers are letters
+    // as far as Unicode goes, and a joiner in front of one joins nothing.
+    if hidden(next) {
+        return false;
+    }
     let letter = |c: char| c.is_alphabetic() || is_mark(c);
     let in_a_word = letter(previous) && letter(next);
     let in_an_emoji =
@@ -211,6 +219,7 @@ pub fn line(raw: &str, max_chars: usize) -> String {
         drop_trailing_joiners(&mut out);
         out.push('\u{2026}');
     }
+    drop_trailing_joiners(&mut out);
     out
 }
 
@@ -256,6 +265,7 @@ pub fn tidy(text: &str, max_chars: usize, multiline: bool) -> String {
     }
     let kept = out.trim_end().len();
     out.truncate(kept);
+    drop_trailing_joiners(&mut out);
     if cut {
         // The ellipsis takes the place of the last character.
         out.pop();
@@ -563,6 +573,14 @@ mod tests {
         assert_eq!(line("a\u{200c} b", 32), "a b");
         assert_eq!(tidy("a \u{fe0f}b", 100, false), "a b");
         assert_eq!(line("1\u{200d}2 a\u{200c}.", 32), "12 a.");
+        // In front of something that is itself dropped, a letter by
+        // Unicode's reckoning or not.
+        assert_eq!(line("a\u{200d}\u{3164}", 32), "a");
+        assert_eq!(line("a\u{200d}\u{3164} b", 32), "a b");
+        assert_eq!(tidy("a\u{200d}\u{3164}", 100, false), "a");
+        assert_eq!(tidy("a\u{200c}\u{115f} b", 100, false), "a b");
+        assert_eq!(shown("a\u{200d}\u{ffa0}"), "a");
+        assert_eq!(line("ក\u{200d}\u{17b4}\u{17b5}", 32), "ក");
         // A cut does not leave one hanging before the ellipsis.
         assert_eq!(line("ab\u{200c}cd", 3), "ab\u{2026}");
         assert_eq!(tidy("ab\u{200c}cd", 4, false), "ab\u{2026}");

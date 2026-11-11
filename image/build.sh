@@ -30,9 +30,10 @@ done
 cargo build --release --locked --manifest-path "$src/Cargo.toml" "$@"
 # The launcher starts on demand and has to stay small. This one build shares
 # cargo features between the programs, so a shared crate that lost a feature
-# gate would put a D-Bus stack or an image decoder into it unnoticed. Each of
-# these crates leaves its name in the binary, in the paths of its panic
-# messages. A bare "png" would not do: the font code has a png.rs of its own.
+# gate would put a D-Bus stack or an image decoder into it unnoticed. The
+# check finds a crate by the source paths of its panic locations, which
+# survive in the binary: it would find nothing in a build that dropped
+# those. A bare "png" would not do: the font code has a png.rs of its own.
 for marker in zbus resvg '/png-[0-9]'; do
 	if grep -a -q -e "$marker" "$work/target/release/sengi-launcher"; then
 		echo "sengi-launcher has $marker linked in, which it must not" >&2
