@@ -185,6 +185,7 @@ impl From<KeyboardMode> for KeyboardInteractivity {
 
 /// Sends everything about the surface that can change while it is mapped.
 fn send_geometry(layer: &LayerSurface, config: &Config) {
+    layer.set_layer(config.layer.into());
     layer.set_anchor(config.anchor.into());
     layer.set_size(config.size.0, config.size.1);
     layer.set_margin(

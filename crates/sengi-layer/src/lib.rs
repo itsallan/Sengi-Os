@@ -394,6 +394,42 @@ impl Handle {
         self.shared.borrow().config.size
     }
 
+    /// Changes the edges the surface is attached to. Fails if the current
+    /// size stretches along an axis the new anchor does not span; use
+    /// [`Handle::set_anchor_and_size`] to change both at once.
+    pub fn set_anchor(&self, anchor: Anchor) -> Result<(), ConfigError> {
+        let size = self.size();
+        self.set_anchor_and_size(anchor, size.0, size.1)
+    }
+
+    /// Changes the anchored edges and the size together, for moves where
+    /// neither is valid with the other's old value, such as turning a
+    /// centred box into a strip along an edge.
+    pub fn set_anchor_and_size(
+        &self,
+        anchor: Anchor,
+        width: u32,
+        height: u32,
+    ) -> Result<(), ConfigError> {
+        config::validate_size(anchor, (width, height))?;
+        let mut shared = self.shared.borrow_mut();
+        if shared.config.anchor != anchor || shared.config.size != (width, height) {
+            shared.config.anchor = anchor;
+            shared.config.size = (width, height);
+            shared.revision += 1;
+        }
+        Ok(())
+    }
+
+    /// Moves the surface to another layer.
+    pub fn set_layer(&self, layer: Layer) {
+        let mut shared = self.shared.borrow_mut();
+        if shared.config.layer != layer {
+            shared.config.layer = layer;
+            shared.revision += 1;
+        }
+    }
+
     /// Changes how much of the screen edge is reserved. See
     /// [`Config::exclusive_zone`].
     pub fn set_exclusive_zone(&self, zone: i32) {
