@@ -136,9 +136,40 @@ struct Waiting {
     passphrase: Secret,
 }
 
-type Slot = Arc<Mutex<Option<Waiting>>>;
+/// What the agent has to hand out. At most one passphrase, for one
+/// network, to one caller, once.
+#[derive(Default)]
+struct Desk {
+    waiting: Option<Waiting>,
+}
 
-fn slot(slot: &Slot) -> MutexGuard<'_, Option<Waiting>> {
+impl Desk {
+    fn put(&mut self, network: &str, asker: &str, passphrase: Secret) {
+        self.waiting = Some(Waiting {
+            network: network.to_string(),
+            asker: asker.to_string(),
+            passphrase,
+        });
+    }
+
+    /// The passphrase, if `sender` is the iwd it was meant for and
+    /// `network` the one it was typed for. Anyone else asking gets
+    /// nothing and leaves it in place.
+    fn answer(&mut self, network: &str, sender: Option<&str>) -> Option<Secret> {
+        self.waiting
+            .take_if(|waiting| waiting.network == network && Some(waiting.asker.as_str()) == sender)
+            .map(|waiting| waiting.passphrase)
+    }
+
+    /// iwd has given up on the request, or is done with the agent.
+    fn cancel(&mut self) {
+        self.waiting = None;
+    }
+}
+
+type Slot = Arc<Mutex<Desk>>;
+
+fn slot(slot: &Slot) -> MutexGuard<'_, Desk> {
     slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
@@ -165,14 +196,9 @@ impl Agent {
         network: ObjectPath<'_>,
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> Result<String, AgentError> {
-        let mut slot = slot(&self.slot);
         let sender = header.sender().map(|name| name.as_str());
-        let wanted = slot.as_ref().is_some_and(|waiting| {
-            waiting.network == network.as_str() && Some(waiting.asker.as_str()) == sender
-        });
-        // Anyone else asking leaves it in place for iwd.
-        match slot.take_if(|_| wanted) {
-            Some(waiting) => Ok(waiting.passphrase.expose().to_string()),
+        match slot(&self.slot).answer(network.as_str(), sender) {
+            Some(passphrase) => Ok(passphrase.expose().to_string()),
             None => declined(),
         }
     }
@@ -202,11 +228,11 @@ impl Agent {
     }
 
     fn cancel(&self, _reason: &str) {
-        slot(&self.slot).take();
+        slot(&self.slot).cancel();
     }
 
     fn release(&self) {
-        slot(&self.slot).take();
+        slot(&self.slot).cancel();
     }
 }
 
@@ -318,15 +344,11 @@ impl WifiService for Iwd {
                 eprintln!("sengi-quick: registering with iwd: {error}");
                 return Err(JoinError::Unavailable);
             }
-            *slot(&self.slot) = Some(Waiting {
-                network: request.id.clone(),
-                asker,
-                passphrase,
-            });
+            slot(&self.slot).put(&request.id, &asker, passphrase);
         }
         let result: zbus::Result<()> = self.bus.call(SERVICE, &request.id, NETWORK, "Connect", &());
         // Whether or not iwd asked for it.
-        slot(&self.slot).take();
+        slot(&self.slot).cancel();
         result.map_err(|error| join_error(bus::error_name(&error)))
     }
 
@@ -398,6 +420,49 @@ mod tests {
             .iter()
             .map(|(suffix, signal)| (format!("{WLAN}/{suffix}"), *signal))
             .collect()
+    }
+
+    fn secret(text: &str) -> Secret {
+        Secret::new(text.to_string())
+    }
+
+    const IWD: Option<&str> = Some(":1.7");
+
+    #[test]
+    fn the_agent_answers_iwd_about_the_right_network_once() {
+        let mut desk = Desk::default();
+        desk.put("/net/a_psk", ":1.7", secret("correct horse"));
+        let answer = desk.answer("/net/a_psk", IWD).unwrap();
+        assert_eq!(answer.expose(), "correct horse");
+        // It is gone: a second request gets nothing.
+        assert!(desk.answer("/net/a_psk", IWD).is_none());
+    }
+
+    #[test]
+    fn the_agent_tells_nobody_but_the_iwd_it_was_meant_for() {
+        let mut desk = Desk::default();
+        desk.put("/net/a_psk", ":1.7", secret("correct horse"));
+        assert!(desk.answer("/net/a_psk", Some(":1.99")).is_none());
+        assert!(desk.answer("/net/a_psk", None).is_none());
+        // And the stranger's asking did not use it up.
+        assert!(desk.answer("/net/a_psk", IWD).is_some());
+    }
+
+    #[test]
+    fn the_agent_gives_a_passphrase_only_to_its_own_network() {
+        let mut desk = Desk::default();
+        desk.put("/net/a_psk", ":1.7", secret("correct horse"));
+        assert!(desk.answer("/net/b_psk", IWD).is_none());
+        assert!(desk.answer("/net/a_psk", IWD).is_some());
+    }
+
+    #[test]
+    fn cancel_clears_the_passphrase() {
+        let mut desk = Desk::default();
+        assert!(desk.answer("/net/a_psk", IWD).is_none());
+        desk.put("/net/a_psk", ":1.7", secret("correct horse"));
+        desk.cancel();
+        assert!(desk.answer("/net/a_psk", IWD).is_none());
     }
 
     #[test]
