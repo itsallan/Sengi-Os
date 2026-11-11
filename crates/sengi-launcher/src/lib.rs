@@ -11,6 +11,7 @@ pub mod cli;
 pub mod desktop;
 pub mod env;
 pub mod exec;
+pub mod instance;
 pub mod matcher;
 pub mod menu;
 pub mod run;

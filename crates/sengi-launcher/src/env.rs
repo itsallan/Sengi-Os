@@ -10,6 +10,7 @@ pub struct Env {
     pub data_home: PathBuf,
     pub data_dirs: Vec<PathBuf>,
     pub state_home: PathBuf,
+    pub runtime_dir: Option<PathBuf>,
     pub path: Vec<PathBuf>,
     /// The message locale, e.g. `de_DE.UTF-8`, if one is set.
     pub locale: Option<String>,
@@ -70,6 +71,7 @@ impl Env {
             data_home,
             data_dirs,
             state_home,
+            runtime_dir: dir("XDG_RUNTIME_DIR"),
             path,
             locale,
             desktops,
@@ -149,6 +151,7 @@ mod tests {
         );
         assert_eq!(e.desktops, vec!["sengi", "wlroots"]);
         assert_eq!(e.locale, None);
+        assert_eq!(e.runtime_dir, None);
         assert_eq!(
             e.usage_file(),
             PathBuf::from("/home/a/.local/state/sengi-launcher/usage")
@@ -194,7 +197,9 @@ mod tests {
             ("LANG", "en_GB.UTF-8"),
             ("LC_MESSAGES", "de_DE.UTF-8"),
             ("XDG_CURRENT_DESKTOP", "sengi:wlroots"),
+            ("XDG_RUNTIME_DIR", "/run/user/1000"),
         ]);
+        assert_eq!(e.runtime_dir, Some(PathBuf::from("/run/user/1000")));
         assert_eq!(e.locale.as_deref(), Some("de_DE.UTF-8"));
         assert_eq!(e.desktops, vec!["sengi", "wlroots"]);
     }
