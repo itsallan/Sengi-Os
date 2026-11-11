@@ -30,6 +30,13 @@ fn strip_comment(line: &str) -> &str {
 
 /// Reads the pinned list: desktop-file IDs, in dock order.
 pub fn parse(text: &str) -> Result<Vec<String>, String> {
+    parse_with_warnings(text).map(|(pinned, _)| pinned)
+}
+
+/// As [`parse`], also returning what was skipped. A key this version does
+/// not know is no reason to throw the whole file away: it may be meant for
+/// a newer dock.
+pub fn parse_with_warnings(text: &str) -> Result<(Vec<String>, Vec<String>), String> {
     let body: String = text
         .lines()
         .map(strip_comment)
@@ -38,14 +45,24 @@ pub fn parse(text: &str) -> Result<Vec<String>, String> {
 
     let mut rest = body.trim_start();
     let mut pinned = None;
+    let mut warnings = Vec::new();
     while !rest.is_empty() {
         let (key, after) = rest
             .split_once('=')
             .ok_or_else(|| format!("expected `key = value` at `{}`", first_line(rest)))?;
         let key = key.trim();
-        let after = after.trim_start();
+        let after = after.trim_start_matches([' ', '\t']);
         if key != "pinned" {
-            return Err(format!("unknown key `{key}`"));
+            // Skip its value: a list up to the closing bracket, anything
+            // else up to the end of the line.
+            let tail = match after.strip_prefix('[') {
+                Some(list) => list.split_once(']').map(|(_, tail)| tail),
+                None => Some(after.split_once('\n').map_or("", |(_, tail)| tail)),
+            };
+            let tail = tail.ok_or_else(|| format!("the `{key}` list is not closed"))?;
+            warnings.push(format!("unknown key `{key}` ignored"));
+            rest = tail.trim_start();
+            continue;
         }
         let after = after
             .strip_prefix('[')
@@ -56,7 +73,8 @@ pub fn parse(text: &str) -> Result<Vec<String>, String> {
         pinned = Some(parse_list(list)?);
         rest = tail.trim_start();
     }
-    pinned.ok_or_else(|| "no `pinned` list".to_string())
+    let pinned = pinned.ok_or_else(|| "no `pinned` list".to_string())?;
+    Ok((pinned, warnings))
 }
 
 fn first_line(text: &str) -> &str {
@@ -118,11 +136,23 @@ pub fn paths() -> Vec<PathBuf> {
 /// with a mistake in it is reported and skipped.
 pub fn pinned(paths: &[PathBuf]) -> Vec<String> {
     for path in paths {
-        let Ok(text) = fs::read_to_string(path) else {
-            continue;
+        let text = match fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) => {
+                // Having no file is normal. Having one that cannot be read is not.
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!("sengi-dock: cannot read {}: {error}", path.display());
+                }
+                continue;
+            }
         };
-        match parse(&text) {
-            Ok(pinned) => return pinned,
+        match parse_with_warnings(&text) {
+            Ok((pinned, warnings)) => {
+                for warning in warnings {
+                    eprintln!("sengi-dock: {}: {warning}", path.display());
+                }
+                return pinned;
+            }
             Err(error) => eprintln!("sengi-dock: {}: {error}", path.display()),
         }
     }
@@ -169,6 +199,49 @@ mod tests {
     #[test]
     fn a_hash_inside_a_name_is_not_a_comment() {
         assert_eq!(parse("pinned = [\"c#-ide\"] # note").unwrap(), ["c#-ide"]);
+    }
+
+    #[test]
+    fn unknown_keys_are_skipped_with_a_warning() {
+        let text = "size = 48\nlabel = \"a = b\"\npinned = [\"foot\"]\n\
+            hidden = [\n  \"x\",\n  \"y\",\n]\nautohide = true\n";
+        let (pinned, warnings) = parse_with_warnings(text).unwrap();
+        assert_eq!(pinned, ["foot"]);
+        assert_eq!(
+            warnings,
+            [
+                "unknown key `size` ignored",
+                "unknown key `label` ignored",
+                "unknown key `hidden` ignored",
+                "unknown key `autohide` ignored",
+            ]
+        );
+        assert_eq!(parse(text).unwrap(), ["foot"]);
+        assert!(parse_with_warnings("pinned = []").unwrap().1.is_empty());
+        // Still an error: nothing says what is pinned.
+        assert!(parse("size = 48\n").is_err());
+        assert!(parse("hidden = [\"x\"\npinned = [\"foot\"").is_err());
+    }
+
+    #[test]
+    fn a_user_file_with_an_unknown_key_is_still_used() {
+        let dir = temp_dir("config");
+        let user = dir.join("user/dock.toml");
+        let system = dir.join("system/dock.toml");
+        write(&system, "pinned = [\"foot\", \"web\"]\n");
+        write(&user, "theme = \"dark\"\npinned = [\"mail\"]\n");
+        assert_eq!(pinned(&[user, system]), ["mail"]);
+    }
+
+    #[test]
+    fn an_unreadable_file_falls_through_to_the_next() {
+        let dir = temp_dir("config");
+        // A directory where the file should be cannot be read as one.
+        let user = dir.join("user/dock.toml");
+        std::fs::create_dir_all(&user).unwrap();
+        let system = dir.join("system/dock.toml");
+        write(&system, "pinned = [\"web\"]\n");
+        assert_eq!(pinned(&[user, system]), ["web"]);
     }
 
     #[test]

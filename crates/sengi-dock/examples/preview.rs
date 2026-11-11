@@ -18,11 +18,12 @@
 use std::cell::RefCell;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
-use sengi_dock::app::App;
+use sengi_dock::app::{App, Deliver, Message};
 use sengi_dock::desktop::{Apps, Entry};
-use sengi_dock::icons::IconDirs;
+use sengi_dock::icons::{self, IconDirs};
 use sengi_dock::model::Dock;
 use sengi_dock::ui;
 use sengi_dock::windows::{Source, Window};
@@ -145,7 +146,12 @@ fn after(ms: u64, f: impl FnOnce() + 'static) {
     slint::Timer::single_shot(Duration::from_millis(ms), f);
 }
 
-fn main() {
+fn main() -> std::process::ExitCode {
+    // Icons are decoded by running this program again.
+    let all: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = icons::run_decoder(&all) {
+        return code;
+    }
     let mut state = String::from("pinned");
     let mut hover = None;
     let mut press = None;
@@ -174,21 +180,18 @@ fn main() {
         }
     };
 
+    let deliver: Deliver = Arc::new(|message: Message| {
+        let _ = slint::invoke_from_event_loop(move || {
+            APP.with_borrow(|app| {
+                if let Some(app) = app {
+                    app.receive(message);
+                }
+            });
+        });
+    });
+
     let app = if state == "live" {
-        App::start(
-            dock_ui.clone_strong(),
-            Source::Own,
-            |windows| {
-                let _ = slint::invoke_from_event_loop(move || {
-                    APP.with_borrow(|app| {
-                        if let Some(app) = app {
-                            app.set_windows(&windows);
-                        }
-                    });
-                });
-            },
-            resize,
-        )
+        App::start(dock_ui.clone_strong(), Source::Own, deliver, resize)
     } else {
         let root = std::env::temp_dir().join(format!("sengi-dock-preview-{}", std::process::id()));
         write_icons(&root);
@@ -213,7 +216,7 @@ fn main() {
             pinned.iter().map(|s| s.to_string()).collect(),
             Vec::new(),
         );
-        let app = App::new(dock_ui.clone_strong(), dock, icon_dirs, resize);
+        let app = App::new(dock_ui.clone_strong(), dock, icon_dirs, deliver, resize);
         app.set_windows(&windows_for(&state));
         app
     };
@@ -276,4 +279,5 @@ fn main() {
     }
 
     dock_ui.run().expect("the event loop");
+    std::process::ExitCode::SUCCESS
 }

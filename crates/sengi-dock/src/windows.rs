@@ -7,11 +7,13 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::{self, Thread};
 
 use sengi_layer::wayland_client::backend::ObjectId;
+use sengi_layer::wayland_client::protocol::wl_callback::{self, WlCallback};
 use sengi_layer::wayland_client::protocol::wl_registry::{self, WlRegistry};
 use sengi_layer::wayland_client::protocol::wl_seat::WlSeat;
 use sengi_layer::wayland_client::{
@@ -37,6 +39,8 @@ pub struct Window {
     /// Grows each time a window gains focus, so the largest value marks the
     /// window used most recently. Zero until the window is first focused.
     pub focus_seq: u64,
+    /// The window this one belongs to, for a dialog or a file chooser.
+    pub parent: Option<u32>,
 }
 
 /// True when two window lists differ in something the dock shows. Titles are
@@ -50,6 +54,7 @@ pub fn differs_for_dock(a: &[Window], b: &[Window]) -> bool {
                 || a.activated != b.activated
                 || a.minimized != b.minimized
                 || a.focus_seq != b.focus_seq
+                || a.parent != b.parent
         })
 }
 
@@ -111,10 +116,26 @@ fn parse_state(bytes: &[u8]) -> Flags {
     flags
 }
 
+/// What the compositor has said about a window since its last `done`.
+#[derive(Default)]
+struct Pending {
+    app_id: Option<String>,
+    title: Option<String>,
+    flags: Option<Flags>,
+    /// `Some(None)` says the window has stopped having a parent.
+    parent: Option<Option<u32>>,
+}
+
 /// The bookkeeping behind the tracker, apart from the Wayland plumbing.
+///
+/// The protocol sends a window's properties one by one and then `done`.
+/// Changes are held back until then, and a window is only listed after its
+/// first `done`, so nobody sees a window that has no app_id yet.
 #[derive(Default)]
 struct Book {
+    /// The windows as published, oldest first.
     windows: Vec<Window>,
+    pending: HashMap<u32, Pending>,
     next_id: u32,
     focus_counter: u64,
 }
@@ -122,33 +143,64 @@ struct Book {
 impl Book {
     fn open(&mut self) -> u32 {
         self.next_id += 1;
-        self.windows.push(Window {
-            id: self.next_id,
-            ..Window::default()
-        });
+        self.pending.insert(self.next_id, Pending::default());
         self.next_id
     }
 
-    fn get(&mut self, id: u32) -> Option<&mut Window> {
-        self.windows.iter_mut().find(|w| w.id == id)
+    /// The changes waiting for `done`, if the window is still open.
+    fn pending(&mut self, id: u32) -> Option<&mut Pending> {
+        self.pending.get_mut(&id)
     }
 
-    fn set_state(&mut self, id: u32, flags: Flags) {
-        let next = self.focus_counter + 1;
-        let Some(window) = self.windows.iter_mut().find(|w| w.id == id) else {
+    /// Applies what has arrived since the last `done`.
+    fn commit(&mut self, id: u32) {
+        let Some(pending) = self.pending.get_mut(&id).map(std::mem::take) else {
             return;
         };
-        if flags.activated && !window.activated {
-            window.focus_seq = next;
-            self.focus_counter = next;
+        let at = match self.windows.iter().position(|w| w.id == id) {
+            Some(at) => at,
+            None => {
+                let at = self.windows.partition_point(|w| w.id < id);
+                self.windows.insert(
+                    at,
+                    Window {
+                        id,
+                        ..Window::default()
+                    },
+                );
+                at
+            }
+        };
+        let window = &mut self.windows[at];
+        if let Some(app_id) = pending.app_id {
+            window.app_id = app_id;
         }
-        window.activated = flags.activated;
-        window.minimized = flags.minimized;
-        window.maximized = flags.maximized;
+        if let Some(title) = pending.title {
+            window.title = title;
+        }
+        if let Some(flags) = pending.flags {
+            if flags.activated && !window.activated {
+                self.focus_counter += 1;
+                window.focus_seq = self.focus_counter;
+            }
+            window.activated = flags.activated;
+            window.minimized = flags.minimized;
+            window.maximized = flags.maximized;
+        }
+        if let Some(parent) = pending.parent {
+            window.parent = parent.filter(|&parent| parent != id);
+        }
     }
 
     fn close(&mut self, id: u32) {
+        self.pending.remove(&id);
         self.windows.retain(|w| w.id != id);
+        // A dialog that outlives its window stands on its own.
+        for window in &mut self.windows {
+            if window.parent == Some(id) {
+                window.parent = None;
+            }
+        }
     }
 }
 
@@ -180,10 +232,17 @@ impl Controller {
 
     /// Focuses the window, bringing it back first if it was minimised.
     pub fn activate(&self, id: u32) {
-        self.with(id, |handle, shared| {
-            if let Some(seat) = &shared.seat {
+        self.with(id, |handle, shared| match &shared.seat {
+            Some(seat) => {
                 handle.unset_minimized();
                 handle.activate(seat);
+            }
+            None => {
+                // Focusing a window needs a seat to focus it for.
+                static WARNED: AtomicBool = AtomicBool::new(false);
+                if !WARNED.swap(true, Ordering::Relaxed) {
+                    eprintln!("sengi-dock: cannot focus windows: the compositor offers no seat");
+                }
             }
         });
     }
@@ -225,6 +284,15 @@ impl<F: FnMut(&[Window])> Tracker<F> {
             (self.on_change)(&self.book.windows);
         }
     }
+
+    /// Forgets every window and tells the listener once.
+    fn stop(&mut self) {
+        self.book = Book::default();
+        self.ids.clear();
+        self.shared.lock().unwrap().handles.clear();
+        self.dirty = true;
+        self.notify();
+    }
 }
 
 impl<F: FnMut(&[Window]) + 'static> Dispatch<WlRegistry, ()> for Tracker<F> {
@@ -252,6 +320,26 @@ impl<F: FnMut(&[Window]) + 'static> Dispatch<WlRegistry, ()> for Tracker<F> {
             if shared.seat.is_none() {
                 shared.seat = Some(registry.bind::<WlSeat, _, _>(name, 1, queue, ()));
             }
+        }
+    }
+}
+
+/// Answers the sync sent after asking for the globals: by now every global
+/// has been announced, so a missing manager is missing for good.
+impl<F: FnMut(&[Window]) + 'static> Dispatch<WlCallback, ()> for Tracker<F> {
+    fn event(
+        state: &mut Self,
+        _: &WlCallback,
+        event: wl_callback::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if matches!(event, wl_callback::Event::Done { .. }) && !state.manager_found {
+            eprintln!(
+                "sengi-dock: windows are not tracked: {}",
+                Error::Unsupported
+            );
         }
     }
 }
@@ -307,20 +395,31 @@ impl<F: FnMut(&[Window]) + 'static> Dispatch<ZwlrForeignToplevelHandleV1, ()> fo
         };
         match event {
             handle::Event::AppId { app_id } => {
-                if let Some(window) = state.book.get(id) {
-                    window.app_id = app_id;
+                if let Some(pending) = state.book.pending(id) {
+                    pending.app_id = Some(app_id);
                 }
             }
             handle::Event::Title { title } => {
-                if let Some(window) = state.book.get(id) {
-                    window.title = title;
+                if let Some(pending) = state.book.pending(id) {
+                    pending.title = Some(title);
                 }
             }
             handle::Event::State { state: bytes } => {
-                state.book.set_state(id, parse_state(&bytes));
+                if let Some(pending) = state.book.pending(id) {
+                    pending.flags = Some(parse_state(&bytes));
+                }
+            }
+            handle::Event::Parent { parent } => {
+                let parent = parent.and_then(|parent| state.id_of(&parent));
+                if let Some(pending) = state.book.pending(id) {
+                    pending.parent = Some(parent);
+                }
             }
             // The compositor sends this after each batch of changes to one window.
-            handle::Event::Done => state.dirty = true,
+            handle::Event::Done => {
+                state.book.commit(id);
+                state.dirty = true;
+            }
             handle::Event::Closed => {
                 state.book.close(id);
                 state.ids.remove(&toplevel.id());
@@ -341,29 +440,30 @@ impl Wake for Unpark {
     }
 }
 
-/// Handles events until the compositor goes away. With a shared connection
-/// another thread does the reading, so this one parks until that thread
-/// puts something on our queue.
-fn run<F: FnMut(&[Window]) + 'static>(
-    mut queue: EventQueue<Tracker<F>>,
-    mut tracker: Tracker<F>,
+/// Handles events until the compositor stops sending them, and says why
+/// it stopped. With a shared connection another thread does the reading, so
+/// this one parks until that thread puts something on our queue.
+fn dispatch<F: FnMut(&[Window]) + 'static>(
+    queue: &mut EventQueue<Tracker<F>>,
+    tracker: &mut Tracker<F>,
     shared_connection: bool,
-) {
+) -> String {
+    const FINISHED: &str = "the compositor stopped reporting windows";
     if !shared_connection {
         while !tracker.finished {
-            if queue.blocking_dispatch(&mut tracker).is_err() {
-                break;
+            if let Err(error) = queue.blocking_dispatch(tracker) {
+                return error.to_string();
             }
             tracker.notify();
         }
-        return;
+        return FINISHED.to_string();
     }
 
     let waker = Waker::from(Arc::new(Unpark(thread::current())));
     let mut context = Context::from_waker(&waker);
     while !tracker.finished {
-        match queue.poll_dispatch_pending(&mut context, &mut tracker) {
-            Poll::Ready(_) => break,
+        match queue.poll_dispatch_pending(&mut context, tracker) {
+            Poll::Ready(Err(error)) => return error.to_string(),
             Poll::Pending => {
                 tracker.notify();
                 let _ = queue.flush();
@@ -371,6 +471,20 @@ fn run<F: FnMut(&[Window]) + 'static>(
             }
         }
     }
+    FINISHED.to_string()
+}
+
+/// The tracker's thread. When tracking ends, for whatever reason, the
+/// listener is told there are no windows, so nothing stays marked as
+/// running on the strength of a list that will never be updated again.
+fn run<F: FnMut(&[Window]) + 'static>(
+    mut queue: EventQueue<Tracker<F>>,
+    mut tracker: Tracker<F>,
+    shared_connection: bool,
+) {
+    let reason = dispatch(&mut queue, &mut tracker, shared_connection);
+    eprintln!("sengi-dock: windows are no longer tracked: {reason}");
+    tracker.stop();
 }
 
 /// Starts tracking windows. `on_change` is called on the tracker's thread
@@ -403,7 +517,9 @@ where
 
     if shared_connection {
         // Somebody else reads the socket, so a blocking roundtrip here could
-        // wait forever. The thread binds the manager when the globals arrive.
+        // wait forever. The thread binds the manager when the globals arrive,
+        // and the sync's answer tells it when they all have.
+        connection.display().sync(&queue.handle(), ());
         connection
             .flush()
             .map_err(|e| Error::Protocol(e.to_string()))?;
@@ -477,14 +593,29 @@ mod tests {
         }
     }
 
+    fn set_state(book: &mut Book, id: u32, flags: Flags) {
+        if let Some(pending) = book.pending(id) {
+            pending.flags = Some(flags);
+        }
+        book.commit(id);
+    }
+
+    fn get(book: &Book, id: u32) -> &Window {
+        book.windows.iter().find(|w| w.id == id).unwrap()
+    }
+
     #[test]
-    fn windows_get_increasing_ids() {
+    fn windows_get_increasing_ids_and_stay_in_that_order() {
         let mut book = Book::default();
         let a = book.open();
         let b = book.open();
-        book.close(a);
         let c = book.open();
         assert!(a < b && b < c);
+        // The compositor may finish describing them in any order.
+        book.commit(c);
+        book.commit(a);
+        book.commit(b);
+        book.close(a);
         assert_eq!(
             book.windows.iter().map(|w| w.id).collect::<Vec<_>>(),
             [b, c]
@@ -492,20 +623,112 @@ mod tests {
     }
 
     #[test]
+    fn a_window_is_not_listed_until_its_first_done() {
+        let mut book = Book::default();
+        let a = book.open();
+        book.pending(a).unwrap().title = Some("~".into());
+        assert!(book.windows.is_empty());
+        book.pending(a).unwrap().app_id = Some("foot".into());
+        book.pending(a).unwrap().flags = Some(active());
+        assert!(book.windows.is_empty());
+
+        book.commit(a);
+        assert_eq!(book.windows.len(), 1);
+        assert_eq!(get(&book, a).app_id, "foot");
+        assert_eq!(get(&book, a).title, "~");
+        assert!(get(&book, a).activated);
+    }
+
+    #[test]
+    fn changes_wait_for_done_and_leave_other_fields_alone() {
+        let mut book = Book::default();
+        let a = book.open();
+        book.pending(a).unwrap().app_id = Some("foot".into());
+        book.pending(a).unwrap().title = Some("~".into());
+        book.commit(a);
+
+        book.pending(a).unwrap().title = Some("vim".into());
+        assert_eq!(get(&book, a).title, "~");
+        book.commit(a);
+        assert_eq!(get(&book, a).title, "vim");
+        assert_eq!(get(&book, a).app_id, "foot");
+
+        // A done with nothing before it changes nothing.
+        let before = book.windows.clone();
+        book.commit(a);
+        assert_eq!(book.windows, before);
+    }
+
+    #[test]
+    fn when_tracking_stops_the_listener_is_told_there_are_no_windows() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let mut tracker = Tracker {
+            book: Book::default(),
+            ids: HashMap::new(),
+            shared: Arc::new(Mutex::new(Shared::default())),
+            on_change: move |list: &[Window]| log.lock().unwrap().push(list.len()),
+            manager_found: true,
+            finished: false,
+            dirty: false,
+        };
+        let a = tracker.book.open();
+        tracker.book.commit(a);
+        tracker.dirty = true;
+        tracker.notify();
+        // Nothing new, nothing said.
+        tracker.notify();
+
+        tracker.stop();
+        assert_eq!(*seen.lock().unwrap(), [1, 0]);
+        assert!(tracker.book.windows.is_empty());
+    }
+
+    #[test]
+    fn a_dialog_knows_its_parent_until_the_parent_closes() {
+        let mut book = Book::default();
+        let main = book.open();
+        let dialog = book.open();
+        book.commit(main);
+        book.pending(dialog).unwrap().parent = Some(Some(main));
+        book.commit(dialog);
+        assert_eq!(get(&book, dialog).parent, Some(main));
+        assert_eq!(get(&book, main).parent, None);
+
+        // Unrelated changes leave the parent alone.
+        book.pending(dialog).unwrap().title = Some("Open".into());
+        book.commit(dialog);
+        assert_eq!(get(&book, dialog).parent, Some(main));
+
+        book.close(main);
+        assert_eq!(get(&book, dialog).parent, None);
+
+        // The compositor can also take the parent away.
+        let other = book.open();
+        book.commit(other);
+        book.pending(dialog).unwrap().parent = Some(Some(other));
+        book.commit(dialog);
+        book.pending(dialog).unwrap().parent = Some(None);
+        book.commit(dialog);
+        assert_eq!(get(&book, dialog).parent, None);
+    }
+
+    #[test]
     fn focus_order_is_remembered() {
         let mut book = Book::default();
         let a = book.open();
         let b = book.open();
-        book.set_state(a, active());
-        book.set_state(a, Flags::default());
-        book.set_state(b, active());
-        let seq = |book: &mut Book, id| book.get(id).unwrap().focus_seq;
-        assert!(seq(&mut book, b) > seq(&mut book, a));
-        assert!(seq(&mut book, a) > 0);
+        set_state(&mut book, a, active());
+        set_state(&mut book, a, Flags::default());
+        set_state(&mut book, b, active());
+        let seq = |book: &Book, id| get(book, id).focus_seq;
+        assert!(seq(&book, b) > seq(&book, a));
+        assert!(seq(&book, a) > 0);
 
         // Staying focused through another state change is not a new focus.
-        let before = seq(&mut book, b);
-        book.set_state(
+        let before = seq(&book, b);
+        set_state(
+            &mut book,
             b,
             Flags {
                 activated: true,
@@ -513,20 +736,21 @@ mod tests {
                 minimized: false,
             },
         );
-        assert_eq!(seq(&mut book, b), before);
-        assert!(book.get(b).unwrap().maximized);
+        assert_eq!(seq(&book, b), before);
+        assert!(get(&book, b).maximized);
 
-        book.set_state(b, Flags::default());
-        book.set_state(a, active());
-        assert!(seq(&mut book, a) > seq(&mut book, b));
+        set_state(&mut book, b, Flags::default());
+        set_state(&mut book, a, active());
+        assert!(seq(&book, a) > seq(&book, b));
     }
 
     #[test]
-    fn state_for_a_closed_window_is_ignored() {
+    fn events_for_a_closed_window_are_ignored() {
         let mut book = Book::default();
         let a = book.open();
+        book.commit(a);
         book.close(a);
-        book.set_state(a, active());
+        set_state(&mut book, a, active());
         assert!(book.windows.is_empty());
         assert_eq!(book.focus_counter, 0);
     }
@@ -552,6 +776,9 @@ mod tests {
         assert!(differs_for_dock(std::slice::from_ref(&a), &[]));
         b.activated = false;
         b.app_id = "other".into();
+        assert!(differ(&a, &b));
+        b.app_id = a.app_id.clone();
+        b.parent = Some(7);
         assert!(differ(&a, &b));
     }
 }

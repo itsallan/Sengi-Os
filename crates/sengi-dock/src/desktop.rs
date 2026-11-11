@@ -212,10 +212,13 @@ impl Apps {
     }
 
     /// Looks an entry up by desktop-file ID, with or without `.desktop`,
-    /// ignoring case.
+    /// ignoring case. The ID is tried as given first, because some IDs end
+    /// in `.desktop` themselves: Telegram's is `org.telegram.desktop`.
     pub fn get(&self, id: &str) -> Option<&Entry> {
+        let id = id.to_lowercase();
         self.by_id
-            .get(&strip_suffix(id).to_lowercase())
+            .get(&id)
+            .or_else(|| self.by_id.get(strip_suffix(&id)))
             .map(|&index| &self.entries[index])
     }
 
@@ -410,6 +413,27 @@ mod tests {
         write(&system.join("applications/foot.desktop"), FOOT);
         let apps = Apps::load(&[user, system]);
         assert!(apps.get("foot").is_none());
+    }
+
+    #[test]
+    fn an_id_that_ends_in_desktop_is_found_both_ways() {
+        let dir = temp_dir("telegram");
+        write(
+            &dir.join("applications/org.telegram.desktop.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Telegram\nExec=telegram-desktop\n",
+        );
+        write(
+            &dir.join("applications/org.telegram.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Other\nExec=other\n",
+        );
+        let apps = Apps::load(&[dir]);
+        assert_eq!(apps.get("org.telegram.desktop").unwrap().name, "Telegram");
+        assert_eq!(
+            apps.get("org.telegram.desktop.desktop").unwrap().name,
+            "Telegram"
+        );
+        assert_eq!(apps.get("Org.Telegram.Desktop").unwrap().name, "Telegram");
+        assert_eq!(apps.get("org.telegram").unwrap().name, "Other");
     }
 
     #[test]
