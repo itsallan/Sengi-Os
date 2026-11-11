@@ -330,12 +330,21 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         .open(&path, flags)
         .map_err(|err| format!("cannot open {}: {err}", path.display()))?;
     let fd = DrmDeviceFd::new(DeviceFd::from(fd));
-    let (device, device_events) = DrmDevice::new(fd.clone(), true)?;
     if std::env::var_os(VIRTUAL_CURSOR_VARIABLE).is_some_and(|value| !value.is_empty()) {
-        if let Err(err) = fd.set_client_capability(ClientCapability::CursorPlaneHotspot, true) {
+        // The kernel wants atomic mode setting switched on first, and the
+        // device must see the plane from the start, so this goes ahead of it.
+        let claimed = [
+            ClientCapability::UniversalPlanes,
+            ClientCapability::Atomic,
+            ClientCapability::CursorPlaneHotspot,
+        ]
+        .into_iter()
+        .try_for_each(|capability| fd.set_client_capability(capability, true));
+        if let Err(err) = claimed {
             eprintln!("sengi-compositor: no virtual cursor plane: {err}");
         }
     }
+    let (device, device_events) = DrmDevice::new(fd.clone(), true)?;
 
     // GPU or CPU: the command line, then the environment, then whatever
     // the hardware turns out to be.
