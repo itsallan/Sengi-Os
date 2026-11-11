@@ -126,6 +126,13 @@ shot hover
 click
 shot session-menu
 key esc 1
+
+# The network item, a little left of the clock: it opens quick settings.
+pointer $((screen_w - 293)) 14
+click
+sleep 1
+shot quick-settings
+key esc 1
 # Park the pointer on empty desktop so the hover does not follow us around.
 pointer $((screen_w / 8)) $((screen_h / 2))
 

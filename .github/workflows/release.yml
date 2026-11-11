@@ -35,7 +35,7 @@ jobs:
         run: |
           version=$(cat VERSION)
           scripts/release-notes.sh "$version" test-output/metrics.txt >notes.md
-          for shot in desktop hover session-menu terminal launcher lock; do
+          for shot in desktop hover session-menu quick-settings terminal launcher lock; do
             cp "test-output/$shot.png" "sengi-os-$version-$shot.png"
           done
           gh release create "$GITHUB_REF_NAME" --title "Sengi OS $version" --notes-file notes.md \
