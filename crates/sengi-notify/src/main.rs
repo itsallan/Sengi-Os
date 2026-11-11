@@ -13,6 +13,7 @@ mod notification;
 mod rate;
 mod store;
 mod ui;
+mod wire;
 
 use std::cell::RefCell;
 use std::process::ExitCode;

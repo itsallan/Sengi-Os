@@ -6,7 +6,6 @@
 //! channel. Signals travel the other way through an ordinary channel that
 //! this module's thread sleeps on.
 
-use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
@@ -19,11 +18,11 @@ use zbus::blocking::Connection;
 use zbus::fdo::RequestNameFlags;
 use zbus::message::Header;
 use zbus::object_server::SignalEmitter;
-use zbus::zvariant::Value;
 
 use crate::cli::{Command, Dnd};
-use crate::notification::{self, HintValue, Notification, Request, CAPABILITIES};
+use crate::notification::{Notification, Request, CAPABILITIES};
 use crate::rate::{Allowance, RateLimiter};
+use crate::wire::{Actions, WireHints};
 
 pub const NAME: &str = "org.freedesktop.Notifications";
 pub const PATH: &str = "/org/freedesktop/Notifications";
@@ -116,26 +115,6 @@ fn next_id(last: u32) -> u32 {
     }
 }
 
-fn hint_value<'a>(value: &'a Value<'a>) -> HintValue<'a> {
-    match value {
-        Value::Bool(value) => HintValue::Bool(*value),
-        Value::U8(value) => HintValue::Int(i64::from(*value)),
-        Value::I16(value) => HintValue::Int(i64::from(*value)),
-        Value::U16(value) => HintValue::Int(i64::from(*value)),
-        Value::I32(value) => HintValue::Int(i64::from(*value)),
-        Value::U32(value) => HintValue::Int(i64::from(*value)),
-        Value::I64(value) => HintValue::Int(*value),
-        Value::U64(value) => HintValue::Int(i64::try_from(*value).unwrap_or(i64::MAX)),
-        Value::Str(value) => HintValue::Str(value.as_str()),
-        // Some bindings wrap every hint in one more variant.
-        Value::Value(inner) => match &**inner {
-            Value::Value(_) => HintValue::Other,
-            inner => hint_value(inner),
-        },
-        _ => HintValue::Other,
-    }
-}
-
 #[zbus::interface(name = "org.freedesktop.Notifications")]
 impl Notifications {
     #[allow(clippy::too_many_arguments)]
@@ -147,8 +126,8 @@ impl Notifications {
         _app_icon: &str,
         summary: &str,
         body: &str,
-        actions: Vec<&str>,
-        hints: HashMap<&str, Value<'_>>,
+        actions: Actions<'_>,
+        hints: WireHints,
         expire_timeout: i32,
     ) -> zbus::fdo::Result<u32> {
         let sender = header.sender().map(|name| name.as_str()).unwrap_or("");
@@ -166,14 +145,12 @@ impl Notifications {
         } else {
             self.next_id()
         };
-        let hints =
-            notification::parse_hints(hints.iter().map(|(name, value)| (*name, hint_value(value))));
         let request = Request {
             app_name,
             summary,
             body,
-            actions,
-            hints,
+            actions: actions.0,
+            hints: hints.0,
             expire_timeout,
         };
         self.link.send(ToUi::Notify(
@@ -389,25 +366,6 @@ mod tests {
         assert_eq!(next_id(0), 1);
         assert_eq!(next_id(1), 2);
         assert_eq!(next_id(u32::MAX), 1);
-    }
-
-    #[test]
-    fn hints_of_any_integer_type_are_read() {
-        assert_eq!(hint_value(&Value::U8(2)), HintValue::Int(2));
-        assert_eq!(hint_value(&Value::I32(2)), HintValue::Int(2));
-        assert_eq!(hint_value(&Value::U32(1)), HintValue::Int(1));
-        assert_eq!(hint_value(&Value::U64(u64::MAX)), HintValue::Int(i64::MAX));
-        assert_eq!(hint_value(&Value::Bool(true)), HintValue::Bool(true));
-        assert_eq!(hint_value(&Value::from("im")), HintValue::Str("im"));
-        assert_eq!(hint_value(&Value::F64(1.0)), HintValue::Other);
-    }
-
-    #[test]
-    fn a_hint_wrapped_once_is_read_and_deeper_nesting_is_not_followed() {
-        let once = Value::Value(Box::new(Value::U8(2)));
-        assert_eq!(hint_value(&once), HintValue::Int(2));
-        let twice = Value::Value(Box::new(Value::Value(Box::new(Value::U8(2)))));
-        assert_eq!(hint_value(&twice), HintValue::Other);
     }
 
     #[test]

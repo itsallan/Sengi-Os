@@ -3568,6 +3568,7 @@ dependencies = [
  "chrono",
  "sengi-layer",
  "sengi-tokens",
+ "serde",
  "slint",
  "slint-build",
  "zbus",
