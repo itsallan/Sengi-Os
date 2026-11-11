@@ -1,0 +1,61 @@
+// The Notifications page.
+
+import { Tokens, SengiButton, SengiToggle } from "components.slint";
+import { Page, PageColumn, Card, Divider, SettingRow, Note } from "../kit.slint";
+
+export global NotificationsData {
+    // The notification service answers.
+    in property <bool> available: false;
+    in property <bool> dnd: false;
+    // Why it does not, when it does not.
+    in property <string> note;
+
+    callback set-dnd(bool);
+    callback clear();
+}
+
+export component NotificationsPage inherits Page {
+    title: "Notifications";
+    content-height: column.preferred-height;
+
+    column := PageColumn {
+        if NotificationsData.note != "": Note {
+            text: NotificationsData.note;
+            warning: true;
+        }
+
+        Card {
+            SettingRow {
+                title: "Do not disturb";
+                detail: "Notifications are kept quiet: nothing pops up until this is off again";
+                enabled: NotificationsData.available;
+
+                VerticalLayout {
+                    alignment: center;
+                    SengiToggle {
+                        checked: NotificationsData.dnd;
+                        enabled: NotificationsData.available;
+                        toggled(on) => { NotificationsData.set-dnd(on); }
+                    }
+                }
+            }
+
+            Divider { }
+
+            SettingRow {
+                title: "Notifications on screen";
+                detail: "Dismiss every notification that is showing";
+                enabled: NotificationsData.available;
+
+                VerticalLayout {
+                    alignment: center;
+                    SengiButton {
+                        text: "Clear all";
+                        enabled: NotificationsData.available;
+                        clicked => { NotificationsData.clear(); }
+                    }
+                }
+            }
+        }
+    }
+}

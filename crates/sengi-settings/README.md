@@ -240,6 +240,13 @@ typing for touchpads. They are written as two `<libinput>` device
 categories, `non-touch` and `touchpad`, in the generated `rc.xml`, which
 labwc applies to the devices present when it reconfigures.
 
+### Notifications
+
+Do not disturb, and a button that dismisses every notification on
+screen. Both belong to the notification service and are reached through
+its command, `sengi-notify --dnd on|off|status` and `sengi-notify
+--dismiss-all`; the page says when the service is missing or silent.
+
 ## Building and testing
 
     cargo build -p sengi-settings
