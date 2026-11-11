@@ -1,6 +1,7 @@
 //! Compositor state shared by every backend.
 
 use std::{
+    collections::HashMap,
     error::Error,
     ffi::OsString,
     os::{
@@ -186,6 +187,8 @@ pub struct State {
     pub lock: Option<Lock>,
     pub idle_notifier_state: IdleNotifierState<Self>,
     _security_context_state: SecurityContextState,
+    /// How many security contexts each client has made.
+    pub security_contexts: HashMap<ClientId, u32>,
     pub shm_state: ShmState,
     pub seat_state: SeatState<Self>,
     pub data_device_state: DataDeviceState,
@@ -349,6 +352,7 @@ impl State {
             lock: None,
             idle_notifier_state,
             _security_context_state: security_context_state,
+            security_contexts: HashMap::new(),
             shm_state,
             seat_state,
             data_device_state,

@@ -21,6 +21,9 @@ use smithay::{
 
 use crate::state::{ClientState, State};
 
+/// How many security contexts one client may set up.
+const MAX_CONTEXTS: u32 = 32;
+
 /// Whether `client` may see the globals that are kept from sandboxes.
 pub fn trusted(client: &Client) -> bool {
     client
@@ -29,7 +32,19 @@ pub fn trusted(client: &Client) -> bool {
 }
 
 impl SecurityContextHandler for State {
-    fn context_created(&mut self, source: SecurityContextListenerSource, _: SecurityContext) {
+    fn context_created(&mut self, source: SecurityContextListenerSource, context: SecurityContext) {
+        // Each context is a socket this process listens on from then on.
+        let made = self
+            .security_contexts
+            .entry(context.creator_client_id)
+            .or_insert(0);
+        *made += 1;
+        if *made > MAX_CONTEXTS {
+            if *made == MAX_CONTEXTS + 1 {
+                crate::say!("a client asked for more than {MAX_CONTEXTS} security contexts");
+            }
+            return;
+        }
         let listening = self.loop_handle.insert_source(source, |stream, _, state| {
             let data = ClientState::of(&stream, true);
             if let Err(err) = state.display_handle.insert_client(stream, Arc::new(data)) {
