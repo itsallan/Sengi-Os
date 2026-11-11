@@ -425,6 +425,9 @@ impl State {
 
     /// Acts on what the app asked for through its handle since last time.
     fn apply_requests(&mut self) {
+        // Before the commit that asks for keyboard focus: a surface focused
+        // while there is no wl_keyboard gets no enter event.
+        self.bind_keyboard();
         let visible = self.shared.borrow().visible;
         if visible != self.shown {
             self.shown = visible;
@@ -446,8 +449,6 @@ impl State {
                 }
             }
         }
-        drop(shared);
-        self.bind_keyboard();
     }
 
     /// Asks for the keyboard once the app wants key presses. A bar never
