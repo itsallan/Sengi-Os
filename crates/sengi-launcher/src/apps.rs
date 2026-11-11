@@ -52,10 +52,11 @@ impl Apps {
             .collect()
     }
 
-    /// Start entry `index` and remember that it was used.
+    /// Start entry `index` and remember that it was used. Nothing is
+    /// remembered unless the program exists and the start went through.
     pub fn launch(&mut self, index: usize, env: &Env, now: u64) -> Result<(), LaunchError> {
         let entry = &self.entries[index];
-        let argv = exec::command_line(entry, env).map_err(LaunchError::Exec)?;
+        let argv = exec::launchable(entry, env).map_err(LaunchError::Exec)?;
         exec::spawn(&argv, entry.working_dir.as_deref()).map_err(LaunchError::Spawn)?;
         self.usage.record(&entry.id, now);
         // Losing the history is not worth failing a launch that worked.
@@ -273,5 +274,32 @@ mod tests {
             assert!(order(&apps, wrapper, 0).is_empty(), "{wrapper}");
         }
         assert_eq!(order(&apps, "gimp", 0), vec!["Image Editor"]);
+    }
+
+    #[test]
+    fn a_missing_program_fails_even_when_the_runner_would_start() {
+        let tmp = TempDir::new();
+        tmp.write("bin/sengi-run", "#!/bin/sh\nexec \"$@\"\n");
+        tmp.make_executable("bin/sengi-run");
+        write_entry(
+            &tmp,
+            "gone.desktop",
+            "Name=Gone\nExec=/no/such/binary --flag\n",
+        );
+        write_entry(
+            &tmp,
+            "bare.desktop",
+            "Name=Bare\nExec=uninstalled-program\n",
+        );
+        let env = env_in(&tmp);
+        assert!(env.find_program("sengi-run").is_some());
+
+        let mut apps = Apps::load(&env);
+        assert_eq!(apps.entries().len(), 2);
+        for index in 0..2 {
+            let error = apps.launch(index, &env, 100).unwrap_err();
+            assert!(error.to_string().ends_with("is not installed"), "{error}");
+        }
+        assert!(!env.usage_file().exists(), "a failed launch was counted");
     }
 }

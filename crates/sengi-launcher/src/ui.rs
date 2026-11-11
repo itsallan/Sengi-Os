@@ -79,18 +79,23 @@ fn show(window: &LauncherWindow, session: &Session) {
         })
         .collect();
     window.set_rows(ModelRc::new(VecModel::from(rows)));
+    // Whatever went wrong belonged to the previous choice.
+    window.set_error(SharedString::new());
     window.set_total_rows(session.hits().len() as i32);
     window.set_first_row(session.first_visible() as i32);
     window.set_selected(session.selected_row().map_or(-1, |row| row as i32));
 }
 
-/// Connect `window` to `session`, laid out as `invocation` asks. `finish` is
-/// called, once, when the user picks a result or dismisses the panel;
-/// closing the window is up to the caller.
+/// Connect `window` to `session`, laid out as `invocation` asks.
+///
+/// A picked result is first put to `check`. If that fails the panel stays
+/// open and shows the message. Otherwise, or when the panel is dismissed,
+/// `finish` is called, once; closing the window is up to the caller.
 pub fn attach(
     window: &LauncherWindow,
     mut session: Session,
     invocation: &Invocation,
+    check: impl Fn(usize) -> Result<(), String> + 'static,
     finish: impl Fn(Outcome) + 'static,
 ) {
     // The length of a full list is a design token, so it is settled here.
@@ -129,24 +134,36 @@ pub fn attach(
             show(&window, &session.borrow());
         }
     });
+    let accept = Rc::new({
+        let (weak, session, finish) = (window.as_weak(), session.clone(), finish.clone());
+        move |index: usize| match check(index) {
+            Ok(()) => finish(Outcome::Accepted(index)),
+            Err(message) => {
+                if let Some(window) = weak.upgrade() {
+                    show(&window, &session.borrow());
+                    window.set_error(message.into());
+                }
+            }
+        }
+    });
     window.on_accept({
-        let (session, finish) = (session.clone(), finish.clone());
+        let (session, accept) = (session.clone(), accept.clone());
         move || {
             // Return with nothing to pick keeps the panel open.
             let chosen = session.borrow().chosen();
             if let Some(index) = chosen {
-                finish(Outcome::Accepted(index));
+                accept(index);
             }
         }
     });
     window.on_row_clicked({
-        let (session, finish) = (session.clone(), finish.clone());
+        let session = session.clone();
         move |row| {
             let chosen = usize::try_from(row)
                 .ok()
                 .and_then(|row| session.borrow_mut().choose_row(row));
             if let Some(index) = chosen {
-                finish(Outcome::Accepted(index));
+                accept(index);
             }
         }
     });

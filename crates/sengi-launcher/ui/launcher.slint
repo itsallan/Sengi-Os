@@ -101,6 +101,8 @@ export component LauncherWindow inherits Window {
     in property <int> first-row: 0;
     in property <int> max-lines: Tokens.launcher-lines;
     in property <string> empty-text: "No results";
+    // Why the last choice could not be carried out. Shown under the list.
+    in property <string> error;
     // The narrow menu width, for menus with a few short lines.
     in property <bool> compact: false;
 
@@ -110,7 +112,8 @@ export component LauncherWindow inherits Window {
     // anywhere else lands on the window and closes it.
     out property <length> panel-width: root.compact ? Tokens.menu-width : Tokens.launcher-width;
     out property <length> full-height: root.height-for(root.max-lines);
-    out property <length> panel-height: root.height-for(Math.clamp(root.rows.length, 1, root.max-lines));
+    out property <length> panel-height: root.height-for(root.shown-lines)
+        + (root.error != "" ? root.row-height : 0);
 
     callback query-edited(string);
     // Move the highlight by this many rows; negative is up.
@@ -127,6 +130,7 @@ export component LauncherWindow inherits Window {
 
     private property <length> field-height: Tokens.font-size-lg + Tokens.space-lg * 2;
     private property <length> row-height: Tokens.font-size-lg + Tokens.space-sm * 2;
+    private property <int> shown-lines: Math.clamp(root.rows.length, 1, root.max-lines);
     private property <length> list-top: root.field-height + Tokens.border-width + Tokens.space-sm;
 
     // Touchpad scrolling that has not yet added up to a row.
@@ -263,7 +267,7 @@ export component LauncherWindow inherits Window {
             x: Tokens.space-sm;
             y: root.list-top;
             width: parent.width - Tokens.space-sm * 2;
-            height: parent.height - root.list-top - Tokens.space-sm;
+            height: root.shown-lines * root.row-height;
             clip: true;
 
             for row[index] in root.rows: ResultRow {
@@ -286,6 +290,17 @@ export component LauncherWindow inherits Window {
                 font-size: Tokens.font-size-lg;
                 vertical-alignment: center;
             }
+        }
+
+        if root.error != "": SengiText {
+            x: Tokens.space-sm + Tokens.space-md;
+            y: root.list-top + root.shown-lines * root.row-height;
+            width: parent.width - self.x * 2;
+            height: root.row-height;
+            text: root.error;
+            color: Tokens.color-danger;
+            vertical-alignment: center;
+            overflow: elide;
         }
     }
 }

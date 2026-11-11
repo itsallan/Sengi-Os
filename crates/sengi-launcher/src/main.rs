@@ -79,7 +79,8 @@ fn show(invocation: &Invocation) -> u8 {
         return run::DISMISSED;
     }
 
-    match open(invocation, &instance, session) {
+    let check = run::checker(&source, &env);
+    match open(invocation, &instance, session, check) {
         Ok(outcome) => run::complete(outcome, source, &env, std::io::stdout()),
         Err(error) => {
             eprintln!("sengi-launcher: {error}");
@@ -93,6 +94,7 @@ fn open(
     invocation: &Invocation,
     instance: &Instance,
     session: Session,
+    check: Box<dyn Fn(usize) -> Result<(), String>>,
 ) -> Result<Outcome, sengi_layer::Error> {
     let app = App::new()?;
     let handle = app.handle();
@@ -119,14 +121,14 @@ fn open(
 
     let outcome = Rc::new(Cell::new(Outcome::Dismissed));
     let invocation = invocation.clone();
-    let mut session = Some(session);
+    let mut parts = Some((session, check));
     app.run(config, {
         let outcome = outcome.clone();
         move |context| {
-            let session = session.take().ok_or("the launcher has a single surface")?;
+            let (session, check) = parts.take().ok_or("the launcher has a single surface")?;
             let window = LauncherWindow::new()?;
             let handle = context.handle();
-            ui::attach(&window, session, &invocation, {
+            ui::attach(&window, session, &invocation, check, {
                 let (handle, outcome) = (handle.clone(), outcome.clone());
                 move |result| {
                     outcome.set(result);

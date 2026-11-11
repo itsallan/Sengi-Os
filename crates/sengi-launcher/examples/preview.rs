@@ -83,7 +83,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !real && invocation.mode == Mode::Menu && invocation.prompt.is_none() {
         invocation.prompt = Some("Session".into());
     }
-    ui::attach(&window, session, &invocation, {
+    let check = match &source {
+        Some(source) => run::checker(source, &env),
+        // Made-up applications: all start, except one to show the error.
+        None => Box::new(|index| match index {
+            3 => Err("Cannot start Settings: sengi-settings is not installed".to_string()),
+            _ => Ok(()),
+        }),
+    };
+    ui::attach(&window, session, &invocation, check, {
         let outcome = outcome.clone();
         move |o| {
             outcome.set(o);
