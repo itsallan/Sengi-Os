@@ -49,6 +49,10 @@ pub(crate) fn pointer_button(code: u32) -> Option<PointerEventButton> {
 /// Wayland counts scrolling down and right as positive, Slint counts it as
 /// negative. A wheel reports whole notches in `discrete`; a touchpad
 /// reports only a distance in `absolute`.
+///
+/// smithay-client-toolkit 0.19 binds wl_seat at version 7 at most, where
+/// `discrete` counts notches. From version 8 the protocol sends 120ths of
+/// a notch instead; if a later toolkit passes those through here, divide.
 pub(crate) fn scroll_delta(absolute: f64, discrete: i32) -> f32 {
     if discrete != 0 {
         -(discrete as f32) * WHEEL_NOTCH
@@ -57,22 +61,26 @@ pub(crate) fn scroll_delta(absolute: f64, discrete: i32) -> f32 {
     }
 }
 
-/// The text Slint expects for a key: one of its own codes for keys such as
-/// Escape and the arrows, otherwise what the key types in the active
-/// layout. `None` for keys Slint has no use for, such as the volume keys.
+/// The text Slint expects for a key press: one of its own codes for keys
+/// such as Escape and the arrows, otherwise what the press typed in the
+/// active layout. `None` for presses that type nothing.
 ///
-/// `utf8` is what xkbcommon says the press produced, which already covers
-/// dead keys and compose sequences. It is missing on release and is a
-/// control code while Ctrl is held, so those fall back to the key's symbol;
-/// that way Ctrl+A reaches Slint as "a" with the control modifier set.
+/// `utf8` is what xkbcommon says the press produced, after dead keys and
+/// compose sequences. It is `None` for a key that is part of a sequence
+/// still being typed, and that key must not show up as text: Compose,
+/// apostrophe, e is "é", not "'é". While Ctrl is held it is a control code,
+/// and then the key's own symbol is used, so that Ctrl+A reaches Slint as
+/// "a" with the control modifier set.
 pub(crate) fn key_text(keysym: Keysym, utf8: Option<&str>) -> Option<SharedString> {
     if let Some(key) = special_key(keysym) {
         return Some(key.into());
     }
-    if let Some(text) = utf8 {
-        if !text.is_empty() && !text.chars().any(char::is_control) {
-            return Some(text.into());
-        }
+    let text = utf8?;
+    if text.is_empty() {
+        return None;
+    }
+    if !text.chars().any(char::is_control) {
+        return Some(text.into());
     }
     keysym
         .key_char()
@@ -142,16 +150,40 @@ const MODIFIER_GROUPS: [ModifierGroup; 4] = [
     (&[Key::Meta, Key::MetaR], |state| state.meta),
 ];
 
+/// The key behind a key text, if the text is a single character.
+fn single(text: &str) -> Option<char> {
+    let mut characters = text.chars();
+    match (characters.next(), characters.next()) {
+        (Some(first), None) => Some(first),
+        _ => None,
+    }
+}
+
 /// True for the key texts Slint treats as modifier keys.
 pub(crate) fn is_modifier(text: &str) -> bool {
-    let mut characters = text.chars();
-    let (Some(first), None) = (characters.next(), characters.next()) else {
+    let Some(key) = single(text) else {
         return false;
     };
-    MODIFIER_GROUPS
-        .iter()
-        .flat_map(|(keys, _)| keys.iter())
-        .any(|key| char::from(*key) == first)
+    key == char::from(Key::AltGr)
+        || MODIFIER_GROUPS
+            .iter()
+            .flat_map(|(keys, _)| keys.iter())
+            .any(|modifier| char::from(*modifier) == key)
+}
+
+/// Whether holding the key down should repeat it. Text, editing and
+/// navigation keys do. Modifiers and locks never do, and a held Escape or
+/// function key acting over and over helps nobody.
+pub(crate) fn key_repeats(text: &str) -> bool {
+    let Some(key) = single(text) else {
+        return !text.is_empty();
+    };
+    let function_keys = char::from(Key::F1)..=char::from(Key::F24);
+    !is_modifier(text)
+        && !function_keys.contains(&key)
+        && ![Key::CapsLock, Key::Escape, Key::Menu, Key::Insert]
+            .iter()
+            .any(|still| char::from(*still) == key)
 }
 
 /// Slint learns about modifiers from the presses and releases of the
@@ -334,10 +366,29 @@ mod tests {
     }
 
     #[test]
-    fn control_combinations_and_releases_fall_back_to_the_symbol() {
+    fn control_combinations_fall_back_to_the_symbol() {
         assert_eq!(key_text(Keysym::a, Some("\u{1}")), Some("a".into()));
-        assert_eq!(key_text(Keysym::a, None), Some("a".into()));
-        assert_eq!(key_text(Keysym::a, Some("")), Some("a".into()));
+        assert_eq!(key_text(Keysym::z, Some("\u{1a}")), Some("z".into()));
+    }
+
+    #[test]
+    fn keys_inside_a_compose_sequence_type_nothing() {
+        // Compose, apostrophe, e: only the last press produces text.
+        assert_eq!(key_text(Keysym::Multi_key, None), None);
+        assert_eq!(key_text(Keysym::apostrophe, None), None);
+        assert_eq!(key_text(Keysym::e, Some("\u{e9}")), Some("\u{e9}".into()));
+        // A dead key, and a key that types nothing at all.
+        assert_eq!(key_text(Keysym::dead_acute, None), None);
+        assert_eq!(key_text(Keysym::a, Some("")), None);
+    }
+
+    #[test]
+    fn special_keys_work_inside_a_compose_sequence_too() {
+        assert_eq!(key_text(Keysym::Escape, None), Some(text(Key::Escape)));
+        assert_eq!(
+            key_text(Keysym::BackSpace, None),
+            Some(text(Key::Backspace))
+        );
     }
 
     #[test]
@@ -348,7 +399,27 @@ mod tests {
     }
 
     #[test]
+    fn only_keys_worth_repeating_repeat() {
+        assert!(key_repeats("a"));
+        assert!(key_repeats(" "));
+        assert!(key_repeats("\u{e9}"));
+        assert!(key_repeats(&text(Key::Backspace)));
+        assert!(key_repeats(&text(Key::Delete)));
+        assert!(key_repeats(&text(Key::LeftArrow)));
+        assert!(key_repeats(&text(Key::DownArrow)));
+        assert!(key_repeats(&text(Key::Return)));
+        assert!(key_repeats(&text(Key::Tab)));
+        assert!(!key_repeats(&text(Key::Shift)));
+        assert!(!key_repeats(&text(Key::AltGr)));
+        assert!(!key_repeats(&text(Key::CapsLock)));
+        assert!(!key_repeats(&text(Key::Escape)));
+        assert!(!key_repeats(&text(Key::F5)));
+        assert!(!key_repeats(""));
+    }
+
+    #[test]
     fn modifier_keys_are_recognised() {
+        assert!(is_modifier(&text(Key::AltGr)));
         assert!(is_modifier(&text(Key::Shift)));
         assert!(is_modifier(&text(Key::ControlR)));
         assert!(is_modifier(&text(Key::Meta)));
