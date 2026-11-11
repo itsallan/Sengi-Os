@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use zbus::zvariant::{ObjectPath, OwnedObjectPath};
 
-use super::bus::{self, Bus, Object};
+use super::bus::{self, Bus, Listing, Object};
 use crate::secret::Secret;
 use crate::services::{Notify, WifiService};
 use crate::text;
@@ -279,9 +279,16 @@ impl Iwd {
     }
 
     fn device(&self) -> Option<(Vec<Object>, Device)> {
-        let objects = self.bus.objects(SERVICE)?;
+        let Listing::Objects(objects) = self.objects() else {
+            return None;
+        };
         let device = device(&objects)?;
         Some((objects, device))
+    }
+
+    fn objects(&self) -> Listing {
+        self.bus
+            .objects(SERVICE, &[ADAPTER, DEVICE, STATION, NETWORK])
     }
 
     /// Export the agent and tell iwd about it. iwd forgets an agent when
@@ -317,7 +324,12 @@ impl Iwd {
 
 impl WifiService for Iwd {
     fn read(&self) -> Wifi {
-        let Some((objects, device)) = self.device() else {
+        let objects = match self.objects() {
+            Listing::Objects(objects) => objects,
+            Listing::Denied => return Wifi::Denied,
+            Listing::Absent => return Wifi::Absent,
+        };
+        let Some(device) = device(&objects) else {
             return Wifi::Absent;
         };
         let ordered: Vec<(OwnedObjectPath, i16)> = match &device.station {

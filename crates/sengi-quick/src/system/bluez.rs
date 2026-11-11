@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use super::bus::{self, Bus, Object};
+use super::bus::{self, Bus, Listing, Object};
 use crate::bluetooth::{Bluetooth, MAX_DEVICES};
 use crate::services::{BluetoothService, Notify};
 use crate::text;
@@ -64,14 +64,15 @@ impl Bluez {
 
 impl BluetoothService for Bluez {
     fn read(&self) -> Bluetooth {
-        match self.bus.objects(SERVICE) {
-            Some(objects) => reading(&objects),
-            None => Bluetooth::Absent,
+        match self.bus.objects(SERVICE, &[ADAPTER, DEVICE]) {
+            Listing::Objects(objects) => reading(&objects),
+            Listing::Denied => Bluetooth::Denied,
+            Listing::Absent => Bluetooth::Absent,
         }
     }
 
     fn set_powered(&self, on: bool) {
-        let Some(objects) = self.bus.objects(SERVICE) else {
+        let Listing::Objects(objects) = self.bus.objects(SERVICE, &[ADAPTER]) else {
             return;
         };
         let Some((path, _)) = adapter(&objects) else {

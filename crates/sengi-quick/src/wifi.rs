@@ -56,6 +56,8 @@ pub enum Link {
 pub enum Wifi {
     /// iwd is not running or has no device.
     Absent,
+    /// iwd is running and the bus policy keeps this user out.
+    Denied,
     Off,
     On {
         link: Link,

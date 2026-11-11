@@ -7,6 +7,8 @@ pub const MAX_DEVICES: usize = 8;
 pub enum Bluetooth {
     /// BlueZ is not running or has no adapter.
     Absent,
+    /// BlueZ is running and the bus policy keeps this user out.
+    Denied,
     Off,
     On {
         /// Names of the connected devices, cleaned for display.

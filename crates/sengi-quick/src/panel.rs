@@ -396,6 +396,7 @@ impl Panel {
                 off(false, "Wi-Fi service is not running")
             }
             Reading::Known(Wifi::Absent) => off(false, "No Wi-Fi adapter"),
+            Reading::Known(Wifi::Denied) => off(false, "Wi-Fi is not permitted for this user"),
             Reading::Known(Wifi::Off) => off(true, "Off"),
             Reading::Known(Wifi::On {
                 link,
@@ -504,6 +505,11 @@ impl Panel {
             Reading::Pending | Reading::Known(Bluetooth::Absent) => {
                 tile(false, false, "No Bluetooth adapter".to_string())
             }
+            Reading::Known(Bluetooth::Denied) => tile(
+                false,
+                false,
+                "Bluetooth is not permitted for this user".to_string(),
+            ),
             Reading::Known(Bluetooth::Off) => tile(true, false, "Off".to_string()),
             Reading::Known(Bluetooth::On { devices }) => {
                 tile(true, true, bluetooth::summary(devices))
@@ -694,6 +700,18 @@ mod tests {
         let view = panel.view();
         assert_eq!(view.wifi.detail, "Wi-Fi service is not running");
         assert_eq!(view.bluetooth.detail, "Bluetooth service is not running");
+
+        // Running, but the bus policy keeps this user out: say that, not
+        // that the service is missing.
+        panel.apply(Event::Wifi(Wifi::Denied));
+        panel.apply(Event::Bluetooth(Bluetooth::Denied));
+        let view = panel.view();
+        assert!(!view.wifi.enabled && !view.bluetooth.enabled);
+        assert_eq!(view.wifi.detail, "Wi-Fi is not permitted for this user");
+        assert_eq!(
+            view.bluetooth.detail,
+            "Bluetooth is not permitted for this user"
+        );
     }
 
     #[test]
