@@ -10,7 +10,8 @@ Usage: sengi-compositor [options]
                         when started from a desktop session, the screen when
                         started on a terminal, headless otherwise)
       --size WxH        output size in pixels (default 1280x720)
-      --screenshot PNG  save the last frame to PNG on exit (headless, drm)
+      --screenshot PNG  save the last frame to PNG on exit (headless, drm);
+                        with --backend drm also on every SIGUSR2
       --exit-after SEC  stop after SEC seconds
       --script FILE     play scripted input and screenshots (headless only)
       --locker CMD      what Super+L runs to lock (default: swaylock -f)
@@ -146,7 +147,11 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
         }
     }
 
-    if options.screenshot.is_some() && options.exit_after.is_none() {
+    // The drm backend also saves one whenever it gets SIGUSR2.
+    if options.screenshot.is_some()
+        && options.exit_after.is_none()
+        && options.backend != Backend::Drm
+    {
         return Err("--screenshot needs --exit-after".into());
     }
     // Winit draws into someone else's window and has no script player;
@@ -263,6 +268,8 @@ mod tests {
             "1",
         ];
         assert!(run(&shot).is_ok());
+        // Without an exit time it still saves one on SIGUSR2.
+        assert!(run(&shot[..4]).is_ok());
         assert!(run(&["--backend", "drm", "--script", "steps.txt"]).is_err());
     }
 

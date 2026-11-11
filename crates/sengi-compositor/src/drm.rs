@@ -44,7 +44,7 @@ use smithay::{
             element::RenderElementStates,
             gles::{ffi, GlesRenderbuffer, GlesRenderer},
             pixman::PixmanRenderer,
-            Bind, ExportMem, Offscreen, TextureMapping,
+            Bind, ExportMem, ImportDma, Offscreen,
         },
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
         udev,
@@ -63,6 +63,7 @@ use smithay::{
         wayland_server::Display,
     },
     utils::{DeviceFd, Rectangle, Size, Transform},
+    wayland::dmabuf::DmabufFeedbackBuilder,
 };
 
 use crate::{
@@ -423,6 +424,11 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         }
     }));
 
+    let dmabuf_formats = match &screen {
+        Screen::Gles { renderer, .. } => Some(renderer.dmabuf_formats()),
+        Screen::Pixman { .. } => None,
+    };
+
     let backend: Shared = Rc::new(RefCell::new(Drm {
         _session: session,
         device,
@@ -432,6 +438,31 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         in_flight: None,
         active: true,
     }));
+
+    // GPU clients may hand over their buffers as they are. Mesa finds the
+    // device to render on through the feedback, so that is always sent.
+    if let (Some(formats), Some(node)) = (dmabuf_formats, &node) {
+        let feedback = std::fs::metadata(node)
+            .map_err(Box::<dyn Error>::from)
+            .and_then(|meta| Ok(DmabufFeedbackBuilder::new(meta.rdev(), formats).build()?));
+        match feedback {
+            Ok(feedback) => {
+                state
+                    .dmabuf_state
+                    .create_global_with_default_feedback::<State>(&state.display_handle, &feedback);
+                let importer = backend.clone();
+                state.dmabuf_import = Some(Box::new(move |dmabuf| {
+                    match &mut importer.borrow_mut().screen {
+                        Screen::Gles { renderer, .. } => {
+                            renderer.import_dmabuf(dmabuf, None).is_ok()
+                        }
+                        Screen::Pixman { .. } => false,
+                    }
+                }));
+            }
+            Err(err) => eprintln!("sengi-compositor: no dmabuf for clients: {err}"),
+        }
+    }
 
     // A frame is drawn when the state asks for one...
     let (ping, wakeups) = make_ping()?;
@@ -510,6 +541,15 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         }
     })?;
 
+    if let Some(path) = options.screenshot.clone() {
+        let on_signal = backend.clone();
+        state.take_screenshot = Some(Box::new(move |state| {
+            if let Err(err) = on_signal.borrow_mut().screenshot(state, &path) {
+                eprintln!("sengi-compositor: screenshot failed: {err}");
+            }
+        }));
+    }
+
     if let Some(after) = options.exit_after {
         let at_exit = backend.clone();
         let path = options.screenshot.clone();
@@ -571,6 +611,9 @@ impl Drm {
                 .render_frame(renderer, &elements, background, flags)
                 .map_err(|err| format!("{err:?}"))?;
             let changed = !result.is_empty;
+            if changed && result.cursor_element.is_some() {
+                state.cursor_plane_frames += 1;
+            }
             let states = result.states;
             if changed {
                 compositor
@@ -614,18 +657,14 @@ impl Drm {
                     Rectangle::from_size(size),
                     Fourcc::Abgr8888,
                 )?;
-                let upside_down = mapping.flipped();
                 let pixels = renderer.map_texture(&mapping)?;
 
-                // ABGR8888 is stored as red, green, blue, alpha bytes.
-                let row = size.w as usize * 4;
-                let mut rows: Vec<&[u8]> = pixels.chunks_exact(row).collect();
-                if upside_down {
-                    rows.reverse();
-                }
-                let rgb: Vec<u8> = rows
-                    .into_iter()
-                    .flat_map(|row| row.as_chunks::<4>().0)
+                // ABGR8888 is stored as red, green, blue, alpha bytes, and
+                // an offscreen target comes back top row first.
+                let rgb: Vec<u8> = pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .flat_map(|px| [px[0], px[1], px[2]])
                     .collect();
                 let mut file = BufWriter::new(File::create(path)?);

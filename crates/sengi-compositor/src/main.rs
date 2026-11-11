@@ -7,6 +7,7 @@ mod cursor;
 mod decoration;
 #[cfg(any(feature = "winit", feature = "drm"))]
 mod device_input;
+mod dmabuf;
 #[cfg(feature = "drm")]
 mod drm;
 mod foreign_toplevel;

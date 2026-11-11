@@ -10,7 +10,10 @@ use std::{
 
 use sengi_tokens::{Rgba, Tokens};
 use smithay::{
-    backend::renderer::{utils::with_renderer_surface_state, Color32F},
+    backend::{
+        allocator::dmabuf::Dmabuf,
+        renderer::{utils::with_renderer_surface_state, Color32F},
+    },
     delegate_cursor_shape, delegate_data_device, delegate_idle_notify, delegate_output,
     delegate_seat, delegate_shm,
     desktop::{layer_map_for_output, PopupManager, Space, Window, WindowSurfaceType},
@@ -38,6 +41,7 @@ use smithay::{
         buffer::BufferHandler,
         compositor::{CompositorClientState, CompositorState},
         cursor_shape::CursorShapeManagerState,
+        dmabuf::DmabufState,
         idle_notify::{IdleNotifierHandler, IdleNotifierState},
         output::{OutputHandler, OutputManagerState},
         selection::{
@@ -74,6 +78,9 @@ use crate::{
 /// Environment variable through which started programs learn our pid.
 pub const PID_VARIABLE: &str = "SENGI_COMPOSITOR_PID";
 
+pub type ScreenshotHook = Box<dyn FnMut(&mut State)>;
+pub type DmabufImport = Box<dyn FnMut(&Dmabuf) -> bool>;
+
 /// Refresh rate reported for outputs that have no real one, in mHz.
 pub const REFRESH_MHZ: i32 = 60_000;
 
@@ -97,6 +104,15 @@ pub struct State {
     /// Frames shown on a real screen so far. Stays zero on backends that
     /// do not flip pages.
     pub page_flips: u64,
+    /// How many of those had the cursor on a plane of its own.
+    pub cursor_plane_frames: u64,
+    /// Saves a picture of the screen on SIGUSR2, where the backend can.
+    pub take_screenshot: Option<ScreenshotHook>,
+    pub dmabuf_state: DmabufState,
+    /// Tries a client's dmabuf on the renderer; set by a backend that
+    /// offers linux-dmabuf.
+    pub dmabuf_import: Option<DmabufImport>,
+    pub dmabufs_imported: u64,
     /// What Super+L runs, and what is started for a session whose locker
     /// died.
     pub locker_command: String,
@@ -190,18 +206,28 @@ impl State {
         // The way to log out: `sengi-compositor --exit`, or any of these
         // signals, ends the loop and with it the session.
         // SIGUSR1 reports how many frames have reached the screen, for
-        // checking that an idle one shows none.
+        // checking that an idle one shows none. SIGUSR2 saves a screenshot.
         let signals = Signals::new(&[
             Signal::SIGTERM,
             Signal::SIGINT,
             Signal::SIGHUP,
             Signal::SIGUSR1,
+            Signal::SIGUSR2,
         ])?;
         event_loop
             .handle()
             .insert_source(signals, |event, _, state| match event.signal() {
                 Signal::SIGUSR1 => {
-                    eprintln!("sengi-compositor: {} page flips", state.page_flips);
+                    eprintln!(
+                        "sengi-compositor: {} page flips, {} with the cursor on its own plane, {} dmabufs imported",
+                        state.page_flips, state.cursor_plane_frames, state.dmabufs_imported
+                    );
+                }
+                Signal::SIGUSR2 => {
+                    if let Some(mut shoot) = state.take_screenshot.take() {
+                        shoot(state);
+                        state.take_screenshot = Some(shoot);
+                    }
                 }
                 _ => state.loop_signal.stop(),
             })?;
@@ -250,6 +276,11 @@ impl State {
             pending_lock: None,
             switch_vt: None,
             page_flips: 0,
+            cursor_plane_frames: 0,
+            take_screenshot: None,
+            dmabuf_state: DmabufState::new(),
+            dmabuf_import: None,
+            dmabufs_imported: 0,
             locker_command: keys::DEFAULT_LOCKER.to_string(),
             locker_pids: Vec::new(),
             relock_armed: false,
