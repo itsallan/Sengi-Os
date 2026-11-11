@@ -128,11 +128,11 @@ use platform::{LayerPlatform, ProxyEvent, QuitGuard, Unclaimed};
 
 pub use config::{Anchor, Config, ConfigError, KeyboardMode, Layer, Margins, Outputs};
 pub use surface::{Output, Rect, SurfaceHandle};
-pub use worker::dispatch_queue;
 /// The version of wayland-client the connection from [`Handle::connection`]
 /// belongs to. Use this instead of a dependency of your own so the types
 /// match.
 pub use wayland_client;
+pub use worker::dispatch_queue;
 
 /// Why a layer-shell program could not start or had to stop.
 #[derive(Debug)]
