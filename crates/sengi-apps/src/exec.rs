@@ -46,39 +46,21 @@ impl std::error::Error for ExecError {}
 /// `$` and `\`. Single quotes and a backslash outside quotes are not in the
 /// spec but appear in real files, and are read the way GLib reads them.
 pub fn split(exec: &str) -> Result<Vec<String>, ExecError> {
-    Ok(split_words(exec)?.into_iter().map(|w| w.text).collect())
-}
-
-struct Word {
-    text: String,
-    /// Some part of the word was inside quotes. Field codes are not
-    /// expanded in such words: the spec leaves that undefined, and a `%`
-    /// someone took the trouble to quote is most likely meant.
-    quoted: bool,
-}
-
-fn split_words(exec: &str) -> Result<Vec<Word>, ExecError> {
     let mut args = Vec::new();
     let mut current = String::new();
     let mut started = false;
-    let mut quoted = false;
     let mut chars = exec.chars();
 
     while let Some(c) = chars.next() {
         match c {
             ' ' | '\t' | '\n' => {
                 if started {
-                    args.push(Word {
-                        text: std::mem::take(&mut current),
-                        quoted,
-                    });
+                    args.push(std::mem::take(&mut current));
                     started = false;
-                    quoted = false;
                 }
             }
             '"' => {
                 started = true;
-                quoted = true;
                 loop {
                     match chars.next() {
                         None => return Err(ExecError::UnclosedQuote),
@@ -97,7 +79,6 @@ fn split_words(exec: &str) -> Result<Vec<Word>, ExecError> {
             }
             '\'' => {
                 started = true;
-                quoted = true;
                 loop {
                     match chars.next() {
                         None => return Err(ExecError::UnclosedQuote),
@@ -117,19 +98,18 @@ fn split_words(exec: &str) -> Result<Vec<Word>, ExecError> {
         }
     }
     if started {
-        args.push(Word {
-            text: current,
-            quoted,
-        });
+        args.push(current);
     }
     Ok(args)
 }
 
 /// Expand the field codes in `args`. There are never files or URLs to pass,
-/// so `%f %F %u %U` vanish, as do the deprecated codes.
+/// so `%f %F %u %U` vanish, as do the deprecated codes, and an argument
+/// that was nothing but such codes disappears. `%%` is a literal percent.
 ///
-/// This expands whatever it is given. [`command_line`] passes it only the
-/// arguments of an Exec line that were not quoted.
+/// Codes are expanded in every argument, whether or not it was quoted in
+/// the Exec line, as GLib does. Real files depend on it: `app "%U"`,
+/// `--name="%c"`. [`command_line`] passes every argument through here.
 pub fn expand(args: &[String], entry: &DesktopEntry) -> Vec<String> {
     let mut out = Vec::with_capacity(args.len());
     for arg in args {
@@ -180,14 +160,7 @@ fn is_only_field_codes(arg: &str) -> bool {
 
 /// The entry's own command: its Exec line split and expanded.
 fn own_command(entry: &DesktopEntry) -> Result<Vec<String>, ExecError> {
-    let mut command = Vec::new();
-    for word in split_words(&entry.exec)? {
-        if word.quoted {
-            command.push(word.text);
-        } else {
-            command.extend(expand(std::slice::from_ref(&word.text), entry));
-        }
-    }
+    let command = expand(&split(&entry.exec)?, entry);
     if command.first().is_none_or(|program| program.is_empty()) {
         return Err(ExecError::Empty);
     }
@@ -656,11 +629,21 @@ mod tests {
     }
 
     #[test]
-    fn field_codes_inside_quotes_are_left_alone() {
-        assert_eq!(run(r#"app "%u""#), args(&["app", "%u"]));
+    fn field_codes_inside_quotes_are_expanded_too() {
+        // What GLib does, and what `Exec=/opt/App/app "%U"` relies on.
+        assert_eq!(run(r#"app "%u""#), args(&["app"]));
         assert_eq!(
             run("app '%c' --name=\"%c\""),
-            args(&["app", "%c", "--name=%c"])
+            args(&["app", "Web Browser", "--name=Web Browser"])
+        );
+        assert_eq!(run(r#"app "100%%""#), args(&["app", "100%"]));
+        assert_eq!(
+            run(r#"bash -c "exec tool --desktop %k""#),
+            args(&[
+                "bash",
+                "-c",
+                "exec tool --desktop /usr/share/applications/web.desktop"
+            ])
         );
     }
 
