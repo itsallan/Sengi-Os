@@ -48,7 +48,7 @@ size-sm = 11
 size-md = 13
 size-lg = 16
 size-xl = 22
-# Point sizes for programs that do not take px (labwc, mako, foot).
+# Point sizes for programs that do not take px (labwc, foot).
 pt-sm = 8
 pt-md = 10
 pt-lg = 12

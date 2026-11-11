@@ -7,12 +7,12 @@ if [ "${WLR_RENDERER:-}" = pixman ]; then
 else
 	swaybg -c '@{color.desktop}' >/dev/null 2>&1 &
 fi
-# Bring the bar and dock back if either ever dies, for as long as this
+# Bring the bar, dock and notifications back if one ever dies, for as long as this
 # compositor is running. Watching the compositor's own process, not its
 # socket, keeps a loop left over from a crashed session from joining the
 # next one. A program that keeps dying is retried more and more slowly, and
 # what it prints goes to the journal.
-for program in sengi-bar sengi-dock; do
+for program in sengi-bar sengi-dock sengi-notify; do
 	(
 		wait=1
 		while kill -0 "$LABWC_PID" 2>/dev/null; do
@@ -29,6 +29,5 @@ for program in sengi-bar sengi-dock; do
 		done
 	) >/dev/null 2>&1 &
 done
-mako -c /etc/xdg/mako/config >/dev/null 2>&1 &
 sengi-focus >/dev/null 2>&1 &
 swayidle -w timeout @{timing.idle-lock} 'swaylock -f' before-sleep 'swaylock -f' >/dev/null 2>&1 &
