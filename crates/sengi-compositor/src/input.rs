@@ -156,7 +156,13 @@ impl State {
                 start,
             }) => {
                 let (min, max) = self.size_limits(window);
+                let outline = if window::data(window).decorated.get() {
+                    self.theme.metrics.frame(*initial)
+                } else {
+                    *initial
+                };
                 let delta = (x - start.0, y - start.1);
+                let delta = frame::limit_resize(outline, *edges, delta, self.usable_area());
                 let wanted = frame::resize(*initial, *edges, delta, min, max);
                 window::request_size(window, (wanted.w, wanted.h), true);
             }
@@ -218,7 +224,7 @@ impl State {
         );
         pointer.frame(self);
 
-        if state == ButtonState::Released && button == BTN_LEFT && self.drag.is_some() {
+        if state == ButtonState::Released && button == self.drag_button && self.drag.is_some() {
             self.finish_drag(location);
             // Whatever is under the pointer now gets it back.
             self.pointer_motion(location, time);
@@ -244,6 +250,7 @@ impl State {
                 if button != BTN_LEFT {
                     return;
                 }
+                self.drag_button = button;
                 match hit {
                     Hit::Titlebar => self.start_move(&window, (x, y)),
                     Hit::Resize(edges) => self.start_resize(&window, edges, (x, y)),

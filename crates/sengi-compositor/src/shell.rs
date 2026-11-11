@@ -8,7 +8,7 @@ use smithay::{
     reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge,
     reexports::wayland_server::{
         protocol::{wl_seat::WlSeat, wl_surface::WlSurface},
-        Client,
+        Client, Resource,
     },
     utils::Serial,
     wayland::{
@@ -77,34 +77,32 @@ impl XdgShellHandler for State {
         }
     }
 
-    fn move_request(&mut self, surface: ToplevelSurface, _seat: WlSeat, _serial: Serial) {
+    fn move_request(&mut self, surface: ToplevelSurface, _seat: WlSeat, serial: Serial) {
         let Some(window) = self.window_for_surface(surface.wl_surface()) else {
             return;
         };
-        let pointer = self.seat.get_pointer().expect("seat has a pointer");
-        // Only a press on the window can start a drag.
-        if self.drag.is_some() || !pointer.is_grabbed() {
+        let Some(button) = self.press_owned_by(surface.wl_surface(), serial) else {
             return;
-        }
-        let at = pointer.current_location();
+        };
+        let at = self.pointer_cell();
         self.release_pointer_from_client();
-        self.start_move(&window, (at.x.floor() as i32, at.y.floor() as i32));
+        self.drag_button = button;
+        self.start_move(&window, at);
     }
 
     fn resize_request(
         &mut self,
         surface: ToplevelSurface,
         _seat: WlSeat,
-        _serial: Serial,
+        serial: Serial,
         edges: ResizeEdge,
     ) {
         let Some(window) = self.window_for_surface(surface.wl_surface()) else {
             return;
         };
-        let pointer = self.seat.get_pointer().expect("seat has a pointer");
-        if self.drag.is_some() || !pointer.is_grabbed() {
+        let Some(button) = self.press_owned_by(surface.wl_surface(), serial) else {
             return;
-        }
+        };
         let has = |part: ResizeEdge| edges as u32 & part as u32 != 0;
         let edges = Edges {
             left: has(ResizeEdge::Left),
@@ -112,9 +110,10 @@ impl XdgShellHandler for State {
             top: has(ResizeEdge::Top),
             bottom: has(ResizeEdge::Bottom),
         };
-        let at = pointer.current_location();
+        let at = self.pointer_cell();
         self.release_pointer_from_client();
-        self.start_resize(&window, edges, (at.x.floor() as i32, at.y.floor() as i32));
+        self.drag_button = button;
+        self.start_resize(&window, edges, at);
     }
 
     fn maximize_request(&mut self, surface: ToplevelSurface) {
@@ -167,6 +166,28 @@ impl XdgShellHandler for State {
 }
 
 impl State {
+    /// The button of the press that `serial` names, if that press went to
+    /// the client owning `surface` and still holds the pointer. Anything
+    /// else is a client trying to start a drag it has no claim to.
+    fn press_owned_by(&self, surface: &WlSurface, serial: Serial) -> Option<u32> {
+        let pointer = self.seat.get_pointer()?;
+        if self.drag.is_some() || !pointer.has_grab(serial) {
+            return None;
+        }
+        let start = pointer.grab_start_data()?;
+        let (focus, _) = start.focus.as_ref()?;
+        focus
+            .id()
+            .same_client_as(&surface.id())
+            .then_some(start.button)
+    }
+
+    fn pointer_cell(&self) -> (i32, i32) {
+        let pointer = self.seat.get_pointer().expect("seat has a pointer");
+        let at = pointer.current_location();
+        (at.x.floor() as i32, at.y.floor() as i32)
+    }
+
     /// The window whose toplevel is `surface`, mapped or not.
     pub fn window_for_surface(&self, surface: &WlSurface) -> Option<Window> {
         self.space

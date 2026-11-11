@@ -213,6 +213,31 @@ pub fn anchor(initial: Rect, edges: Edges, size: (i32, i32)) -> (i32, i32) {
     (x, y)
 }
 
+/// Like [`anchor`], but only while it is still wanted: `None` once the
+/// settle time after the drag is over, and for drags of the right or bottom
+/// edge alone, which never move the window's origin.
+pub fn anchored(
+    initial: Rect,
+    edges: Edges,
+    size: (i32, i32),
+    expired: bool,
+) -> Option<(i32, i32)> {
+    if expired || !(edges.left || edges.top) {
+        return None;
+    }
+    Some(anchor(initial, edges, size))
+}
+
+/// Cuts a resize drag short where it would push the title bar above the
+/// usable area. `frame` is the frame when the drag started.
+pub fn limit_resize(frame: Rect, edges: Edges, delta: (i32, i32), usable: Rect) -> (i32, i32) {
+    let (dx, mut dy) = delta;
+    if edges.top {
+        dy = dy.max(usable.y - frame.y);
+    }
+    (dx, dy)
+}
+
 /// The nearest position for `frame` that keeps its title bar usable: never
 /// above the usable area or below its bottom, and with at least `grab`
 /// pixels of it left on screen sideways.
@@ -416,6 +441,75 @@ mod tests {
         assert_eq!(
             anchor(start, edges(false, true, false, true), (344, 310)),
             (100, 100)
+        );
+    }
+
+    #[test]
+    fn anchor_applies_only_to_live_left_or_top_drags() {
+        let start = Rect::new(100, 100, 400, 300);
+        let size = (344, 310);
+        assert_eq!(
+            anchored(start, edges(true, false, false, false), size, false),
+            Some((156, 100))
+        );
+        assert_eq!(
+            anchored(start, edges(true, false, true, false), size, true),
+            None
+        );
+        assert_eq!(
+            anchored(start, edges(false, true, false, true), size, false),
+            None
+        );
+    }
+
+    #[test]
+    fn top_edge_cannot_be_dragged_above_the_usable_area() {
+        let usable = Rect::new(0, 28, 1280, 692);
+        let frame = Rect::new(300, 100, 400, 300);
+        let top = edges(false, false, true, false);
+        assert_eq!(limit_resize(frame, top, (5, -50), usable), (5, -50));
+        assert_eq!(limit_resize(frame, top, (5, -500), usable), (5, -72));
+        // Other edges are not limited.
+        let bottom = edges(false, false, false, true);
+        assert_eq!(limit_resize(frame, bottom, (5, -500), usable), (5, -500));
+    }
+
+    #[test]
+    fn tiny_frames_pick_the_nearer_edge() {
+        let tiny = Rect::new(100, 100, 10, 10);
+        assert_eq!(
+            M.hit(tiny, 100, 100, true),
+            Some(Hit::Resize(edges(true, false, true, false)))
+        );
+        assert_eq!(
+            M.hit(tiny, 108, 109, true),
+            Some(Hit::Resize(edges(false, true, false, true)))
+        );
+    }
+
+    #[test]
+    fn degenerate_sizes_do_not_panic_or_go_negative() {
+        assert_eq!(M.client(Rect::new(0, 0, 0, 0)), Rect::new(1, 30, 1, 1));
+        // A maximum below the minimum loses to the minimum.
+        let start = Rect::new(0, 0, 400, 300);
+        let grown = resize(
+            start,
+            edges(false, true, false, false),
+            (50, 0),
+            (500, 0),
+            (200, 0),
+        );
+        assert_eq!(grown.w, 500);
+        // No usable area at all still gives a position.
+        let nowhere = Rect::new(0, 0, 0, 0);
+        assert_eq!(
+            keep_reachable(nowhere, Rect::new(50, 50, 400, 300), 30, 100),
+            (-100, 0)
+        );
+        let huge = Rect::new(0, 0, i32::MAX / 4, i32::MAX / 4);
+        assert_eq!(
+            keep_reachable(Rect::new(0, 28, 1280, 692), huge, 30, 100).1,
+            28
         );
     }
 

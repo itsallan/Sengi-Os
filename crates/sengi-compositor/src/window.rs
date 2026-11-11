@@ -50,6 +50,8 @@ pub struct WindowData {
 pub struct FrameBuffers {
     pub look: (Titlebar, String),
     pub titlebar: MemoryRenderBuffer,
+    /// Plain fill for the part of a very wide title bar that is not painted.
+    pub rest: SolidColorBuffer,
     pub left: SolidColorBuffer,
     pub right: SolidColorBuffer,
     pub bottom: SolidColorBuffer,
@@ -60,6 +62,9 @@ pub fn data(window: &Window) -> &WindowData {
     map.insert_if_missing(WindowData::default);
     map.get::<WindowData>().expect("inserted above")
 }
+
+/// Cap on the painted title bar width when there is no output to go by.
+const FALLBACK_PAINTED_WIDTH: i32 = 4096;
 
 /// How long after an edge drag late commits are still aligned to it.
 const RESIZE_SETTLE: Duration = Duration::from_millis(500);
@@ -227,6 +232,8 @@ impl State {
         let Some(client) = self.client_rect(window) else {
             return;
         };
+        // Wherever a finished resize wanted the window, it goes here now.
+        data(window).resize_anchor.set(None);
         let wanted = Rect::new(x, y, frame.w, frame.h);
         let (x, y) = self.reachable(wanted);
         self.move_window(window, x + client.x - frame.x, y + client.y - frame.y);
@@ -250,10 +257,10 @@ impl State {
             return;
         };
         let size = window.geometry().size;
-        let (x, y) = frame::anchor(initial, edges, (size.w, size.h));
-        self.move_window(window, x, y);
-        if until.is_some_and(|until| Instant::now() >= until) {
-            data.resize_anchor.set(None);
+        let expired = until.is_some_and(|until| Instant::now() >= until);
+        match frame::anchored(initial, edges, (size.w, size.h), expired) {
+            Some((x, y)) => self.move_window(window, x, y),
+            None => data.resize_anchor.set(None),
         }
     }
 
@@ -316,12 +323,22 @@ impl State {
         for window in windows {
             if data(&window).restore.get().is_some() {
                 let target = self.maximised_rect(&window);
+                data(&window).resize_anchor.set(None);
                 request_size(&window, (target.w, target.h), false);
                 self.move_window(&window, target.x, target.y);
             } else if let Some(frame) = self.frame_rect(&window) {
                 self.move_frame_to(&window, frame.x, frame.y);
             }
         }
+    }
+
+    /// The widest title bar that is painted as a texture.
+    fn max_painted_width(&self) -> i32 {
+        self.output()
+            .and_then(|output| output.current_mode())
+            .map(|mode| mode.size.w)
+            .unwrap_or(FALLBACK_PAINTED_WIDTH)
+            .max(self.theme.metrics.min_frame_width())
     }
 
     /// Makes sure the frame textures of `window` match how it should look
@@ -333,13 +350,22 @@ impl State {
             Some((hovered, button)) if hovered == window => Some(*button),
             _ => None,
         };
+        // The client picks the window's width, so it must not pick how much
+        // memory the title bar takes: nothing wider than the screen is
+        // painted, the remainder is a flat fill.
+        let full = width + 2 * border;
+        let painted = full.min(self.max_painted_width());
+        let active = self.focus_stack.current() == Some(window);
         let bar = Titlebar {
-            width: width + 2 * border,
-            active: self.focus_stack.current() == Some(window),
+            width: painted,
+            active,
             hovered,
             square: data(window).restore.get().is_some(),
+            cut: painted < full,
         };
         let look = (bar, title(window));
+        let fill = self.color(if active { theme.active } else { theme.inactive });
+        let rest_size = (full - painted, theme.metrics.titlebar);
 
         let mut slot = data(window).frame.borrow_mut();
         match slot.as_mut() {
@@ -361,6 +387,7 @@ impl State {
                 *slot = Some(FrameBuffers {
                     look,
                     titlebar,
+                    rest: SolidColorBuffer::new(rest_size, fill),
                     left: side(),
                     right: side(),
                     bottom: SolidColorBuffer::new((width + 2 * border, border), color),
@@ -369,6 +396,7 @@ impl State {
         }
         if let Some(buffers) = slot.as_mut() {
             let color = self.color(theme.border);
+            buffers.rest.update(rest_size, fill);
             buffers.left.update((border, height), color);
             buffers.right.update((border, height), color);
             buffers.bottom.update((width + 2 * border, border), color);

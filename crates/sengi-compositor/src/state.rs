@@ -82,6 +82,8 @@ pub struct State {
     pub hovered_button: Option<(Window, Button)>,
     /// A move, resize or button press the pointer is in the middle of.
     pub drag: Option<Drag>,
+    /// The button whose release ends `drag`.
+    pub drag_button: u32,
     pub cursors: Cursors,
     /// The cursor the client under the pointer asked for.
     pub client_cursor: CursorImageStatus,
@@ -179,6 +181,7 @@ impl State {
             layer_focus: None,
             hovered_button: None,
             drag: None,
+            drag_button: 0,
             cursors,
             client_cursor: CursorImageStatus::default_named(),
             frame_cursor: None,

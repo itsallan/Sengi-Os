@@ -259,6 +259,9 @@ pub struct Titlebar {
     /// Maximised windows fill the screen edge to edge and have square
     /// corners.
     pub square: bool,
+    /// The frame is wider than `width`: this is only its left part, so the
+    /// right end is a straight cut with no corner or border.
+    pub cut: bool,
 }
 
 /// Paints a title bar: `width` by the title bar height, premultiplied ARGB.
@@ -272,7 +275,15 @@ pub fn draw_titlebar(theme: &Theme, bar: &Titlebar, title: Option<&TextBitmap>) 
     let radius = if bar.square { 0.0 } else { theme.radius as f32 };
     let border = metrics.border;
     let outer = Rect::new(0, 0, width, height);
-    let inner = Rect::new(border, border, width - 2 * border, height - border);
+    let right_border = if bar.cut { 0 } else { border };
+    let inner = Rect::new(
+        border,
+        border,
+        width - border - right_border,
+        height - border,
+    );
+    let right_radius = if bar.cut { 0.0 } else { radius };
+    let inner_right_radius = (right_radius - border as f32).max(0.0);
     let inner_radius = (radius - border as f32).max(0.0);
     let background = if bar.active {
         theme.active
@@ -280,11 +291,11 @@ pub fn draw_titlebar(theme: &Theme, bar: &Titlebar, title: Option<&TextBitmap>) 
         theme.inactive
     };
     canvas.fill(
-        Rounded::new(outer, [radius, radius, 0.0, 0.0]),
+        Rounded::new(outer, [radius, right_radius, 0.0, 0.0]),
         theme.border,
     );
     canvas.fill(
-        Rounded::new(inner, [inner_radius, inner_radius, 0.0, 0.0]),
+        Rounded::new(inner, [inner_radius, inner_right_radius, 0.0, 0.0]),
         background,
     );
 
@@ -351,6 +362,7 @@ mod tests {
             active,
             hovered: None,
             square: false,
+            cut: false,
         }
     }
 
@@ -407,6 +419,19 @@ mod tests {
         square.square = true;
         let canvas = draw_titlebar(&theme, &square, None);
         assert_eq!(canvas.pixel(0, 0), rgba(theme.border));
+    }
+
+    #[test]
+    fn cut_bars_end_straight_without_a_border() {
+        let theme = theme();
+        let mut cut = bar(true);
+        cut.cut = true;
+        let canvas = draw_titlebar(&theme, &cut, None);
+        // Top right: border along the top, but no corner and no side border.
+        assert_eq!(canvas.pixel(399, 0), rgba(theme.border));
+        assert_eq!(canvas.pixel(399, 20), rgba(theme.active));
+        // The left end is unchanged.
+        assert_eq!(canvas.pixel(0, 0)[3], 0);
     }
 
     #[test]

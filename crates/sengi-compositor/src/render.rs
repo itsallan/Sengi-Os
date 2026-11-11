@@ -214,7 +214,12 @@ fn frame<R>(
         Err(err) => eprintln!("sengi-compositor: cannot draw a title bar: {err:?}"),
     }
 
+    let painted = buffers.look.0.width;
     let sides = [
+        (
+            &buffers.rest,
+            at(painted - metrics.border, -metrics.titlebar),
+        ),
         (&buffers.left, at(-metrics.border, 0)),
         (&buffers.right, at(size.w, 0)),
         (&buffers.bottom, at(-metrics.border, size.h)),
