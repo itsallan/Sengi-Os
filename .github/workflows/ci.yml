@@ -34,7 +34,7 @@ jobs:
       - name: Toolchain
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends pkg-config libfontconfig1-dev
+          sudo apt-get install -y -q --no-install-recommends pkg-config libfontconfig1-dev libxkbcommon-dev
           rustup show active-toolchain || rustup toolchain install
       - uses: actions/cache@v4
         with:
