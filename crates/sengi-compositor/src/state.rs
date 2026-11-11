@@ -402,7 +402,21 @@ impl State {
         let timer = Timer::from_duration(render::HIDDEN_FRAME_INTERVAL);
         let armed = self.loop_handle.insert_source(timer, |_, _, state| {
             state.hidden_frames_armed = false;
-            let outputs: Vec<Output> = state.space.outputs().cloned().collect();
+            let mut outputs: Vec<Output> = state.space.outputs().cloned().collect();
+            if outputs.is_empty() {
+                // With every screen gone, clients are still owed the slow
+                // tick; it is sent in the name of a screen that is not
+                // there.
+                outputs.push(Output::new(
+                    "none".into(),
+                    PhysicalProperties {
+                        size: (0, 0).into(),
+                        subpixel: Subpixel::Unknown,
+                        make: "Sengi OS".into(),
+                        model: "none".into(),
+                    },
+                ));
+            }
             for output in outputs {
                 render::send_frames(state, &output);
             }
