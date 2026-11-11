@@ -39,6 +39,7 @@ use crate::convert::{
     is_modifier, key_text, modifier_fixes, pointer_button, repeats_due, scroll_delta,
     write_argb8888, ModifierState, RepeatTiming,
 };
+use crate::outputs::plan;
 use crate::platform::QuitGuard;
 use crate::{Context, Error, Handle};
 
@@ -318,39 +319,39 @@ impl State {
         if self.builder.is_none() {
             return;
         }
-        if self.mode() == Outputs::All {
-            let outputs: Vec<wl_output::WlOutput> = self
-                .outputs
-                .outputs()
-                .filter(|output| Some(output) != gone)
-                .collect();
+        // An output counts once the compositor has described it, which is
+        // also when its name is known.
+        let ready: Vec<(wl_output::WlOutput, Option<String>)> = self
+            .outputs
+            .outputs()
+            .filter(|output| Some(output) != gone)
+            .filter_map(|output| {
+                let info = self.outputs.info(&output)?;
+                Some((output, info.name))
+            })
+            .collect();
+        let instances: Vec<wl_output::WlOutput> = self
+            .surfaces
+            .iter()
+            .filter_map(|surface| surface.output.clone())
+            .collect();
+        let plan = plan(&self.mode(), &ready, &instances);
 
-            let mut index = 0;
-            while index < self.surfaces.len() {
-                let alive = self.surfaces[index]
-                    .output
-                    .as_ref()
-                    .is_some_and(|output| outputs.contains(output));
-                if alive {
-                    index += 1;
-                } else {
-                    self.unmap(index);
-                    let surface = self.surfaces.remove(index);
-                    retire(surface.component, &self.quits);
-                }
+        for output in plan.remove {
+            let position = self
+                .surfaces
+                .iter()
+                .position(|surface| surface.output.as_ref() == Some(&output));
+            if let Some(index) = position {
+                self.unmap(index);
+                let surface = self.surfaces.remove(index);
+                retire(surface.component, &self.quits);
             }
-
-            for output in outputs {
-                let known = self
-                    .surfaces
-                    .iter()
-                    .any(|surface| surface.output.as_ref() == Some(&output));
-                if !known {
-                    if let Err(error) = self.build(Some(output)) {
-                        self.failure = Some(error);
-                        return;
-                    }
-                }
+        }
+        for output in plan.add {
+            if let Err(error) = self.build(Some(output)) {
+                self.failure = Some(error);
+                return;
             }
         }
         for index in 0..self.surfaces.len() {

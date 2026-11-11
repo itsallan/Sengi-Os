@@ -71,6 +71,7 @@
 mod backend;
 mod config;
 mod convert;
+mod outputs;
 mod platform;
 
 use std::cell::RefCell;
