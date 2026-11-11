@@ -195,6 +195,7 @@ impl State {
     }
 
     /// Applies a new size to `output`, for backends whose window can resize.
+    #[cfg_attr(not(feature = "winit"), allow(dead_code))]
     pub fn resize_output(&mut self, output: &Output, size: Size<i32, Physical>) {
         let mode = OutputMode {
             size,

@@ -4,6 +4,8 @@
 
 mod cli;
 mod headless;
+// Only the winit backend delivers input so far.
+#[cfg_attr(not(feature = "winit"), allow(dead_code))]
 mod input;
 mod layer;
 mod layout;
