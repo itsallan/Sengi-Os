@@ -3567,6 +3567,7 @@ version = "0.5.0"
 dependencies = [
  "sengi-apps",
  "sengi-layer",
+ "sengi-system",
  "slint",
  "slint-build",
 ]

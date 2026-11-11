@@ -19,6 +19,3 @@ pub mod demo;
 pub mod instance;
 pub mod panel;
 pub mod ui;
-
-#[cfg(test)]
-mod testutil;

@@ -11,7 +11,7 @@ static NEXT: AtomicU32 = AtomicU32::new(0);
 impl TempDir {
     pub fn new() -> TempDir {
         let dir = std::env::temp_dir().join(format!(
-            "sengi-quick-test-{}-{}",
+            "sengi-system-test-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));

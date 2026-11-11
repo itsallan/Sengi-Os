@@ -1,5 +1,8 @@
 //! What the Sengi OS shell needs from the system around it.
 //!
+//! [`instance`] is the socket by which a panel that is already open is
+//! found and told to close; it needs no feature and nothing but std.
+//!
 //! With the `bus` feature, [`connect`] opens the D-Bus connections by hand
 //! so that no helper thread is left waking the machine.
 //!
@@ -20,6 +23,7 @@
 
 #[cfg(feature = "bus")]
 pub mod connect;
+pub mod instance;
 
 #[cfg(feature = "services")]
 pub mod backlight;
@@ -50,7 +54,7 @@ pub mod volume;
 #[cfg(feature = "services")]
 pub mod wifi;
 
-#[cfg(all(test, feature = "services"))]
+#[cfg(test)]
 mod testutil;
 
 #[cfg(feature = "services")]

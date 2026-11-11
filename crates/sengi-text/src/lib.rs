@@ -7,7 +7,7 @@
 //! characters serves every program, so a trick that is closed in one place
 //! is closed in all of them.
 
-/// The least that [`line`] reads of its input before giving up on it, in
+/// The least that [`line()`] reads of its input before giving up on it, in
 /// characters.
 const MIN_SCAN: usize = 768;
 
@@ -51,7 +51,7 @@ pub fn hidden(c: char) -> bool {
 /// `name` for use inside a sentence of the program's own. A name in a
 /// right-to-left script would otherwise reorder the words around it; the
 /// isolate marks keep its direction to itself. `name` must have been
-/// through [`line`] or [`tidy`], so that it holds no marks of its own to
+/// through [`line()`] or [`tidy`], so that it holds no marks of its own to
 /// close these early.
 pub fn isolate(name: &str) -> String {
     format!("\u{2068}{name}\u{2069}")
