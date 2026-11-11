@@ -88,7 +88,11 @@ mod tests {
 
     fn into(sender: mpsc::Sender<u32>) -> impl Fn(u32) -> bool + Send + 'static {
         let sender = Mutex::new(sender);
-        move |message| sender.lock().is_ok_and(|sender| sender.send(message).is_ok())
+        move |message| {
+            sender
+                .lock()
+                .is_ok_and(|sender| sender.send(message).is_ok())
+        }
     }
 
     #[test]
