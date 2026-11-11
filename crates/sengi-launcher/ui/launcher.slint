@@ -93,10 +93,12 @@ export component LauncherWindow inherits Window {
     in property <int> first-row: 0;
     in property <int> max-lines: 8;
     in property <string> empty-text: "No results";
+    // Half the width, for menus with a few short lines.
+    in property <bool> compact: false;
 
     // The window is always full-height tall and see-through below the panel,
     // so the search field stays put while the list under it grows and shrinks.
-    out property <length> panel-width: Tokens.launcher-width;
+    out property <length> panel-width: root.compact ? Tokens.launcher-width / 2 : Tokens.launcher-width;
     out property <length> full-height: root.height-for(root.max-lines);
     out property <length> panel-height: root.height-for(Math.clamp(root.rows.length, 1, root.max-lines));
 
@@ -173,6 +175,14 @@ export component LauncherWindow inherits Window {
                 text-cursor-width: Tokens.space-xxs;
 
                 edited => { root.query-edited(self.text); }
+
+                // Focus only leaves when the window loses the keyboard, and a
+                // launcher nobody can type into has no business staying open.
+                changed has-focus => {
+                    if !self.has-focus {
+                        root.dismiss();
+                    }
+                }
 
                 key-pressed(event) => {
                     if event.text == Key.Escape {

@@ -66,11 +66,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (Some(source), session)
     } else {
         let session = match invocation.mode {
-            Mode::Apps => Session::new(sample_apps(), TieBreak::Alphabetical, invocation.lines),
+            Mode::Apps => Session::new(
+                sample_apps(),
+                TieBreak::Alphabetical,
+                invocation.lines_for(0),
+            ),
             Mode::Menu => {
                 let items = ["Lock", "Log out", "Restart", "Shut down"].map(String::from);
                 let candidates = sengi_launcher::menu::candidates(&items);
-                Session::new(candidates, TieBreak::InputOrder, invocation.lines)
+                Session::new(candidates, TieBreak::InputOrder, invocation.lines_for(4))
             }
         };
         (None, session)
@@ -84,6 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("", Mode::Menu) if !real => "Session",
         (prompt, _) => prompt,
     };
+    window.set_compact(invocation.compact());
     ui::attach(&window, session, prompt, {
         let outcome = outcome.clone();
         move |o| {

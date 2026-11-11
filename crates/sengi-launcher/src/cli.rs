@@ -14,7 +14,9 @@ Search and start applications, or choose from a menu.
   --menu              read lines from standard input, print the chosen one;
                       exits 0 on a choice and 1 if dismissed
   --prompt TEXT       label in front of the search field
-  --lines N           rows to show (default 8)
+  --lines N           rows to show (default 8; a menu shows all its lines
+                      up to that)
+  --wide              give a menu the full width of the application search
   --list [QUERY]      print the ranked results and exit, without a window
   --help, --version
 ";
@@ -40,7 +42,10 @@ pub struct Invocation {
     pub mode: Mode,
     pub action: Action,
     pub prompt: Option<String>,
-    pub lines: usize,
+    /// Rows asked for with `--lines`.
+    pub lines: Option<usize>,
+    /// A menu as wide as the application search, for long lines.
+    pub wide: bool,
 }
 
 impl Invocation {
@@ -50,6 +55,20 @@ impl Invocation {
             (None, Mode::Apps) => "Search",
             (None, Mode::Menu) => "",
         }
+    }
+
+    /// Rows to show for `count` candidates. A menu is as tall as its lines.
+    pub fn lines_for(&self, count: usize) -> usize {
+        match (self.lines, self.mode) {
+            (Some(lines), _) => lines,
+            (None, Mode::Apps) => DEFAULT_LINES,
+            (None, Mode::Menu) => count.clamp(1, DEFAULT_LINES),
+        }
+    }
+
+    /// Short menus get a narrow panel; the application search is full width.
+    pub fn compact(&self) -> bool {
+        self.mode == Mode::Menu && !self.wide
     }
 }
 
@@ -62,7 +81,8 @@ where
         mode: Mode::Apps,
         action: Action::Show,
         prompt: None,
-        lines: DEFAULT_LINES,
+        lines: None,
+        wide: false,
     };
     let mut args = args.into_iter().map(Into::into);
 
@@ -85,18 +105,19 @@ where
             "--prompt" | "-p" => invocation.prompt = Some(value("--prompt")?),
             "--lines" | "-l" => {
                 let text = value("--lines")?;
-                invocation.lines = text
+                let lines = text
                     .parse::<usize>()
                     .ok()
                     .filter(|n| *n >= 1)
-                    .ok_or_else(|| format!("--lines needs a number from 1, not '{text}'"))?
-                    .min(MAX_LINES);
+                    .ok_or_else(|| format!("--lines needs a number from 1, not '{text}'"))?;
+                invocation.lines = Some(lines.min(MAX_LINES));
             }
             "--list" => {
                 let mut words: Vec<String> = inline.into_iter().collect();
                 words.extend(args.by_ref());
                 invocation.action = Action::List(words.join(" "));
             }
+            "--wide" => invocation.wide = true,
             "--help" | "-h" => invocation.action = Action::Help,
             "--version" | "-V" => invocation.action = Action::Version,
             other => return Err(format!("unknown argument '{other}'")),
@@ -118,8 +139,10 @@ mod tests {
         let inv = ok(&[]);
         assert_eq!(inv.mode, Mode::Apps);
         assert_eq!(inv.action, Action::Show);
-        assert_eq!(inv.lines, DEFAULT_LINES);
+        assert_eq!(inv.lines, None);
+        assert_eq!(inv.lines_for(3), DEFAULT_LINES);
         assert_eq!(inv.prompt(), "Search");
+        assert!(!inv.compact());
     }
 
     #[test]
@@ -128,10 +151,14 @@ mod tests {
         assert_eq!(inv.mode, Mode::Menu);
         assert_eq!(inv.action, Action::Show);
         assert_eq!(inv.prompt(), "Session");
-        assert_eq!(inv.lines, 4);
+        assert_eq!(inv.lines_for(9), 4);
+        assert!(inv.compact());
 
         let inv = ok(&["--dmenu", "--lines=3", "--prompt=Pick"]);
-        assert_eq!((inv.mode, inv.lines, inv.prompt()), (Mode::Menu, 3, "Pick"));
+        assert_eq!(
+            (inv.mode, inv.lines, inv.prompt()),
+            (Mode::Menu, Some(3), "Pick")
+        );
         assert_eq!(ok(&["--menu"]).prompt(), "");
         assert_eq!(ok(&["-d", "-p", "x=y", "-l", "2"]).prompt(), "x=y");
     }
@@ -157,12 +184,23 @@ mod tests {
 
     #[test]
     fn lines_are_checked_and_capped() {
-        assert_eq!(ok(&["--lines", "1000"]).lines, MAX_LINES);
+        assert_eq!(ok(&["--lines", "1000"]).lines, Some(MAX_LINES));
         assert!(parse(["--lines", "0"]).is_err());
         assert!(parse(["--lines", "many"]).is_err());
         assert!(parse(["--lines", "-3"]).is_err());
         assert!(parse(["--lines"]).is_err());
         assert!(parse(["--prompt"]).is_err());
+    }
+
+    #[test]
+    fn a_menu_is_as_tall_as_its_lines_and_narrow_unless_asked() {
+        let menu = ok(&["--menu"]);
+        assert_eq!(menu.lines_for(4), 4);
+        assert_eq!(menu.lines_for(0), 1);
+        assert_eq!(menu.lines_for(100), DEFAULT_LINES);
+        assert!(menu.compact());
+        assert!(!ok(&["--menu", "--wide"]).compact());
+        assert!(!ok(&["--wide"]).compact());
     }
 
     #[test]

@@ -83,8 +83,9 @@ fn show(window: &LauncherWindow, session: &Session) {
     window.set_selected(session.selected_row().map_or(-1, |row| row as i32));
 }
 
-/// Connect `window` to `session`. `finish` is called once the user picks a
-/// result or dismisses the panel; closing the window is up to the caller.
+/// Connect `window` to `session`. `finish` is called, once, when the user
+/// picks a result or dismisses the panel; closing the window is up to the
+/// caller.
 pub fn attach(
     window: &LauncherWindow,
     session: Session,
@@ -97,7 +98,14 @@ pub fn attach(
     show(window, &session);
 
     let session = Rc::new(RefCell::new(session));
-    let finish = Rc::new(finish);
+    // Only the first outcome counts: closing the surface after a choice
+    // takes the keyboard away, which would otherwise read as a dismissal.
+    let finished = std::cell::Cell::new(false);
+    let finish = Rc::new(move |outcome| {
+        if !finished.replace(true) {
+            finish(outcome);
+        }
+    });
 
     window.on_query_edited({
         let (weak, session) = (window.as_weak(), session.clone());

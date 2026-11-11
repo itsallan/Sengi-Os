@@ -33,13 +33,15 @@ pub fn load(
         Mode::Apps => {
             let apps = Apps::load(env);
             let candidates = apps.candidates(usage::now());
-            let session = Session::new(candidates, TieBreak::Alphabetical, invocation.lines);
+            let lines = invocation.lines_for(candidates.len());
+            let session = Session::new(candidates, TieBreak::Alphabetical, lines);
             (Source::Apps(apps), session)
         }
         Mode::Menu => {
             let items = menu::read_items(input)?;
             let candidates = menu::candidates(&items);
-            let session = Session::new(candidates, TieBreak::InputOrder, invocation.lines);
+            let lines = invocation.lines_for(candidates.len());
+            let session = Session::new(candidates, TieBreak::InputOrder, lines);
             (Source::Menu(items), session)
         }
     })
@@ -134,6 +136,17 @@ mod tests {
         let status = complete(Outcome::Accepted(chosen), source, &env, &mut out);
         assert_eq!(status, 0);
         assert_eq!(out, b"Restart\n");
+    }
+
+    #[test]
+    fn a_menu_without_lines_shows_all_its_entries() {
+        let tmp = TempDir::new();
+        let env = env_in(&tmp);
+        let invocation = cli::parse(["--menu"]).unwrap();
+        let (_source, session) = load(&invocation, &env, SESSION_MENU).unwrap();
+        assert_eq!(session.lines(), 4);
+        let (_source, session) = load(&invocation, &env, &b"only\n"[..]).unwrap();
+        assert_eq!(session.lines(), 1);
     }
 
     #[test]
