@@ -24,6 +24,11 @@ use sengi_quick::{commands, system};
 /// starting up took.
 const TRACE_VARIABLE: &str = "SENGI_QUICK_TRACE";
 
+/// How long closing may wait for the last volume or brightness change to
+/// be applied. One `wpctl` run or one call to logind takes a few
+/// milliseconds; this is for when something is stuck.
+const LAST_WORDS: Duration = Duration::from_millis(500);
+
 fn main() -> ExitCode {
     let started = Instant::now();
     // First, before a passphrase can be anywhere in memory.
@@ -174,7 +179,8 @@ fn open(
         .keyboard(KeyboardMode::Exclusive);
 
     let exit = Rc::new(Cell::new(Exit::Dismissed));
-    let mut parts = Some((panel, workers, script));
+    let workers = Rc::new(workers);
+    let mut parts = Some((panel, workers.clone(), script));
     app.run(config, {
         let exit = exit.clone();
         move |context| {
@@ -211,6 +217,9 @@ fn open(
             Ok(window)
         }
     })?;
+    // The panel is off the screen. Before the process goes, let the audio
+    // and brightness workers finish what the sliders last asked for.
+    workers.finish(LAST_WORDS);
     Ok(exit.get())
 }
 
