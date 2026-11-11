@@ -8,6 +8,10 @@ const TAB: u32 = 0xff09;
 /// What Shift+Tab produces.
 const ISO_LEFT_TAB: u32 = 0xfe20;
 
+/// What locks the session unless `--locker` says otherwise. The shell
+/// replaces itself, so the locker has the pid we started.
+pub const DEFAULT_LOCKER: &str = "exec swaylock -f";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Launcher,
@@ -66,8 +70,8 @@ pub fn command(action: Action) -> Option<&'static str> {
         Action::Terminal => Some(
             "if command -v sengi-run >/dev/null 2>&1; then exec sengi-run foot; else exec foot; fi",
         ),
-        Action::Lock => Some("exec swaylock -f"),
-        Action::CloseWindow | Action::NextWindow | Action::PreviousWindow => None,
+        // The locker is configurable and tracked, see `State::spawn_locker`.
+        Action::Lock | Action::CloseWindow | Action::NextWindow | Action::PreviousWindow => None,
     }
 }
 
@@ -170,7 +174,8 @@ mod tests {
             .unwrap()
             .contains("sengi-run foot"));
         assert!(command(Action::Terminal).unwrap().contains("exec foot"));
-        assert!(command(Action::Lock).unwrap().contains("swaylock -f"));
+        assert!(DEFAULT_LOCKER.contains("swaylock -f"));
+        assert_eq!(command(Action::Lock), None);
         assert_eq!(command(Action::CloseWindow), None);
         assert_eq!(command(Action::NextWindow), None);
     }

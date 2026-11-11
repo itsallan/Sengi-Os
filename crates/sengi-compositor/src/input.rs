@@ -291,7 +291,8 @@ impl State {
                 }
                 self.cycle = Some((order, index));
             }
-            Action::Launcher | Action::Terminal | Action::Lock => {}
+            Action::Lock => self.spawn_locker(),
+            Action::Launcher | Action::Terminal => {}
         }
     }
 

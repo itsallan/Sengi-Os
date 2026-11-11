@@ -71,6 +71,9 @@ fn main() -> ExitCode {
 fn start_clients(state: &mut State, options: &Options) {
     println!("{}", state.socket_name.to_string_lossy());
 
+    if let Some(locker) = &options.locker {
+        state.locker_command = locker.clone();
+    }
     for command in &options.startup {
         state.spawn(command);
     }

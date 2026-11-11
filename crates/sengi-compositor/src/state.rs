@@ -63,7 +63,7 @@ use crate::{
     foreign_toplevel::ForeignToplevelState,
     frame::Button,
     input::Drag,
-    keys::Swallowed,
+    keys::{self, Swallowed},
     layout::FocusStack,
     lock::Lock,
     render,
@@ -88,6 +88,12 @@ pub struct State {
     hidden_frames_armed: bool,
     /// A lock that is confirmed once the first locked frame is out.
     pub pending_lock: Option<SessionLocker>,
+    /// What Super+L runs, and what is started for a session whose locker
+    /// died.
+    pub locker_command: String,
+    /// Lockers we started ourselves that are still running.
+    pub locker_pids: Vec<u32>,
+    pub relock_armed: bool,
     pub tokens: Tokens,
     pub theme: Theme,
     /// The title bar typeface, if it is installed.
@@ -214,6 +220,9 @@ impl State {
             redraw_ping: None,
             hidden_frames_armed: false,
             pending_lock: None,
+            locker_command: keys::DEFAULT_LOCKER.to_string(),
+            locker_pids: Vec::new(),
+            relock_armed: false,
             tokens,
             theme,
             font,
@@ -260,6 +269,7 @@ impl State {
             state.sync_pointer_focus();
             state.refresh_foreign_toplevels();
             state.reap_children();
+            state.watch_locker();
             let _ = state.display_handle.flush_clients();
         })?;
 
@@ -412,16 +422,28 @@ impl State {
     }
 
     /// Runs `command` with the shell as a client of this compositor.
-    pub fn spawn(&mut self, command: &str) {
+    pub fn spawn(&mut self, command: &str) -> Option<u32> {
         let child = Command::new("sh")
             .arg("-c")
             .arg(command)
             .env("WAYLAND_DISPLAY", &self.socket_name)
             .spawn();
         match child {
-            Ok(child) => self.children.push(child),
-            Err(err) => eprintln!("sengi-compositor: cannot start `{command}`: {err}"),
+            Ok(child) => {
+                let pid = child.id();
+                self.children.push(child);
+                Some(pid)
+            }
+            Err(err) => {
+                eprintln!("sengi-compositor: cannot start `{command}`: {err}");
+                None
+            }
         }
+    }
+
+    /// The programs we started that are still running.
+    pub fn child_pids(&self) -> Vec<u32> {
+        self.children.iter().map(Child::id).collect()
     }
 
     /// Collects the programs that have exited, so they do not stay around

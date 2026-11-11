@@ -5,12 +5,16 @@
 //! which ask `is_locked`: `render::output`, the pointer hit test in
 //! `input.rs`, and `State::update_keyboard_focus`. If the locker dies
 //! without unlocking, the session stays locked and blank, as the protocol
-//! demands. A new locker can then take the lock over, and only it can
-//! unlock; while the first one lives, a second is turned away.
+//! demands, and the compositor starts its own locker for it. Only a locker
+//! the compositor started may take over a dead one's session; while a
+//! locker lives, a second is turned away.
+
+use std::time::Duration;
 
 use smithay::{
     delegate_session_lock,
     reexports::{
+        calloop::timer::{TimeoutAction, Timer},
         wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::ExtSessionLockV1,
         wayland_server::{
             protocol::{wl_output::WlOutput, wl_surface::WlSurface},
@@ -32,7 +36,72 @@ pub struct Lock {
     locker: ExtSessionLockV1,
 }
 
+/// Who holds the session lock when a client asks for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Holder {
+    Nobody,
+    /// A locker that is still connected.
+    Alive,
+    /// The session is locked but its locker is gone.
+    Dead,
+}
+
+/// Whether a lock request is granted. `ours` says the client is a locker
+/// this compositor started itself.
+///
+/// Anyone may lock an unlocked session; that is what swayidle's locker
+/// does. Nobody may lock over a live locker. A dead locker's session can
+/// only be taken over by our own locker: otherwise any client could step
+/// in and unlock it.
+pub fn may_lock(holder: Holder, ours: bool) -> bool {
+    match holder {
+        Holder::Nobody => true,
+        Holder::Alive => false,
+        Holder::Dead => ours,
+    }
+}
+
+/// How long to wait before starting a locker for a session whose locker
+/// died, and between attempts if that one fails too.
+const RELOCK_DELAY: Duration = Duration::from_secs(1);
+
 impl State {
+    fn lock_holder(&self) -> Holder {
+        match &self.lock {
+            None => Holder::Nobody,
+            Some(lock) if lock.locker.is_alive() => Holder::Alive,
+            Some(_) => Holder::Dead,
+        }
+    }
+
+    /// Starts the configured locker and remembers it as ours.
+    pub fn spawn_locker(&mut self) {
+        let command = self.locker_command.clone();
+        if let Some(pid) = self.spawn(&command) {
+            self.locker_pids.push(pid);
+        }
+    }
+
+    /// A locked session whose locker died must not stay a blank screen
+    /// with no way in: start our locker for it, and keep trying.
+    pub fn watch_locker(&mut self) {
+        let running = self.child_pids();
+        self.locker_pids.retain(|pid| running.contains(pid));
+        let orphaned = self.lock_holder() == Holder::Dead && self.locker_pids.is_empty();
+        if !orphaned || self.relock_armed {
+            return;
+        }
+        let timer = Timer::from_duration(RELOCK_DELAY);
+        let armed = self.loop_handle.insert_source(timer, |_, _, state| {
+            state.relock_armed = false;
+            if state.lock_holder() == Holder::Dead && state.locker_pids.is_empty() {
+                state.spawn_locker();
+            }
+            TimeoutAction::Drop
+        });
+        self.relock_armed = armed.is_ok();
+    }
+
     pub fn is_locked(&self) -> bool {
         self.lock.is_some()
     }
@@ -50,13 +119,15 @@ impl SessionLockHandler for State {
     }
 
     fn lock(&mut self, confirmation: SessionLocker) {
-        // One locker at a time. Dropping the confirmation tells the
-        // newcomer that it did not get the lock.
-        if self
-            .lock
-            .as_ref()
-            .is_some_and(|lock| lock.locker.is_alive())
-        {
+        // Dropping the confirmation tells a refused client that it did not
+        // get the lock.
+        let pid = confirmation
+            .ext_session_lock()
+            .client()
+            .and_then(|client| client.get_credentials(&self.display_handle).ok())
+            .map(|credentials| credentials.pid as u32);
+        let ours = pid.is_some_and(|pid| self.locker_pids.contains(&pid));
+        if !may_lock(self.lock_holder(), ours) {
             return;
         }
         // Whatever the pointer or keyboard was in the middle of ends here.
@@ -112,3 +183,26 @@ impl SessionLockHandler for State {
 }
 
 delegate_session_lock!(State);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unlocked_session_can_be_locked_by_anyone() {
+        assert!(may_lock(Holder::Nobody, false));
+        assert!(may_lock(Holder::Nobody, true));
+    }
+
+    #[test]
+    fn a_live_locker_is_never_replaced() {
+        assert!(!may_lock(Holder::Alive, false));
+        assert!(!may_lock(Holder::Alive, true));
+    }
+
+    #[test]
+    fn only_our_own_locker_takes_over_a_dead_one() {
+        assert!(!may_lock(Holder::Dead, false));
+        assert!(may_lock(Holder::Dead, true));
+    }
+}

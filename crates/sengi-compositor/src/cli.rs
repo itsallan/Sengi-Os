@@ -12,6 +12,7 @@ Usage: sengi-compositor [options]
       --screenshot PNG  save the last frame to PNG on exit (headless only)
       --exit-after SEC  stop after SEC seconds
       --script FILE     play scripted input and screenshots (headless only)
+      --locker CMD      what Super+L runs to lock (default: swaylock -f)
   -h, --help            show this help
   -V, --version         show the version";
 
@@ -30,6 +31,7 @@ pub struct Options {
     pub screenshot: Option<PathBuf>,
     pub exit_after: Option<Duration>,
     pub script: Option<PathBuf>,
+    pub locker: Option<String>,
 }
 
 impl Options {
@@ -62,6 +64,7 @@ impl Default for Options {
             screenshot: None,
             exit_after: None,
             script: None,
+            locker: None,
         }
     }
 }
@@ -94,6 +97,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             "--size" => options.size = parse_size(&value()?)?,
             "--screenshot" => options.screenshot = Some(PathBuf::from(value()?)),
             "--script" => options.script = Some(PathBuf::from(value()?)),
+            "--locker" => options.locker = Some(value()?),
             "--exit-after" => {
                 let text = value()?;
                 let seconds: f64 = text
@@ -160,6 +164,8 @@ mod tests {
             "2.5",
             "--script",
             "steps.txt",
+            "--locker",
+            "swaylock",
         ]);
         assert_eq!(
             parsed,
@@ -170,6 +176,7 @@ mod tests {
                 screenshot: Some("out.png".into()),
                 exit_after: Some(Duration::from_millis(2500)),
                 script: Some("steps.txt".into()),
+                locker: Some("swaylock".into()),
             }))
         );
     }
