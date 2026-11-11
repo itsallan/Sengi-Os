@@ -1,10 +1,12 @@
 //! The built-in key bindings. They match what labwc is configured with in
-//! the image, so the session behaves the same on either compositor.
+//! the image, and the labwc defaults people reach for without thinking, so
+//! the session behaves the same on either compositor.
 
 /// Keysyms used by the bindings. Letters are their ASCII codes.
 const SPACE: u32 = 0x0020;
 const RETURN: u32 = 0xff0d;
 const TAB: u32 = 0xff09;
+const F4: u32 = 0xffc1;
 /// What Shift+Tab produces.
 const ISO_LEFT_TAB: u32 = 0xfe20;
 /// XF86Switch_VT_1; the other eleven follow it.
@@ -79,6 +81,9 @@ pub fn binding(mods: Mods, keysym: u32) -> Option<Action> {
             (_, Some('q')) => Some(Action::CloseWindow),
             _ => None,
         };
+    }
+    if only_alt && !mods.shift && keysym == F4 {
+        return Some(Action::CloseWindow);
     }
     if only_alt && (keysym == TAB || keysym == ISO_LEFT_TAB) {
         return Some(if mods.shift {
@@ -191,6 +196,14 @@ mod tests {
         assert_eq!(binding(ALT, TAB), Some(Action::NextWindow));
         let shifted = Mods { shift: true, ..ALT };
         assert_eq!(binding(shifted, ISO_LEFT_TAB), Some(Action::PreviousWindow));
+    }
+
+    #[test]
+    fn alt_f4_closes_like_super_q() {
+        assert_eq!(binding(ALT, F4), Some(Action::CloseWindow));
+        assert_eq!(binding(Mods::default(), F4), None);
+        assert_eq!(binding(LOGO, F4), None);
+        assert_eq!(binding(Mods { shift: true, ..ALT }, F4), None);
     }
 
     #[test]
