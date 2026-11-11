@@ -70,13 +70,25 @@ fn run_clock(timer: Rc<Timer>, bars: Instances<Bar>) {
     });
 }
 
-fn refresh_sys(bar: &Bar) {
-    let network = status::network(&status::read_interfaces(Path::new("/sys/class/net")));
-    bar.set_network(network.label().into());
-    bar.set_online(network != status::Network::Offline);
-    bar.set_wifi(network == status::Network::Wifi);
+/// Readings that are a few small files under /sys.
+struct Sys {
+    network: status::Network,
+    battery: Option<status::Battery>,
+}
 
-    match status::read_battery(Path::new("/sys/class/power_supply")) {
+fn read_sys() -> Sys {
+    Sys {
+        network: status::network(&status::read_interfaces(Path::new("/sys/class/net"))),
+        battery: status::read_battery(Path::new("/sys/class/power_supply")),
+    }
+}
+
+fn apply_sys(bar: &Bar, sys: &Sys) {
+    bar.set_network(sys.network.label().into());
+    bar.set_online(sys.network != status::Network::Offline);
+    bar.set_wifi(sys.network == status::Network::Wifi);
+
+    match &sys.battery {
         Some(battery) => {
             bar.set_battery(battery.label().into());
             bar.set_battery_low(battery.low());
@@ -156,8 +168,9 @@ fn run() -> Result<(), sengi_layer::Error> {
     {
         let bars = bars.clone();
         sys_timer.start(TimerMode::Repeated, SYS_INTERVAL, move || {
+            let sys = read_sys();
             bars.for_each(|bar| {
-                refresh_sys(bar);
+                apply_sys(bar, &sys);
                 // The minute timer does not run while the machine is
                 // suspended, so this catches the clock up after a resume.
                 refresh_clock(bar);
@@ -190,7 +203,7 @@ fn run() -> Result<(), sengi_layer::Error> {
             let _ = mute.send(());
         });
 
-        refresh_sys(&bar);
+        apply_sys(&bar, &read_sys());
         refresh_clock(&bar);
         if let Some(slow) = latest.borrow().as_ref() {
             apply_slow(&bar, slow);
