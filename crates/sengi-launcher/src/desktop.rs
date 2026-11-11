@@ -215,6 +215,23 @@ fn unescape(value: &str) -> String {
     out
 }
 
+/// Make a value safe to show: control characters could drive a terminal
+/// through `--list`, and bidirectional overrides could reorder what the
+/// panel shows. Line breaks and tabs become spaces, the rest is dropped.
+fn display_text(value: &str) -> String {
+    let cleaned: String = value
+        .chars()
+        .filter_map(|c| match c {
+            '\n' | '\r' | '\t' => Some(' '),
+            c if c.is_control() => None,
+            '\u{200e}' | '\u{200f}' | '\u{061c}' => None,
+            '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' => None,
+            c => Some(c),
+        })
+        .collect();
+    cleaned.trim().to_owned()
+}
+
 /// Split a `;` separated list. `\;` is a literal semicolon.
 fn split_list(value: &str) -> Vec<String> {
     let mut items = Vec::new();
@@ -240,7 +257,7 @@ fn split_list(value: &str) -> Vec<String> {
     items.push(current);
     items
         .iter()
-        .map(|item| unescape(item).trim().to_owned())
+        .map(|item| display_text(&unescape(item)))
         .filter(|item| !item.is_empty())
         .collect()
 }
@@ -253,11 +270,12 @@ pub fn parse(id: &str, path: &Path, bytes: &[u8], locales: &[String], env: &Env)
     let get = |key: &str| fields.get(key).map(String::as_str).unwrap_or("");
     let flag = |key: &str| get(key) == "true";
     let string = |key: &str| unescape(get(key)).trim().to_owned();
+    let text = |key: &str| display_text(&unescape(get(key)));
 
     // A file placed to hide a system entry often carries nothing but
     // Hidden=true or NoDisplay=true, so anything with the group takes the ID,
     // and what cannot be shown is hidden rather than ignored.
-    let name = string("Name");
+    let name = text("Name");
     if flag("Hidden") || flag("NoDisplay") || get("Type") != "Application" || name.is_empty() {
         return Parsed::Hidden;
     }
@@ -290,8 +308,8 @@ pub fn parse(id: &str, path: &Path, bytes: &[u8], locales: &[String], env: &Env)
         id: id.to_owned(),
         path: path.to_owned(),
         name,
-        generic_name: string("GenericName"),
-        comment: string("Comment"),
+        generic_name: text("GenericName"),
+        comment: text("Comment"),
         keywords: split_list(get("Keywords")),
         exec,
         icon: string("Icon"),
@@ -613,5 +631,34 @@ mod tests {
         let found = scan(&dirs, &plain_env());
         let ids: Vec<&str> = found.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, vec!["link.desktop", "ok.desktop"]);
+    }
+
+    #[test]
+    fn control_and_bidi_characters_are_stripped_from_shown_text() {
+        let entry = visible(
+            "[Desktop Entry]\nType=Application\nExec=app \"a\\tb\"\n\
+             Name=\x1b[31mRed\x07 \u{202e}evil\u{202c}\u{9b}2J\x7f\n\
+             GenericName=Two\\nLines\\tTabbed\n\
+             Comment=\u{2066}iso\u{2069}late \u{200f}mark\n\
+             Keywords=k\x1b]0;title\x07;\u{202d}two;\n",
+            &plain_env(),
+        );
+        assert_eq!(entry.name, "[31mRed evil2J");
+        assert_eq!(entry.generic_name, "Two Lines Tabbed");
+        assert_eq!(entry.comment, "isolate mark");
+        assert_eq!(entry.keywords, vec!["k]0", "title", "two"]);
+        // The command is never shown, and is passed on as written.
+        assert_eq!(entry.exec, "app \"a\tb\"");
+    }
+
+    #[test]
+    fn a_name_of_only_control_characters_is_no_name() {
+        assert_eq!(
+            parse_str(
+                "[Desktop Entry]\nType=Application\nName=\x1b\x07\nExec=x\n",
+                &plain_env()
+            ),
+            Parsed::Hidden
+        );
     }
 }
