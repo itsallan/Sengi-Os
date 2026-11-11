@@ -9,7 +9,7 @@ use crate::backlight::{self, Backlight};
 use crate::battery::Battery;
 use crate::bluetooth::{self, Bluetooth};
 use crate::secret::Secret;
-use crate::services::{Command, Event, Hardware};
+use crate::services::{Block, Command, Event, Hardware};
 use crate::text::isolate;
 use crate::volume::{Echo, Volume, MAX_PERCENT};
 use crate::wifi::{self, Join, JoinError, Link, Network, Problem, Security, Wifi};
@@ -420,7 +420,7 @@ impl Panel {
             }
             Reading::Known(Wifi::Absent) => off(false, "No Wi-Fi adapter"),
             Reading::Known(Wifi::Denied) => off(false, "Wi-Fi is not permitted for this user"),
-            Reading::Known(Wifi::Off) => off(true, "Off"),
+            Reading::Known(Wifi::Off) => off(true, off_text(self.hardware.wifi_block)),
             Reading::Known(Wifi::On {
                 link,
                 scanning,
@@ -534,7 +534,11 @@ impl Panel {
                 false,
                 "Bluetooth is not permitted for this user".to_string(),
             ),
-            Reading::Known(Bluetooth::Off) => tile(true, false, "Off".to_string()),
+            Reading::Known(Bluetooth::Off) => tile(
+                true,
+                false,
+                off_text(self.hardware.bluetooth_block).to_string(),
+            ),
             Reading::Known(Bluetooth::On { devices }) => {
                 tile(true, true, bluetooth::summary(devices))
             }
@@ -564,6 +568,16 @@ impl Panel {
                 )
             },
         }
+    }
+}
+
+/// What a radio that is off says for itself. When rfkill is behind it the
+/// switch in the tile will not turn it on, and this is why.
+fn off_text(block: Block) -> &'static str {
+    match block {
+        Block::None => "Off",
+        Block::Soft => "Turned off",
+        Block::Hard => "Blocked by the hardware switch",
     }
 }
 
@@ -648,6 +662,7 @@ mod tests {
             wired: false,
             wifi_device: true,
             bluetooth_device: true,
+            ..Hardware::default()
         }
     }
 
@@ -1070,6 +1085,33 @@ mod tests {
         assert!(panel.view().bluetooth.on);
         panel.apply(Event::Bluetooth(Bluetooth::Off));
         assert!(!panel.view().bluetooth.on);
+    }
+
+    #[test]
+    fn a_radio_held_off_by_rfkill_says_why() {
+        let mut hardware = laptop();
+        hardware.wifi_block = Block::Hard;
+        hardware.bluetooth_block = Block::Soft;
+        let mut panel = Panel::new(hardware, false);
+        panel.apply(Event::Wifi(Wifi::Off));
+        panel.apply(Event::Bluetooth(Bluetooth::Off));
+        assert_eq!(panel.view().wifi.detail, "Blocked by the hardware switch");
+        assert_eq!(panel.view().bluetooth.detail, "Turned off");
+
+        // The switch is tried and does not take: it springs back, and the
+        // reason is still there to read.
+        panel.toggle_wifi(true);
+        panel.apply(Event::Wifi(Wifi::Off));
+        let view = panel.view().wifi;
+        assert!(!view.on);
+        assert_eq!(view.detail, "Blocked by the hardware switch");
+
+        // The block is lifted while the panel is open.
+        panel.apply(Event::Hardware {
+            sequence: 0,
+            hardware: laptop(),
+        });
+        assert_eq!(panel.view().wifi.detail, "Off");
     }
 
     #[test]

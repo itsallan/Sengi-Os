@@ -59,6 +59,17 @@ pub trait DndService: Send + 'static {
     fn set(&self, on: bool);
 }
 
+/// Whether the kernel's rfkill is holding a radio off.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Block {
+    #[default]
+    None,
+    /// By software: a key on the keyboard, or `rfkill block`.
+    Soft,
+    /// By a physical switch. Nothing on the screen can undo it.
+    Hard,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Hardware {
     pub battery: Option<Battery>,
@@ -67,6 +78,8 @@ pub struct Hardware {
     pub wired: bool,
     pub wifi_device: bool,
     pub bluetooth_device: bool,
+    pub wifi_block: Block,
+    pub bluetooth_block: Block,
 }
 
 pub struct Services {

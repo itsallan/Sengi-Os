@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::bus::Bus;
-use crate::services::{Hardware, Machine};
+use crate::services::{Block, Hardware, Machine};
 use crate::{backlight, battery};
 
 const LOGIND: &str = "org.freedesktop.login1";
@@ -46,6 +46,32 @@ fn has_bluetooth(root: &Path) -> bool {
         .any(|entry| entry.file_name().to_string_lossy().starts_with("hci"))
 }
 
+/// Whether rfkill holds the radios of `kind` ("wlan", "bluetooth") off. A
+/// machine often has two switches for one radio, the laptop's and the
+/// card's; any one of them blocks it.
+fn block(rfkill: &Path, kind: &str) -> Block {
+    let mut found = Block::None;
+    for entry in fs::read_dir(rfkill)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .take(64)
+    {
+        let path = entry.path();
+        let file = |name: &str| fs::read_to_string(path.join(name)).unwrap_or_default();
+        if file("type").trim() != kind {
+            continue;
+        }
+        if file("hard").trim() == "1" {
+            return Block::Hard;
+        }
+        if file("soft").trim() == "1" {
+            found = Block::Soft;
+        }
+    }
+    found
+}
+
 /// Reads `class`, which is `/sys/class` on a real machine.
 pub fn read(class: &Path) -> Hardware {
     let (wired, wifi_device) = links(&class.join("net"));
@@ -55,6 +81,8 @@ pub fn read(class: &Path) -> Hardware {
         wired,
         wifi_device,
         bluetooth_device: has_bluetooth(&class.join("bluetooth")),
+        wifi_block: block(&class.join("rfkill"), "wlan"),
+        bluetooth_block: block(&class.join("rfkill"), "bluetooth"),
     }
 }
 
@@ -116,6 +144,33 @@ mod tests {
         assert!(hardware.wired);
         assert!(!hardware.wifi_device && !hardware.bluetooth_device);
         assert!(hardware.battery.is_none() && hardware.backlight.is_none());
+    }
+
+    #[test]
+    fn radios_held_off_by_rfkill() {
+        let sys = TempDir::new();
+        // The laptop's own switch and the card's, as most have.
+        sys.write("rfkill/rfkill0/type", "wlan\n");
+        sys.write("rfkill/rfkill0/soft", "0\n");
+        sys.write("rfkill/rfkill0/hard", "0\n");
+        sys.write("rfkill/rfkill1/type", "wlan\n");
+        sys.write("rfkill/rfkill1/soft", "1\n");
+        sys.write("rfkill/rfkill1/hard", "0\n");
+        sys.write("rfkill/rfkill2/type", "bluetooth\n");
+        sys.write("rfkill/rfkill2/soft", "1\n");
+        sys.write("rfkill/rfkill2/hard", "1\n");
+        sys.write("rfkill/rfkill3/type", "nfc\n");
+        sys.write("rfkill/rfkill3/hard", "1\n");
+        let hardware = read(sys.path());
+        assert_eq!(hardware.wifi_block, Block::Soft);
+        assert_eq!(hardware.bluetooth_block, Block::Hard);
+
+        sys.write("rfkill/rfkill1/soft", "0\n");
+        assert_eq!(read(sys.path()).wifi_block, Block::None);
+        // A hard block on either switch wins.
+        sys.write("rfkill/rfkill1/soft", "1\n");
+        sys.write("rfkill/rfkill0/hard", "1\n");
+        assert_eq!(read(sys.path()).wifi_block, Block::Hard);
     }
 
     #[test]

@@ -29,6 +29,7 @@ pub const SCENARIOS: &[&str] = &[
     "low-battery",
     "charging",
     "off",
+    "blocked",
     "desktop",
     "hostile",
 ];
@@ -264,6 +265,7 @@ pub fn scenario(name: &str) -> Option<Demo> {
         wired: false,
         wifi_device: true,
         bluetooth_device: true,
+        ..Hardware::default()
     };
     let mut networks = neighbourhood();
     let mut wifi_on = true;
@@ -349,6 +351,14 @@ pub fn scenario(name: &str) -> Option<Demo> {
                 muted: true,
             });
             hardware.battery = battery(100, Charge::Full, None);
+        }
+        "blocked" => {
+            // The switch on the side of the laptop is off, and Bluetooth
+            // was turned off with the keyboard.
+            wifi_on = false;
+            bluetooth = Bluetooth::Off;
+            hardware.wifi_block = crate::services::Block::Hard;
+            hardware.bluetooth_block = crate::services::Block::Soft;
         }
         "desktop" => {
             wifi_present = false;
