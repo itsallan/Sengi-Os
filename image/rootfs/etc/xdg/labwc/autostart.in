@@ -10,12 +10,22 @@ fi
 # Bring the bar and dock back if either ever dies, for as long as this
 # compositor is running. Watching the compositor's own process, not its
 # socket, keeps a loop left over from a crashed session from joining the
-# next one.
+# next one. A program that keeps dying is retried more and more slowly, and
+# what it prints goes to the journal.
 for program in sengi-bar sengi-dock; do
 	(
+		wait=1
 		while kill -0 "$LABWC_PID" 2>/dev/null; do
-			$program
-			sleep 1
+			started=$(date +%s)
+			systemd-cat -t "$program" "$program"
+			# Ran for a while before dying: start over quickly.
+			if [ $(($(date +%s) - started)) -gt 60 ]; then
+				wait=1
+			fi
+			sleep "$wait"
+			if [ "$wait" -lt 30 ]; then
+				wait=$((wait * 2))
+			fi
 		done
 	) >/dev/null 2>&1 &
 done
