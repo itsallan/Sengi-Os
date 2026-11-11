@@ -96,6 +96,36 @@ component Heading inherits HorizontalLayout {
     }
 }
 
+// A few lines of wrapped text at most; the last one ends in an ellipsis.
+component Lines inherits Rectangle {
+    in property <string> text;
+    in property <int> lines;
+    in property <bool> strong: false;
+
+    height: Math.min(content.preferred-height, line.preferred-height * root.lines);
+    clip: true;
+
+    content := SengiText {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+        text: root.text;
+        color: root.strong ? Tokens.color-text : Tokens.color-text-muted;
+        font-weight: root.strong ? Tokens.font-weight-bold : Tokens.font-weight-regular;
+        vertical-alignment: top;
+        wrap: word-wrap;
+        overflow: elide;
+    }
+
+    // Measures one line of text; never drawn.
+    line := SengiText {
+        text: "Ag";
+        font-weight: content.font-weight;
+        visible: false;
+    }
+}
+
 // Summary and body, each cut off after a few lines.
 component Message inherits VerticalLayout {
     in property <string> summary;
@@ -104,27 +134,46 @@ component Message inherits VerticalLayout {
 
     spacing: Tokens.space-xxs;
 
-    if root.summary != "": SengiText {
+    if root.summary != "": Lines {
         text: root.summary;
-        font-weight: Tokens.font-weight-bold;
-        wrap: word-wrap;
-        overflow: elide;
-        max-height: line.preferred-height * 2;
+        lines: 2;
+        strong: true;
     }
 
-    if root.body != "": SengiText {
+    if root.body != "": Lines {
         text: root.body;
-        color: Tokens.color-text-muted;
-        wrap: word-wrap;
+        lines: root.body-lines;
+    }
+}
+
+// SengiButton, except that a label too long for its share of the card is
+// cut short instead of pushing the other buttons out.
+component ActionButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    min-width: 0;
+    height: Tokens.bar-height;
+    border-radius: Tokens.radius;
+    background: !root.enabled ? Tokens.color-surface
+        : touch.has-hover ? Tokens.color-surface-hover : Tokens.color-surface-raised;
+    animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+
+    SengiText {
+        x: Tokens.space-sm;
+        width: parent.width - Tokens.space-sm * 2;
+        text: root.text;
+        color: root.enabled ? Tokens.color-text : Tokens.color-text-disabled;
+        font-weight: Tokens.font-weight-medium;
+        horizontal-alignment: center;
+        vertical-alignment: center;
         overflow: elide;
-        max-height: line.preferred-height * root.body-lines;
     }
 
-    // Measures one line of text; never drawn.
-    line := SengiText {
-        text: "Ag";
-        visible: false;
-        height: 0;
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
     }
 }
 
@@ -185,9 +234,8 @@ component PopupCard inherits Rectangle {
                     y: Tokens.space-xs;
                     height: self.preferred-height;
                     spacing: Tokens.space-sm;
-                    for item in root.data.actions: SengiButton {
+                    for item in root.data.actions: ActionButton {
                         horizontal-stretch: 1;
-                        min-width: 0;
                         text: item.label;
                         enabled: !root.data.leaving;
                         clicked => { root.action(item.key); }
