@@ -28,6 +28,12 @@ impl Compositor {
     /// Starts the compositor. `locker` is the program it recognises as
     /// the screen locker; `None` names this test, so its clients count.
     pub fn start(locker: Option<&str>) -> Self {
+        // The tests name this very program as the locker so that their
+        // clients are recognised. When a locker dies the compositor starts
+        // it again, which would be the whole test run once more.
+        if std::env::var_os("SENGI_COMPOSITOR_PID").is_some() {
+            std::process::exit(0);
+        }
         static COUNT: AtomicU32 = AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!(
             "sengi-test-{}-{}",

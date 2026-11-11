@@ -140,6 +140,24 @@ fn a_dead_lockers_session_stays_locked() {
 }
 
 #[test]
+fn a_new_locker_takes_over_from_a_dead_one() {
+    let compositor = Compositor::start(None);
+    let (first, held) = locked(&compositor);
+    drop(held);
+    drop(first);
+    // Let the compositor notice before the next one asks.
+    let mut app = compositor.connect();
+    app.wait(Duration::from_millis(300), |_| false);
+    assert!(compositor.status().contains("locker gone"));
+
+    let (_second, _held) = locked(&compositor);
+    let status = compositor.status();
+    assert!(status.contains("locker alive"), "{status}");
+    assert!(status.contains("1 lock surface"), "{status}");
+    assert!(status.contains("locker told yes"), "{status}");
+}
+
+#[test]
 fn a_program_that_is_not_the_locker_cannot_ask_for_the_lock() {
     let compositor = Compositor::start(Some("/bin/true"));
     let client = compositor.connect();

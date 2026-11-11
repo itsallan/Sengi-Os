@@ -14,7 +14,9 @@ Usage: sengi-compositor [options]
                         with --backend drm also on every SIGUSR2
       --exit-after SEC  stop after SEC seconds
       --script FILE     play scripted input and screenshots (headless only)
-      --locker CMD      what Super+L runs to lock (default: swaylock -f)
+      --locker CMD      the screen locker: a program and its arguments, no
+                        shell syntax (default: swaylock -f). Super+L runs
+                        it, and nothing else may lock the session
       --renderer NAME   drm backend: gles, pixman or auto (default auto: gles
                         with a GPU, pixman without; SENGI_COMPOSITOR_RENDERER
                         sets the same)

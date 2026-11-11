@@ -60,6 +60,9 @@ Build for the image, without the development window backend:
 
     cargo build --release --locked --no-default-features --features drm
 
+That also leaves out the `test-hooks` feature, and with it `--script` and
+the virtual cursor plane switch, which are for testing only.
+
 Build-time packages (Debian): `build-essential pkg-config libseat-dev
 libinput-dev libudev-dev libgbm-dev libpixman-1-dev libxkbcommon-dev`.
 Run-time packages: `libseat1 libinput10 libudev1 libgbm1 libdrm2
@@ -70,8 +73,12 @@ session with pam_systemd is enough) or seatd.
 Under greetd, point the session command at a script like the image's
 `sengi-session` with the last line replaced:
 
-    exec sengi-compositor \
+    exec sengi-compositor --backend drm \
         -s 'LABWC_PID=$SENGI_COMPOSITOR_PID sh /etc/xdg/labwc/autostart'
+
+Name the backend there. Left to choose, the compositor opens a window
+when `WAYLAND_DISPLAY` or `DISPLAY` name a display that is really there,
+takes the screen when started on a terminal, and otherwise runs headless.
 
 Started programs get `WAYLAND_DISPLAY` and `SENGI_COMPOSITOR_PID`. The
 start-up script's restart loops watch `LABWC_PID`, hence the assignment
@@ -193,12 +200,17 @@ swaylock, swayidle, sengi-focus, wlrctl and gtk3-widget-factory:
 - xdg popups, also on layer surfaces (waybar tooltips), with grabs: a GTK
   menu opens and a click elsewhere dismisses it.
 - ext-session-lock and ext-idle-notify: swaylock locks, swayidle locks
-  after its timeout. While locked only the lock surface is drawn and gets
-  input; keys typed and clicks made on the lock screen did not reach the
-  terminal behind it, and bindings did not fire. The locker is told the
-  session is locked after the first locked frame is out. If the locker
-  dies, the screen stays locked and plain; a new locker can take over, a
-  second one is refused while the first lives.
+  after its timeout. While locked only the lock surfaces are drawn and get
+  input, one per screen; keys typed and clicks made on the lock screen did
+  not reach the terminal behind it, and bindings did not fire. The locker
+  is told the session is locked once every screen has shown a frame drawn
+  under the lock. If the locker dies, the screen stays locked and plain
+  and the compositor starts the locker again; a second locker is refused
+  while the first lives. Only the lock object that was granted the lock
+  can unlock or supply lock surfaces. `tests/lock.rs` checks these rules
+  against the running compositor, and on two screens in the GPU guest
+  swaylock covered both while `misbehave steal-unlock` and
+  `fake-lock-surface` got nowhere.
 - DRM backend, checked on virtio-gpu in a nested QEMU guest booted from the
   project's ISO, with the compositor in labwc's place in the live greetd
   session: the image's start-up script brought up swaybg, sengi-bar,
@@ -239,10 +251,12 @@ swaylock, swayidle, sengi-focus, wlrctl and gtk3-widget-factory:
   sent in two steps 129 to 198.
 - `sengi-compositor --exit` and SIGTERM end the session; started programs
   get `SENGI_COMPOSITOR_PID`.
-- Only a locker the compositor started may take over the session of a
-  locker that died, and the compositor starts one itself; a foreign locker
-  was refused. A forged `xdg_toplevel.move` is ignored and a toplevel that
-  detaches its buffer unmaps cleanly (`examples/misbehave.rs`).
+- A forged `xdg_toplevel.move` is ignored and a toplevel that detaches
+  its buffer unmaps cleanly (`examples/misbehave.rs`). A client that
+  commits with a frame callback and no damage gets its callbacks at the
+  refresh rate (`misbehave spin`: 69 a second on a 75 Hz display; 507
+  before that was fixed).
+- wp-security-context, see "Who may do what" below.
 - Headless backend: pixman rendering into memory, scripted input, PNG
   screenshots.
 - Winit backend: GLES rendering in a window with keyboard and pointer input.
@@ -262,9 +276,8 @@ swaylock, swayidle, sengi-focus, wlrctl and gtk3-widget-factory:
 - Unplugging a display is handled (bars closed, windows moved to a screen
   that is left) but only unit-tested; the test guest cannot unplug.
 - With several screens: new windows open on the first one, absolute
-  pointing devices map to the first one, there is one lock surface and
-  the other screens go plain while locked, popups are constrained to the
-  first screen, screens line up left to right in the order found with no
+  pointing devices map to the first one, popups are constrained to the
+  first screen, a taskbar is told every window is on the first screen, screens line up left to right in the order found with no
   way to arrange them or pick a mode, and a gap left by an unplugged
   screen is not closed.
 - The touchpad settings (tap to click, disable while typing) have not
@@ -273,8 +286,6 @@ swaylock, swayidle, sengi-focus, wlrctl and gtk3-widget-factory:
   change vt") for the session user; it works when the compositor runs on
   libseat's builtin backend. The image probably has the same limit under
   labwc; polkit or seatd would lift it.
-- Any client may lock an unlocked session and later unlock it; only the
-  takeover of a dead locker's session is restricted.
 - The bottom corners of a window are square and there are no shadows.
 - Fullscreen requests are ignored (and `wm_capabilities` says so).
 - The bar's power icon starts `sengi-power`, which was not available to
@@ -299,8 +310,11 @@ swaylock, swayidle, sengi-focus, wlrctl and gtk3-widget-factory:
 - No dmabuf on the pixman path, so GPU clients fall back to software
   there. No `wl_drm`; Mesa finds the device through dmabuf feedback.
 - Missing protocols: primary selection, xdg-activation, fractional-scale,
-  viewporter, text-input, screencopy, output management, idle-inhibit,
+  viewporter, text-input, screencopy, output management, output power
+  management (so nothing can blank the panel when idle), idle-inhibit,
+  pointer constraints and relative pointer (games, remote desktops),
   virtual keyboard and pointer, ext-foreign-toplevel-list.
+- The icon of a drag-and-drop is not drawn; the drop itself works.
 - No XWayland.
 - No HiDPI scale: frames and cursors are drawn for scale 1.
 - Clients started with `-s` or a key binding are not stopped when the
@@ -338,18 +352,48 @@ and so counts as dirty.
 1. Run it on the target laptop: GLES on i915, the cursor plane, VT
    switching under logind, the touchpad, suspend, idle RAM and frame time.
 2. Arranging screens and choosing modes, windows and popups that know
-   which screen they are on, a lock surface per screen.
-3. Restrict foreign-toplevel and locking an unlocked session to the
-   clients meant to use them.
-3. screencopy (grim, and the CI screenshot), output management, primary
-   selection, xdg-activation, fractional scale, idle-inhibit.
-4. Fullscreen, popup constraining, double-click to maximise, edge snapping,
-   an Alt+Tab switcher.
-5. Rounded bottom corners and shadows.
-6. Keyboard layout, key bindings and input settings from configuration.
-7. XWayland, started on demand.
-8. Run the real session start-up script against it, then measure idle RAM
-   and time to first frame against labwc on the target machine.
+   which screen they are on.
+3. Output power management, so swayidle can blank the panel.
+4. screencopy (grim, and the CI screenshot), output management, primary
+   selection, xdg-activation, fractional scale, idle-inhibit, pointer
+   constraints and relative pointer.
+5. Fullscreen, popup constraining, double-click to maximise, edge snapping,
+   an Alt+Tab switcher, drag-and-drop icons.
+6. Rounded bottom corners and shadows.
+7. Keyboard layout, key bindings and input settings from configuration.
+8. XWayland, started on demand.
+9. Measure idle RAM and time to first frame against labwc on the target
+   machine.
+
+## Who may do what
+
+The lock screen is only worth something if other programs cannot get
+around it, so this is spelled out.
+
+A client that connects through a security context, which is how Flatpak
+apps arrive once the portal sees a compositor that supports it, is not
+offered session lock, layer shell, foreign-toplevel management, idle
+notification or the security context manager, and cannot bind them by
+number either. It can still do what any window can: open windows, read
+the clipboard while it has keyboard focus, and offer drags.
+
+The session lock is offered only to the locker program: the first word
+of `--locker` (default `swaylock -f`; a program and its arguments, no
+shell syntax), found in `PATH` at start and compared with the
+executable of the process that connected. Whoever holds the lock is the
+only one who can unlock or supply lock surfaces; a second locker is
+refused while the first lives, and one that connects after the first
+died takes its place.
+
+A program that runs unsandboxed as the user is not confined by any of
+this, here or under labwc. It can put up a layer surface over everything
+and take all keys, list, activate and close all windows, and watch idle
+time, because the bar, the dock and swayidle do exactly that through the
+same globals. It can start the locker itself, or connect and then
+replace itself with the locker so that the executable check passes for a
+connection its parent kept, and with the user's rights it could as well
+trace the real locker or replace the session's start-up script. Keeping
+untrusted programs in a sandbox is what protects against them.
 
 ## Layout
 
@@ -366,7 +410,9 @@ and so counts as dirty.
 - `src/shell.rs`: wl_compositor, xdg-shell and xdg-decoration.
 - `src/layer.rs`: layer-shell.
 - `src/foreign_toplevel.rs`: wlr-foreign-toplevel-management.
-- `src/lock.rs`: session lock.
+- `src/lock.rs`: session lock and who may use it.
+- `src/security.rs`: security contexts and what sandboxed clients are
+  kept from.
 - `src/cursor.rs`: cursor theme loading and the fallback arrow.
 - `src/input.rs`: keyboard and pointer events, the drag grab, hit testing.
 - `src/device_input.rs`: backend device events, built only with a backend
@@ -375,5 +421,9 @@ and so counts as dirty.
 - `src/headless.rs`, `src/winit.rs`, `src/drm.rs`: the backends.
 - `src/gpu.rs`: choosing between GLES and pixman. Pure, unit-tested.
 - `src/dmabuf.rs`: linux-dmabuf.
-- `src/log.rs`: printing what Smithay logs.
+- `src/log.rs`: printing what Smithay logs, and the `say!` and `tell!`
+  macros everything else prints with.
+- `tests/`: tests that start the compositor on the headless backend and
+  talk to it as clients (`common/` is the client, shared with
+  `examples/misbehave.rs`; `harness/` starts the compositor).
 - `src/png.rs`: minimal PNG writer for screenshots.
