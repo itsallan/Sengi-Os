@@ -104,6 +104,15 @@ pub fn read_volume() -> Option<Volume> {
     parse_volume(&String::from_utf8_lossy(&output.stdout))
 }
 
+pub fn toggle_mute() {
+    let _ = Command::new("wpctl")
+        .args(["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Battery {
     pub percent: u32,
@@ -385,6 +394,40 @@ mod tests {
             r#""/net/connman/iwd/0/4/486f6d652057694669_psk"},"Scanning":{"type":"b","data":false}}}}]}"#
         );
         assert_eq!(parse_wifi_name(objects), Some("Home WiFi".to_string()));
+    }
+
+    fn connected_to(network: &str) -> String {
+        format!(
+            r#"{{"data":[{{"/net/connman/iwd/0/4":{{"net.connman.iwd.Station":{{"ConnectedNetwork":{{"type":"o","data":"/net/connman/iwd/0/4/{network}"}}}}}}}}]}}"#
+        )
+    }
+
+    #[test]
+    fn wifi_name_with_other_security_types() {
+        assert_eq!(
+            parse_wifi_name(&connected_to("43616665_open")),
+            Some("Cafe".to_string())
+        );
+        assert_eq!(
+            parse_wifi_name(&connected_to("43616665_8021x")),
+            Some("Cafe".to_string())
+        );
+    }
+
+    #[test]
+    fn wifi_name_outside_ascii() {
+        // "Café" as UTF-8.
+        assert_eq!(
+            parse_wifi_name(&connected_to("436166c3a9_psk")),
+            Some("Café".to_string())
+        );
+    }
+
+    #[test]
+    fn malformed_network_paths_give_no_name() {
+        assert_eq!(parse_wifi_name(&connected_to("4361666_psk")), None);
+        assert_eq!(parse_wifi_name(&connected_to("zz_psk")), None);
+        assert_eq!(parse_wifi_name(&connected_to("nounderscore")), None);
     }
 
     #[test]

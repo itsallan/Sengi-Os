@@ -7,9 +7,11 @@ if [ "${WLR_RENDERER:-}" = pixman ]; then
 else
 	swaybg -c '@{color.desktop}' >/dev/null 2>&1 &
 fi
-# Bring the bar back if it ever dies, for as long as the session is alive.
+# Bring the bar back if it ever dies, for as long as this compositor is
+# running. Watching the compositor's own process, not its socket, keeps a
+# loop left over from a crashed session from joining the next one.
 (
-	while [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; do
+	while kill -0 "$LABWC_PID" 2>/dev/null; do
 		sengi-bar
 		sleep 1
 	done

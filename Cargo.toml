@@ -8,8 +8,8 @@ edition = "2021"
 repository = "https://github.com/itsallan/Sengi-Os"
 
 [workspace.dependencies]
-slint = { version = "1.8", default-features = false, features = ["compat-1-2", "std", "backend-winit", "renderer-software"] }
-slint-build = "1.8"
+slint = { version = "1.18", default-features = false, features = ["compat-1-2", "std", "backend-winit", "renderer-software"] }
+slint-build = "1.18"
 
 [profile.release]
 opt-level = "s"

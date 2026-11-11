@@ -92,7 +92,8 @@ struct App {
     layer_shell: LayerShell,
     shm: Shm,
     pool: SlotPool,
-    layer: LayerSurface,
+    /// None while there is no output to put the bar on.
+    layer: Option<LayerSurface>,
     pointer: Option<ThemedPointer>,
 
     bar: Bar,
@@ -144,6 +145,15 @@ fn pointer_button(code: u32) -> Option<PointerEventButton> {
 }
 
 impl App {
+    fn place(&mut self, queue: &QueueHandle<Self>) {
+        self.layer = Some(create_layer(
+            &self.compositor,
+            &self.layer_shell,
+            queue,
+            self.height,
+        ));
+    }
+
     fn resize(&mut self) {
         self.window.dispatch_event(WindowEvent::ScaleFactorChanged {
             scale_factor: self.scale as f32,
@@ -152,11 +162,16 @@ impl App {
             self.width * self.scale,
             self.height * self.scale,
         ));
-        self.layer.wl_surface().set_buffer_scale(self.scale as i32);
+        if let Some(layer) = &self.layer {
+            layer.wl_surface().set_buffer_scale(self.scale as i32);
+        }
     }
 
     /// Renders a frame if Slint has anything new to show.
     fn draw(&mut self) {
+        let Some(layer) = &self.layer else {
+            return;
+        };
         if !self.configured || self.width == 0 {
             return;
         }
@@ -185,10 +200,10 @@ impl App {
         };
         write_argb8888(&self.pixels, canvas);
 
-        let surface = self.layer.wl_surface();
+        let surface = layer.wl_surface();
         surface.damage_buffer(0, 0, width as i32, height as i32);
         if buffer.attach_to(surface).is_ok() {
-            self.layer.commit();
+            layer.commit();
         }
     }
 }
@@ -240,11 +255,17 @@ impl CompositorHandler for App {
 
 impl LayerShellHandler for App {
     // The compositor closes the surface when its output goes away, for
-    // example when an external monitor is unplugged. Ask for a new one so
-    // the bar comes back on whichever output is left.
+    // example when an external monitor is unplugged. Move to an output that
+    // is left. With none left a new surface would be closed straight away,
+    // so wait for `new_output` instead.
     fn closed(&mut self, _: &Connection, queue: &QueueHandle<Self>, _: &LayerSurface) {
         self.configured = false;
-        self.layer = create_layer(&self.compositor, &self.layer_shell, queue, self.height);
+        self.layer = None;
+        // No leave event arrives for a surface that is gone.
+        self.window.dispatch_event(WindowEvent::PointerExited);
+        if self.outputs.outputs().next().is_some() {
+            self.place(queue);
+        }
     }
 
     fn configure(
@@ -274,7 +295,7 @@ impl PointerHandler for App {
         events: &[PointerEvent],
     ) {
         for event in events {
-            if &event.surface != self.layer.wl_surface() {
+            if self.layer.as_ref().map(|layer| layer.wl_surface()) != Some(&event.surface) {
                 continue;
             }
             let position = LogicalPosition::new(event.position.0 as f32, event.position.1 as f32);
@@ -339,9 +360,7 @@ impl SeatHandler for App {
         capability: Capability,
     ) {
         if capability == Capability::Pointer {
-            if let Some(pointer) = self.pointer.take() {
-                pointer.pointer().release();
-            }
+            self.pointer = None;
         }
     }
 
@@ -353,7 +372,11 @@ impl OutputHandler for App {
         &mut self.outputs
     }
 
-    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+    fn new_output(&mut self, _: &Connection, queue: &QueueHandle<Self>, _: wl_output::WlOutput) {
+        if self.layer.is_none() {
+            self.place(queue);
+        }
+    }
 
     fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
 
@@ -400,6 +423,12 @@ fn refresh_clock(bar: &Bar) {
     bar.set_clock(now.format("%a %-e %b  %H:%M").to_string().into());
 }
 
+/// Seconds from `second` of the current minute to the start of the next.
+/// Never zero, so a timer that fires a touch early cannot spin.
+fn seconds_until_next_minute(second: u32) -> u64 {
+    u64::from(60 - second.min(59))
+}
+
 /// Shows the time now and again at the start of each minute, so the bar
 /// wakes once a minute for the clock instead of once a second.
 fn run_clock(timer: Rc<Timer>, bar: Weak<Bar>) {
@@ -407,8 +436,8 @@ fn run_clock(timer: Rc<Timer>, bar: Weak<Bar>) {
         return;
     };
     refresh_clock(&strong);
-    let into_minute = u64::from(chrono::Timelike::second(&chrono::Local::now()));
-    let until_next = Duration::from_secs(60 - into_minute.min(59));
+    let second = chrono::Timelike::second(&chrono::Local::now());
+    let until_next = Duration::from_secs(seconds_until_next_minute(second));
     let again = timer.clone();
     timer.start(TimerMode::SingleShot, until_next, move || {
         run_clock(again.clone(), bar.clone())
@@ -474,18 +503,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let bar = Bar::new()?;
     let height = (bar.get_bar_height().round() as u32).max(1);
-    let layer = create_layer(&compositor, &layer_shell, &handle, height);
+    let layer = Some(create_layer(&compositor, &layer_shell, &handle, height));
 
     // Big enough for one 4K-wide frame; the pool grows if it has to.
     let pool = SlotPool::new(3840 * height as usize * 4, &shm)?;
 
-    // The slow readings come from a worker thread. Sending on `poke` makes
-    // it read again straight away, which the mute button uses.
+    // The slow readings come from a worker thread. The mute button sends
+    // on `mute`, and the worker toggles and reads the result back in order.
     let (slow_sender, slow_receiver) = channel::<Slow>();
-    let (poke, poked) = mpsc::channel::<()>();
+    let (mute, mute_requests) = mpsc::channel::<()>();
     thread::spawn(move || {
         let mut last = None;
+        let mut toggle = false;
         loop {
+            if toggle {
+                status::toggle_mute();
+            }
             let slow = read_slow();
             if last.as_ref() != Some(&slow) {
                 if slow_sender.send(slow.clone()).is_err() {
@@ -493,9 +526,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 last = Some(slow);
             }
-            if let Err(mpsc::RecvTimeoutError::Disconnected) = poked.recv_timeout(SLOW_INTERVAL) {
-                return;
-            }
+            toggle = match mute_requests.recv_timeout(SLOW_INTERVAL) {
+                Ok(()) => true,
+                Err(mpsc::RecvTimeoutError::Timeout) => false,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            };
         }
     });
 
@@ -505,12 +540,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     bar.on_dismiss_notifications(|| spawn("makoctl dismiss --all"));
     bar.on_open_session(|| spawn("sengi-power"));
     bar.on_toggle_mute(move || {
-        spawn("wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle; true");
-        // Give wpctl a moment to apply the change before reading it back.
-        let poke = poke.clone();
-        Timer::single_shot(Duration::from_millis(150), move || {
-            let _ = poke.send(());
-        });
+        let _ = mute.send(());
     });
 
     refresh_sys(&bar);
@@ -522,6 +552,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         sys_timer.start(TimerMode::Repeated, SYS_INTERVAL, move || {
             if let Some(bar) = weak.upgrade() {
                 refresh_sys(&bar);
+                // The minute timer does not run while the machine is
+                // suspended, so this catches the clock up after a resume.
+                refresh_clock(&bar);
             }
         });
     }
@@ -603,6 +636,15 @@ mod tests {
         let mut canvas = [0u8; 8];
         write_argb8888(&pixels, &mut canvas);
         assert_eq!(canvas, [3, 2, 1, 4, 30, 20, 10, 40]);
+    }
+
+    #[test]
+    fn the_clock_timer_always_waits_at_least_a_second() {
+        assert_eq!(seconds_until_next_minute(0), 60);
+        assert_eq!(seconds_until_next_minute(20), 40);
+        assert_eq!(seconds_until_next_minute(59), 1);
+        // A leap second reads as 60.
+        assert_eq!(seconds_until_next_minute(60), 1);
     }
 
     #[test]
