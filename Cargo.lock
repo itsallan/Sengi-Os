@@ -3516,10 +3516,17 @@ checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 name = "sengi-bar"
 version = "0.4.0"
 dependencies = [
+ "async-io",
  "chrono",
+ "enumflags2",
+ "futures-lite",
+ "libc",
+ "png",
+ "resvg",
  "sengi-layer",
  "slint",
  "slint-build",
+ "zbus",
 ]
 
 [[package]]

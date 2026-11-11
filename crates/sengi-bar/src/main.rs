@@ -5,8 +5,10 @@
 //! the bar in and keeps it up to date.
 
 mod status;
+mod tray;
+mod tray_ui;
 
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 use std::rc::Rc;
@@ -127,6 +129,10 @@ fn run() -> Result<(), sengi_layer::Error> {
     let app = App::new()?;
     let bars: Instances<Bar> = Instances::new();
 
+    // The tray starts with the first bar, which is when the size icons are
+    // drawn at is known. None inside means it could not be started.
+    let tray: OnceCell<Option<Rc<tray_ui::TrayUi>>> = OnceCell::new();
+
     // The slow readings come from a worker thread. The mute button sends
     // on `mute`, and the worker toggles and reads the result back in order.
     // The latest reading is kept for bars that are built later.
@@ -194,7 +200,9 @@ fn run() -> Result<(), sengi_layer::Error> {
         handle.set_exclusive_zone(height as i32);
 
         bar.on_open_launcher(|| spawn("sengi-launcher"));
-        bar.on_open_network(|| spawn("sengi-run foot -e iwctl"));
+        // The network, volume and battery items open the quick settings
+        // panel; the same command closes it again.
+        bar.on_open_quick(|| spawn("sengi-quick"));
         bar.on_show_notifications(|| spawn("sengi-notify --toggle-centre"));
         bar.on_dismiss_notifications(|| spawn("sengi-notify --dismiss-all"));
         bar.on_open_session(|| spawn("sengi-power"));
@@ -202,6 +210,16 @@ fn run() -> Result<(), sengi_layer::Error> {
         bar.on_toggle_mute(move || {
             let _ = mute.send(());
         });
+
+        let started = tray.get_or_init(|| {
+            let scale = context.output().map_or(1, |output| output.scale);
+            tray_ui::TrayUi::start(&handle, &bar, scale, bars.clone())
+                .inspect_err(|error| eprintln!("sengi-bar: no system tray: {error}"))
+                .ok()
+        });
+        if let Some(tray) = started {
+            tray.attach(&bar, context);
+        }
 
         apply_sys(&bar, &read_sys());
         refresh_clock(&bar);
@@ -214,6 +232,15 @@ fn run() -> Result<(), sengi_layer::Error> {
 }
 
 fn main() -> ExitCode {
+    // The bar runs itself again for two jobs it will not do in its own
+    // process: decoding an icon file and drawing a tray menu.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = tray::icons::run_decoder(&args) {
+        return code;
+    }
+    if let Some(code) = tray::menu_view::run(&args) {
+        return code;
+    }
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

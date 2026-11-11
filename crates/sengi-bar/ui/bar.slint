@@ -1,6 +1,22 @@
 // The Sengi OS top bar: menu on the left, status and session on the right.
 
 import { Tokens, SengiText } from "components.slint";
+import { TrayMenu, MenuPanel, MenuRow } from "tray-menu.slint";
+
+// The menu is drawn by this same program, started again for the purpose.
+export { TrayMenu, MenuPanel, MenuRow }
+
+// One icon in the system tray.
+export struct TrayEntry {
+    id: int,
+    icon: image,
+    // False when the app gave no usable icon; the letter is shown instead.
+    has-icon: bool,
+    letter: string,
+    // Shown beside the tray while the pointer is over the icon.
+    label: string,
+    attention: bool,
+}
 
 // A piece of the bar that can be clicked.
 component BarItem inherits Rectangle {
@@ -12,6 +28,7 @@ component BarItem inherits Rectangle {
     // Items that do nothing on click do not light up on hover either.
     in property <bool> interactive: true;
     callback clicked();
+    callback middle-clicked();
 
     border-radius: Tokens.radius;
     background: root.interactive && touch.has-hover ? Tokens.color-surface-hover : transparent;
@@ -32,6 +49,11 @@ component BarItem inherits Rectangle {
     touch := TouchArea {
         enabled: root.interactive;
         clicked => { root.clicked(); }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.up && event.button == PointerEventButton.middle {
+                root.middle-clicked();
+            }
+        }
     }
 
     @children
@@ -52,6 +74,11 @@ component Icon inherits Path {
 
 component NotificationsIcon inherits Icon {
     commands: "M8 2a4 4 0 0 0-4 4v3l-1.5 2.5h11L12 9V6a4 4 0 0 0-4-4z M6.5 13.5a1.5 1.5 0 0 0 3 0";
+}
+
+// Three dots: there are more tray icons than fit.
+component MoreIcon inherits Icon {
+    commands: "M3.5 8h.01 M8 8h.01 M12.5 8h.01";
 }
 
 component PowerIcon inherits Icon {
@@ -80,6 +107,72 @@ component IconItem inherits Rectangle {
     @children
 }
 
+// An app's icon in the tray. Sized and lit like the bar's own icon items.
+component TrayItem inherits Rectangle {
+    in property <TrayEntry> entry;
+    out property <bool> hovered: touch.has-hover;
+    // 0 is the left button, 1 the middle and 2 the right.
+    callback pressed(int);
+    callback scrolled(length, length);
+
+    border-radius: Tokens.radius;
+    background: touch.has-hover ? Tokens.color-surface-hover : transparent;
+    animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+    height: Tokens.bar-height - Tokens.space-xs;
+    width: Tokens.bar-icon + Tokens.space-sm * 2;
+
+    if root.entry.has-icon: Image {
+        width: Tokens.bar-icon;
+        height: Tokens.bar-icon;
+        source: root.entry.icon;
+        image-fit: contain;
+    }
+
+    if !root.entry.has-icon: Rectangle {
+        width: Tokens.bar-icon;
+        height: Tokens.bar-icon;
+        border-radius: Tokens.radius;
+        background: Tokens.color-surface-raised;
+
+        SengiText {
+            text: root.entry.letter;
+            font-size: Tokens.font-size-sm;
+            font-weight: Tokens.font-weight-bold;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    // The dot sits on the icon's top right corner, ringed in the bar's
+    // colour so it reads against any icon.
+    if root.entry.attention: Rectangle {
+        width: Tokens.space-sm;
+        height: self.width;
+        x: (parent.width + Tokens.bar-icon) / 2 - self.width / 2 - Tokens.space-xxs;
+        y: (parent.height - Tokens.bar-icon) / 2 - Tokens.space-xxs;
+        border-radius: self.width / 2;
+        border-width: Tokens.border-width;
+        border-color: Tokens.color-bg;
+        background: Tokens.color-accent;
+    }
+
+    touch := TouchArea {
+        clicked => { root.pressed(0); }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.up && event.button == PointerEventButton.middle {
+                root.pressed(1);
+            }
+            if event.kind == PointerEventKind.up && event.button == PointerEventButton.right {
+                root.pressed(2);
+            }
+        }
+        scroll-event(event) => {
+            root.scrolled(event.delta-x, event.delta-y);
+            return accept;
+        }
+    }
+}
+
 export component Bar inherits Window {
     in property <string> clock;
     in property <string> network: "Offline";
@@ -93,15 +186,59 @@ export component Bar inherits Window {
     in property <bool> battery-low: false;
     in property <bool> battery-warning: false;
 
+    // Icons of the apps running in the background, leftmost first. Empty
+    // is no tray at all.
+    in property <[TrayEntry]> tray;
+    // The width of the output the bar is on, set by the program once it
+    // is known. The bar's own width cannot be used to count how many tray
+    // icons fit, because the layout that gives it depends on that count.
+    in property <length> output-width;
+
     // Read by the program to size the layer surface.
     out property <length> bar-height: Tokens.bar-height;
+    // Read by the program to decode tray icons at the size they are drawn.
+    out property <length> tray-icon-size: Tokens.bar-icon;
+    // Read by the program: how long after the tray changes a click on it
+    // is not acted on, since the icon under the pointer may have moved.
+    out property <duration> click-guard: Tokens.click-guard;
+    // How many tray icons, counted from the left, do not fit on this bar.
+    // They are reached through the "more" item.
+    out property <int> tray-hidden: root.tray.length <= root.tray-capacity ? 0
+        : root.tray.length - Math.max(0, root.tray-capacity - 1);
 
     callback open-launcher();
-    callback open-network();
+    // The network, volume or battery item was clicked.
+    callback open-quick();
     callback toggle-mute();
     callback show-notifications();
     callback dismiss-notifications();
     callback open-session();
+    // A tray icon was clicked: its id, the button (0 left, 1 middle,
+    // 2 right) and where its left edge is, for the menu to open under.
+    callback tray-pressed(int, int, length);
+    // The wheel was turned over a tray icon: its id and the distance.
+    callback tray-scrolled(int, length, length);
+    // The "more" item was clicked; where its left edge is.
+    callback tray-more(length);
+
+    // The width one tray icon takes, and how many of them there is room
+    // for between the launcher item and the rest of the right-hand group.
+    private property <length> tray-cell: Tokens.bar-icon + Tokens.space-sm * 2 + Tokens.space-xxs;
+    private property <length> tray-room: root.output-width - Tokens.space-xs * 2 - Tokens.space-xxs * 3
+        - launcher.preferred-width - rest.preferred-width - Tokens.space-lg;
+    // Until the output's width is known, everything is shown.
+    private property <int> tray-capacity: root.output-width <= 0 ? 1000
+        : Math.max(0, Math.floor(root.tray-room / root.tray-cell));
+
+    // The tray icon under the pointer and what it is called.
+    private property <int> tray-hover: -1;
+    private property <string> tray-label;
+
+    // The program calls this when the icons change, since the one that was
+    // under the pointer may be gone.
+    public function tray-changed() {
+        root.tray-hover = -1;
+    }
 
     background: Tokens.color-bar;
     default-font-family: Tokens.font-family;
@@ -112,7 +249,7 @@ export component Bar inherits Window {
         padding-right: Tokens.space-xs;
         spacing: Tokens.space-xxs;
 
-        VerticalLayout {
+        launcher := VerticalLayout {
             alignment: center;
             BarItem {
                 text: "Sengi OS";
@@ -123,58 +260,127 @@ export component Bar inherits Window {
 
         Rectangle {
             horizontal-stretch: 1;
-        }
 
-        VerticalLayout {
-            alignment: center;
-            BarItem {
-                text: root.wifi && root.wifi-name != "" ? root.wifi-name : root.network;
-                dim: !root.online;
-                clicked => { root.open-network(); }
+            // There is no room under the bar for a tooltip, so the name of
+            // the tray icon under the pointer is shown beside the tray.
+            SengiText {
+                x: 0;
+                width: parent.width - Tokens.space-sm;
+                text: root.tray-label;
+                color: Tokens.color-text-muted;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+                overflow: elide;
+                opacity: root.tray-hover >= 0 ? 1 : 0;
+                animate opacity { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
             }
         }
 
-        if root.volume != "": VerticalLayout {
-            alignment: center;
-            BarItem {
-                text: root.volume;
-                dim: root.muted;
-                clicked => { root.toggle-mute(); }
+        // The tray. Each icon's cell carries its own gap, so an icon that
+        // does not fit takes no room at all.
+        HorizontalLayout {
+            horizontal-stretch: 0;
+            spacing: 0;
+
+            if root.tray-hidden > 0: Rectangle {
+                width: root.tray-cell;
+                more := IconItem {
+                    x: 0;
+                    y: (parent.height - self.height) / 2;
+                    clicked => { root.tray-more(more.absolute-position.x); }
+                    MoreIcon { }
+                }
+            }
+
+            for entry[index] in root.tray: Rectangle {
+                property <bool> shown: index >= root.tray-hidden;
+                // Kept up to date while the pointer rests on the icon.
+                property <string> label: entry.label;
+                width: self.shown ? root.tray-cell : 0;
+                visible: self.shown;
+
+                changed label => {
+                    if item.hovered {
+                        root.tray-label = self.label;
+                    }
+                }
+
+                item := TrayItem {
+                    x: 0;
+                    y: (parent.height - self.height) / 2;
+                    entry: entry;
+                    pressed(button) => {
+                        root.tray-pressed(entry.id, button, item.absolute-position.x);
+                    }
+                    scrolled(dx, dy) => { root.tray-scrolled(entry.id, dx, dy); }
+                    changed hovered => {
+                        if self.hovered {
+                            root.tray-label = entry.label;
+                            root.tray-hover = entry.id;
+                        } else if root.tray-hover == entry.id {
+                            root.tray-hover = -1;
+                        }
+                    }
+                }
             }
         }
 
-        if root.battery != "": VerticalLayout {
-            alignment: center;
-            BarItem {
-                text: root.battery;
-                alert: root.battery-low;
-                caution: root.battery-warning;
-                interactive: false;
-            }
-        }
+        rest := HorizontalLayout {
+            horizontal-stretch: 0;
+            spacing: Tokens.space-xxs;
 
-        VerticalLayout {
-            alignment: center;
-            BarItem {
-                text: root.clock;
-                interactive: false;
+            VerticalLayout {
+                alignment: center;
+                BarItem {
+                    text: root.wifi && root.wifi-name != "" ? root.wifi-name : root.network;
+                    dim: !root.online;
+                    clicked => { root.open-quick(); }
+                }
             }
-        }
 
-        VerticalLayout {
-            alignment: center;
-            IconItem {
-                clicked => { root.show-notifications(); }
-                secondary-clicked => { root.dismiss-notifications(); }
-                NotificationsIcon { }
+            if root.volume != "": VerticalLayout {
+                alignment: center;
+                BarItem {
+                    text: root.volume;
+                    dim: root.muted;
+                    clicked => { root.open-quick(); }
+                    middle-clicked => { root.toggle-mute(); }
+                }
             }
-        }
 
-        VerticalLayout {
-            alignment: center;
-            IconItem {
-                clicked => { root.open-session(); }
-                PowerIcon { }
+            if root.battery != "": VerticalLayout {
+                alignment: center;
+                BarItem {
+                    text: root.battery;
+                    alert: root.battery-low;
+                    caution: root.battery-warning;
+                    clicked => { root.open-quick(); }
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                BarItem {
+                    text: root.clock;
+                    interactive: false;
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                IconItem {
+                    clicked => { root.show-notifications(); }
+                    secondary-clicked => { root.dismiss-notifications(); }
+                    NotificationsIcon { }
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                IconItem {
+                    clicked => { root.open-session(); }
+                    PowerIcon { }
+                }
             }
         }
     }
