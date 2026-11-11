@@ -31,6 +31,72 @@ fn pick(apps: &Apps, matches: impl Fn(&Entry) -> bool) -> Option<&Entry> {
     hidden
 }
 
+/// For the loose rules: the entry only if it is the single one that matches.
+/// Two apps that both fit are a coin toss, and a window on the wrong icon is
+/// worse than a window with an icon of its own. Hidden helpers only count
+/// when no visible entry matches.
+fn only(apps: &Apps, matches: impl Fn(&Entry) -> bool) -> Option<&Entry> {
+    let found: Vec<&Entry> = apps.entries().iter().filter(|e| matches(e)).collect();
+    let visible: Vec<&Entry> = found.iter().copied().filter(|e| !e.no_display).collect();
+    match (visible.as_slice(), found.as_slice()) {
+        ([entry], _) => Some(entry),
+        ([], [entry]) => Some(entry),
+        _ => None,
+    }
+}
+
+/// Programs that run something else. An Exec line that starts with one says
+/// nothing about which app it is: `python3 /opt/x/main.py` is not "python3".
+const WRAPPERS: &[&str] = &[
+    "sh",
+    "bash",
+    "dash",
+    "zsh",
+    "fish",
+    "env",
+    "exec",
+    "sudo",
+    "pkexec",
+    "nice",
+    "ionice",
+    "python",
+    "perl",
+    "ruby",
+    "node",
+    "nodejs",
+    "deno",
+    "bun",
+    "lua",
+    "php",
+    "java",
+    "mono",
+    "dotnet",
+    "gjs",
+    "electron",
+    "flatpak",
+    "snap",
+    "wine",
+    "wine64",
+    "proton",
+    "steam",
+    "gtk-launch",
+    "xdg-open",
+    "dbus-launch",
+    "dbus-run-session",
+    "systemd-run",
+    "sengi-run",
+    "foot",
+    "footclient",
+    "xterm",
+];
+
+/// True for `python3`, `python3.13`, `electron34`, `java` and the like.
+fn is_wrapper(program: &str) -> bool {
+    let program = program.to_lowercase();
+    let stem = program.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.' || c == '-');
+    WRAPPERS.contains(&stem)
+}
+
 /// Finds the desktop entry for a window's app_id.
 pub fn find<'a>(app_id: &str, apps: &'a Apps) -> Option<&'a Entry> {
     let app_id = app_id.trim();
@@ -52,28 +118,29 @@ pub fn find<'a>(app_id: &str, apps: &'a Apps) -> Option<&'a Entry> {
         return Some(entry);
     }
 
-    // 3. The app_id is the name of the program the entry starts.
-    if let Some(entry) = pick(apps, |e| {
-        e.exec
-            .as_deref()
-            .and_then(exec::program_name)
-            .is_some_and(|program| same(&program, app_id))
-    }) {
-        return Some(entry);
+    // 3. The app_id is the name of the program the entry starts, unless
+    //    that program is only a way of starting something else.
+    if !is_wrapper(app_id) {
+        if let Some(entry) = only(apps, |e| {
+            e.exec
+                .as_deref()
+                .and_then(exec::program_name)
+                .is_some_and(|program| same(&program, app_id))
+        }) {
+            return Some(entry);
+        }
     }
 
     // 4. One side is a reverse-DNS name and the other only its last part:
     //    app_id `org.gnome.Nautilus` with `nautilus.desktop`, or app_id
-    //    `firefox` with `org.mozilla.firefox.desktop`.
-    let short = last_component(app_id);
-    if let Some(short) = short {
-        if let Some(entry) = apps.get(short) {
-            return Some(entry);
-        }
+    //    `firefox` with `org.mozilla.firefox.desktop`. Two reverse-DNS names
+    //    that merely end in the same word are different apps.
+    match last_component(app_id) {
+        Some(short) => apps.get(short).filter(|entry| !entry.id.contains('.')),
+        None => only(apps, |e| {
+            last_component(&e.id).is_some_and(|last| same(last, app_id))
+        }),
     }
-    pick(apps, |e| {
-        last_component(&e.id).is_some_and(|last| same(last, short.unwrap_or(app_id)))
-    })
 }
 
 /// The key the dock groups windows under: the matched entry's ID, or the
@@ -173,10 +240,92 @@ mod tests {
             id("thunderbird").as_deref(),
             Some("org.mozilla.Thunderbird")
         );
+    }
+
+    #[test]
+    fn two_reverse_dns_names_ending_alike_are_different_apps() {
+        assert_eq!(id("io.example.Thunderbird"), None);
+        let apps = Apps::from_entries(vec![
+            entry(
+                "io.elementary.calculator",
+                "Calculator",
+                "io.elementary.calculator",
+            ),
+            entry("org.xfce.Settings", "Settings", "xfce4-settings-manager"),
+        ]);
+        assert!(find("org.gnome.Calculator", &apps).is_none());
+        assert!(find("org.gnome.Settings", &apps).is_none());
         assert_eq!(
-            id("io.example.Thunderbird").as_deref(),
-            Some("org.mozilla.Thunderbird")
+            app_key("org.gnome.Calculator", &apps),
+            "org.gnome.calculator"
         );
+    }
+
+    #[test]
+    fn a_short_app_id_shared_by_two_reverse_dns_entries_matches_neither() {
+        let apps = Apps::from_entries(vec![
+            entry(
+                "io.elementary.terminal",
+                "Terminal",
+                "io.elementary.terminal",
+            ),
+            entry("org.gnome.Terminal", "Terminal", "gnome-terminal"),
+        ]);
+        assert!(find("terminal", &apps).is_none());
+        // With only one of them installed there is no doubt.
+        let apps = Apps::from_entries(vec![entry(
+            "org.gnome.Terminal",
+            "Terminal",
+            "gnome-terminal",
+        )]);
+        assert_eq!(find("terminal", &apps).unwrap().id, "org.gnome.Terminal");
+    }
+
+    #[test]
+    fn interpreters_and_launchers_are_not_program_names() {
+        let apps = Apps::from_entries(vec![
+            entry("backup", "Backup", "python3 /opt/backup/main.py"),
+            entry("chat", "Chat", "electron34 /usr/lib/chat/app.asar"),
+            entry("game", "Game", "steam steam://rungameid/70"),
+            entry("notes", "Notes", "flatpak run org.example.Notes"),
+            entry("old", "Old", "wine /opt/old/old.exe"),
+            entry("report", "Report", "java -jar /opt/report.jar"),
+            entry("script", "Script", "sh -c \"exec /opt/script/run\""),
+        ]);
+        for app_id in [
+            "python3",
+            "Python3.13",
+            "electron",
+            "electron34",
+            "steam",
+            "flatpak",
+            "wine",
+            "java",
+            "sh",
+        ] {
+            assert!(find(app_id, &apps).is_none(), "{app_id} matched an entry");
+        }
+        assert!(is_wrapper("python3.13"));
+        assert!(!is_wrapper("python-editor"));
+        assert!(!is_wrapper("shotwell"));
+    }
+
+    #[test]
+    fn a_wrapper_with_an_entry_of_its_own_still_matches_by_id() {
+        let apps = Apps::from_entries(vec![
+            entry("game", "Game", "steam steam://rungameid/70"),
+            entry("steam", "Steam", "/usr/bin/steam %U"),
+        ]);
+        assert_eq!(find("steam", &apps).unwrap().id, "steam");
+    }
+
+    #[test]
+    fn a_program_started_by_two_entries_matches_neither() {
+        let apps = Apps::from_entries(vec![
+            entry("editor-a", "Editor", "edit --profile a"),
+            entry("editor-b", "Editor (B)", "edit --profile b"),
+        ]);
+        assert!(find("edit", &apps).is_none());
     }
 
     #[test]
