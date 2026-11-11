@@ -1,16 +1,25 @@
-//! The parts of the process environment the launcher reads, gathered once so
-//! the rest of the crate can be tested without touching real variables.
+//! The parts of the process environment that finding and starting
+//! applications depends on, gathered once so the rest can be tested without
+//! touching real variables.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+/// The environment, read once. Relative directories are ignored, as the
+/// base directory specification asks.
 #[derive(Debug, Clone)]
 pub struct Env {
+    /// `HOME`, or `/` without one.
     pub home: PathBuf,
+    /// `XDG_DATA_HOME`, or `~/.local/share`.
     pub data_home: PathBuf,
+    /// `XDG_DATA_DIRS`, or `/usr/local/share` and `/usr/share`.
     pub data_dirs: Vec<PathBuf>,
+    /// `XDG_STATE_HOME`, or `~/.local/state`.
     pub state_home: PathBuf,
+    /// `XDG_RUNTIME_DIR`, if it is set.
     pub runtime_dir: Option<PathBuf>,
+    /// The directories of `PATH`.
     pub path: Vec<PathBuf>,
     /// The message locale, e.g. `de_DE.UTF-8`, if one is set.
     pub locale: Option<String>,
@@ -21,10 +30,12 @@ pub struct Env {
 }
 
 impl Env {
+    /// The environment of this process.
     pub fn from_process() -> Self {
         Self::from_vars(|name| std::env::var_os(name))
     }
 
+    /// An environment from a lookup function, for tests.
     pub fn from_vars(get: impl Fn(&str) -> Option<OsString>) -> Self {
         let set = |name: &str| get(name).filter(|v| !v.is_empty());
         // The base directory spec says relative paths are to be ignored.
@@ -110,13 +121,9 @@ impl Env {
         dirs
     }
 
-    pub fn usage_file(&self) -> PathBuf {
-        self.state_home.join("sengi-launcher/usage")
-    }
-
     /// Find a program given as an absolute path or as a bare name to look up
     /// in PATH. The Desktop Entry spec allows nothing else, and a relative
-    /// path would depend on where the launcher happened to be started.
+    /// path would depend on where the caller happened to be started.
     pub fn find_program(&self, name: &str) -> Option<PathBuf> {
         if name.is_empty() {
             return None;
@@ -167,10 +174,6 @@ mod tests {
         assert_eq!(e.desktops, vec!["sengi", "wlroots"]);
         assert_eq!(e.locale, None);
         assert_eq!(e.runtime_dir, None);
-        assert_eq!(
-            e.usage_file(),
-            PathBuf::from("/home/a/.local/state/sengi-launcher/usage")
-        );
     }
 
     #[test]

@@ -8,8 +8,8 @@ use std::cell::Cell;
 use std::process::ExitCode;
 use std::rc::Rc;
 
+use sengi_apps::env::Env;
 use sengi_launcher::cli::{self, Action, Invocation, Mode};
-use sengi_launcher::env::Env;
 use sengi_launcher::instance::{self, Claim, Instance};
 use sengi_launcher::run::{self, Source};
 use sengi_launcher::session::Session;

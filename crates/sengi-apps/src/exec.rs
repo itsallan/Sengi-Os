@@ -14,9 +14,12 @@ pub const TERMINAL: [&str; 2] = ["foot", "-e"];
 /// Puts the app in its own systemd scope so the focused app can be prioritised.
 pub const RUNNER: &str = "sengi-run";
 
+/// Why an Exec line cannot be run.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ExecError {
+    /// There is no command: no Exec line, or nothing left of it.
     Empty,
+    /// A quote was opened and never closed.
     UnclosedQuote,
     /// The program is a path that does not start at the root.
     RelativePath,
@@ -100,7 +103,7 @@ pub fn split(exec: &str) -> Result<Vec<String>, ExecError> {
     Ok(args)
 }
 
-/// Expand field codes. The launcher never has files or URLs to pass, so
+/// Expand field codes. There are never files or URLs to pass, so
 /// `%f %F %u %U` vanish, as do the deprecated codes.
 pub fn expand(args: &[String], entry: &DesktopEntry) -> Vec<String> {
     let mut out = Vec::with_capacity(args.len());
@@ -198,7 +201,7 @@ pub fn launchable(entry: &DesktopEntry, env: &Env) -> Result<Vec<String>, ExecEr
     command_line(entry, env)
 }
 
-/// Start `argv` detached from the launcher. Does not wait for it.
+/// Start `argv` detached from the caller. Does not wait for it.
 pub fn spawn(argv: &[String], working_dir: Option<&Path>) -> std::io::Result<()> {
     use std::os::unix::process::CommandExt;
 
@@ -211,7 +214,7 @@ pub fn spawn(argv: &[String], working_dir: Option<&Path>) -> std::io::Result<()>
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        // Its own process group, so nothing aimed at the launcher reaches it.
+        // Its own process group, so nothing aimed at the caller reaches it.
         .process_group(0);
     if let Some(dir) = working_dir.filter(|dir| dir.is_dir()) {
         command.current_dir(dir);

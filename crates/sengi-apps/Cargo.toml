@@ -1,0 +1,8 @@
+[package]
+name = "sengi-apps"
+description = "Desktop entries, launching and icons for the Sengi OS shell"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]

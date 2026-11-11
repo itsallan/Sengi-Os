@@ -11,8 +11,8 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use sengi_apps::env::Env;
 use sengi_launcher::cli::{self, Mode};
-use sengi_launcher::env::Env;
 use sengi_launcher::matcher::{Candidate, TieBreak};
 use sengi_launcher::run;
 use sengi_launcher::session::Session;

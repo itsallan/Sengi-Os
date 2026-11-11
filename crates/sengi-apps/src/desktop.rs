@@ -7,23 +7,32 @@ use std::path::{Path, PathBuf};
 use crate::env::Env;
 use crate::files::read_limited;
 
-/// An application the launcher can show and start.
+/// An installed application, as its desktop file describes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopEntry {
     /// Desktop file ID, e.g. `org.mozilla.firefox.desktop`.
     pub id: String,
+    /// The desktop file this was read from.
     pub path: PathBuf,
+    /// `Name`, translated, made safe to show and cut to 256 characters.
     pub name: String,
+    /// `GenericName`, treated like the name. Empty if there is none.
     pub generic_name: String,
+    /// `Comment`, treated like the name. Empty if there is none.
     pub comment: String,
+    /// `Keywords`, at most 64, each treated like the name.
     pub keywords: Vec<String>,
     /// The Exec value with the general string escapes already resolved.
     pub exec: String,
+    /// `Icon`: an icon name or an absolute path. Empty if there is none.
     pub icon: String,
+    /// `Terminal=true`: the program wants to run inside a terminal.
     pub terminal: bool,
+    /// `Path`, when it is absolute: the directory to start the program in.
     pub working_dir: Option<PathBuf>,
 }
 
+/// What one desktop file turned out to be.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Parsed {
     /// Not a desktop file at all: there is no `[Desktop Entry]` group. It
@@ -31,6 +40,7 @@ pub enum Parsed {
     Invalid,
     /// A real entry that must not be shown, and that hides later ones.
     Hidden,
+    /// An application to show.
     Visible(Box<DesktopEntry>),
 }
 
@@ -51,6 +61,8 @@ pub fn load(env: &Env) -> Vec<DesktopEntry> {
     scan(&env.application_dirs(), env)
 }
 
+/// [`load`], from the given `applications` directories, most important
+/// first.
 pub fn scan(dirs: &[PathBuf], env: &Env) -> Vec<DesktopEntry> {
     scan_limited(dirs, env, MAX_VISITED)
 }
@@ -310,6 +322,8 @@ fn split_list(value: &str) -> Vec<String> {
         .collect()
 }
 
+/// Read one desktop file. `locales` is what [`locales`] returned; `env`
+/// decides the `OnlyShowIn`, `NotShowIn` and `TryExec` rules.
 pub fn parse(id: &str, path: &Path, bytes: &[u8], locales: &[String], env: &Env) -> Parsed {
     let text = String::from_utf8_lossy(bytes);
     let Some(fields) = read_group(&text, locales) else {

@@ -7,8 +7,9 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::files::read_limited;
 use crate::matcher::Weight;
+use sengi_apps::env::Env;
+use sengi_apps::files::read_limited;
 
 /// Applications remembered; the least used are forgotten beyond this.
 const MAX_ENTRIES: usize = 256;
@@ -25,6 +26,11 @@ struct Record {
 #[derive(Debug, Default)]
 pub struct Usage {
     records: HashMap<String, Record>,
+}
+
+/// Where the launch history is kept.
+pub fn file(env: &Env) -> PathBuf {
+    env.state_home.join("sengi-launcher/usage")
 }
 
 pub fn now() -> u64 {
