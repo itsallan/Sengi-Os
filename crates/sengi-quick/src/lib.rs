@@ -6,7 +6,7 @@
 //! [`panel`] holds the state of an open panel and decides what it shows.
 //! [`services`] defines what the panel needs from the system, as traits,
 //! and runs each service on a thread of its own; [`system`] implements them
-//! for the real machine and [`demo`] for a made-up one. [`wifi`],
+//! for the real machine and `demo`, in debug builds, for a made-up one. [`wifi`],
 //! [`bluetooth`], [`volume`], [`backlight`] and [`battery`] are the rules
 //! for each tile, and [`ui`] connects a panel to the Slint window.
 
@@ -15,6 +15,9 @@ pub mod battery;
 pub mod bluetooth;
 pub mod cli;
 pub mod commands;
+// Not in release builds: a panel showing invented state must not be
+// something the shipped program can be talked into.
+#[cfg(debug_assertions)]
 pub mod demo;
 pub mod instance;
 pub mod panel;

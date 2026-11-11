@@ -3,14 +3,16 @@
 //! iwd asks for passphrases through an agent: an object the client exports
 //! and registers, which iwd calls back in the middle of `Network.Connect`.
 //! The passphrase typed into the panel waits in a slot for that one call
-//! and is gone after it. iwd keeps what it needs to rejoin the network; the
-//! panel stores nothing. See iwd's `doc/agent-api.txt`.
+//! and is handed over once. iwd keeps what it needs to rejoin the network;
+//! the panel stores nothing. See iwd's `doc/agent-api.txt`, and `secret.rs`
+//! for what happens to the copies in memory.
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use zbus::zvariant::{ObjectPath, OwnedObjectPath};
+use zbus::export::serde::{Serialize, Serializer};
+use zbus::zvariant::{ObjectPath, OwnedObjectPath, Signature, Type};
 
-use super::bus::{self, Bus, Object};
+use super::bus::{self, Bus, Listing, Object};
 use crate::secret::Secret;
 use crate::services::{Notify, WifiService};
 use crate::text;
@@ -120,6 +122,8 @@ pub fn join_error(name: Option<&str>) -> JoinError {
     match name.and_then(|name| name.strip_prefix("net.connman.iwd.")) {
         // InvalidFormat is a passphrase iwd would not even try.
         Some("Failed" | "InvalidFormat") => JoinError::Failed,
+        // iwd wanted to ask for a passphrase and had nobody to ask.
+        Some("NoAgent") => JoinError::NeedsPassphrase,
         Some("Aborted" | "Busy" | "InProgress") => JoinError::Aborted,
         Some("Timeout") => JoinError::Timeout,
         Some("NotConfigured") => JoinError::NotConfigured,
@@ -130,15 +134,73 @@ pub fn join_error(name: Option<&str>) -> JoinError {
 
 /// A passphrase waiting to be asked for.
 struct Waiting {
+    /// Which call to `put` this is from.
+    ticket: u64,
     network: String,
     /// The bus name of the iwd the request went to. Nobody else gets it.
     asker: String,
     passphrase: Secret,
 }
 
-type Slot = Arc<Mutex<Option<Waiting>>>;
+/// What the agent has to hand out. At most one passphrase, for one
+/// network, to one caller, once.
+#[derive(Default)]
+struct Desk {
+    waiting: Option<Waiting>,
+    tickets: u64,
+    /// The network iwd last asked about when there was nothing to give.
+    /// iwd reports that to the caller only as "aborted", which could be
+    /// anything; this says the join needs a passphrase typed.
+    unanswered: Option<String>,
+}
 
-fn slot(slot: &Slot) -> MutexGuard<'_, Option<Waiting>> {
+impl Desk {
+    /// Leave a passphrase to be asked for. The ticket is for taking it
+    /// back if nobody did.
+    fn put(&mut self, network: &str, asker: &str, passphrase: Secret) -> u64 {
+        self.tickets += 1;
+        self.waiting = Some(Waiting {
+            ticket: self.tickets,
+            network: network.to_string(),
+            asker: asker.to_string(),
+            passphrase,
+        });
+        self.tickets
+    }
+
+    /// The join that left a passphrase is over. Whatever a later join has
+    /// left since is not this one's to remove.
+    fn take_back(&mut self, ticket: u64) {
+        self.waiting.take_if(|waiting| waiting.ticket == ticket);
+    }
+
+    /// The passphrase, if `sender` is the iwd it was meant for and
+    /// `network` the one it was typed for. Anyone else asking gets
+    /// nothing and leaves it in place.
+    fn answer(&mut self, network: &str, sender: Option<&str>) -> Option<Secret> {
+        if self.waiting.is_none() {
+            self.unanswered = Some(network.to_string());
+        }
+        self.waiting
+            .take_if(|waiting| waiting.network == network && Some(waiting.asker.as_str()) == sender)
+            .map(|waiting| waiting.passphrase)
+    }
+
+    /// Whether a passphrase for `network` was asked for in vain since the
+    /// last time this was called.
+    fn asked_in_vain(&mut self, network: &str) -> bool {
+        self.unanswered.take_if(|asked| asked == network).is_some()
+    }
+
+    /// iwd has given up on the request, or is done with the agent.
+    fn cancel(&mut self) {
+        self.waiting = None;
+    }
+}
+
+type Slot = Arc<Mutex<Desk>>;
+
+fn slot(slot: &Slot) -> MutexGuard<'_, Desk> {
     slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
@@ -154,6 +216,22 @@ enum AgentError {
     Canceled(String),
 }
 
+/// A passphrase as the string of a D-Bus reply. zbus serialises it
+/// straight from here into the message, so no `String` of it is made on
+/// the way, and this copy is wiped when the reply has been built. The
+/// message buffer itself belongs to zbus and is only freed.
+struct Reply(Secret);
+
+impl Type for Reply {
+    const SIGNATURE: &'static Signature = <str as Type>::SIGNATURE;
+}
+
+impl Serialize for Reply {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.0.expose())
+    }
+}
+
 fn declined<T>() -> Result<T, AgentError> {
     Err(AgentError::Canceled("nothing to offer".to_string()))
 }
@@ -164,15 +242,10 @@ impl Agent {
         &self,
         network: ObjectPath<'_>,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> Result<String, AgentError> {
-        let mut slot = slot(&self.slot);
+    ) -> Result<Reply, AgentError> {
         let sender = header.sender().map(|name| name.as_str());
-        let wanted = slot.as_ref().is_some_and(|waiting| {
-            waiting.network == network.as_str() && Some(waiting.asker.as_str()) == sender
-        });
-        // Anyone else asking leaves it in place for iwd.
-        match slot.take_if(|_| wanted) {
-            Some(waiting) => Ok(waiting.passphrase.expose().to_string()),
+        match slot(&self.slot).answer(network.as_str(), sender) {
+            Some(passphrase) => Ok(Reply(passphrase)),
             None => declined(),
         }
     }
@@ -202,11 +275,11 @@ impl Agent {
     }
 
     fn cancel(&self, _reason: &str) {
-        slot(&self.slot).take();
+        slot(&self.slot).cancel();
     }
 
     fn release(&self) {
-        slot(&self.slot).take();
+        slot(&self.slot).cancel();
     }
 }
 
@@ -224,9 +297,16 @@ impl Iwd {
     }
 
     fn device(&self) -> Option<(Vec<Object>, Device)> {
-        let objects = self.bus.objects(SERVICE)?;
+        let Listing::Objects(objects) = self.objects() else {
+            return None;
+        };
         let device = device(&objects)?;
         Some((objects, device))
+    }
+
+    fn objects(&self) -> Listing {
+        self.bus
+            .objects(SERVICE, &[ADAPTER, DEVICE, STATION, NETWORK])
     }
 
     /// Export the agent and tell iwd about it. iwd forgets an agent when
@@ -262,7 +342,12 @@ impl Iwd {
 
 impl WifiService for Iwd {
     fn read(&self) -> Wifi {
-        let Some((objects, device)) = self.device() else {
+        let objects = match self.objects() {
+            Listing::Objects(objects) => objects,
+            Listing::Denied => return Wifi::Denied,
+            Listing::Absent => return Wifi::Absent,
+        };
+        let Some(device) = device(&objects) else {
             return Wifi::Absent;
         };
         let ordered: Vec<(OwnedObjectPath, i16)> = match &device.station {
@@ -313,21 +398,35 @@ impl WifiService for Iwd {
         {
             return Err(JoinError::Unavailable);
         }
+        // The agent is there for every join, typed passphrase or not. iwd
+        // asks it about a network it already knows when the stored
+        // passphrase has stopped working, and with no agent at all the
+        // only way out would be to forget the network by hand.
+        let registered = self.register_agent();
+        if let Err(error) = &registered {
+            eprintln!("sengi-quick: registering with iwd: {error}");
+        }
+        slot(&self.slot).asked_in_vain(&request.id);
+        let mut ticket = None;
         if let Some(passphrase) = request.passphrase {
-            if let Err(error) = self.register_agent() {
-                eprintln!("sengi-quick: registering with iwd: {error}");
+            if registered.is_err() {
                 return Err(JoinError::Unavailable);
             }
-            *slot(&self.slot) = Some(Waiting {
-                network: request.id.clone(),
-                asker,
-                passphrase,
-            });
+            ticket = Some(slot(&self.slot).put(&request.id, &asker, passphrase));
         }
         let result: zbus::Result<()> = self.bus.call(SERVICE, &request.id, NETWORK, "Connect", &());
-        // Whether or not iwd asked for it.
-        slot(&self.slot).take();
-        result.map_err(|error| join_error(bus::error_name(&error)))
+        // Whether or not iwd asked for it. Another join may have started
+        // while this one was waiting; its passphrase stays.
+        if let Some(ticket) = ticket {
+            slot(&self.slot).take_back(ticket);
+        }
+        result.map_err(|error| {
+            if slot(&self.slot).asked_in_vain(&request.id) {
+                JoinError::NeedsPassphrase
+            } else {
+                join_error(bus::error_name(&error))
+            }
+        })
     }
 
     fn watch(&self, changed: Notify) {
@@ -398,6 +497,85 @@ mod tests {
             .iter()
             .map(|(suffix, signal)| (format!("{WLAN}/{suffix}"), *signal))
             .collect()
+    }
+
+    fn secret(text: &str) -> Secret {
+        Secret::new(text.to_string())
+    }
+
+    const IWD: Option<&str> = Some(":1.7");
+
+    #[test]
+    fn the_agent_answers_iwd_about_the_right_network_once() {
+        let mut desk = Desk::default();
+        desk.put("/net/a_psk", ":1.7", secret("correct horse"));
+        let answer = desk.answer("/net/a_psk", IWD).unwrap();
+        assert_eq!(answer.expose(), "correct horse");
+        // It is gone: a second request gets nothing.
+        assert!(desk.answer("/net/a_psk", IWD).is_none());
+    }
+
+    #[test]
+    fn the_agent_tells_nobody_but_the_iwd_it_was_meant_for() {
+        let mut desk = Desk::default();
+        desk.put("/net/a_psk", ":1.7", secret("correct horse"));
+        assert!(desk.answer("/net/a_psk", Some(":1.99")).is_none());
+        assert!(desk.answer("/net/a_psk", None).is_none());
+        // And the stranger's asking did not use it up.
+        assert!(desk.answer("/net/a_psk", IWD).is_some());
+    }
+
+    #[test]
+    fn the_agent_gives_a_passphrase_only_to_its_own_network() {
+        let mut desk = Desk::default();
+        desk.put("/net/a_psk", ":1.7", secret("correct horse"));
+        assert!(desk.answer("/net/b_psk", IWD).is_none());
+        assert!(desk.answer("/net/a_psk", IWD).is_some());
+    }
+
+    #[test]
+    fn a_join_that_ends_late_leaves_the_next_ones_passphrase_alone() {
+        let mut desk = Desk::default();
+        let first = desk.put("/net/a_psk", ":1.7", secret("for network a"));
+        // The first join is still in flight when a second is typed.
+        let second = desk.put("/net/b_psk", ":1.7", secret("for network b"));
+        desk.take_back(first);
+        assert_eq!(
+            desk.answer("/net/b_psk", IWD).unwrap().expose(),
+            "for network b"
+        );
+
+        // The same network twice over is no different.
+        let third = desk.put("/net/b_psk", ":1.7", secret("second try"));
+        desk.take_back(second);
+        assert!(desk.waiting.is_some());
+        desk.take_back(third);
+        assert!(desk.waiting.is_none());
+    }
+
+    #[test]
+    fn the_agent_remembers_being_asked_with_nothing_to_give() {
+        let mut desk = Desk::default();
+        assert!(!desk.asked_in_vain("/net/a_psk"));
+        // iwd asks about a saved network whose passphrase has failed.
+        assert!(desk.answer("/net/a_psk", IWD).is_none());
+        assert!(!desk.asked_in_vain("/net/b_psk"));
+        assert!(desk.asked_in_vain("/net/a_psk"));
+        // Told once.
+        assert!(!desk.asked_in_vain("/net/a_psk"));
+        // Being asked and answering is not asking in vain.
+        desk.put("/net/a_psk", ":1.7", secret("correct horse"));
+        assert!(desk.answer("/net/a_psk", IWD).is_some());
+        assert!(!desk.asked_in_vain("/net/a_psk"));
+    }
+
+    #[test]
+    fn cancel_clears_the_passphrase() {
+        let mut desk = Desk::default();
+        assert!(desk.answer("/net/a_psk", IWD).is_none());
+        desk.put("/net/a_psk", ":1.7", secret("correct horse"));
+        desk.cancel();
+        assert!(desk.answer("/net/a_psk", IWD).is_none());
     }
 
     #[test]
@@ -572,6 +750,10 @@ mod tests {
         assert_eq!(
             join_error(Some("net.connman.iwd.Aborted")),
             JoinError::Aborted
+        );
+        assert_eq!(
+            join_error(Some("net.connman.iwd.NoAgent")),
+            JoinError::NeedsPassphrase
         );
         assert_eq!(
             join_error(Some("net.connman.iwd.Timeout")),

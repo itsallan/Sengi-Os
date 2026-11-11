@@ -14,8 +14,9 @@ Open the Sengi OS quick settings panel, or close it if it is open.
 pub enum Action {
     /// Open the panel, or close the one that is open.
     Toggle,
-    /// The same, over made-up services. Not in the usage text: it is for
-    /// looking at the design, see `demo`.
+    /// The same, over made-up services. For looking at the design, see
+    /// `demo`; debug builds only, and not in the usage text.
+    #[cfg(debug_assertions)]
     Demo(String),
     Help,
     Version,
@@ -27,6 +28,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Action, String> {
         None => Action::Toggle,
         Some("-h" | "--help") => Action::Help,
         Some("-V" | "--version") => Action::Version,
+        #[cfg(debug_assertions)]
         Some("--demo") => match args.next() {
             Some(name) => Action::Demo(name),
             None => return Err("--demo needs the name of a scenario".to_string()),
@@ -56,6 +58,11 @@ mod tests {
     fn options() {
         assert_eq!(parsed(&["--help"]), Ok(Action::Help));
         assert_eq!(parsed(&["-V"]), Ok(Action::Version));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn the_demo_is_there_in_debug_builds() {
         assert_eq!(
             parsed(&["--demo", "connected"]),
             Ok(Action::Demo("connected".to_string()))
@@ -68,5 +75,11 @@ mod tests {
         assert!(parsed(&["--frobnicate"]).is_err());
         assert!(parsed(&["--help", "more"]).is_err());
         assert!(parsed(&["--demo", "connected", "more"]).is_err());
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn a_release_build_has_no_demo() {
+        assert!(parsed(&["--demo", "connected"]).is_err());
     }
 }

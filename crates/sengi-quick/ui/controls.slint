@@ -2,118 +2,19 @@
 // tokens alone and know nothing about quick settings, so they can move to
 // ui/components.slint as they are.
 //
-// Each control that can be operated takes the keyboard focus on Tab but not
-// on a click, so the focus ring only appears for someone using the keys.
+// Focus is shown the way SengiButton and SengiToggle show it: a border in
+// the focus colour, inside the control.
 
-import { Tokens, SengiText, SengiLabel, SengiButton, SengiToggle } from "components.slint";
+import { Tokens, SengiText, SengiLabel } from "components.slint";
 
 // Sizes the tokens do not name, derived from the ones they do.
 export global Metrics {
-    // Height of a control that sits in a row: a button, a text field.
-    out property <length> control: Tokens.bar-height;
     // A row of a list.
     out property <length> row: Tokens.font-size-md + Tokens.space-sm * 2;
     // A tile's header: an icon, two lines of text, a control.
-    out property <length> tile: Tokens.bar-height + Tokens.space-lg;
-    // The line of a focus ring, and its distance from the control.
-    out property <length> ring: Tokens.space-xxs;
+    out property <length> tile: Tokens.button + Tokens.space-lg;
     out property <length> slider-knob: Tokens.space-lg;
     out property <length> slider-track: Tokens.space-xs;
-}
-
-// Drawn around its parent while `shown`.
-export component FocusRing inherits Rectangle {
-    in property <bool> shown: false;
-    // The corner radius of what is being ringed.
-    in property <length> inner-radius: Tokens.radius;
-
-    // This element covers the parent; the ring is drawn outside it.
-    Rectangle {
-        x: -Metrics.ring * 2;
-        y: -Metrics.ring * 2;
-        width: parent.width + Metrics.ring * 4;
-        height: parent.height + Metrics.ring * 4;
-        visible: root.shown;
-        border-radius: root.inner-radius + Metrics.ring * 2;
-        border-width: Metrics.ring;
-        border-color: Tokens.color-focus-ring;
-    }
-}
-
-// SengiToggle with keyboard focus.
-export component Switch inherits Rectangle {
-    in-out property <bool> checked <=> toggle.checked;
-    // A switch that is not enabled cannot be focused. Hide it as well:
-    // SengiToggle has no look for "cannot be changed".
-    in property <bool> enabled: true;
-    callback toggled(bool);
-
-    width: toggle.width;
-    height: toggle.height;
-
-    scope := FocusScope {
-        focus-on-click: false;
-        enabled: root.enabled;
-
-        key-pressed(event) => {
-            if event.text == " " || event.text == Key.Return {
-                toggle.checked = !toggle.checked;
-                root.toggled(toggle.checked);
-                return EventResult.accept;
-            }
-            return EventResult.reject;
-        }
-
-        toggle := SengiToggle {
-            x: 0;
-            y: 0;
-            toggled(on) => { root.toggled(on); }
-        }
-    }
-
-    FocusRing {
-        shown: scope.has-focus;
-        inner-radius: root.height / 2;
-    }
-}
-
-// SengiButton with keyboard focus.
-export component PushButton inherits Rectangle {
-    in property <string> text;
-    in property <bool> primary: false;
-    in property <bool> enabled: true;
-    callback clicked();
-
-    height: Metrics.control;
-    // The same for every button, whatever its text, so that buttons side
-    // by side in a layout come out the same width.
-    min-width: Metrics.control;
-    preferred-width: Metrics.control;
-    horizontal-stretch: 1;
-
-    scope := FocusScope {
-        focus-on-click: false;
-        enabled: root.enabled;
-
-        key-pressed(event) => {
-            if event.text == " " || event.text == Key.Return {
-                root.clicked();
-                return EventResult.accept;
-            }
-            return EventResult.reject;
-        }
-
-        SengiButton {
-            text: root.text;
-            primary: root.primary;
-            enabled: root.enabled;
-            clicked => { root.clicked(); }
-        }
-    }
-
-    FocusRing {
-        shown: scope.has-focus;
-    }
 }
 
 // A square button around an icon, which is its child.
@@ -121,9 +22,11 @@ export component IconButton inherits Rectangle {
     in property <bool> enabled: true;
     callback clicked();
 
-    width: Metrics.control;
-    height: Metrics.control;
+    width: Tokens.button;
+    height: Tokens.button;
     border-radius: Tokens.radius;
+    border-width: scope.has-focus ? Tokens.focus-ring-width : 0;
+    border-color: Tokens.color-focus-ring;
     background: root.enabled && touch.has-hover ? Tokens.color-surface-hover : transparent;
     animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
 
@@ -146,10 +49,6 @@ export component IconButton inherits Rectangle {
     }
 
     @children
-
-    FocusRing {
-        shown: scope.has-focus;
-    }
 }
 
 // A horizontal slider over whole numbers. `changed` is called for every
@@ -257,16 +156,14 @@ export component Slider inherits Rectangle {
         width: Metrics.slider-knob;
         height: Metrics.slider-knob;
         border-radius: self.height / 2;
+        border-width: scope.has-focus ? Tokens.focus-ring-width : 0;
+        border-color: Tokens.color-focus-ring;
         background: Tokens.color-text;
         animate x {
             duration: Tokens.motion-fast * (touch.pressed ? 0 : 1);
             easing: Tokens.motion-easing;
         }
 
-        FocusRing {
-            shown: scope.has-focus;
-            inner-radius: parent.height / 2;
-        }
     }
 }
 
@@ -290,16 +187,18 @@ export component TextField inherits Rectangle {
         input.text = "";
     }
 
-    height: Metrics.control;
+    height: Tokens.button;
     border-radius: Tokens.radius;
     border-width: Tokens.border-width;
     border-color: input.has-focus && root.enabled ? Tokens.color-focus-ring : Tokens.color-border;
     background: Tokens.color-surface;
     animate border-color { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
 
+    // Starts clear of the caret, which sits at the left edge of an empty
+    // field and would otherwise cut through the first letter.
     if input.text == "": SengiText {
-        x: Tokens.space-sm;
-        width: parent.width - Tokens.space-sm * 2;
+        x: Tokens.space-sm + Tokens.space-xs;
+        width: parent.width - Tokens.space-sm * 2 - Tokens.space-xs;
         height: parent.height;
         text: root.placeholder;
         color: Tokens.color-text-disabled;
@@ -339,14 +238,22 @@ export component TextField inherits Rectangle {
 export component ListRow inherits Rectangle {
     in property <string> text;
     in property <bool> current: false;
+    // A row that is not enabled keeps its place but cannot be clicked.
+    in property <bool> enabled: true;
     in property <bool> strong: false;
+    // For a list that follows the pointer itself, with one touch area over
+    // all its rows: the row takes no clicks of its own and is told when
+    // the pointer is on it.
+    in property <bool> passive: false;
+    in property <bool> hovered: false;
     // Room kept free at the right for the children.
     in property <length> trailing;
     callback clicked();
 
     height: Metrics.row;
     border-radius: Tokens.radius;
-    background: touch.has-hover || root.current ? Tokens.color-surface-hover : transparent;
+    background: ((touch.has-hover || root.hovered) && root.enabled) || root.current
+        ? Tokens.color-surface-hover : transparent;
     animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
 
     SengiText {
@@ -354,12 +261,14 @@ export component ListRow inherits Rectangle {
         width: parent.width - Tokens.space-sm * 2 - root.trailing;
         height: parent.height;
         text: root.text;
+        color: root.enabled ? Tokens.color-text : Tokens.color-text-disabled;
         font-weight: root.strong ? Tokens.font-weight-medium : Tokens.font-weight-regular;
         vertical-alignment: center;
         overflow: elide;
     }
 
     touch := TouchArea {
+        enabled: root.enabled && !root.passive;
         clicked => { root.clicked(); }
     }
 

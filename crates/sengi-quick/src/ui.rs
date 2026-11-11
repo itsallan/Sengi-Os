@@ -8,7 +8,7 @@ use std::time::Duration;
 use slint::platform::{Key, WindowEvent};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
-use crate::panel::{NetworkRow, Panel, View};
+use crate::panel::{DndControl, NetworkRow, Panel, View};
 use crate::secret::Secret;
 use crate::services::{Command, Event};
 
@@ -26,11 +26,15 @@ pub enum Exit {
 
 fn item(row: &NetworkRow) -> NetworkItem {
     NetworkItem {
+        id: row.id.as_str().into(),
+        gone: row.gone,
+        joined: row.joined,
         name: row.name.as_str().into(),
         secured: row.secured,
         known: row.known,
         level: row.level,
         busy: row.busy,
+        confirm: row.confirm,
     }
 }
 
@@ -58,7 +62,9 @@ fn show(window: &QuickWindow, networks: &VecModel<NetworkItem>, view: &View) {
     window.set_wifi_on(view.wifi.on);
     window.set_wifi_detail(text(&view.wifi.detail));
     window.set_wifi_level(view.wifi.level);
-    window.set_wired(view.wifi.wired);
+    window.set_network_current(view.wifi.current);
+    window.set_network_confirming(view.wifi.confirming);
+    window.set_link_text(text(&view.wifi.link));
     sync(networks, &view.wifi.rows);
     window.set_wifi_note(text(&view.wifi.note));
     window.set_wifi_alert(text(&view.wifi.alert));
@@ -83,6 +89,8 @@ fn show(window: &QuickWindow, networks: &VecModel<NetworkItem>, view: &View) {
     window.set_brightness_label(text(&view.brightness.label));
 
     window.set_dnd_visible(view.dnd.visible);
+    window.set_dnd_switch(view.dnd.control == DndControl::Switch);
+    window.set_dnd_buttons(view.dnd.control == DndControl::Buttons);
     window.set_dnd_known(view.dnd.state.is_some());
     window.set_dnd_on(view.dnd.state == Some(true));
 
@@ -141,18 +149,42 @@ pub fn attach(
     });
     window.on_network_chosen({
         let act = act.clone();
-        move |row| {
+        move |id| act(&mut |panel| panel.choose_network(id.as_str()))
+    });
+    window.on_network_confirmed({
+        let act = act.clone();
+        move |id| act(&mut |panel| panel.confirm_network(id.as_str()))
+    });
+    window.on_list_held({
+        let act = act.clone();
+        move |held, focused| {
             act(&mut |panel| {
-                usize::try_from(row)
-                    .ok()
-                    .and_then(|row| panel.choose_network(row))
+                panel.hold_list(held, focused);
+                None
             })
         }
+    });
+    window.on_list_step({
+        let act = act.clone();
+        move |delta| {
+            let mut moved = false;
+            act(&mut |panel| {
+                moved = panel.move_selection(delta);
+                None
+            });
+            moved
+        }
+    });
+    window.on_list_activated({
+        let act = act.clone();
+        move || act(&mut |panel| panel.activate_selection())
     });
     window.on_passphrase_submitted({
         let act = act.clone();
         move |typed| {
-            // From here on the passphrase is held only as a Secret.
+            // This copy is wiped when it is done with. The string Slint
+            // passed in, and the text field's own, are not ours to wipe;
+            // the field is cleared, which frees them.
             let mut secret = Some(Secret::new(typed.to_string()));
             act(&mut |panel| panel.submit_passphrase(secret.take()?));
         }

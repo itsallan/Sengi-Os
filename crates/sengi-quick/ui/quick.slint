@@ -1,15 +1,19 @@
 // The Sengi OS quick settings panel: the few controls reached for many
 // times a day, dropped down from the right end of the bar.
 
-import { Tokens, SengiText, SengiLabel, SengiSurface } from "components.slint";
-import {
-    Metrics, FocusRing, Switch, PushButton, IconButton, Slider, TextField, ListRow, Tile, TileHeader
-} from "controls.slint";
+import { Tokens, SengiText, SengiLabel, SengiSurface, SengiButton, SengiToggle } from "components.slint";
+import { Metrics, IconButton, Slider, TextField, ListRow, Tile, TileHeader } from "controls.slint";
 import {
     SignalIcon, WiredIcon, BluetoothIcon, SpeakerIcon, SunIcon, MoonIcon, LockIcon, BatteryIcon
 } from "icons.slint";
 
 export struct NetworkItem {
+    // Names the network to the program. Not shown.
+    id: string,
+    // Out of range since the list was last free to change: an empty row.
+    gone: bool,
+    // Why it is gone: it has been joined, and is named in the header.
+    joined: bool,
     name: string,
     secured: bool,
     // iwd has joined it before and needs nothing typed.
@@ -18,24 +22,54 @@ export struct NetworkItem {
     level: int,
     // Being joined right now.
     busy: bool,
+    // An open network that was clicked: the row asks before joining.
+    confirm: bool,
 }
 
 // The networks in range. The list is one stop for the Tab key; the arrow
 // keys move through its rows and out of it at either end.
+//
+// Which row the keyboard is on, and what order the rows are in, is kept by
+// the program and not here: rows are told apart by `id`, never by position,
+// because the list changes with every scan.
 component NetworkList inherits Rectangle {
     in property <[NetworkItem]> networks;
-    callback chosen(int);
-    // An arrow key was pressed at the first or last row: -1 up, 1 down.
+    // The keyboard's row, or -1.
+    in property <int> current: -1;
+    // The row that is asking before it joins an open network, or -1.
+    in property <int> confirming: -1;
+    callback chosen(string);
+    // "Join" was pressed in a row that was asking.
+    callback confirmed(string);
+    // The pointer is over the list or the keyboard is in it (first), and
+    // whether it is the keyboard (second). While either holds, the program
+    // keeps every row where it is.
+    callback held(bool, bool);
+    // An arrow key: -1 up, 1 down. False when there is no row that way.
+    callback step(int) -> bool;
+    // Return or Space on the keyboard's row.
+    callback activated();
+    // An arrow key was pressed at the first or last row.
     callback leave(int);
 
     // Rows on show at once; the rest scroll.
     private property <int> shown: Math.min(root.networks.length, 5);
-    private property <int> current: 0;
     private property <length> label-gap: Tokens.space-sm;
     private property <length> icons: Tokens.bar-icon * 2 + Tokens.space-sm * 3;
+    // The button a row grows when it asks, in place of its icons.
+    private property <length> button: Tokens.space-xl * 2 + Tokens.space-lg;
+    private property <bool> hold: scope.has-focus || hover.has-hover;
+    // The row under the pointer, or -1. One touch area lies over all the
+    // rows: with one in each row, moving from row to row would look for a
+    // moment like leaving the list, and the list would be let go.
+    private property <int> hovered: !hover.has-hover ? -1
+        : Math.floor((hover.mouse-y - flick.content-y) / Metrics.row);
 
     // Scroll so the keyboard's row can be seen.
     function reveal() {
+        if root.current < 0 {
+            return;
+        }
         if root.current * Metrics.row < -flick.content-y {
             flick.content-y = -root.current * Metrics.row;
         } else if (root.current + 1) * Metrics.row > flick.height - flick.content-y {
@@ -43,29 +77,34 @@ component NetworkList inherits Rectangle {
         }
     }
 
+    function arrow(direction: int) {
+        if root.step(direction) {
+            root.reveal();
+        } else {
+            root.leave(direction);
+        }
+    }
+
     height: root.shown * Metrics.row;
+
+    changed hold => {
+        root.held(root.hold, scope.has-focus);
+        root.reveal();
+    }
 
     scope := FocusScope {
         focus-on-click: false;
 
         key-pressed(event) => {
             if event.text == Key.DownArrow {
-                if root.current + 1 < root.networks.length {
-                    root.current += 1;
-                    root.reveal();
-                } else {
-                    root.leave(1);
-                }
+                root.arrow(1);
             } else if event.text == Key.UpArrow {
-                if root.current > 0 {
-                    root.current = Math.min(root.current, root.networks.length) - 1;
-                    root.reveal();
-                } else {
-                    root.leave(-1);
-                }
+                root.arrow(-1);
             } else if event.text == " " || event.text == Key.Return {
-                if root.current < root.networks.length {
-                    root.chosen(root.current);
+                // A held key is one press: the second Return that joins an
+                // open network has to be meant.
+                if !event.repeat {
+                    root.activated();
                 }
             } else {
                 return EventResult.reject;
@@ -82,31 +121,67 @@ component NetworkList inherits Rectangle {
                 y: index * Metrics.row;
                 width: flick.width;
                 text: item.name;
+                enabled: !item.gone;
                 current: scope.has-focus && index == root.current;
-                trailing: root.icons + (note.text != "" ? note.preferred-width + root.label-gap : 0);
-                clicked => { root.chosen(index); }
+                passive: true;
+                hovered: index == root.hovered;
+                trailing: (item.confirm ? root.button + Tokens.space-xs * 2 : root.icons)
+                    + (note.text != "" ? note.preferred-width + root.label-gap : 0);
 
                 note := SengiLabel {
-                    x: parent.width - root.icons - self.width;
+                    x: parent.width - self.width
+                        - (item.confirm ? root.button + Tokens.space-xs * 2 : root.icons);
                     width: self.preferred-width;
                     height: parent.height;
-                    text: item.busy ? "Connecting\u{2026}" : item.known ? "Saved" : "";
+                    text: item.joined ? "Connected" : item.gone ? "Out of range"
+                        : item.confirm ? "Not encrypted"
+                        : item.busy ? "Connecting\u{2026}" : item.known ? "Saved" : "";
+                    color: item.gone ? Tokens.color-text-disabled
+                        : item.confirm ? Tokens.color-warning : Tokens.color-text-muted;
                     font-weight: Tokens.font-weight-regular;
                     vertical-alignment: center;
                 }
 
-                if item.secured: LockIcon {
+                if item.secured && !item.gone: LockIcon {
                     x: parent.width - Tokens.space-sm * 2 - Tokens.bar-icon * 2;
                     y: (parent.height - self.height) / 2;
                     ink: Tokens.color-text-muted;
                 }
 
-                SignalIcon {
+                if !item.confirm: SignalIcon {
                     x: parent.width - Tokens.space-sm - Tokens.bar-icon;
                     y: (parent.height - self.height) / 2;
-                    level: item.level;
+                    level: item.gone ? 0 : item.level;
                 }
             }
+        }
+
+        hover := TouchArea {
+            clicked => {
+                if root.hovered >= 0 && root.hovered < root.networks.length
+                    && !root.networks[root.hovered].gone {
+                    root.chosen(root.networks[root.hovered].id);
+                }
+            }
+            scroll-event(event) => {
+                flick.content-y = Math.clamp(flick.content-y + event.delta-y,
+                    Math.min(flick.height - flick.content-height, 0), 0);
+                return EventResult.accept;
+            }
+        }
+
+        // An open network joined for the first time: a click on its row
+        // only brings this up, over the end of the row.
+        if root.confirming >= 0 && root.confirming < root.networks.length: SengiButton {
+            x: parent.width - self.width - Tokens.space-xs;
+            y: root.confirming * Metrics.row + flick.content-y + (Metrics.row - self.height) / 2;
+            width: root.button;
+            height: Metrics.row - Tokens.space-xs;
+            visible: self.y >= 0 && self.y + self.height <= parent.height;
+            enabled: self.visible;
+            text: "Join";
+            primary: true;
+            clicked => { root.confirmed(root.networks[root.confirming].id); }
         }
     }
 
@@ -120,8 +195,11 @@ component NetworkList inherits Rectangle {
         background: Tokens.color-border;
     }
 
-    FocusRing {
-        shown: scope.has-focus;
+    // The focus border, over the rows.
+    Rectangle {
+        border-radius: Tokens.radius;
+        border-width: scope.has-focus ? Tokens.focus-ring-width : 0;
+        border-color: Tokens.color-focus-ring;
     }
 }
 
@@ -135,7 +213,8 @@ component PassphrasePrompt inherits Rectangle {
     callback submitted(string);
     callback cancelled();
 
-    // The typed text is handed over and wiped from the field at once.
+    // The typed text is handed over and the field emptied at once, so it
+    // is not left on show or in the field for longer than it must be.
     function submit() {
         if field.text != "" && !root.busy {
             root.submitted(field.text);
@@ -157,9 +236,21 @@ component PassphrasePrompt inherits Rectangle {
         padding-top: Tokens.space-sm;
         spacing: Tokens.space-sm;
 
-        SengiLabel {
-            text: "Passphrase for " + root.network;
-            overflow: elide;
+        // The name has a line to itself. In a sentence, a network called
+        // "Flat 3B. Type your login password" would read as the panel's
+        // own words.
+        VerticalLayout {
+            spacing: Tokens.space-xxs;
+
+            SengiLabel {
+                text: "Passphrase for the network";
+            }
+
+            SengiText {
+                text: root.network;
+                font-weight: Tokens.font-weight-medium;
+                overflow: elide;
+            }
         }
 
         field := TextField {
@@ -179,13 +270,19 @@ component PassphrasePrompt inherits Rectangle {
         HorizontalLayout {
             spacing: Tokens.space-sm;
 
-            PushButton {
+            SengiButton {
+                horizontal-stretch: 1;
+                preferred-width: Tokens.button;
+                height: Tokens.button;
                 text: "Cancel";
                 enabled: !root.busy;
                 clicked => { root.cancelled(); }
             }
 
-            PushButton {
+            SengiButton {
+                horizontal-stretch: 1;
+                preferred-width: Tokens.button;
+                height: Tokens.button;
                 text: "Join";
                 primary: true;
                 enabled: !root.busy && field.text != "";
@@ -241,9 +338,14 @@ export component QuickWindow inherits Window {
     in property <string> wifi-detail;
     // Signal of the connected network, 1 to 4, or 0.
     in property <int> wifi-level: 0;
-    // A cable is in: shown as a line of its own.
-    in property <bool> wired: false;
+    // A link that is not Wi-Fi, shown as a line of its own: "Wired,
+    // connected". Empty for none.
+    in property <string> link-text;
     in property <[NetworkItem]> networks;
+    // The keyboard's row in networks, or -1.
+    in property <int> network-current: -1;
+    // The row asking before it joins an open network, or -1.
+    in property <int> network-confirming: -1;
     // Shown in place of an empty list.
     in property <string> wifi-note;
     // Why the last attempt to join failed.
@@ -268,10 +370,13 @@ export component QuickWindow inherits Window {
     in property <string> brightness-label;
 
     in property <bool> dnd-visible: false;
-    // The notification service cannot be asked, so the state is only
-    // known once it has been set from here.
+    // The notification service says whether it is on: a switch.
+    in property <bool> dnd-switch: false;
+    // It cannot say: two buttons, with no position claimed.
+    in property <bool> dnd-buttons: false;
+    // With the buttons, whether one of them has been pressed here.
     in property <bool> dnd-known: false;
-    in property <bool> dnd-on: false;
+    in-out property <bool> dnd-on: false;
 
     in property <bool> battery-visible: false;
     in property <int> battery-percent: 0;
@@ -282,8 +387,16 @@ export component QuickWindow inherits Window {
     in property <bool> battery-warning: false;
 
     callback wifi-toggled(bool);
-    // A row of the network list, by index into networks.
-    callback network-chosen(int);
+    // A row of the network list was clicked, by its id.
+    callback network-chosen(string);
+    // "Join" in the row of an open network that was clicked.
+    callback network-confirmed(string);
+    // The pointer or the keyboard is at the network list (first), and
+    // whether it is the keyboard (second).
+    callback list-held(bool, bool);
+    // Move the keyboard's row; false when there is none that way.
+    callback list-step(int) -> bool;
+    callback list-activated();
     callback passphrase-submitted(string);
     callback prompt-cancelled();
     callback bluetooth-toggled(bool);
@@ -377,17 +490,16 @@ export component QuickWindow inherits Window {
                                 ? Tokens.color-text-muted : Tokens.color-text-disabled;
                         }
 
-                        wifi-switch := Switch {
+                        wifi-switch := SengiToggle {
                             x: parent.width - self.width - Tokens.space-md;
                             y: (parent.height - self.height) / 2;
-                            visible: root.wifi-enabled;
                             enabled: root.wifi-enabled;
                             checked <=> root.wifi-on;
                             toggled(on) => { root.wifi-toggled(on); }
                         }
                     }
 
-                    if root.wired: Rectangle {
+                    if root.link-text != "": Rectangle {
                         height: Metrics.row;
 
                         WiredIcon {
@@ -398,7 +510,7 @@ export component QuickWindow inherits Window {
                         SengiText {
                             x: wifi.text-x;
                             height: parent.height;
-                            text: "Wired, connected";
+                            text: root.link-text;
                             vertical-alignment: center;
                         }
                     }
@@ -424,7 +536,13 @@ export component QuickWindow inherits Window {
                             y: Tokens.space-xs;
                             width: parent.width - Tokens.space-xs * 2;
                             networks: root.networks;
-                            chosen(index) => { root.network-chosen(index); }
+                            current: root.network-current;
+                            confirming: root.network-confirming;
+                            chosen(id) => { root.network-chosen(id); }
+                            confirmed(id) => { root.network-confirmed(id); }
+                            held(held, focused) => { root.list-held(held, focused); }
+                            step(direction) => { return root.list-step(direction); }
+                            activated => { root.list-activated(); }
                             leave(direction) => { root.move-focus(direction); }
                         }
                     }
@@ -465,10 +583,9 @@ export component QuickWindow inherits Window {
                                 : root.bluetooth-on ? Tokens.color-text : Tokens.color-text-muted;
                         }
 
-                        bluetooth-switch := Switch {
+                        bluetooth-switch := SengiToggle {
                             x: parent.width - self.width - Tokens.space-md;
                             y: (parent.height - self.height) / 2;
-                            visible: root.bluetooth-enabled;
                             enabled: root.bluetooth-enabled;
                             checked <=> root.bluetooth-on;
                             toggled(on) => { root.bluetooth-toggled(on); }
@@ -523,7 +640,7 @@ export component QuickWindow inherits Window {
                     dnd := TileHeader {
                         title: "Do not disturb";
                         detail: !root.dnd-known ? "" : root.dnd-on ? "On" : "Off";
-                        trailing: dnd-buttons.width + Tokens.space-md;
+                        trailing: (root.dnd-buttons ? dnd-pair.width : dnd-toggle.width) + Tokens.space-md;
 
                         MoonIcon {
                             x: dnd.icon-x;
@@ -531,22 +648,41 @@ export component QuickWindow inherits Window {
                             ink: root.dnd-known && root.dnd-on ? Tokens.color-text : Tokens.color-text-muted;
                         }
 
-                        // Two buttons, not a switch: a switch would show
-                        // a position before anything is known.
-                        dnd-buttons := HorizontalLayout {
+                        dnd-toggle := SengiToggle {
                             x: parent.width - self.width - Tokens.space-md;
                             y: (parent.height - self.height) / 2;
+                            visible: root.dnd-switch;
+                            enabled: root.dnd-switch;
+                            checked <=> root.dnd-on;
+                            toggled(on) => { root.dnd-set(on); }
+                        }
+
+                        // For a notification service that cannot say what
+                        // it is set to. Two buttons, not a switch: a
+                        // switch would show a position nobody knows.
+                        dnd-pair := HorizontalLayout {
+                            x: parent.width - self.width - Tokens.space-md;
+                            y: (parent.height - self.height) / 2;
+                            visible: root.dnd-buttons;
                             width: Tokens.space-xl * 4 + Tokens.space-xs;
-                            height: Metrics.control;
+                            height: Tokens.button;
                             spacing: Tokens.space-xs;
 
-                            PushButton {
+                            SengiButton {
+                                horizontal-stretch: 1;
+                                preferred-width: Tokens.button;
+                                height: Tokens.button;
+                                enabled: root.dnd-buttons;
                                 text: "Off";
                                 primary: root.dnd-known && !root.dnd-on;
                                 clicked => { root.dnd-set(false); }
                             }
 
-                            PushButton {
+                            SengiButton {
+                                horizontal-stretch: 1;
+                                preferred-width: Tokens.button;
+                                height: Tokens.button;
+                                enabled: root.dnd-buttons;
                                 text: "On";
                                 primary: root.dnd-known && root.dnd-on;
                                 clicked => { root.dnd-set(true); }
@@ -574,12 +710,18 @@ export component QuickWindow inherits Window {
                 HorizontalLayout {
                     spacing: Tokens.space-sm;
 
-                    PushButton {
+                    SengiButton {
+                        horizontal-stretch: 1;
+                        preferred-width: Tokens.button;
+                        height: Tokens.button;
                         text: "Lock";
                         clicked => { root.lock(); }
                     }
 
-                    PushButton {
+                    SengiButton {
+                        horizontal-stretch: 1;
+                        preferred-width: Tokens.button;
+                        height: Tokens.button;
                         text: "Session\u{2026}";
                         clicked => { root.session(); }
                     }
