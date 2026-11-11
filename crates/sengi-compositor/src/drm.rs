@@ -153,7 +153,16 @@ struct Screen {
     waiting: bool,
     /// How many frames in a row could not be drawn.
     failures: u32,
+    /// Counts the frames queued, for the watchdog to tell them apart.
+    queued: u64,
+    /// The watchdog timer is running.
+    watched: bool,
 }
+
+/// How long a queued frame may take to reach the screen before it is
+/// given up as failed. A flip that never completes would otherwise block
+/// its screen for good, and under a lock keep the locker waiting.
+const FLIP_TIME: Duration = Duration::from_secs(1);
 
 /// After this many failed frames in a row a screen is switched off if the
 /// session is locked: what it still shows must not stay on the glass.
@@ -536,6 +545,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
                     let frame = screen.in_flight.take();
                     if let Some((_, epoch)) = &frame {
                         screen.on_glass = *epoch;
+                        screen.failures = 0;
                     }
                     frame.map(|frame| (output, frame))
                 })
@@ -644,6 +654,7 @@ fn draw_if_ready(backend: &Shared, state: &mut State) {
     let mut shown = Vec::new();
     let mut retry = Vec::new();
     let mut hopeless = Vec::new();
+    let mut watch = Vec::new();
     {
         let mut backend = backend.borrow_mut();
         if !backend.active {
@@ -661,6 +672,10 @@ fn draw_if_ready(backend: &Shared, state: &mut State) {
         for screen in screens.iter_mut() {
             // A screen with a frame under way is drawn when that lands.
             if !screen.stale || screen.in_flight.is_some() || screen.waiting {
+                continue;
+            }
+            if state.is_locked() && screen.failures >= FAILURES_UNDER_LOCK {
+                hopeless.push(screen.crtc);
                 continue;
             }
             screen.stale = false;
@@ -682,7 +697,14 @@ fn draw_if_ready(backend: &Shared, state: &mut State) {
                     let epoch = epoch.filter(|_| proven);
                     shown.push((screen.crtc, screen.output.clone(), states, epoch));
                 }
-                Ok(None) => screen.failures = 0,
+                Ok(None) => {
+                    // Queued; whether it worked is known at the flip.
+                    screen.queued += 1;
+                    if !screen.watched {
+                        screen.watched = true;
+                        watch.push((screen.crtc, screen.queued));
+                    }
+                }
                 Err(err) => {
                     // The screen still shows what it showed. Try again
                     // shortly, at growing intervals.
@@ -698,13 +720,9 @@ fn draw_if_ready(backend: &Shared, state: &mut State) {
                             screen.failures
                         );
                     }
-                    if state.is_locked() && screen.failures >= FAILURES_UNDER_LOCK {
-                        hopeless.push(screen.crtc);
-                    } else {
-                        screen.waiting = true;
-                        let pause = refresh_interval(&screen.output) * screen.failures.min(60);
-                        retry.push((screen.crtc, pause));
-                    }
+                    screen.waiting = true;
+                    let pause = refresh_interval(&screen.output) * screen.failures.min(60);
+                    retry.push((screen.crtc, pause));
                 }
             }
         }
@@ -717,6 +735,56 @@ fn draw_if_ready(backend: &Shared, state: &mut State) {
                     screen.output.name()
                 );
                 state.remove_output(&screen.output);
+            }
+        }
+    }
+    for (crtc, mut frame) in watch {
+        let watching = backend.clone();
+        let timer = Timer::from_duration(FLIP_TIME);
+        let armed = state.loop_handle.insert_source(timer, move |_, _, state| {
+            let mut backend = watching.borrow_mut();
+            let Some(screen) = backend
+                .screens
+                .iter_mut()
+                .find(|screen| screen.crtc == crtc)
+            else {
+                return TimeoutAction::Drop;
+            };
+            match &screen.in_flight {
+                // Still the frame this was set for: it is not coming.
+                Some(_) if screen.queued == frame => {
+                    crate::say!(
+                        "{}: a frame did not reach the screen in {FLIP_TIME:?}",
+                        screen.output.name()
+                    );
+                    screen.in_flight = None;
+                    screen.failures += 1;
+                    screen.stale = true;
+                    screen.watched = false;
+                    screen.repaint();
+                    drop(backend);
+                    draw_if_ready(&watching, state);
+                    TimeoutAction::Drop
+                }
+                // A later frame is under way: watch that one.
+                Some(_) => {
+                    frame = screen.queued;
+                    TimeoutAction::ToDuration(FLIP_TIME)
+                }
+                None => {
+                    screen.watched = false;
+                    TimeoutAction::Drop
+                }
+            }
+        });
+        if armed.is_err() {
+            if let Some(screen) = backend
+                .borrow_mut()
+                .screens
+                .iter_mut()
+                .find(|screen| screen.crtc == crtc)
+            {
+                screen.watched = false;
             }
         }
     }
@@ -1013,6 +1081,8 @@ impl Drm {
             on_glass: None,
             waiting: false,
             failures: 0,
+            queued: 0,
+            watched: false,
         });
         Ok(())
     }
