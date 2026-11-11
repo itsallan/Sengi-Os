@@ -3523,6 +3523,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sengi-dock"
+version = "0.3.0"
+dependencies = [
+ "libc",
+ "png",
+ "resvg",
+ "sengi-layer",
+ "slint",
+ "slint-build",
+ "wayland-protocols-wlr",
+]
+
+[[package]]
 name = "sengi-focus"
 version = "0.3.0"
 dependencies = [
