@@ -100,7 +100,7 @@ use backend::{Builder, Instance, Shared, State};
 use platform::{LayerPlatform, ProxyEvent, QuitGuard, Unclaimed};
 
 pub use config::{Anchor, Config, ConfigError, KeyboardMode, Layer, Margins, Outputs};
-pub use surface::SurfaceHandle;
+pub use surface::{Output, SurfaceHandle};
 /// The version of wayland-client the connection from [`Handle::connection`]
 /// belongs to. Use this instead of a dependency of your own so the types
 /// match.
@@ -361,6 +361,14 @@ impl Context {
     /// affect this instance only.
     pub fn surface(&self) -> SurfaceHandle {
         self.surface.clone()
+    }
+
+    /// The output this instance is for: its name, logical size and scale.
+    /// `None` with [`Outputs::Auto`], where the compositor has not picked
+    /// yet; use [`SurfaceHandle::on_output_changed`] to hear when it has,
+    /// and when the output later changes.
+    pub fn output(&self) -> Option<Output> {
+        self.surface.output()
     }
 
     /// The name of the output this instance is for, such as `eDP-1`, when

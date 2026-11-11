@@ -41,7 +41,7 @@ use crate::convert::{
 };
 use crate::outputs::{plan, retry_delay};
 use crate::platform::QuitGuard;
-use crate::surface::{SurfaceHandle, SurfaceShared};
+use crate::surface::{call_hook, Output, SurfaceHandle, SurfaceShared};
 use crate::{Context, Error, Handle};
 
 /// How often to look again while something animates without drawing, so
@@ -112,6 +112,9 @@ struct Surface {
     height: u32,
     scale: u32,
     configured: bool,
+    /// The output the surface was last seen entering, for a surface whose
+    /// output the compositor picks.
+    entered: Option<wl_output::WlOutput>,
     /// What the instance has asked for through its `SurfaceHandle`.
     own: Rc<RefCell<SurfaceShared>>,
     /// The `Shared::revision` and `SurfaceShared::revision` the compositor
@@ -280,6 +283,7 @@ impl State {
             .and_then(|output| self.outputs.info(output))
             .and_then(|info| info.name);
         let own = Rc::new(RefCell::new(SurfaceShared::new()));
+        own.borrow_mut().output = output.as_ref().and_then(|output| self.describe(output));
         let context = Context {
             handle: self.handle.clone(),
             surface: SurfaceHandle {
@@ -302,6 +306,7 @@ impl State {
             height: 0,
             scale: 1,
             configured: false,
+            entered: None,
             own,
             sent: (0, 0),
             frame_pending: false,
@@ -309,6 +314,35 @@ impl State {
             retry: None,
         });
         Ok(self.surfaces.len() - 1)
+    }
+
+    fn describe(&self, output: &wl_output::WlOutput) -> Option<Output> {
+        let info = self.outputs.info(output)?;
+        Some(Output {
+            name: info.name,
+            size: info
+                .logical_size
+                .map(|(width, height)| (width.max(0) as u32, height.max(0) as u32)),
+            scale: info.scale_factor.max(1) as u32,
+        })
+    }
+
+    /// Looks up the surface's output again and tells the app if what is
+    /// known about it has changed.
+    fn refresh_output(&mut self, index: usize) {
+        let surface = &self.surfaces[index];
+        let Some(output) = surface.output.as_ref().or(surface.entered.as_ref()) else {
+            return;
+        };
+        let Some(described) = self.describe(output) else {
+            return;
+        };
+        let own = surface.own.clone();
+        if own.borrow().output.as_ref() == Some(&described) {
+            return;
+        }
+        own.borrow_mut().output = Some(described.clone());
+        call_hook(&own, |own| &mut own.on_output, described);
     }
 
     /// Gives the instance a layer surface. Nothing is drawn until the
@@ -343,6 +377,7 @@ impl State {
             return;
         };
         surface.configured = false;
+        surface.entered = None;
         // No leave events arrive for a surface that is gone.
         let window = surface.window.clone();
         window.dispatch_event(WindowEvent::PointerExited);
@@ -692,18 +727,27 @@ impl CompositorHandler for State {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_surface::WlSurface,
-        _: &wl_output::WlOutput,
+        surface: &wl_surface::WlSurface,
+        output: &wl_output::WlOutput,
     ) {
+        if let Some(index) = self.index_of(surface) {
+            self.surfaces[index].entered = Some(output.clone());
+            self.refresh_output(index);
+        }
     }
 
     fn surface_leave(
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_surface::WlSurface,
-        _: &wl_output::WlOutput,
+        surface: &wl_surface::WlSurface,
+        output: &wl_output::WlOutput,
     ) {
+        if let Some(index) = self.index_of(surface) {
+            if self.surfaces[index].entered.as_ref() == Some(output) {
+                self.surfaces[index].entered = None;
+            }
+        }
     }
 }
 
@@ -1010,6 +1054,9 @@ impl OutputHandler for State {
     fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
         if self.mode() != Outputs::Auto {
             self.sync_outputs(None);
+        }
+        for index in 0..self.surfaces.len() {
+            self.refresh_output(index);
         }
     }
 

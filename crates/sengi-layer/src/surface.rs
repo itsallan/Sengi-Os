@@ -14,6 +14,40 @@ pub(crate) struct Stamped<T> {
     pub stamp: u64,
 }
 
+/// What is known about the output a surface is on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Output {
+    /// The connector name, such as `eDP-1`, if the compositor gives one.
+    pub name: Option<String>,
+    /// The size in logical pixels, which is what surface sizes are measured
+    /// in: a 3840 x 2160 panel at scale 2 is 1920 x 1080. `None` if the
+    /// compositor does not say.
+    pub size: Option<(u32, u32)>,
+    /// The integer scale of the output.
+    pub scale: u32,
+}
+
+/// A callback the app has set on a surface, if any.
+pub(crate) type Hook<A> = Option<Box<dyn FnMut(A)>>;
+
+/// Calls a hook that may want to set itself again, or set another, without
+/// holding the cell it lives in.
+pub(crate) fn call_hook<A>(
+    own: &Rc<RefCell<SurfaceShared>>,
+    slot: fn(&mut SurfaceShared) -> &mut Hook<A>,
+    argument: A,
+) {
+    let Some(mut hook) = slot(&mut own.borrow_mut()).take() else {
+        return;
+    };
+    hook(argument);
+    let mut own = own.borrow_mut();
+    let slot = slot(&mut own);
+    if slot.is_none() {
+        *slot = Some(hook);
+    }
+}
+
 /// What one instance has asked for and what is known about its surface.
 pub(crate) struct SurfaceShared {
     pub size: Option<Stamped<(u32, u32)>>,
@@ -23,6 +57,8 @@ pub(crate) struct SurfaceShared {
     /// The size the compositor last settled on; zero before that.
     pub configured: (u32, u32),
     pub scale: u32,
+    pub output: Option<Output>,
+    pub on_output: Hook<Output>,
 }
 
 impl SurfaceShared {
@@ -33,6 +69,8 @@ impl SurfaceShared {
             revision: 0,
             configured: (0, 0),
             scale: 1,
+            output: None,
+            on_output: None,
         }
     }
 
@@ -94,6 +132,27 @@ impl SurfaceHandle {
     /// The integer scale the surface is drawn at; 2 on a HiDPI output.
     pub fn scale(&self) -> u32 {
         self.own.borrow().scale
+    }
+
+    /// The output this surface is on, once that is known. With
+    /// [`Outputs::All`](crate::Outputs::All) and
+    /// [`Outputs::Named`](crate::Outputs::Named) it is known from the
+    /// start. With [`Outputs::Auto`](crate::Outputs::Auto) the compositor
+    /// picks, and it is `None` until the surface is on screen.
+    pub fn output(&self) -> Option<Output> {
+        self.own.borrow().output.clone()
+    }
+
+    /// Calls `changed` whenever the surface's output becomes known or
+    /// changes: another resolution or scale, or, with
+    /// [`Outputs::Auto`](crate::Outputs::Auto), another output altogether.
+    /// It is not called for what [`SurfaceHandle::output`] already returns
+    /// when the hook is set. A second call replaces the hook.
+    ///
+    /// This is where a dock clamps its width to the output and a launcher
+    /// sizes itself to the screen.
+    pub fn on_output_changed(&self, changed: impl FnMut(Output) + 'static) {
+        self.own.borrow_mut().on_output = Some(Box::new(changed));
     }
 
     /// Takes this surface off the screen and keeps its component alive.
