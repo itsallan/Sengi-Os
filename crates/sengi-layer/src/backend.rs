@@ -1,7 +1,6 @@
 //! The Wayland side: layer surfaces, input and the loop that ties them to
 //! Slint.
 
-use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -40,6 +39,7 @@ use crate::convert::{
     is_modifier, key_text, modifier_fixes, pointer_button, repeats_due, scroll_delta,
     write_argb8888, ModifierState, RepeatTiming,
 };
+use crate::platform::QuitGuard;
 use crate::{Context, Error, Handle};
 
 /// How long to sleep between frames while something is animating.
@@ -57,13 +57,31 @@ pub(crate) struct Shared {
     pub quit: bool,
 }
 
-pub(crate) type Built = (Box<dyn Any>, Rc<MinimalSoftwareWindow>);
+/// A component the loop is showing, with its type forgotten.
+pub(crate) trait Instance {
+    /// Lets go of the component. Slint keeps a shown component alive from
+    /// its window, so only hiding it frees it.
+    fn retire(&self);
+}
+
+impl<C: slint::ComponentHandle> Instance for C {
+    fn retire(&self) {
+        let _ = self.hide();
+    }
+}
+
+/// Hides a component for good without Slint taking the hiding of its last
+/// window as a request to quit.
+pub(crate) fn retire(component: Box<dyn Instance>, quits: &QuitGuard) {
+    quits.hold(|| component.retire());
+}
+
+pub(crate) type Built = (Box<dyn Instance>, Rc<MinimalSoftwareWindow>);
 pub(crate) type Builder = Box<dyn FnMut(&Context) -> Result<Built, Box<dyn std::error::Error>>>;
 
 /// One instance of the app's component and the layer surface showing it.
 struct Surface {
-    /// Held only to keep the component alive.
-    _component: Box<dyn Any>,
+    component: Box<dyn Instance>,
     window: Rc<MinimalSoftwareWindow>,
     /// The output this instance belongs to. None when the compositor picks.
     output: Option<wl_output::WlOutput>,
@@ -99,6 +117,7 @@ pub(crate) struct State {
 
     pub(crate) shared: Rc<RefCell<Shared>>,
     handle: Handle,
+    quits: QuitGuard,
     builder: Option<Builder>,
     surfaces: Vec<Surface>,
     /// Whether the surfaces are currently meant to be mapped. Follows
@@ -179,6 +198,7 @@ impl State {
         queue: QueueHandle<State>,
         shared: Rc<RefCell<Shared>>,
         handle: Handle,
+        quits: QuitGuard,
         started: Instant,
     ) -> State {
         State {
@@ -194,6 +214,7 @@ impl State {
             keyboard: None,
             shared,
             handle,
+            quits,
             builder: None,
             surfaces: Vec::new(),
             shown: false,
@@ -234,7 +255,7 @@ impl State {
             .expect("the builder is set before the loop runs");
         let (component, window) = builder(&context).map_err(Error::Build)?;
         self.surfaces.push(Surface {
-            _component: component,
+            component,
             window,
             output,
             layer: None,
@@ -314,7 +335,8 @@ impl State {
                     index += 1;
                 } else {
                     self.unmap(index);
-                    self.surfaces.remove(index);
+                    let surface = self.surfaces.remove(index);
+                    retire(surface.component, &self.quits);
                 }
             }
 

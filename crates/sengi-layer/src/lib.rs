@@ -73,7 +73,6 @@ mod config;
 mod convert;
 mod platform;
 
-use std::any::Any;
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
@@ -95,8 +94,8 @@ use smithay_client_toolkit::shm::Shm;
 use wayland_client::globals::registry_queue_init;
 use wayland_client::Connection;
 
-use backend::{Builder, Shared, State};
-use platform::{LayerPlatform, ProxyEvent, Unclaimed};
+use backend::{Builder, Instance, Shared, State};
+use platform::{LayerPlatform, ProxyEvent, QuitGuard, Unclaimed};
 
 pub use config::{Anchor, Config, ConfigError, KeyboardMode, Layer, Margins, Outputs};
 /// The version of wayland-client the connection from [`Handle::connection`]
@@ -238,10 +237,12 @@ impl App {
 
         let started = Instant::now();
         let unclaimed = Unclaimed::default();
+        let quits = QuitGuard::default();
         slint::platform::set_platform(Box::new(LayerPlatform {
             unclaimed: unclaimed.clone(),
             started,
             proxy,
+            quits: quits.clone(),
             clipboard: RefCell::new(None),
         }))
         .map_err(|error| Error::Platform(PlatformError::Other(error.to_string())))?;
@@ -268,6 +269,7 @@ impl App {
             queue_handle,
             shared,
             handle.clone(),
+            quits,
             started,
         );
 
@@ -308,7 +310,7 @@ impl App {
             let window = claim(&unclaimed, component.window())
                 .ok_or("the component returned by the build closure has no window here")?;
             component.show()?;
-            Ok((Box::new(component) as Box<dyn Any>, window))
+            Ok((Box::new(component) as Box<dyn Instance>, window))
         });
         backend::run(self.event_loop, self.state, builder)
     }
@@ -536,5 +538,54 @@ impl<C: ComponentHandle> Clone for Instances<C> {
 impl<C: ComponentHandle> Default for Instances<C> {
     fn default() -> Instances<C> {
         Instances::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    slint::slint! {
+        export component Probe inherits Window { }
+    }
+
+    // Slint keeps one platform per thread of tests, so everything that
+    // needs one lives in this single test.
+    #[test]
+    fn a_retired_instance_is_freed_and_does_not_quit_the_loop() {
+        let (proxy, events) = channel::channel();
+        let unclaimed = Unclaimed::default();
+        let quits = QuitGuard::default();
+        slint::platform::set_platform(Box::new(LayerPlatform {
+            unclaimed: unclaimed.clone(),
+            started: Instant::now(),
+            proxy,
+            quits: quits.clone(),
+            clipboard: RefCell::new(None),
+        }))
+        .expect("no platform is set yet");
+
+        let instances = Instances::new();
+        let probe = Probe::new().expect("the component builds");
+        let weak = probe.as_weak();
+        instances.add(&probe);
+        let window = claim(&unclaimed, probe.window()).expect("the window is claimed");
+        probe.show().expect("the component shows");
+
+        // What the loop holds for an instance: the component and its window.
+        let held: Box<dyn Instance> = Box::new(probe);
+        assert!(weak.upgrade().is_some());
+
+        backend::retire(held, &quits);
+        drop(window);
+        assert!(weak.upgrade().is_none(), "the component is still alive");
+        let mut visited = 0;
+        instances.for_each(|_| visited += 1);
+        assert_eq!(visited, 0);
+        assert!(events.try_recv().is_err(), "hiding it asked the loop to quit");
+
+        // A quit the app asks for still gets through.
+        slint::quit_event_loop().expect("the proxy takes the request");
+        assert!(matches!(events.try_recv(), Ok(ProxyEvent::Quit)));
     }
 }
