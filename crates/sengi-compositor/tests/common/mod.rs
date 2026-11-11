@@ -6,7 +6,10 @@
 use std::{
     fs::{self, File},
     io::Write,
-    os::{fd::AsFd, unix::net::UnixStream},
+    os::{
+        fd::AsFd,
+        unix::net::{UnixListener, UnixStream},
+    },
     path::Path,
     sync::atomic::{AtomicU32, Ordering},
     thread::sleep,
@@ -35,6 +38,10 @@ use wayland_protocols::{
         ext_session_lock_manager_v1::ExtSessionLockManagerV1,
         ext_session_lock_surface_v1::{self, ExtSessionLockSurfaceV1},
         ext_session_lock_v1::{self, ExtSessionLockV1},
+    },
+    wp::security_context::v1::client::{
+        wp_security_context_manager_v1::WpSecurityContextManagerV1,
+        wp_security_context_v1::WpSecurityContextV1,
     },
     xdg::shell::client::{
         xdg_surface::{self, XdgSurface},
@@ -192,6 +199,23 @@ impl Client {
         Ok((surface, toplevel))
     }
 
+    /// Opens a socket at `path` whose clients the compositor treats as
+    /// sandboxed, the way a sandbox's portal does.
+    pub fn sandbox(&mut self, path: &Path) -> Result<(), Failure> {
+        let manager: WpSecurityContextManagerV1 = self.globals.bind(&self.handle, 1..=1, ())?;
+        let listener = UnixListener::bind(path)?;
+        // The compositor listens for as long as the other end stays open.
+        let (keep, close) = UnixStream::pair()?;
+        let context = manager.create_listener(listener.as_fd(), close.as_fd(), &self.handle, ());
+        context.set_sandbox_engine("org.sengi.test".into());
+        context.set_app_id("org.sengi.test.App".into());
+        context.set_instance_id("1".into());
+        context.commit();
+        self.roundtrip()?;
+        std::mem::forget(keep);
+        Ok(())
+    }
+
     /// Asks for the session lock. Whether it was granted shows in
     /// `seen.locked` and `seen.finished` later.
     pub fn lock(&mut self) -> Result<ExtSessionLockV1, Failure> {
@@ -342,6 +366,8 @@ impl Dispatch<WlCallback, ()> for Seen {
 delegate_noop!(Seen: WlCompositor);
 delegate_noop!(Seen: WlShmPool);
 delegate_noop!(Seen: ExtSessionLockManagerV1);
+delegate_noop!(Seen: WpSecurityContextManagerV1);
+delegate_noop!(Seen: WpSecurityContextV1);
 delegate_noop!(Seen: ignore WlShm);
 delegate_noop!(Seen: ignore WlBuffer);
 delegate_noop!(Seen: ignore WlSurface);

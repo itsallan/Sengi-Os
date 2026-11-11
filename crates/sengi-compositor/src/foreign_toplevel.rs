@@ -241,6 +241,10 @@ impl GlobalDispatch<ZwlrForeignToplevelManagerV1, ()> for State {
         }
         state.foreign_toplevels.managers.push(manager);
     }
+
+    fn can_view(client: Client, _: &()) -> bool {
+        crate::security::trusted(&client)
+    }
 }
 
 impl Dispatch<ZwlrForeignToplevelManagerV1, ()> for State {

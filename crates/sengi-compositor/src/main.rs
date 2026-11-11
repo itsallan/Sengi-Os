@@ -25,6 +25,7 @@ mod log;
 mod png;
 mod render;
 mod script;
+mod security;
 mod shell;
 mod state;
 mod text;

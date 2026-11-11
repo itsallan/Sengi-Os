@@ -14,8 +14,7 @@ use smithay::{
         allocator::dmabuf::Dmabuf,
         renderer::{utils::with_renderer_surface_state, Color32F},
     },
-    delegate_cursor_shape, delegate_data_device, delegate_idle_notify, delegate_output,
-    delegate_seat, delegate_shm,
+    delegate_cursor_shape, delegate_data_device, delegate_output, delegate_seat, delegate_shm,
     desktop::{layer_map_for_output, PopupManager, Space, Window, WindowSurfaceType},
     input::{
         pointer::{CursorIcon, CursorImageStatus},
@@ -30,11 +29,16 @@ use smithay::{
             timer::{TimeoutAction, Timer},
             EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction,
         },
+        wayland_protocols::ext::idle_notify::v1::server::{
+            ext_idle_notification_v1::ExtIdleNotificationV1,
+            ext_idle_notifier_v1::ExtIdleNotifierV1,
+        },
         wayland_server::{
             backend::GlobalId,
             backend::{ClientData, ClientId, DisconnectReason},
+            delegate_dispatch,
             protocol::{wl_buffer::WlBuffer, wl_surface::WlSurface},
-            Display, DisplayHandle, Resource,
+            Client, DataInit, Display, DisplayHandle, GlobalDispatch, New, Resource,
         },
     },
     utils::{Logical, Physical, Point, Size, Transform, SERIAL_COUNTER},
@@ -43,8 +47,9 @@ use smithay::{
         compositor::{CompositorClientState, CompositorState},
         cursor_shape::CursorShapeManagerState,
         dmabuf::DmabufState,
-        idle_notify::{IdleNotifierHandler, IdleNotifierState},
+        idle_notify::{IdleNotificationUserData, IdleNotifierHandler, IdleNotifierState},
         output::{OutputHandler, OutputManagerState},
+        security_context::SecurityContextState,
         selection::{
             data_device::{
                 set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler, DataDeviceState,
@@ -72,7 +77,7 @@ use crate::{
     keys::{self, Swallowed},
     layout::{self, FocusStack, Rect},
     lock::{Lock, Lockers},
-    render,
+    render, security,
     text::Font,
 };
 
@@ -176,6 +181,7 @@ pub struct State {
     /// Set while the session is locked. See `lock.rs`.
     pub lock: Option<Lock>,
     pub idle_notifier_state: IdleNotifierState<Self>,
+    _security_context_state: SecurityContextState,
     pub shm_state: ShmState,
     pub seat_state: SeatState<Self>,
     pub data_device_state: DataDeviceState,
@@ -205,7 +211,9 @@ impl State {
         let session_lock_state =
             SessionLockManagerState::new::<Self, _>(&dh, move |client| known.recognises(client));
         let idle_notifier_state = IdleNotifierState::<Self>::new(&dh, event_loop.handle());
-        let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
+        let layer_shell_state =
+            WlrLayerShellState::new_with_filter::<Self, _>(&dh, security::trusted);
+        let security_context_state = SecurityContextState::new::<Self, _>(&dh, security::trusted);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
         let data_device_state = DataDeviceState::new::<Self>(&dh);
@@ -339,6 +347,7 @@ impl State {
             session_lock_state,
             lock: None,
             idle_notifier_state,
+            _security_context_state: security_context_state,
             shm_state,
             seat_state,
             data_device_state,
@@ -830,7 +839,33 @@ impl OutputHandler for State {}
 
 delegate_shm!(State);
 delegate_seat!(State);
-delegate_idle_notify!(State);
+// As `delegate_idle_notify!` would, except that sandboxed clients do not
+// get to watch when the user is at the machine.
+impl GlobalDispatch<ExtIdleNotifierV1, ()> for State {
+    fn bind(
+        state: &mut Self,
+        handle: &DisplayHandle,
+        client: &Client,
+        resource: New<ExtIdleNotifierV1>,
+        global_data: &(),
+        data_init: &mut DataInit<'_, Self>,
+    ) {
+        <IdleNotifierState<Self> as GlobalDispatch<ExtIdleNotifierV1, (), Self>>::bind(
+            state,
+            handle,
+            client,
+            resource,
+            global_data,
+            data_init,
+        );
+    }
+
+    fn can_view(client: Client, _: &()) -> bool {
+        security::trusted(&client)
+    }
+}
+delegate_dispatch!(State: [ExtIdleNotifierV1: ()] => IdleNotifierState<State>);
+delegate_dispatch!(State: [ExtIdleNotificationV1: IdleNotificationUserData] => IdleNotifierState<State>);
 delegate_cursor_shape!(State);
 delegate_data_device!(State);
 delegate_output!(State);
