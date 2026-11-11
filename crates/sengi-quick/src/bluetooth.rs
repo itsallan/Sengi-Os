@@ -1,5 +1,7 @@
 //! Bluetooth as the panel sees it. `system::bluez` fills this in.
 
+use crate::text::isolate;
+
 /// More connected devices than this are counted, not named.
 pub const MAX_DEVICES: usize = 8;
 
@@ -21,8 +23,8 @@ pub fn summary(devices: &[String]) -> String {
     match devices {
         [] => "On".to_string(),
         [one] => one.clone(),
-        [one, two] => format!("{one}, {two}"),
-        [one, rest @ ..] => format!("{one} and {} more", rest.len()),
+        [one, two] => format!("{}, {}", isolate(one), isolate(two)),
+        [one, rest @ ..] => format!("{} and {} more", isolate(one), rest.len()),
     }
 }
 
@@ -35,7 +37,10 @@ mod tests {
         let names = |n: usize| -> Vec<String> { (1..=n).map(|i| format!("Device {i}")).collect() };
         assert_eq!(summary(&names(0)), "On");
         assert_eq!(summary(&names(1)), "Device 1");
-        assert_eq!(summary(&names(2)), "Device 1, Device 2");
-        assert_eq!(summary(&names(5)), "Device 1 and 4 more");
+        assert_eq!(
+            summary(&names(2)),
+            "\u{2068}Device 1\u{2069}, \u{2068}Device 2\u{2069}"
+        );
+        assert_eq!(summary(&names(5)), "\u{2068}Device 1\u{2069} and 4 more");
     }
 }

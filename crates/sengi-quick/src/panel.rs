@@ -10,6 +10,7 @@ use crate::battery::Battery;
 use crate::bluetooth::{self, Bluetooth};
 use crate::secret::Secret;
 use crate::services::{Command, Event, Hardware};
+use crate::text::isolate;
 use crate::volume::{Echo, Volume, MAX_PERCENT};
 use crate::wifi::{self, Join, JoinError, Link, Network, Problem, Security, Wifi};
 
@@ -415,9 +416,9 @@ impl Panel {
                     _ => None,
                 };
                 let detail = match (joining, link, connected) {
-                    (Some(name), _, _) => format!("Connecting to {name}\u{2026}"),
+                    (Some(name), _, _) => format!("Connecting to {}\u{2026}", isolate(name)),
                     (None, Link::Connecting, Some(network)) => {
-                        format!("Connecting to {}\u{2026}", network.name)
+                        format!("Connecting to {}\u{2026}", isolate(&network.name))
                     }
                     (None, Link::Connecting, None) => "Connecting\u{2026}".to_string(),
                     (None, Link::Connected, Some(network)) => network.name.clone(),
@@ -484,6 +485,7 @@ impl Panel {
         let Join::Failed { name, error } = &self.join else {
             return String::new();
         };
+        let name = isolate(name);
         match error {
             JoinError::Failed | JoinError::Aborted | JoinError::NeedsPassphrase => {
                 format!("Could not connect to {name}")
@@ -781,7 +783,7 @@ mod tests {
         assert_eq!(request.passphrase.unwrap().expose(), "wrong passphrase");
         let view = panel.view().wifi;
         assert!(view.prompt.unwrap().busy);
-        assert_eq!(view.detail, "Connecting to Office\u{2026}");
+        assert_eq!(view.detail, "Connecting to \u{2068}Office\u{2069}\u{2026}");
 
         panel.apply(Event::Joined {
             id: "/Office".to_string(),
@@ -814,7 +816,7 @@ mod tests {
         let view = panel.view().wifi;
         assert!(view.rows[0].busy && !view.rows[1].busy);
         assert!(view.prompt.is_none());
-        assert_eq!(view.detail, "Connecting to Home\u{2026}");
+        assert_eq!(view.detail, "Connecting to \u{2068}Home\u{2069}\u{2026}");
 
         // The stored passphrase is refused: the field opens for a new one.
         panel.apply(Event::Joined {
@@ -832,7 +834,10 @@ mod tests {
             id: "/Home".to_string(),
             result: Err(JoinError::Timeout),
         });
-        assert_eq!(panel.view().wifi.alert, "Home did not answer");
+        assert_eq!(
+            panel.view().wifi.alert,
+            "\u{2068}Home\u{2069} did not answer"
+        );
         // Trying something else clears the complaint.
         panel.cancel_prompt();
         assert_eq!(panel.view().wifi.alert, "");
@@ -1058,7 +1063,10 @@ mod tests {
         }));
         let view = panel.view().bluetooth;
         assert!(view.enabled && view.on);
-        assert_eq!(view.detail, "Headphones, Keyboard");
+        assert_eq!(
+            view.detail,
+            "\u{2068}Headphones\u{2069}, \u{2068}Keyboard\u{2069}"
+        );
     }
 
     fn volume(percent: u32, muted: bool) -> Option<Volume> {

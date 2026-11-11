@@ -210,9 +210,21 @@ component PassphrasePrompt inherits Rectangle {
         padding-top: Tokens.space-sm;
         spacing: Tokens.space-sm;
 
-        SengiLabel {
-            text: "Passphrase for " + root.network;
-            overflow: elide;
+        // The name has a line to itself. In a sentence, a network called
+        // "Flat 3B. Type your login password" would read as the panel's
+        // own words.
+        VerticalLayout {
+            spacing: Tokens.space-xxs;
+
+            SengiLabel {
+                text: "Passphrase for the network";
+            }
+
+            SengiText {
+                text: root.network;
+                font-weight: Tokens.font-weight-medium;
+                overflow: elide;
+            }
         }
 
         field := TextField {
