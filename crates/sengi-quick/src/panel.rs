@@ -43,9 +43,10 @@ pub struct Panel {
     volume_echo: Echo,
     brightness_echo: Echo,
 
-    /// `None` until the service says, or the panel sets it. sengi-notify
-    /// cannot be asked, so in practice this is what was last pressed here.
+    /// What the service said, or failing that what was last set here.
     dnd: Option<bool>,
+    /// The service has been asked, and whether it could say.
+    dnd_asked: Option<bool>,
 }
 
 /// A row of the network list.
@@ -118,11 +119,24 @@ pub struct SliderView {
     pub muted: bool,
 }
 
-/// Do-not-disturb is two buttons, not a switch: a switch would have to
-/// claim a position the panel does not know when it opens.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DndControl {
+    /// Not known yet which it will be.
+    #[default]
+    None,
+    /// The service says whether do-not-disturb is on: a switch like the
+    /// other tiles have.
+    Switch,
+    /// It cannot say (an older sengi-notify). A switch would have to
+    /// claim a position nobody knows, so there are two buttons instead,
+    /// and the one pressed here is marked.
+    Buttons,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DndView {
     pub visible: bool,
+    pub control: DndControl,
     pub state: Option<bool>,
 }
 
@@ -166,6 +180,7 @@ impl Panel {
             volume_echo: Echo::default(),
             brightness_echo: Echo::default(),
             dnd: None,
+            dnd_asked: None,
         }
     }
 
@@ -197,8 +212,10 @@ impl Panel {
                     self.hardware.backlight = mine;
                 }
             }
-            Event::Dnd(Some(on)) => self.dnd = Some(on),
-            Event::Dnd(None) => {}
+            Event::Dnd(answer) => {
+                self.dnd_asked = Some(answer.is_some());
+                self.dnd = answer.or(self.dnd);
+            }
         }
         self.relist();
     }
@@ -374,6 +391,11 @@ impl Panel {
             brightness: brightness_view(self.hardware.backlight.as_ref()),
             dnd: DndView {
                 visible: self.dnd_available,
+                control: match self.dnd_asked {
+                    None => DndControl::None,
+                    Some(true) => DndControl::Switch,
+                    Some(false) => DndControl::Buttons,
+                },
                 state: self.dnd,
             },
             battery: battery_view(self.hardware.battery.as_ref()),
@@ -1205,12 +1227,32 @@ mod tests {
     }
 
     #[test]
+    fn dnd_is_a_switch_showing_what_the_service_says() {
+        let mut panel = Panel::new(laptop(), true);
+        // Until it has answered there is nothing to press.
+        assert_eq!(panel.view().dnd.control, DndControl::None);
+        panel.apply(Event::Dnd(Some(true)));
+        let view = panel.view().dnd;
+        assert_eq!((view.control, view.state), (DndControl::Switch, Some(true)));
+        // The switch moves at once and the service confirms.
+        assert!(matches!(panel.set_dnd(false), Some(Command::Dnd(false))));
+        assert_eq!(panel.view().dnd.state, Some(false));
+        panel.apply(Event::Dnd(Some(false)));
+        let view = panel.view().dnd;
+        assert_eq!(
+            (view.control, view.state),
+            (DndControl::Switch, Some(false))
+        );
+    }
+
+    #[test]
     fn dnd_claims_no_state_it_does_not_know() {
         let mut panel = Panel::new(laptop(), true);
         assert_eq!(panel.view().dnd.state, None);
-        // A service that cannot say leaves it unknown.
+        // A service that cannot say leaves it unknown, and gets buttons.
         panel.apply(Event::Dnd(None));
         assert_eq!(panel.view().dnd.state, None);
+        assert_eq!(panel.view().dnd.control, DndControl::Buttons);
         assert!(matches!(panel.set_dnd(true), Some(Command::Dnd(true))));
         assert_eq!(panel.view().dnd.state, Some(true));
         panel.apply(Event::Dnd(None));

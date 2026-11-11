@@ -342,10 +342,13 @@ export component QuickWindow inherits Window {
     in property <string> brightness-label;
 
     in property <bool> dnd-visible: false;
-    // The notification service cannot be asked, so the state is only
-    // known once it has been set from here.
+    // The notification service says whether it is on: a switch.
+    in property <bool> dnd-switch: false;
+    // It cannot say: two buttons, with no position claimed.
+    in property <bool> dnd-buttons: false;
+    // With the buttons, whether one of them has been pressed here.
     in property <bool> dnd-known: false;
-    in property <bool> dnd-on: false;
+    in-out property <bool> dnd-on: false;
 
     in property <bool> battery-visible: false;
     in property <int> battery-percent: 0;
@@ -608,7 +611,7 @@ export component QuickWindow inherits Window {
                     dnd := TileHeader {
                         title: "Do not disturb";
                         detail: !root.dnd-known ? "" : root.dnd-on ? "On" : "Off";
-                        trailing: dnd-buttons.width + Tokens.space-md;
+                        trailing: (root.dnd-buttons ? dnd-pair.width : dnd-toggle.width) + Tokens.space-md;
 
                         MoonIcon {
                             x: dnd.icon-x;
@@ -616,11 +619,22 @@ export component QuickWindow inherits Window {
                             ink: root.dnd-known && root.dnd-on ? Tokens.color-text : Tokens.color-text-muted;
                         }
 
-                        // Two buttons, not a switch: a switch would show
-                        // a position before anything is known.
-                        dnd-buttons := HorizontalLayout {
+                        dnd-toggle := SengiToggle {
                             x: parent.width - self.width - Tokens.space-md;
                             y: (parent.height - self.height) / 2;
+                            visible: root.dnd-switch;
+                            enabled: root.dnd-switch;
+                            checked <=> root.dnd-on;
+                            toggled(on) => { root.dnd-set(on); }
+                        }
+
+                        // For a notification service that cannot say what
+                        // it is set to. Two buttons, not a switch: a
+                        // switch would show a position nobody knows.
+                        dnd-pair := HorizontalLayout {
+                            x: parent.width - self.width - Tokens.space-md;
+                            y: (parent.height - self.height) / 2;
+                            visible: root.dnd-buttons;
                             width: Tokens.space-xl * 4 + Tokens.space-xs;
                             height: Tokens.button;
                             spacing: Tokens.space-xs;
@@ -629,6 +643,7 @@ export component QuickWindow inherits Window {
                                 horizontal-stretch: 1;
                                 preferred-width: Tokens.button;
                                 height: Tokens.button;
+                                enabled: root.dnd-buttons;
                                 text: "Off";
                                 primary: root.dnd-known && !root.dnd-on;
                                 clicked => { root.dnd-set(false); }
@@ -638,6 +653,7 @@ export component QuickWindow inherits Window {
                                 horizontal-stretch: 1;
                                 preferred-width: Tokens.button;
                                 height: Tokens.button;
+                                enabled: root.dnd-buttons;
                                 text: "On";
                                 primary: root.dnd-known && root.dnd-on;
                                 clicked => { root.dnd-set(true); }

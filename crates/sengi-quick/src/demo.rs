@@ -202,6 +202,8 @@ impl Machine for FakeMachine {
 
 struct FakeDnd {
     installed: bool,
+    /// Whether it can be asked, as sengi-notify can since `--dnd status`.
+    answers: bool,
     on: Mutex<Option<bool>>,
 }
 
@@ -210,7 +212,7 @@ impl DndService for FakeDnd {
         self.installed
     }
     fn read(&self) -> Option<bool> {
-        *lock(&self.on)
+        lock(&self.on).filter(|_| self.answers)
     }
     fn set(&self, on: bool) {
         *lock(&self.on) = Some(on);
@@ -276,7 +278,8 @@ pub fn scenario(name: &str) -> Option<Demo> {
         percent: 40,
         muted: false,
     });
-    let mut dnd = None;
+    let mut dnd = Some(false);
+    let mut dnd_answers = true;
     let mut script = Vec::new();
 
     let disconnect = |networks: &mut Vec<Network>, link: &mut Link| {
@@ -350,6 +353,8 @@ pub fn scenario(name: &str) -> Option<Demo> {
         "desktop" => {
             wifi_present = false;
             bluetooth = Bluetooth::Absent;
+            // And a notification service too old to say what it is set to.
+            dnd_answers = false;
             hardware = Hardware {
                 wired: true,
                 ..Hardware::default()
@@ -403,6 +408,7 @@ pub fn scenario(name: &str) -> Option<Demo> {
             machine: Box::new(FakeMachine(Mutex::new(hardware))),
             dnd: Box::new(FakeDnd {
                 installed: true,
+                answers: dnd_answers,
                 on: Mutex::new(dnd),
             }),
         },

@@ -8,7 +8,7 @@ use std::time::Duration;
 use slint::platform::{Key, WindowEvent};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
-use crate::panel::{NetworkRow, Panel, View};
+use crate::panel::{DndControl, NetworkRow, Panel, View};
 use crate::secret::Secret;
 use crate::services::{Command, Event};
 
@@ -87,6 +87,8 @@ fn show(window: &QuickWindow, networks: &VecModel<NetworkItem>, view: &View) {
     window.set_brightness_label(text(&view.brightness.label));
 
     window.set_dnd_visible(view.dnd.visible);
+    window.set_dnd_switch(view.dnd.control == DndControl::Switch);
+    window.set_dnd_buttons(view.dnd.control == DndControl::Buttons);
     window.set_dnd_known(view.dnd.state.is_some());
     window.set_dnd_on(view.dnd.state == Some(true));
 
