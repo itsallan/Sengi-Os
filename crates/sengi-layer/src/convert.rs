@@ -57,22 +57,26 @@ pub(crate) fn scroll_delta(absolute: f64, discrete: i32) -> f32 {
     }
 }
 
-/// The text Slint expects for a key: one of its own codes for keys such as
-/// Escape and the arrows, otherwise what the key types in the active
-/// layout. `None` for keys Slint has no use for, such as the volume keys.
+/// The text Slint expects for a key press: one of its own codes for keys
+/// such as Escape and the arrows, otherwise what the press typed in the
+/// active layout. `None` for presses that type nothing.
 ///
-/// `utf8` is what xkbcommon says the press produced, which already covers
-/// dead keys and compose sequences. It is missing on release and is a
-/// control code while Ctrl is held, so those fall back to the key's symbol;
-/// that way Ctrl+A reaches Slint as "a" with the control modifier set.
+/// `utf8` is what xkbcommon says the press produced, after dead keys and
+/// compose sequences. It is `None` for a key that is part of a sequence
+/// still being typed, and that key must not show up as text: Compose,
+/// apostrophe, e is "é", not "'é". While Ctrl is held it is a control code,
+/// and then the key's own symbol is used, so that Ctrl+A reaches Slint as
+/// "a" with the control modifier set.
 pub(crate) fn key_text(keysym: Keysym, utf8: Option<&str>) -> Option<SharedString> {
     if let Some(key) = special_key(keysym) {
         return Some(key.into());
     }
-    if let Some(text) = utf8 {
-        if !text.is_empty() && !text.chars().any(char::is_control) {
-            return Some(text.into());
-        }
+    let text = utf8?;
+    if text.is_empty() {
+        return None;
+    }
+    if !text.chars().any(char::is_control) {
+        return Some(text.into());
     }
     keysym
         .key_char()
@@ -334,10 +338,29 @@ mod tests {
     }
 
     #[test]
-    fn control_combinations_and_releases_fall_back_to_the_symbol() {
+    fn control_combinations_fall_back_to_the_symbol() {
         assert_eq!(key_text(Keysym::a, Some("\u{1}")), Some("a".into()));
-        assert_eq!(key_text(Keysym::a, None), Some("a".into()));
-        assert_eq!(key_text(Keysym::a, Some("")), Some("a".into()));
+        assert_eq!(key_text(Keysym::z, Some("\u{1a}")), Some("z".into()));
+    }
+
+    #[test]
+    fn keys_inside_a_compose_sequence_type_nothing() {
+        // Compose, apostrophe, e: only the last press produces text.
+        assert_eq!(key_text(Keysym::Multi_key, None), None);
+        assert_eq!(key_text(Keysym::apostrophe, None), None);
+        assert_eq!(key_text(Keysym::e, Some("\u{e9}")), Some("\u{e9}".into()));
+        // A dead key, and a key that types nothing at all.
+        assert_eq!(key_text(Keysym::dead_acute, None), None);
+        assert_eq!(key_text(Keysym::a, Some("")), None);
+    }
+
+    #[test]
+    fn special_keys_work_inside_a_compose_sequence_too() {
+        assert_eq!(key_text(Keysym::Escape, None), Some(text(Key::Escape)));
+        assert_eq!(
+            key_text(Keysym::BackSpace, None),
+            Some(text(Key::Backspace))
+        );
     }
 
     #[test]

@@ -783,11 +783,9 @@ impl KeyboardHandler for State {
         let Some((_, window)) = self.focus.clone() else {
             return;
         };
-        let text = self
-            .pressed
-            .remove(&event.raw_code)
-            .or_else(|| key_text(event.keysym, None));
-        let Some(text) = text else {
+        // A release carries no text; it repeats what the press sent. A
+        // press that typed nothing has nothing to release.
+        let Some(text) = self.pressed.remove(&event.raw_code) else {
             return;
         };
         if is_modifier(&text) {
