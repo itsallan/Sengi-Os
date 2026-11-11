@@ -195,6 +195,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "test-hooks"))]
+    fn a_build_for_the_image_has_no_script_player() {
+        assert!(run(&["--backend", "headless", "--script", "steps.txt"]).is_err());
+    }
+
+    #[test]
+    #[cfg(feature = "test-hooks")]
     fn all_options_are_read() {
         let parsed = run(&[
             "--backend",
