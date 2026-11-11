@@ -20,7 +20,7 @@ use smithay::{
             Bind, ExportMem, Offscreen,
         },
     },
-    output::{Mode, Output, PhysicalProperties, Subpixel},
+    output::Output,
     reexports::{
         calloop::{
             timer::{TimeoutAction, Timer},
@@ -34,7 +34,6 @@ use smithay::{
 
 use crate::{png, render, state::State, Options};
 
-const REFRESH_MHZ: i32 = 60_000;
 const FRAME: Duration = Duration::from_micros(16_667);
 
 struct Headless {
@@ -53,28 +52,12 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
     let mut state = State::new(&mut event_loop, display)?;
 
     let (width, height) = options.size;
-    let mode = Mode {
-        size: (width, height).into(),
-        refresh: REFRESH_MHZ,
-    };
-    let output = Output::new(
-        "HEADLESS-1".into(),
-        PhysicalProperties {
-            size: (0, 0).into(),
-            subpixel: Subpixel::Unknown,
-            make: "Sengi OS".into(),
-            model: "Headless".into(),
-        },
+    let output = state.add_output(
+        "HEADLESS-1",
+        "Headless",
+        (width, height).into(),
+        Transform::Normal,
     );
-    let _global = output.create_global::<State>(&state.display_handle);
-    output.change_current_state(
-        Some(mode),
-        Some(Transform::Normal),
-        None,
-        Some((0, 0).into()),
-    );
-    output.set_preferred(mode);
-    state.space.map_output(&output, (0, 0));
 
     let mut renderer = PixmanRenderer::new()?;
     let size = Size::from((width, height));
@@ -108,16 +91,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         })?;
 
     crate::start_clients(&state, &options)?;
-    event_loop.run(None, &mut state, |state| {
-        state.space.refresh();
-        state.popups.cleanup();
-        let _ = state.display_handle.flush_clients();
-    })?;
-
-    if state.failed {
-        return Err("rendering failed".into());
-    }
-    Ok(())
+    state.run(event_loop)
 }
 
 impl Headless {

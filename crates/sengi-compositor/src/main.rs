@@ -4,16 +4,19 @@
 
 mod cli;
 mod headless;
+mod input;
 mod layer;
 mod layout;
 mod png;
 mod render;
 mod shell;
 mod state;
+#[cfg(feature = "winit")]
+mod winit;
 
 use std::{error::Error, process::ExitCode};
 
-use cli::{Command, Options};
+use cli::{Backend, Command, Options};
 use state::State;
 
 fn main() -> ExitCode {
@@ -33,7 +36,18 @@ fn main() -> ExitCode {
         }
     };
 
-    match headless::run(options) {
+    let has_display = ["WAYLAND_DISPLAY", "DISPLAY"]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()));
+    let result = match options.resolve_backend(has_display) {
+        #[cfg(feature = "winit")]
+        Backend::Winit => winit::run(options),
+        #[cfg(not(feature = "winit"))]
+        Backend::Winit => Err("this build has no winit backend".into()),
+        Backend::Headless | Backend::Auto => headless::run(options),
+    };
+
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("sengi-compositor: {err}");

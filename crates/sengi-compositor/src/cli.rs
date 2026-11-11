@@ -6,23 +6,46 @@ pub const USAGE: &str = "\
 Usage: sengi-compositor [options]
 
   -s, --startup CMD     run CMD with sh once the compositor is ready
+      --backend NAME    headless, winit or auto (default auto: a window when
+                        started from a desktop session, headless otherwise)
       --size WxH        output size in pixels (default 1280x720)
-      --screenshot PNG  save the last frame to PNG on exit
+      --screenshot PNG  save the last frame to PNG on exit (headless only)
       --exit-after SEC  stop after SEC seconds
   -h, --help            show this help
   -V, --version         show the version";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend {
+    Auto,
+    Headless,
+    Winit,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
+    pub backend: Backend,
     pub size: (i32, i32),
     pub startup: Vec<String>,
     pub screenshot: Option<PathBuf>,
     pub exit_after: Option<Duration>,
 }
 
+impl Options {
+    /// Settles `Auto`. `has_display` says whether we were started from
+    /// inside a desktop session that a window could be opened on.
+    pub fn resolve_backend(&self, has_display: bool) -> Backend {
+        match self.backend {
+            Backend::Auto if self.screenshot.is_none() && has_display => Backend::Winit,
+            Backend::Auto => Backend::Headless,
+            chosen => chosen,
+        }
+    }
+}
+
 impl Default for Options {
     fn default() -> Self {
         Self {
+            backend: Backend::Auto,
             size: (1280, 720),
             startup: Vec::new(),
             screenshot: None,
@@ -48,6 +71,14 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             "-h" | "--help" => return Ok(Command::Help),
             "-V" | "--version" => return Ok(Command::Version),
             "-s" | "--startup" => options.startup.push(value()?),
+            "--backend" => {
+                options.backend = match value()?.as_str() {
+                    "auto" => Backend::Auto,
+                    "headless" => Backend::Headless,
+                    "winit" => Backend::Winit,
+                    other => return Err(format!("unknown backend: {other}")),
+                }
+            }
             "--size" => options.size = parse_size(&value()?)?,
             "--screenshot" => options.screenshot = Some(PathBuf::from(value()?)),
             "--exit-after" => {
@@ -65,6 +96,9 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
 
     if options.screenshot.is_some() && options.exit_after.is_none() {
         return Err("--screenshot needs --exit-after".into());
+    }
+    if options.screenshot.is_some() && options.backend == Backend::Winit {
+        return Err("--screenshot only works with the headless backend".into());
     }
     Ok(Command::Run(options))
 }
@@ -97,6 +131,8 @@ mod tests {
     #[test]
     fn all_options_are_read() {
         let parsed = run(&[
+            "--backend",
+            "headless",
             "--size",
             "1920x1080",
             "-s",
@@ -111,6 +147,7 @@ mod tests {
         assert_eq!(
             parsed,
             Ok(Command::Run(Options {
+                backend: Backend::Headless,
                 size: (1920, 1080),
                 startup: vec!["foot".into(), "sengi-bar".into()],
                 screenshot: Some("out.png".into()),
@@ -134,10 +171,38 @@ mod tests {
         assert!(run(&["--exit-after", "soon"]).is_err());
         assert!(run(&["--exit-after", "-1"]).is_err());
         assert!(run(&["--frobnicate"]).is_err());
+        assert!(run(&["--backend", "drm"]).is_err());
     }
 
     #[test]
     fn screenshot_needs_an_exit_time() {
         assert!(run(&["--screenshot", "out.png"]).is_err());
+    }
+
+    #[test]
+    fn screenshot_and_winit_do_not_mix() {
+        let args = [
+            "--backend",
+            "winit",
+            "--screenshot",
+            "a.png",
+            "--exit-after",
+            "1",
+        ];
+        assert!(run(&args).is_err());
+    }
+
+    #[test]
+    fn auto_picks_a_window_only_inside_a_session() {
+        let mut options = Options::default();
+        assert_eq!(options.resolve_backend(true), Backend::Winit);
+        assert_eq!(options.resolve_backend(false), Backend::Headless);
+
+        options.screenshot = Some("a.png".into());
+        assert_eq!(options.resolve_backend(true), Backend::Headless);
+
+        options.backend = Backend::Winit;
+        options.screenshot = None;
+        assert_eq!(options.resolve_backend(false), Backend::Winit);
     }
 }

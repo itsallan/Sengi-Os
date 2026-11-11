@@ -1,14 +1,14 @@
 //! Compositor state shared by every backend.
 
-use std::{ffi::OsString, sync::Arc, time::Instant};
+use std::{error::Error, ffi::OsString, sync::Arc, time::Instant};
 
 use sengi_tokens::Tokens;
 use smithay::{
     backend::renderer::Color32F,
     delegate_data_device, delegate_output, delegate_seat, delegate_shm,
-    desktop::{PopupManager, Space, Window},
+    desktop::{layer_map_for_output, PopupManager, Space, Window},
     input::{Seat, SeatHandler, SeatState},
-    output::Output,
+    output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel},
     reexports::{
         calloop::{generic::Generic, EventLoop, Interest, LoopSignal, Mode, PostAction},
         wayland_server::{
@@ -17,7 +17,7 @@ use smithay::{
             Display, DisplayHandle, Resource,
         },
     },
-    utils::SERIAL_COUNTER,
+    utils::{Physical, Size, Transform, SERIAL_COUNTER},
     wayland::{
         buffer::BufferHandler,
         compositor::{CompositorClientState, CompositorState},
@@ -36,6 +36,9 @@ use smithay::{
 };
 
 use crate::layout::FocusStack;
+
+/// Refresh rate reported for outputs that have no real one, in mHz.
+pub const REFRESH_MHZ: i32 = 60_000;
 
 pub struct State {
     pub start_time: Instant,
@@ -71,7 +74,7 @@ impl State {
     pub fn new(
         event_loop: &mut EventLoop<'static, Self>,
         display: Display<Self>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> Result<Self, Box<dyn Error>> {
         let dh = display.handle();
 
         let compositor_state = CompositorState::new::<Self>(&dh);
@@ -129,6 +132,20 @@ impl State {
         })
     }
 
+    /// Runs until a backend stops the loop.
+    pub fn run(mut self, mut event_loop: EventLoop<'static, Self>) -> Result<(), Box<dyn Error>> {
+        event_loop.run(None, &mut self, |state| {
+            state.space.refresh();
+            state.popups.cleanup();
+            let _ = state.display_handle.flush_clients();
+        })?;
+
+        if self.failed {
+            return Err("rendering failed".into());
+        }
+        Ok(())
+    }
+
     /// The colour behind all windows.
     pub fn desktop_color(&self) -> Color32F {
         let c = self
@@ -145,6 +162,47 @@ impl State {
 
     pub fn output(&self) -> Option<Output> {
         self.space.outputs().next().cloned()
+    }
+
+    /// Announces an output of `size` pixels to clients and puts it at the
+    /// origin of the desktop.
+    pub fn add_output(
+        &mut self,
+        name: &str,
+        model: &str,
+        size: Size<i32, Physical>,
+        transform: Transform,
+    ) -> Output {
+        let output = Output::new(
+            name.into(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "Sengi OS".into(),
+                model: model.into(),
+            },
+        );
+        // The global lives as long as the compositor does.
+        let _global = output.create_global::<Self>(&self.display_handle);
+        let mode = OutputMode {
+            size,
+            refresh: REFRESH_MHZ,
+        };
+        output.change_current_state(Some(mode), Some(transform), None, Some((0, 0).into()));
+        output.set_preferred(mode);
+        self.space.map_output(&output, (0, 0));
+        output
+    }
+
+    /// Applies a new size to `output`, for backends whose window can resize.
+    pub fn resize_output(&mut self, output: &Output, size: Size<i32, Physical>) {
+        let mode = OutputMode {
+            size,
+            refresh: REFRESH_MHZ,
+        };
+        output.change_current_state(Some(mode), None, None, None);
+        output.set_preferred(mode);
+        layer_map_for_output(output).arrange();
     }
 
     /// Raises `window`, marks it active and gives it the keyboard.
