@@ -169,12 +169,28 @@ fn entity(text: &str) -> Option<(usize, char)> {
     Some((end + 1, decoded))
 }
 
-/// Characters that change the direction or shape of the text around them,
-/// which a sender could use to make one message read as another.
+/// Characters that draw nothing or change the direction of the text around
+/// them, which a sender could use to make one message read as another or
+/// to pad a label with what looks like nothing. Joiners and variation
+/// selectors go too: some emoji fall apart into their pieces, which is the
+/// price of not having to tell a harmless joiner from a hidden one.
 fn is_format_trick(c: char) -> bool {
     matches!(c,
-        '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{200e}' | '\u{200f}'
-        | '\u{61c}' | '\u{2028}' | '\u{2029}' | '\u{feff}' | '\u{fff9}'..='\u{fffb}')
+        // Soft hyphen, Arabic letter mark, Mongolian vowel separator.
+        '\u{ad}' | '\u{61c}' | '\u{180e}'
+        // Zero-width spaces and joiners, direction marks.
+        | '\u{200b}'..='\u{200f}'
+        // Line and paragraph separators, direction embeddings and overrides.
+        | '\u{2028}'..='\u{202e}'
+        // Word joiner, invisible operators, direction isolates and the
+        // deprecated format characters after them.
+        | '\u{2060}'..='\u{206f}'
+        // Hangul fillers, which are letters that draw as blanks.
+        | '\u{115f}' | '\u{1160}' | '\u{3164}' | '\u{ffa0}'
+        // Variation selectors.
+        | '\u{fe00}'..='\u{fe0f}' | '\u{e0100}'..='\u{e01ef}'
+        // Byte order mark, interlinear annotation marks, tag characters.
+        | '\u{feff}' | '\u{fff9}'..='\u{fffb}' | '\u{e0000}'..='\u{e007f}')
 }
 
 /// Makes text fit to draw: no control characters, no direction overrides,
@@ -192,6 +208,10 @@ pub fn tidy(text: &str, max_chars: usize, multiline: bool) -> String {
             c if c.is_control() || is_format_trick(c) => continue,
             c => c,
         };
+        // A space that only led because what came before it was removed.
+        if out.is_empty() && c.is_whitespace() {
+            continue;
+        }
         if c == '\n' {
             newlines += 1;
             if newlines > 2 {
@@ -334,6 +354,43 @@ mod tests {
         assert_eq!(tidy("\u{2066}x\u{2069}\u{200f}", 100, false), "x");
         // Decoded control characters go the same way.
         assert_eq!(tidy(&strip("a&#0;b&#27;c&#x202e;d"), 100, false), "abcd");
+    }
+
+    #[test]
+    fn tidy_removes_characters_that_draw_nothing() {
+        for hidden in [
+            '\u{ad}',
+            '\u{180e}',
+            '\u{200b}',
+            '\u{200c}',
+            '\u{200d}',
+            '\u{2060}',
+            '\u{2064}',
+            '\u{115f}',
+            '\u{1160}',
+            '\u{3164}',
+            '\u{ffa0}',
+            '\u{fe0f}',
+            '\u{e0100}',
+            '\u{e0001}',
+            '\u{e0041}',
+            '\u{e007f}',
+            '\u{feff}',
+        ] {
+            let text = format!("pay{hidden}pal");
+            assert_eq!(tidy(&text, 100, false), "paypal", "U+{:04X}", hidden as u32);
+        }
+        // A label made only of them is empty, not a blank button.
+        assert_eq!(tidy("\u{200b}\u{3164}\u{e0020}", 100, false), "");
+        assert_eq!(tidy("\u{200b} \u{200b} OK \u{200b}", 100, false), "OK");
+        // They do not use up the length either.
+        let padded = format!("{}end", "\u{200b}".repeat(1_000));
+        assert_eq!(tidy(&padded, 5, false), "end");
+        // Ordinary spaces, accents and scripts are left alone.
+        assert_eq!(
+            tidy("a\u{a0}b e\u{301} 한글 😀", 100, false),
+            "a\u{a0}b e\u{301} 한글 😀"
+        );
     }
 
     #[test]

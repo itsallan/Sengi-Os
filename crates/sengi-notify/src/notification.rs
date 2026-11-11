@@ -45,6 +45,12 @@ pub struct Action {
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Notification {
     pub id: u32,
+    /// The unique bus name of the client that sent it.
+    pub sender: String,
+    /// Names the `Notify` call this content came from. The bus side uses
+    /// it to tell a closure of this content from one of older content
+    /// under the same id.
+    pub token: u64,
     pub app: String,
     pub summary: String,
     pub body: String,
@@ -194,6 +200,8 @@ impl Request<'_> {
         }
         Notification {
             id,
+            sender: String::new(),
+            token: 0,
             app,
             summary: clean_line(self.summary, SUMMARY_MAX),
             body: markup::tidy(&body, BODY_MAX, true),

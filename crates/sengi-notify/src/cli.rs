@@ -10,6 +10,7 @@ Options, sent to the running service:
   --toggle-centre       open or close the notification centre
   --dismiss-all         dismiss every notification on screen
   --dnd on|off|toggle   set do-not-disturb
+  --dnd status          print whether do-not-disturb is on or off
   -h, --help            show this help
   -V, --version         show the version
 ";
@@ -33,6 +34,8 @@ pub enum Command {
 pub enum Invocation {
     Serve,
     Send(Command),
+    /// Print `on` or `off`.
+    DndStatus,
     Help,
     Version,
 }
@@ -49,9 +52,12 @@ pub fn parse<S: AsRef<str>>(arguments: &[S]) -> Result<Invocation, String> {
             "on" => Ok(Invocation::Send(Command::Dnd(Dnd::On))),
             "off" => Ok(Invocation::Send(Command::Dnd(Dnd::Off))),
             "toggle" => Ok(Invocation::Send(Command::Dnd(Dnd::Toggle))),
-            other => Err(format!("--dnd takes on, off or toggle, not '{other}'")),
+            "status" => Ok(Invocation::DndStatus),
+            other => Err(format!(
+                "--dnd takes on, off, toggle or status, not '{other}'"
+            )),
         },
-        ["--dnd"] => Err("--dnd takes on, off or toggle".to_string()),
+        ["--dnd"] => Err("--dnd takes on, off, toggle or status".to_string()),
         [other, ..] => Err(format!("unknown option '{other}'")),
     }
 }
@@ -87,6 +93,7 @@ mod tests {
             parse(&["--dnd", "toggle"]),
             Ok(Invocation::Send(Command::Dnd(Dnd::Toggle)))
         );
+        assert_eq!(parse(&["--dnd", "status"]), Ok(Invocation::DndStatus));
         assert_eq!(parse(&["--help"]), Ok(Invocation::Help));
         assert_eq!(parse(&["-V"]), Ok(Invocation::Version));
     }
