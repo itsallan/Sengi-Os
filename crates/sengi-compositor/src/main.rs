@@ -19,6 +19,7 @@ mod keys;
 mod layer;
 mod layout;
 mod lock;
+mod log;
 mod png;
 mod render;
 mod script;
@@ -71,6 +72,8 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+
+    log::init();
 
     let has_display = ["WAYLAND_DISPLAY", "DISPLAY"]
         .iter()

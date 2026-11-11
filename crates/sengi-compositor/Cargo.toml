@@ -33,6 +33,8 @@ xcursor = "0.3"
 # The same calloop Smithay uses, with signal handling switched on.
 calloop = { version = "0.14", features = ["signals"] }
 sengi-tokens = { path = "../sengi-tokens" }
+# Smithay logs through this; src/log.rs prints what it says.
+tracing = { version = "0.1", default-features = false, features = ["std"] }
 smithay = { version = "0.7", default-features = false, features = [
     "desktop",
     "wayland_frontend",
