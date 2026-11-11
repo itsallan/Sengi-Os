@@ -494,6 +494,20 @@ fn to_sender<'a>(connection: &'a Connection, sender: &str) -> zbus::Result<Signa
     }
 }
 
+/// For tests, in debug builds only: stretches the time between owning the
+/// name and being ready for the UI, which on a real machine is only long
+/// when the machine is very busy. `SENGI_NOTIFY_START_DELAY_MS` says by
+/// how much.
+fn slow_start() {
+    #[cfg(debug_assertions)]
+    if let Some(delay) = std::env::var("SENGI_NOTIFY_START_DELAY_MS")
+        .ok()
+        .and_then(|delay| delay.parse().ok())
+    {
+        thread::sleep(std::time::Duration::from_millis(delay));
+    }
+}
+
 /// Runs the bus side on the calling thread: takes the name, reports on
 /// `ready` whether that worked, then sends out the UI's signals until the
 /// UI is gone.
@@ -504,6 +518,7 @@ pub fn serve(
     ready: Sender<Result<(), StartError>>,
 ) {
     let started = connect(link.clone(), default_timeout).and_then(|connection| {
+        slow_start();
         watch(&connection, &link)?;
         Ok(connection)
     });

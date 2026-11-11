@@ -8,6 +8,7 @@
 
 mod cli;
 mod dbus;
+mod gate;
 mod intake;
 mod markup;
 mod notification;
@@ -19,14 +20,14 @@ mod wire;
 use std::cell::{Cell, RefCell};
 use std::process::ExitCode;
 use std::rc::Rc;
-use std::sync::{mpsc, Arc, Condvar, Mutex};
+use std::sync::{mpsc, Arc};
 use std::thread;
-use std::time::Duration;
 
 use sengi_layer::{Anchor, App, Config, Layer};
 
 use cli::Invocation;
 use dbus::{Deliver, Link, Pending, StartError, ToUi};
+use gate::Gate;
 
 /// Used if the tokens ever lose `timing.notification-timeout`.
 const FALLBACK_TIMEOUT: u64 = 5_000;
@@ -37,39 +38,24 @@ const EXIT_NAME_TAKEN: u8 = 3;
 const EXIT_NAME_LOST: u8 = 4;
 const EXIT_BUS_CLOSED: u8 = 5;
 
-/// How long a call that arrives before the UI loop exists waits for it.
-const UI_WAIT: Duration = Duration::from_secs(10);
-
 fn default_timeout() -> u64 {
     sengi_tokens::Tokens::builtin()
         .px("timing.notification-timeout")
         .map_or(FALLBACK_TIMEOUT, u64::from)
 }
 
-/// Where the bus thread finds the way into the UI loop, once there is one.
-type Gate = Arc<(Mutex<Option<sengi_layer::Sender<ToUi>>>, Condvar)>;
-
-/// Calls can arrive from the moment the name is ours, which is a little
-/// before the compositor connection and the UI loop exist. They wait here.
-fn through(gate: Gate) -> Deliver {
-    Arc::new(move |message| {
-        let (slot, opened) = &*gate;
-        let Ok(slot) = slot.lock() else {
-            return false;
-        };
-        let Ok((slot, _)) = opened.wait_timeout_while(slot, UI_WAIT, |slot| slot.is_none()) else {
-            return false;
-        };
-        slot.as_ref().is_some_and(|ui| ui.send(message).is_ok())
-    })
-}
-
 fn serve() -> Result<ExitCode, Box<dyn std::error::Error>> {
     // The name comes first. If someone else has it there is nothing for
     // this process to do, and no reason to talk to the compositor at all.
-    let gate = Gate::default();
+    // Calls arrive from the moment the name is ours, the one that had the
+    // service started first of all; the gate keeps them until the UI is up.
+    let gate = Arc::new(Gate::new());
     let pending = Pending::default();
-    let link = Link::new(through(gate.clone()), pending.clone());
+    let deliver: Deliver = {
+        let gate = gate.clone();
+        Arc::new(move |message| gate.send(message))
+    };
+    let link = Link::new(deliver, pending.clone());
     let (signals, signals_out) = mpsc::channel();
     let (ready, started) = mpsc::channel();
     let timeout = default_timeout();
@@ -86,7 +72,13 @@ fn serve() -> Result<ExitCode, Box<dyn std::error::Error>> {
         Err(_) => return Err("the bus thread ended before it started".into()),
     }
 
-    let app = App::new()?;
+    let app = match App::new() {
+        Ok(app) => app,
+        Err(error) => {
+            gate.close();
+            return Err(error.into());
+        }
+    };
     let handle = app.handle();
     // Nothing to show yet, so no surface yet.
     handle.hide();
@@ -116,10 +108,9 @@ fn serve() -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
         })?
     };
-    if let Ok(mut slot) = gate.0.lock() {
-        *slot = Some(to_ui);
-    }
-    gate.1.notify_all();
+    // What came in while starting goes into the loop now, in order, and is
+    // handled as soon as the loop runs.
+    gate.open(move |message| to_ui.send(message).is_ok());
 
     let config = Config::new("sengi-notify")
         .layer(Layer::Overlay)
