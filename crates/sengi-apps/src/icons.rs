@@ -6,14 +6,20 @@
 //! decoded straight to the size they are drawn at, so a 256 px PNG costs
 //! its user a 40 px bitmap and nothing more.
 //!
-//! Icon files come from whatever the user installs, and a tray item can
-//! name any path it likes: one may lead to a network or FUSE mount that
-//! never answers, and a file may be built to break a decoder. So the
-//! program that draws the icon never decodes one. [`Decoder`] starts that
-//! same program again as a short-lived child that finds and decodes one
-//! icon under tight limits and a timeout, and writes the pixels to its
-//! standard output. A file that crashes or stalls the decoder costs that
-//! child, and the icon is simply missing.
+//! Icon files come from whatever the user installs, and a file may be built
+//! to break a decoder. So the program that draws the icon never decodes
+//! one. [`Decoder`] starts that same program again as a short-lived child
+//! that decodes one icon under tight limits and a timeout, and writes the
+//! pixels to its standard output. A file that crashes or stalls the
+//! decoder costs that child, and the icon is simply missing.
+//!
+//! Who looks the file up differs. A tray item can name any path it likes,
+//! and one may lead to a network or FUSE mount that never answers, so for
+//! [`Decoder::decode`] the child does the lookup as well and the caller
+//! never touches the path. The dock calls [`find`] itself, on a worker
+//! thread, for names out of desktop files, and hands the child the file
+//! with [`Decoder::decode_file`]: a path that never answers there stalls
+//! that worker, not the dock's window.
 //!
 //! The child is the program itself rather than a helper of its own, so
 //! nothing new has to be installed: a program that uses [`Decoder`] passes
@@ -24,6 +30,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
+
+use crate::env::Env;
 
 /// Largest source image we are willing to decode, in pixels per side.
 const MAX_SOURCE: u32 = 2048;
@@ -75,29 +83,15 @@ impl IconDirs {
         }
     }
 
-    /// The standard places, from the environment. Relative directories in
-    /// it are ignored.
+    /// The standard places for `env`: `~/.icons`, then `icons` under each
+    /// of [`Env::data_roots`], Flatpak's export directories included.
+    pub fn for_env(env: &Env) -> Self {
+        Self::from_data_dirs(env.home.to_str(), &env.data_roots())
+    }
+
+    /// The standard places, from this process's environment.
     pub fn from_env() -> Self {
-        let home = std::env::var("HOME").ok().filter(|home| !home.is_empty());
-        let mut data = Vec::new();
-        match std::env::var("XDG_DATA_HOME") {
-            Ok(dir) if dir.starts_with('/') => data.push(PathBuf::from(dir)),
-            _ => data.extend(
-                home.as_ref()
-                    .map(|home| Path::new(home).join(".local/share")),
-            ),
-        }
-        let system = std::env::var("XDG_DATA_DIRS")
-            .ok()
-            .filter(|dirs| !dirs.is_empty())
-            .unwrap_or_else(|| "/usr/local/share:/usr/share".to_string());
-        data.extend(
-            system
-                .split(':')
-                .filter(|dir| dir.starts_with('/'))
-                .map(PathBuf::from),
-        );
-        Self::from_data_dirs(home.as_deref(), &data)
+        Self::for_env(&Env::from_process())
     }
 }
 
@@ -252,7 +246,13 @@ pub fn find(
     contexts: Contexts,
 ) -> Option<PathBuf> {
     if icon.starts_with('/') {
-        return resolve(icon).filter(|path| supported(path) && path.is_file());
+        // The extension is judged on the name as given: an icon may be a
+        // link to a file called something else. What the file really is
+        // is settled from its bytes when it is read.
+        if !supported(Path::new(icon)) {
+            return None;
+        }
+        return resolve(icon).filter(|path| path.is_file());
     }
     // Some entries wrongly include the extension in the name.
     let name = [".png", ".svg", ".xpm"]
@@ -285,15 +285,14 @@ pub struct Pixels {
     pub data: Vec<u8>,
 }
 
+/// How every PNG file begins.
+const PNG_MAGIC: &[u8] = b"\x89PNG\r\n\x1a\n";
+
 /// Reads an icon file, refusing anything that is not a regular file of a
 /// believable size. A FIFO or `/dev/zero` under an icon's name would
 /// otherwise be read for ever.
 fn read_icon(path: &Path) -> Option<Vec<u8>> {
-    let limit = match path.extension().and_then(|e| e.to_str()) {
-        Some("png") => MAX_PNG_BYTES,
-        Some("svg") => MAX_SVG_BYTES,
-        _ => return None,
-    };
+    let limit = MAX_PNG_BYTES.max(MAX_SVG_BYTES);
     let meta = fs::metadata(path).ok()?;
     if !meta.is_file() || meta.len() > limit {
         return None;
@@ -311,20 +310,24 @@ fn read_icon(path: &Path) -> Option<Vec<u8>> {
 /// Decodes an icon file into a square of `pixels` per side, in this
 /// process. Programs go through [`Decoder`] instead; this is what its
 /// child runs.
+///
+/// What kind of image it is comes from the file's first bytes, not its
+/// name: a PNG if it starts like one, otherwise (with the `svg` feature)
+/// an SVG if it parses as one.
 pub fn load(path: &Path, pixels: u32) -> Option<Pixels> {
     if pixels == 0 || pixels > MAX_PIXELS {
         return None;
     }
     let bytes = read_icon(path)?;
-    match path.extension().and_then(|e| e.to_str()) {
-        Some("png") => {
-            let (width, height, rgba) = decode_png(&bytes)?;
-            Some(fit(&rgba, width, height, pixels))
-        }
-        #[cfg(feature = "svg")]
-        Some("svg") => render_svg(&bytes, pixels),
-        _ => None,
+    if bytes.starts_with(PNG_MAGIC) {
+        let (width, height, rgba) = decode_png(&bytes)?;
+        return Some(fit(&rgba, width, height, pixels));
     }
+    #[cfg(feature = "svg")]
+    if bytes.len() as u64 <= MAX_SVG_BYTES {
+        return render_svg(&bytes, pixels);
+    }
+    None
 }
 
 /// Decodes to straight (not premultiplied) RGBA.
@@ -517,7 +520,8 @@ impl Decoder {
     /// environment and every context, after `theme_path` if that is not
     /// empty. Blocks for at most `timeout`, so call it away from the UI
     /// thread. None means there is no usable icon by that name, whatever
-    /// the reason.
+    /// the reason; a `pixels` of zero or above [`MAX_PIXELS`] is one such
+    /// reason.
     pub fn decode(
         &self,
         name: &str,
@@ -777,13 +781,59 @@ mod tray_tests {
         // is judged by where it really leads.
         assert_eq!(find(&dirs, None, "/proc/self/exe.png", 16), None);
         assert_eq!(find(&dirs, None, "/sys/class/x.png", 16), None);
+        // A link through /proc to a real file leads to that file, which
+        // is read and found to be no image.
         let link = root.join("via-link.png");
         std::os::unix::fs::symlink("/proc/self/exe", &link).unwrap();
-        assert_eq!(find(&dirs, None, link.to_str().unwrap(), 16), None);
+        let found = find(&dirs, None, link.to_str().unwrap(), 16);
+        assert_eq!(found.and_then(|path| load(&path, 16)), None);
         assert_eq!(
             find(&dirs, None, own.join("zero.png").to_str().unwrap(), 16),
             None
         );
+    }
+
+    #[test]
+    fn an_icon_may_be_a_link_to_a_file_called_something_else() {
+        let root = temp_dir("linked");
+        let dirs = dirs(&root);
+        let target = root.join("store/3f2a.bin");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        write_png(&target, 32, [10, 20, 30, 255]);
+        // Named by path.
+        let link = root.join("app.png");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let found = find(&dirs, None, link.to_str().unwrap(), 16).unwrap();
+        assert_eq!(found, fs::canonicalize(&target).unwrap());
+        assert_eq!(&load(&found, 16).unwrap().data[..4], [10, 20, 30, 255]);
+        // Named by icon name, in a theme.
+        let themed = root.join("home/icons/hicolor/32x32/apps/linked.png");
+        fs::create_dir_all(themed.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&target, &themed).unwrap();
+        let found = find(&dirs, None, "linked", 16).unwrap();
+        assert!(load(&found, 16).is_some());
+        // The name still has to be an image's: the target alone is not
+        // offered under any name at all.
+        assert_eq!(find(&dirs, None, target.to_str().unwrap(), 16), None);
+        // And a link does not make something else an image.
+        let fake = root.join("fake.png");
+        std::os::unix::fs::symlink("/etc/passwd", &fake).unwrap();
+        let found = find(&dirs, None, fake.to_str().unwrap(), 16);
+        assert_eq!(found.and_then(|path| load(&path, 16)), None);
+    }
+
+    #[test]
+    fn the_standard_places_include_flatpak_exports() {
+        let env =
+            Env::from_vars(|name| (name == "HOME").then(|| std::ffi::OsString::from("/home/a")));
+        let dirs = IconDirs::for_env(&env);
+        assert_eq!(dirs.themes[0], Path::new("/home/a/.icons"));
+        assert!(dirs
+            .themes
+            .contains(&PathBuf::from("/var/lib/flatpak/exports/share/icons")));
+        assert!(dirs.themes.contains(&PathBuf::from(
+            "/home/a/.local/share/flatpak/exports/share/icons"
+        )));
     }
 
     #[test]

@@ -34,9 +34,13 @@ at. The `svg` feature adds scalable icons through resvg.
 
 Icon files are never decoded in the program that draws them. `Decoder`
 starts that same program again as a child with an address-space and CPU
-limit and a timeout, and the child finds the file, decodes it and writes the
-pixels to its standard output. A program that uses it must hand its
-arguments to `icons::run_decoder` first thing in `main`:
+limit and a timeout, and the child decodes the file and writes the pixels to
+its standard output. Who looks the file up differs: with `Decoder::decode`
+(the bar's tray, where an app names the path) the child does that too and
+the bar never touches the path; the dock calls `icons::find` itself, on a
+worker thread, and hands the child the file with `Decoder::decode_file`.
+A program that uses either must hand its arguments to `icons::run_decoder`
+first thing in `main`:
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(code) = sengi_apps::icons::run_decoder(&args) {
@@ -44,8 +48,12 @@ arguments to `icons::run_decoder` first thing in `main`:
     }
 
 Files over 4 MiB (PNG) or 1 MiB (SVG), images over 2048 pixels a side and
-requests over 256 pixels a side are refused. An SVG cannot pull in other
-files. Paths that resolve into `/proc`, `/sys` or `/dev` are refused.
+requests over 256 pixels a side are refused: `Decoder` gives nothing for a
+larger size, so a caller that draws bigger must ask for 256 and scale. An
+SVG cannot pull in other files. Paths that resolve into `/proc`, `/sys` or
+`/dev` are refused. A file's type is told from its first bytes, so an icon
+may be a link to a file with another name.
 
-Without features the crate depends on nothing but libc, so a program that
-only lists and starts applications links no image decoder.
+Without features the crate depends only on libc and sengi-text (which has
+no dependencies), so a program that only lists and starts applications
+links no image decoder.

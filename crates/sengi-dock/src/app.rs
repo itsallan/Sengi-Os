@@ -104,6 +104,10 @@ fn to_image(pixels: icons::Pixels) -> Image {
 }
 
 impl State {
+    /// The size to ask the decoder for. It gives nothing above
+    /// `icons::MAX_PIXELS` (256), which the dock's icons stay well under
+    /// at any scale an output really has; past that an app would get its
+    /// letter tile.
     fn icon_pixels(&self, icon_size: f32) -> u32 {
         (icon_size * self.scale).round().max(1.0) as u32
     }
@@ -225,8 +229,7 @@ impl App {
     ) -> Self {
         let env = Env::from_process();
         let data_dirs = env.data_roots();
-        let home = std::env::var("HOME").ok();
-        let icon_dirs = IconDirs::from_data_dirs(home.as_deref(), &data_dirs);
+        let icon_dirs = IconDirs::for_env(&env);
         let dock = Dock::load(config::pinned(&config::paths()), data_dirs, env);
         let app = Self::new(ui, dock, icon_dirs, deliver.clone(), on_resize);
 
