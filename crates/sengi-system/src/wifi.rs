@@ -1,6 +1,6 @@
 //! Wi-Fi as the panel sees it: the networks in range, which to list and in
 //! what order, and the steps of joining one. Nothing here talks to iwd;
-//! `system::iwd` turns what iwd says into these types.
+//! [`iwd`](crate::iwd) turns what iwd says into these types.
 
 use crate::secret::Secret;
 
@@ -8,8 +8,10 @@ use crate::secret::Secret;
 /// and anything past the strongest few dozen is out of practical reach.
 pub const MAX_NETWORKS: usize = 24;
 
+/// How a network is secured, as far as joining it goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Security {
+    /// No passphrase.
     Open,
     /// A shared passphrase: WPA2 or WPA3 personal.
     Passphrase,
@@ -31,36 +33,48 @@ impl Security {
     }
 }
 
+/// One network in range.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Network {
     /// Opaque to everything but the service: iwd's object path.
     pub id: String,
     /// Already cleaned for display.
     pub name: String,
+    /// How it is secured.
     pub security: Security,
     /// iwd has joined it before and holds what it needs to do so again.
     pub known: bool,
+    /// This is the network the device is on, or is joining.
     pub connected: bool,
     /// Signal strength in hundredths of a dBm, as iwd reports it.
     pub signal: i16,
 }
 
+/// Where the device stands with the network it is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Link {
+    /// On no network.
     Disconnected,
+    /// Joining one.
     Connecting,
+    /// On a network, roaming between its access points included.
     Connected,
 }
 
+/// Wi-Fi as a whole.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Wifi {
     /// iwd is not running or has no device.
     Absent,
     /// iwd is running and the bus policy keeps this user out.
     Denied,
+    /// There is a device and it is switched off.
     Off,
+    /// Switched on.
     On {
+        /// Where the device stands.
         link: Link,
+        /// A scan is under way.
         scanning: bool,
         /// Arranged: see [`arrange`].
         networks: Vec<Network>,
@@ -102,6 +116,7 @@ pub fn arrange(mut networks: Vec<Network>) -> Vec<Network> {
 
 /// Why an attempt to join failed, in iwd's terms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum JoinError {
     /// The network refused, which for a typed passphrase nearly always
     /// means it was wrong.
@@ -111,9 +126,11 @@ pub enum JoinError {
     NeedsPassphrase,
     /// Another request took over, or the passphrase was not supplied.
     Aborted,
+    /// The attempt timed out.
     Timeout,
     /// An enterprise network without a provisioning file.
     NotConfigured,
+    /// iwd cannot join this kind of network.
     NotSupported,
     /// The service went away or would not take the request.
     Unavailable,
@@ -122,7 +139,9 @@ pub enum JoinError {
 /// What is wrong with a passphrase before or after trying it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Problem {
+    /// Under 8 characters.
     TooShort,
+    /// Over 63 characters.
     TooLong,
     /// WPA passphrases are printable ASCII.
     NotPlain,
@@ -150,30 +169,41 @@ pub fn check_passphrase(passphrase: &str) -> Result<(), Problem> {
 /// What to ask the service for.
 #[derive(Debug)]
 pub struct Request {
+    /// The ID of the [`Network`] to join.
     pub id: String,
+    /// The passphrase the user typed, if one was needed. Without one iwd
+    /// uses what it has stored.
     pub passphrase: Option<Secret>,
 }
 
 /// Where the user is in joining a network.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Join {
+    /// Nothing is being joined.
     Idle,
     /// An open network nobody has joined before was picked. Anyone can
     /// put up an open network under any name, and everything sent over it
     /// can be read, so one click is not enough: the row asks first.
     Confirming {
+        /// The network's ID.
         id: String,
+        /// Its name, for the question.
         name: String,
     },
     /// The passphrase field is open for this network.
     Asking {
+        /// The network's ID.
         id: String,
+        /// Its name, for the prompt.
         name: String,
+        /// What was wrong with the last passphrase, if one was tried.
         problem: Option<Problem>,
     },
     /// The service is working on it.
     Joining {
+        /// The network's ID.
         id: String,
+        /// Its name.
         name: String,
         /// A passphrase was typed for this attempt.
         typed: bool,
@@ -183,7 +213,9 @@ pub enum Join {
     },
     /// The last attempt failed and there is nothing to retype.
     Failed {
+        /// The network's name.
         name: String,
+        /// Why it failed.
         error: JoinError,
     },
 }

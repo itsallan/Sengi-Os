@@ -3513,6 +3513,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
+name = "sengi-apps"
+version = "0.5.0"
+dependencies = [
+ "libc",
+ "png",
+ "resvg",
+ "sengi-text",
+]
+
+[[package]]
 name = "sengi-bar"
 version = "0.5.0"
 dependencies = [
@@ -3521,9 +3531,10 @@ dependencies = [
  "enumflags2",
  "futures-lite",
  "libc",
- "png",
- "resvg",
+ "sengi-apps",
  "sengi-layer",
+ "sengi-system",
+ "sengi-text",
  "slint",
  "slint-build",
  "zbus",
@@ -3533,10 +3544,10 @@ dependencies = [
 name = "sengi-dock"
 version = "0.5.0"
 dependencies = [
- "libc",
  "png",
- "resvg",
+ "sengi-apps",
  "sengi-layer",
+ "sengi-text",
  "slint",
  "slint-build",
  "wayland-protocols-wlr",
@@ -3554,7 +3565,9 @@ dependencies = [
 name = "sengi-launcher"
 version = "0.5.0"
 dependencies = [
+ "sengi-apps",
  "sengi-layer",
+ "sengi-system",
  "slint",
  "slint-build",
 ]
@@ -3574,6 +3587,8 @@ version = "0.5.0"
 dependencies = [
  "chrono",
  "sengi-layer",
+ "sengi-system",
+ "sengi-text",
  "sengi-tokens",
  "serde",
  "slint",
@@ -3585,11 +3600,11 @@ dependencies = [
 name = "sengi-quick"
 version = "0.5.0"
 dependencies = [
- "libc",
  "sengi-layer",
+ "sengi-system",
+ "sengi-text",
  "slint",
  "slint-build",
- "zbus",
 ]
 
 [[package]]
@@ -3603,6 +3618,19 @@ dependencies = [
  "wayland-protocols-wlr",
  "zbus",
 ]
+
+[[package]]
+name = "sengi-system"
+version = "0.5.0"
+dependencies = [
+ "libc",
+ "sengi-text",
+ "zbus",
+]
+
+[[package]]
+name = "sengi-text"
+version = "0.5.0"
 
 [[package]]
 name = "sengi-tokens"

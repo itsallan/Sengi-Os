@@ -162,7 +162,7 @@ pub fn pinned(paths: &[PathBuf]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::desktop::testing::{temp_dir, write};
+    use crate::testing::{temp_dir, write};
 
     #[test]
     fn a_one_line_list_is_read() {

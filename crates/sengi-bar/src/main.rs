@@ -103,7 +103,7 @@ fn apply_sys(bar: &Bar, sys: &Sys) {
 fn apply_slow(bar: &Bar, slow: &Slow) {
     match &slow.volume {
         Some(volume) => {
-            bar.set_volume(volume.label().into());
+            bar.set_volume(status::volume_label(volume).into());
             bar.set_muted(volume.muted);
         }
         None => bar.set_volume("".into()),
@@ -235,7 +235,7 @@ fn main() -> ExitCode {
     // The bar runs itself again for two jobs it will not do in its own
     // process: decoding an icon file and drawing a tray menu.
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if let Some(code) = tray::icons::run_decoder(&args) {
+    if let Some(code) = sengi_apps::icons::run_decoder(&args) {
         return code;
     }
     if let Some(code) = tray::menu_view::run(&args) {

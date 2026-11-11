@@ -3,19 +3,27 @@
 use std::fs;
 use std::path::Path;
 
+/// What the battery is doing, from its `status` file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Charge {
+    /// Taking charge.
     Charging,
+    /// Running the machine.
     Discharging,
+    /// Full.
     Full,
     /// On mains but holding its level, as with a charge threshold.
     NotCharging,
+    /// The kernel does not know, or says something else.
     Unknown,
 }
 
+/// The state of one battery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Battery {
+    /// Charge left, 0 to 100.
     pub percent: u32,
+    /// What it is doing.
     pub charge: Charge,
     /// Minutes until empty when discharging, until full when charging.
     pub minutes: Option<u32>,
@@ -24,19 +32,28 @@ pub struct Battery {
 /// The files of one battery, unparsed. Missing files are `None`.
 #[derive(Debug, Default, Clone)]
 pub struct Raw {
+    /// `capacity`: percent.
     pub capacity: Option<String>,
+    /// `status`: `Charging`, `Discharging` and so on.
     pub status: Option<String>,
+    /// `energy_now`, in microwatt-hours.
     pub energy_now: Option<String>,
+    /// `energy_full`, in microwatt-hours.
     pub energy_full: Option<String>,
+    /// `power_now`, in microwatts.
     pub power_now: Option<String>,
+    /// `charge_now`, in microampere-hours.
     pub charge_now: Option<String>,
+    /// `charge_full`, in microampere-hours.
     pub charge_full: Option<String>,
+    /// `current_now`, in microamperes.
     pub current_now: Option<String>,
 }
 
 /// Below these the battery is drawn in the warning and danger colours, the
 /// same levels the bar uses.
 pub const WARNING_PERCENT: u32 = 20;
+/// At or below this, discharging, the battery is drawn as critical.
 pub const CRITICAL_PERCENT: u32 = 10;
 
 /// Estimates past a day are noise from a battery that is barely draining.
@@ -63,6 +80,8 @@ pub fn minutes_left(charge: Charge, now: u64, full: Option<u64>, rate: u64) -> O
     (minutes > 0 && minutes <= MAX_MINUTES).then_some(minutes as u32)
 }
 
+/// Makes sense of one battery's files. `None` without a usable
+/// `capacity`.
 pub fn parse(raw: &Raw) -> Option<Battery> {
     let percent = raw
         .capacity
@@ -95,14 +114,18 @@ pub fn parse(raw: &Raw) -> Option<Battery> {
 }
 
 impl Battery {
+    /// Whether it is taking charge.
     pub fn charging(&self) -> bool {
         self.charge == Charge::Charging
     }
 
+    /// Discharging and at or below [`CRITICAL_PERCENT`].
     pub fn low(&self) -> bool {
         self.charge == Charge::Discharging && self.percent <= CRITICAL_PERCENT
     }
 
+    /// Discharging and at or below [`WARNING_PERCENT`], but not yet
+    /// [`low`](Battery::low).
     pub fn warning(&self) -> bool {
         self.charge == Charge::Discharging && self.percent <= WARNING_PERCENT && !self.low()
     }

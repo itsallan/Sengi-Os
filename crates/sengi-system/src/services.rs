@@ -4,8 +4,9 @@
 //! Every method of a service may block: on the system bus, on a child
 //! process, on a file. None is ever called on the UI thread. Each service
 //! has a worker that takes [`Command`]s from the panel, calls the service,
-//! and reports what it then reads as [`Event`]s. The real services are in
-//! `system`; `demo` has made-up ones for looking at the panel.
+//! and reports what it then reads as [`Event`]s. The real services come
+//! from [`real_services`](crate::real_services); a program can supply
+//! made-up ones of its own, as quick settings does for looking at its panel.
 
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
@@ -21,47 +22,70 @@ use crate::wifi::{JoinError, Request, Wifi};
 /// Called by a service, from any thread, when a later read could differ.
 pub type Notify = Box<dyn Fn() + Send + Sync>;
 
+/// Wi-Fi: reading its state, switching the radio, scanning and joining a
+/// network.
 pub trait WifiService: Send + Sync + 'static {
+    /// Wi-Fi as it is now. Never starts the daemon: one that is not running
+    /// reads as absent.
     fn read(&self) -> Wifi;
+    /// Switch the radio on or off. The change shows in a later `read`.
     fn set_powered(&self, on: bool);
     /// Ask for a fresh look at what is in range. Returns at once.
     fn scan(&self);
     /// Returns when the network is joined or the attempt has failed, which
     /// can take half a minute. `read` and the rest stay usable meanwhile.
     fn join(&self, request: Request) -> Result<(), JoinError>;
+    /// Arrange for `changed` to be called whenever a later `read` could
+    /// differ.
     fn watch(&self, changed: Notify);
 }
 
+/// Bluetooth: whether there is an adapter, whether it is on, and what is
+/// connected.
 pub trait BluetoothService: Send + Sync + 'static {
+    /// Bluetooth as it is now. Never starts the daemon: one that is not
+    /// running reads as absent.
     fn read(&self) -> Bluetooth;
+    /// Switch the adapter on or off. The change shows in a later `read`.
     fn set_powered(&self, on: bool);
+    /// Arrange for `changed` to be called whenever a later `read` could
+    /// differ.
     fn watch(&self, changed: Notify);
 }
 
+/// The default audio output.
 pub trait AudioService: Send + 'static {
     /// `None` when there is no output to control.
     fn read(&self) -> Option<Volume>;
+    /// Set the volume, in percent. It is held at 100.
     fn set_volume(&self, percent: u32);
+    /// Mute or unmute the output.
     fn set_muted(&self, muted: bool);
 }
 
 /// What the kernel says about the machine itself.
 pub trait Machine: Send + 'static {
+    /// The battery, backlight, links and radio blocks as they are now.
     fn read(&self) -> Hardware;
+    /// Set the backlight called `name` to `raw`, in the device's own units:
+    /// see [`Backlight::raw`].
     fn set_backlight(&self, name: &str, raw: u32);
 }
 
+/// Do-not-disturb, which the notification service owns.
 pub trait DndService: Send + 'static {
     /// Whether the notification service is installed at all.
     fn available(&self) -> bool;
     /// `None` when the service cannot say.
     fn read(&self) -> Option<bool>;
+    /// Switch do-not-disturb on or off.
     fn set(&self, on: bool);
 }
 
 /// Whether the kernel's rfkill is holding a radio off.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Block {
+    /// Not held off.
     #[default]
     None,
     /// By software: a key on the keyboard, or `rfkill block`.
@@ -70,63 +94,97 @@ pub enum Block {
     Hard,
 }
 
+/// What [`Machine::read`] found.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Hardware {
+    /// The first system battery, if the machine has one.
     pub battery: Option<Battery>,
+    /// The backlight to control, if the machine has one.
     pub backlight: Option<Backlight>,
     /// A cable is in and the link is up.
     pub wired: bool,
     /// Some other kind of hardware link is up: a phone's modem, say.
     pub other_link: bool,
+    /// There is Wi-Fi hardware, connected or not.
     pub wifi_device: bool,
+    /// There is Bluetooth hardware.
     pub bluetooth_device: bool,
+    /// Whether rfkill is holding Wi-Fi off.
     pub wifi_block: Block,
+    /// Whether rfkill is holding Bluetooth off.
     pub bluetooth_block: Block,
 }
 
+/// One of each service: the real ones from
+/// [`real_services`](crate::real_services), or a program's own fakes.
 pub struct Services {
+    /// Wi-Fi.
     pub wifi: Arc<dyn WifiService>,
+    /// Bluetooth.
     pub bluetooth: Arc<dyn BluetoothService>,
+    /// The default audio output.
     pub audio: Box<dyn AudioService>,
+    /// The machine itself: `/sys`, and logind for the backlight.
     pub machine: Box<dyn Machine>,
+    /// Do-not-disturb.
     pub dnd: Box<dyn DndService>,
 }
 
 /// News for the panel.
 #[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Event {
+    /// Wi-Fi as it now reads.
     Wifi(Wifi),
+    /// A [`Command::Join`] has ended.
     Joined {
+        /// The network's ID, as it was in the request.
         id: String,
+        /// How the attempt ended.
         result: Result<(), JoinError>,
     },
+    /// Bluetooth as it now reads.
     Bluetooth(Bluetooth),
     /// The volume as read after applying slider change `sequence`.
     Volume {
+        /// The number of the change this reading follows.
         sequence: u64,
+        /// `None` when there is no output to control.
         volume: Option<Volume>,
     },
     /// Likewise for the brightness slider.
     Hardware {
+        /// The number of the change this reading follows.
         sequence: u64,
+        /// The machine as it now reads.
         hardware: Hardware,
     },
+    /// Do-not-disturb as it now reads. `None` when the service cannot say.
     Dnd(Option<bool>),
 }
 
 /// What the panel asks for.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Command {
+    /// Switch the Wi-Fi radio on or off.
     WifiPower(bool),
+    /// Join a network. Answered with [`Event::Joined`].
     Join(Request),
+    /// Switch the Bluetooth adapter on or off.
     BluetoothPower(bool),
+    /// Set the volume to the step's value, in percent.
     Volume(Step),
     /// Numbered in the same series as the volume changes.
     Mute {
+        /// This change's number.
         sequence: u64,
+        /// Whether to mute.
         muted: bool,
     },
+    /// Set the brightness to the step's value, in percent.
     Brightness(Step),
+    /// Switch do-not-disturb on or off.
     Dnd(bool),
 }
 
@@ -145,32 +203,46 @@ const SETTLE_LIMIT: Duration = Duration::from_millis(250);
 /// is open. Nothing announces changes to them.
 pub const POLL: Duration = Duration::from_secs(2);
 
+/// What the Wi-Fi worker takes in.
 #[derive(Debug)]
-pub enum WifiMessage {
+enum WifiMessage {
+    /// The service says a read could now differ.
     Changed,
+    /// Switch the radio on or off.
     Power(bool),
+    /// Join a network.
     Join(Request),
 }
 
+/// What the Bluetooth worker takes in.
 #[derive(Debug)]
-pub enum BluetoothMessage {
+enum BluetoothMessage {
+    /// The service says a read could now differ.
     Changed,
+    /// Switch the adapter on or off.
     Power(bool),
 }
 
+/// What the audio worker takes in.
 #[derive(Debug)]
-pub enum AudioMessage {
+enum AudioMessage {
+    /// Set the volume.
     Volume(Step),
+    /// Mute or unmute.
     Mute {
+        /// This change's number.
         sequence: u64,
+        /// Whether to mute.
         muted: bool,
     },
     /// The panel is closing: apply what is queued and end.
     Stop,
 }
 
+/// What the machine worker takes in.
 #[derive(Debug)]
-pub enum MachineMessage {
+enum MachineMessage {
+    /// Set the brightness.
     Brightness(Step),
     /// The panel is closing: apply what is queued and end.
     Stop,
@@ -188,6 +260,8 @@ pub struct Workers {
 }
 
 impl Workers {
+    /// Start a thread for each service. Everything they learn arrives
+    /// through `emit`, on those threads.
     pub fn start(services: Services, emit: impl Emit + Clone) -> Workers {
         let (wifi, inbox) = mpsc::channel();
         thread::spawn({
@@ -280,7 +354,8 @@ fn burst<T>(inbox: &Receiver<T>) -> Option<Vec<T>> {
     Some(messages)
 }
 
-pub fn wifi_worker(
+/// The Wi-Fi worker's loop, run by [`Workers::start`].
+fn wifi_worker(
     service: Arc<dyn WifiService>,
     inbox: Receiver<WifiMessage>,
     own: Sender<WifiMessage>,
@@ -341,7 +416,8 @@ pub fn wifi_worker(
     }
 }
 
-pub fn bluetooth_worker(
+/// The Bluetooth worker's loop, run by [`Workers::start`].
+fn bluetooth_worker(
     service: Arc<dyn BluetoothService>,
     inbox: Receiver<BluetoothMessage>,
     own: Sender<BluetoothMessage>,
@@ -376,7 +452,7 @@ pub fn bluetooth_worker(
 
 /// What a batch of slider and mute messages comes to: the newest volume
 /// and the last mute state. Everything in between was overtaken.
-pub fn settle(batch: impl IntoIterator<Item = AudioMessage>) -> Settled {
+fn settle(batch: impl IntoIterator<Item = AudioMessage>) -> Settled {
     let mut steps = Vec::new();
     let mut settled = Settled::default();
     for message in batch {
@@ -396,9 +472,12 @@ pub fn settle(batch: impl IntoIterator<Item = AudioMessage>) -> Settled {
     settled
 }
 
+/// What [`settle`] makes of a batch.
 #[derive(Debug, Default, PartialEq, Eq)]
-pub struct Settled {
+struct Settled {
+    /// The newest volume asked for, if any was.
     pub volume: Option<Step>,
+    /// The last mute state asked for, if any was.
     pub mute: Option<bool>,
     /// The newest change in the batch, of either kind; 0 for none.
     pub sequence: u64,
@@ -420,7 +499,8 @@ fn waiting<T>(inbox: &Receiver<T>, poll: Duration) -> Result<Vec<T>, ()> {
     }
 }
 
-pub fn audio_worker(
+/// The audio worker's loop, run by [`Workers::start`].
+fn audio_worker(
     service: &dyn AudioService,
     inbox: Receiver<AudioMessage>,
     emit: impl Emit,
@@ -463,7 +543,8 @@ pub fn audio_worker(
     }
 }
 
-pub fn machine_worker(
+/// The machine worker's loop, run by [`Workers::start`].
+fn machine_worker(
     service: &dyn Machine,
     inbox: Receiver<MachineMessage>,
     emit: impl Emit,
@@ -511,7 +592,8 @@ pub fn machine_worker(
     }
 }
 
-pub fn dnd_worker(service: &dyn DndService, inbox: Receiver<bool>, emit: impl Emit) {
+/// The do-not-disturb worker's loop, run by [`Workers::start`].
+fn dnd_worker(service: &dyn DndService, inbox: Receiver<bool>, emit: impl Emit) {
     if !service.available() {
         return;
     }

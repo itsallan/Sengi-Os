@@ -14,9 +14,12 @@ pub const TERMINAL: [&str; 2] = ["foot", "-e"];
 /// Puts the app in its own systemd scope so the focused app can be prioritised.
 pub const RUNNER: &str = "sengi-run";
 
+/// Why an Exec line cannot be run.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ExecError {
+    /// There is no command: no Exec line, or nothing left of it.
     Empty,
+    /// A quote was opened and never closed.
     UnclosedQuote,
     /// The program is a path that does not start at the root.
     RelativePath,
@@ -100,8 +103,13 @@ pub fn split(exec: &str) -> Result<Vec<String>, ExecError> {
     Ok(args)
 }
 
-/// Expand field codes. The launcher never has files or URLs to pass, so
-/// `%f %F %u %U` vanish, as do the deprecated codes.
+/// Expand the field codes in `args`. There are never files or URLs to pass,
+/// so `%f %F %u %U` vanish, as do the deprecated codes, and an argument
+/// that was nothing but such codes disappears. `%%` is a literal percent.
+///
+/// Codes are expanded in every argument, whether or not it was quoted in
+/// the Exec line, as GLib does. Real files depend on it: `app "%U"`,
+/// `--name="%c"`. [`command_line`] passes every argument through here.
 pub fn expand(args: &[String], entry: &DesktopEntry) -> Vec<String> {
     let mut out = Vec::with_capacity(args.len());
     for arg in args {
@@ -198,7 +206,30 @@ pub fn launchable(entry: &DesktopEntry, env: &Env) -> Result<Vec<String>, ExecEr
     command_line(entry, env)
 }
 
-/// Start `argv` detached from the launcher. Does not wait for it.
+/// The name of the program an Exec line starts, without its directory:
+/// `/usr/bin/env FOO=1 /opt/app/bin/app --flag` gives `app`.
+pub fn program_name(exec: &str) -> Option<String> {
+    let words = split(exec).ok()?;
+    let mut words = words.iter().map(String::as_str);
+    let base = |path: &str| path.rsplit('/').next().unwrap_or(path).to_string();
+
+    let first = words.next()?;
+    if base(first) != "env" {
+        return Some(base(first)).filter(|name| !name.is_empty());
+    }
+    words
+        .find(|word| !word.contains('=') && !word.starts_with('-'))
+        .map(base)
+        .filter(|name| !name.is_empty())
+}
+
+/// Start `argv` and let go of it. Does not wait for the program.
+///
+/// The program is forked twice, so it is never the caller's child: when it
+/// exits, init collects it and a long-lived caller such as the dock is left
+/// with no zombie to reap. It gets a session of its own, so nothing aimed at
+/// the caller reaches it and it outlives the caller. It starts in
+/// `working_dir` if that is a directory, with no standard input or output.
 pub fn spawn(argv: &[String], working_dir: Option<&Path>) -> std::io::Result<()> {
     use std::os::unix::process::CommandExt;
 
@@ -210,13 +241,27 @@ pub fn spawn(argv: &[String], working_dir: Option<&Path>) -> std::io::Result<()>
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        // Its own process group, so nothing aimed at the launcher reaches it.
-        .process_group(0);
+        .stderr(Stdio::null());
     if let Some(dir) = working_dir.filter(|dir| dir.is_dir()) {
         command.current_dir(dir);
     }
-    command.spawn().map(drop)
+    // SAFETY: the closure runs in the forked child before exec and only
+    // makes async-signal-safe calls: fork, setsid and _exit.
+    unsafe {
+        command.pre_exec(|| match libc::fork() {
+            -1 => Err(std::io::Error::last_os_error()),
+            0 => {
+                libc::setsid();
+                Ok(())
+            }
+            _ => libc::_exit(0),
+        });
+    }
+    // The child seen from here is the short-lived middle process. A failed
+    // exec in the grandchild is still reported through spawn().
+    let mut middle = command.spawn()?;
+    let _ = middle.wait();
+    Ok(())
 }
 
 #[cfg(test)]
@@ -224,21 +269,11 @@ mod tests {
     use super::*;
     use crate::testutil::TempDir;
     use std::ffi::OsString;
-    use std::path::PathBuf;
 
     fn entry(exec: &str) -> DesktopEntry {
-        DesktopEntry {
-            id: "app.desktop".into(),
-            path: PathBuf::from("/usr/share/applications/app.desktop"),
-            name: "My App".into(),
-            generic_name: String::new(),
-            comment: String::new(),
-            keywords: Vec::new(),
-            exec: exec.into(),
-            icon: "app-icon".into(),
-            terminal: false,
-            working_dir: None,
-        }
+        let mut entry = DesktopEntry::named("app", "My App", exec);
+        entry.icon = "app-icon".into();
+        entry
     }
 
     fn env_with_path(path: &str) -> Env {
@@ -519,6 +554,189 @@ mod tests {
         assert_eq!(
             launchable(&entry("./app"), &env),
             Err(ExecError::RelativePath)
+        );
+    }
+
+    // The tests below came with the dock's parser.
+
+    fn run(exec: &str) -> Result<Vec<String>, ExecError> {
+        let mut entry = crate::testutil::entry("web", "Web Browser", exec);
+        entry.icon = "web-icon".into();
+        command_line(&entry, &no_runner())
+    }
+
+    fn args(list: &[&str]) -> Result<Vec<String>, ExecError> {
+        Ok(list.iter().map(|s| s.to_string()).collect())
+    }
+
+    #[test]
+    fn plain_words_are_split_on_whitespace() {
+        assert_eq!(run("foot"), args(&["foot"]));
+        assert_eq!(
+            run("  foot   --server\t-x "),
+            args(&["foot", "--server", "-x"])
+        );
+    }
+
+    #[test]
+    fn file_and_url_codes_are_dropped_from_a_command() {
+        assert_eq!(run("web %u"), args(&["web"]));
+        assert_eq!(
+            run("web --new-window %U --tail"),
+            args(&["web", "--new-window", "--tail"])
+        );
+        assert_eq!(run("edit %f %F"), args(&["edit"]));
+        assert_eq!(run("web --url=%u"), args(&["web", "--url="]));
+    }
+
+    #[test]
+    fn name_icon_and_path_codes_are_filled_in() {
+        assert_eq!(
+            run("web --title %c"),
+            args(&["web", "--title", "Web Browser"])
+        );
+        assert_eq!(run("web %i"), args(&["web", "--icon", "web-icon"]));
+        assert_eq!(
+            run("web --desktop=%k"),
+            args(&["web", "--desktop=/usr/share/applications/web.desktop"])
+        );
+    }
+
+    #[test]
+    fn the_icon_code_vanishes_when_there_is_no_icon() {
+        let mut entry = crate::testutil::entry("web", "Web", "web %i");
+        entry.icon.clear();
+        assert_eq!(command_line(&entry, &no_runner()), args(&["web"]));
+    }
+
+    #[test]
+    fn percent_and_deprecated_codes() {
+        assert_eq!(run("calc 100%%"), args(&["calc", "100%"]));
+        assert_eq!(run("old %d %n %v %m x"), args(&["old", "x"]));
+    }
+
+    #[test]
+    fn quoted_arguments_keep_spaces_and_escapes() {
+        assert_eq!(
+            run(r#"sh -c "echo \"a  b\" \$HOME \\ \`x\`""#),
+            args(&["sh", "-c", r#"echo "a  b" $HOME \ `x`"#])
+        );
+        assert_eq!(
+            run(r#""/opt/My App/run" --flag"#),
+            args(&["/opt/My App/run", "--flag"])
+        );
+        assert_eq!(run(r#"app """#), args(&["app", ""]));
+    }
+
+    #[test]
+    fn field_codes_inside_quotes_are_expanded_too() {
+        // What GLib does, and what `Exec=/opt/App/app "%U"` relies on.
+        assert_eq!(run(r#"app "%u""#), args(&["app"]));
+        assert_eq!(
+            run("app '%c' --name=\"%c\""),
+            args(&["app", "Web Browser", "--name=Web Browser"])
+        );
+        assert_eq!(run(r#"app "100%%""#), args(&["app", "100%"]));
+        assert_eq!(
+            run(r#"bash -c "exec tool --desktop %k""#),
+            args(&[
+                "bash",
+                "-c",
+                "exec tool --desktop /usr/share/applications/web.desktop"
+            ])
+        );
+    }
+
+    #[test]
+    fn broken_and_empty_commands_are_errors() {
+        assert_eq!(run(r#"app "unfinished"#), Err(ExecError::UnclosedQuote));
+        assert_eq!(run(r#"app "bad\"#), Err(ExecError::UnclosedQuote));
+        assert_eq!(run(""), Err(ExecError::Empty));
+        assert_eq!(run("%u"), Err(ExecError::Empty));
+    }
+
+    #[test]
+    fn the_program_name_skips_paths_and_env() {
+        assert_eq!(program_name("foot").as_deref(), Some("foot"));
+        assert_eq!(
+            program_name("/usr/lib/firefox-esr/firefox-esr %u").as_deref(),
+            Some("firefox-esr")
+        );
+        assert_eq!(
+            program_name("env GDK_BACKEND=wayland /opt/app/bin/app --flag").as_deref(),
+            Some("app")
+        );
+        assert_eq!(
+            program_name(r#""/opt/My App/run" %f"#).as_deref(),
+            Some("run")
+        );
+        assert_eq!(program_name(""), None);
+        assert_eq!(program_name("env A=1"), None);
+    }
+
+    #[test]
+    fn a_started_program_is_not_our_child() {
+        let tmp = TempDir::new();
+        let out = tmp.path().join("out");
+        tmp.write(
+            "report",
+            "#!/bin/sh\nprintf '%s|%s|%s' \"$1\" \"$2\" \"$PPID\" > \"$3\"\n",
+        );
+        tmp.make_executable("report");
+        spawn(
+            &[
+                tmp.path().join("report").display().to_string(),
+                "two words".into(),
+                "$HOME".into(),
+                out.display().to_string(),
+            ],
+            None,
+        )
+        .unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let text = loop {
+            match std::fs::read_to_string(&out) {
+                Ok(text) if text.matches('|').count() == 2 => break text,
+                _ if std::time::Instant::now() > deadline => panic!("the program did not run"),
+                _ => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
+        };
+        let fields: Vec<&str> = text.split('|').collect();
+        // Arguments arrive untouched: no shell has split or expanded them.
+        assert_eq!(fields[0], "two words");
+        assert_eq!(fields[1], "$HOME");
+        // Its parent is whoever adopts orphans, not this process.
+        assert_ne!(fields[2], std::process::id().to_string());
+    }
+
+    #[test]
+    fn the_runner_is_used_only_when_installed() {
+        let tmp = TempDir::new();
+        let env = env_with_path(&format!("/nonexistent:{}", tmp.path().display()));
+        let foot = crate::testutil::entry("foot", "Foot", "foot -x");
+        assert_eq!(command_line(&foot, &env), args(&["foot", "-x"]));
+
+        // Present but not executable does not count.
+        tmp.write(RUNNER, "");
+        assert_eq!(command_line(&foot, &env), args(&["foot", "-x"]));
+
+        tmp.write(RUNNER, "#!/bin/sh\nexec \"$@\"\n");
+        tmp.make_executable(RUNNER);
+        let runner = tmp.path().join(RUNNER).display().to_string();
+        assert_eq!(command_line(&foot, &env), args(&[&runner, "foot", "-x"]));
+        assert_eq!(env.find_program(RUNNER), Some(tmp.path().join(RUNNER)));
+        assert_eq!(env_with_path("").find_program(RUNNER), None);
+    }
+
+    #[test]
+    fn terminal_apps_are_wrapped_in_the_terminal() {
+        let mut vim = crate::testutil::entry("vim", "Vim", "vim %F");
+        assert_eq!(command_line(&vim, &no_runner()), args(&["vim"]));
+        vim.terminal = true;
+        assert_eq!(
+            command_line(&vim, &no_runner()),
+            args(&["foot", "-e", "vim"])
         );
     }
 }

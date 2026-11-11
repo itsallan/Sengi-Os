@@ -22,6 +22,7 @@ fn output(program: &str, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// The default output's volume, through `wpctl`.
 pub struct Wpctl;
 
 impl AudioService for Wpctl {
@@ -64,11 +65,13 @@ pub fn parse_dnd(output: &str) -> Option<bool> {
     }
 }
 
+/// Do-not-disturb, through the `sengi-notify` command.
 pub struct Notify {
     installed: bool,
 }
 
 impl Notify {
+    /// Looks for `sengi-notify` in `PATH` once, now.
     pub fn new() -> Notify {
         let path = std::env::var("PATH").unwrap_or_default();
         Notify {

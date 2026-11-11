@@ -5,7 +5,7 @@ use std::path::Path;
 
 /// Read a whole file, or nothing if it is larger than `limit` bytes. The
 /// size is enforced while reading, so a file that grows, or one that only
-/// claims to be small, cannot make the launcher allocate without bound.
+/// claims to be small, cannot make the caller allocate without bound.
 pub fn read_limited(path: &Path, limit: u64) -> Option<Vec<u8>> {
     let file = std::fs::File::open(path).ok()?;
     let mut bytes = Vec::new();

@@ -10,10 +10,12 @@ use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
 
-use crate::icons::{self, Decoder, IconDirs};
+use sengi_apps::icons::{self, Contexts, Decoder, IconDirs, DECODE_TIMEOUT};
+use sengi_apps::Env;
+
 use crate::model::{self, Action, Button, Dock, Icon, Item, Launches, LAUNCHER_KEY, LAUNCH_WAIT};
 use crate::windows::{self, Controller, Source, Window};
-use crate::{config, desktop, launch, ui};
+use crate::{config, launch, ui};
 
 /// The widest the dock may be until the output's real width is known: a
 /// width every laptop panel has.
@@ -71,7 +73,7 @@ struct State {
     icons: HashMap<String, IconState>,
     /// Icons to start decoding: item key, icon name, pixels per side.
     wanted: Vec<(String, String, u32)>,
-    decoder: Option<Decoder>,
+    decoder: Decoder,
     launches: Launches,
     /// The dock's generation the icons were looked up in.
     generation: u64,
@@ -102,6 +104,10 @@ fn to_image(pixels: icons::Pixels) -> Image {
 }
 
 impl State {
+    /// The size to ask the decoder for. It gives nothing above
+    /// `icons::MAX_PIXELS` (256), which the dock's icons stay well under
+    /// at any scale an output really has; past that an app would get its
+    /// letter tile.
     fn icon_pixels(&self, icon_size: f32) -> u32 {
         (icon_size * self.scale).round().max(1.0) as u32
     }
@@ -114,7 +120,7 @@ impl State {
             Icon::Named(name) => {
                 if !self.icons.contains_key(&item.key) {
                     // Decoding happens elsewhere; see `start_decoding`.
-                    let state = if name.is_empty() || self.decoder.is_none() {
+                    let state = if name.is_empty() {
                         IconState::Ready(None)
                     } else {
                         let pixels = self.icon_pixels(icon_size);
@@ -175,7 +181,7 @@ impl App {
                     rows: Vec::new(),
                     icons: HashMap::new(),
                     wanted: Vec::new(),
-                    decoder: Decoder::for_this_program(),
+                    decoder: Decoder::default(),
                     launches: Launches::default(),
                     generation: 0,
                     controller: None,
@@ -221,10 +227,10 @@ impl App {
         deliver: Deliver,
         on_resize: impl Fn(u32, u32) + 'static,
     ) -> Self {
-        let data_dirs = desktop::data_dirs();
-        let home = std::env::var("HOME").ok();
-        let icon_dirs = IconDirs::from_data_dirs(home.as_deref(), &data_dirs);
-        let dock = Dock::load(config::pinned(&config::paths()), data_dirs);
+        let env = Env::from_process();
+        let data_dirs = env.data_roots();
+        let icon_dirs = IconDirs::for_env(&env);
+        let dock = Dock::load(config::pinned(&config::paths()), data_dirs, env);
         let app = Self::new(ui, dock, icon_dirs, deliver.clone(), on_resize);
 
         // Drop updates that change nothing the dock shows, so a terminal
@@ -289,12 +295,9 @@ impl App {
             if state.wanted.is_empty() {
                 return;
             }
-            let Some(decoder) = state.decoder.clone() else {
-                return;
-            };
             (
                 std::mem::take(&mut state.wanted),
-                decoder,
+                state.decoder.clone(),
                 state.icon_dirs.clone(),
             )
         };
@@ -303,7 +306,8 @@ impl App {
             .name("icons".into())
             .spawn(move || {
                 for (key, name, pixels) in wanted {
-                    let icon = decoder.decode_named(&dirs, &name, pixels);
+                    let icon = icons::find(&dirs, None, &name, pixels, Contexts::Apps)
+                        .and_then(|path| decoder.decode_file(&path, pixels, DECODE_TIMEOUT));
                     deliver(Message::Icon { key, pixels, icon });
                 }
             });

@@ -17,13 +17,13 @@
 
 use std::cell::RefCell;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use sengi_apps::icons::{self, IconDirs};
+use sengi_apps::{AppIndex, DesktopEntry, Env};
 use sengi_dock::app::{App, Deliver, Message};
-use sengi_dock::desktop::{Apps, Entry};
-use sengi_dock::icons::{self, IconDirs};
 use sengi_dock::model::Dock;
 use sengi_dock::ui;
 use sengi_dock::windows::{Source, Window};
@@ -34,17 +34,10 @@ thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
 }
 
-fn entry(id: &str, name: &str, icon: &str) -> Entry {
-    Entry {
-        id: id.into(),
-        path: PathBuf::new(),
-        name: name.into(),
-        icon: icon.into(),
-        exec: Some("true".into()),
-        wm_class: None,
-        terminal: false,
-        no_display: false,
-    }
+fn entry(id: &str, name: &str, icon: &str) -> DesktopEntry {
+    let mut entry = DesktopEntry::named(id, name, "true");
+    entry.icon = icon.into();
+    entry
 }
 
 /// Stand-ins for icons that apps install: a large PNG that has to be shrunk
@@ -199,7 +192,7 @@ fn main() -> std::process::ExitCode {
             themes: vec![root.join("icons")],
             pixmaps: Vec::new(),
         };
-        let apps = Apps::from_entries(vec![
+        let apps = AppIndex::from_entries(vec![
             entry("files", "Files", "files"),
             entry("foot", "Foot", "foot"),
             entry("mail", "Mail", "no-such-icon"),
@@ -215,6 +208,7 @@ fn main() -> std::process::ExitCode {
             apps,
             pinned.iter().map(|s| s.to_string()).collect(),
             Vec::new(),
+            Env::from_process(),
         );
         let app = App::new(dock_ui.clone_strong(), dock, icon_dirs, deliver, resize);
         app.set_windows(&windows_for(&state));

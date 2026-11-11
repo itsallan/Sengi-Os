@@ -56,6 +56,14 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Tests
         run: cargo test --workspace --locked
+      # A build of the whole workspace shares cargo features between the
+      # programs, so one that uses a feature of a shared crate without
+      # asking for it still compiles there. On its own it does not.
+      - name: Each program on its own
+        run: |
+          for program in sengi-bar sengi-dock sengi-focus sengi-launcher sengi-notify sengi-quick; do
+            cargo check --locked -p "$program"
+          done
 
   # Types into a real layer surface under a headless compositor. New, so it
   # reports without blocking until it has proved steady on the runners.

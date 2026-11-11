@@ -7,10 +7,10 @@
 
 use std::sync::Arc;
 
-use super::bus::{self, Bus, Listing, Object};
 use crate::bluetooth::{Bluetooth, MAX_DEVICES};
+use crate::bus::{self, Bus, Listing, Object};
+use crate::names;
 use crate::services::{BluetoothService, Notify};
-use crate::text;
 
 const SERVICE: &str = "org.bluez";
 const ADAPTER: &str = "org.bluez.Adapter1";
@@ -27,6 +27,8 @@ pub fn adapter(objects: &[Object]) -> Option<(&str, bool)> {
     })
 }
 
+/// What a program shows for these BlueZ objects: whether there is an
+/// adapter, whether it is on, and the names of the connected devices.
 pub fn reading(objects: &[Object]) -> Bluetooth {
     let Some((adapter, powered)) = adapter(objects) else {
         return Bluetooth::Absent;
@@ -44,7 +46,7 @@ pub fn reading(objects: &[Object]) -> Bluetooth {
             }
             // The alias is the name the user gave it, or else its own.
             let name = bus::text(props, "Alias").or_else(|| bus::text(props, "Name"));
-            Some(text::name(name.unwrap_or_default(), "Unnamed device"))
+            Some(names::name(name.unwrap_or_default(), "Unnamed device"))
         })
         .take(MAX_DEVICES)
         .collect();
@@ -52,11 +54,13 @@ pub fn reading(objects: &[Object]) -> Bluetooth {
     Bluetooth::On { devices }
 }
 
+/// Bluetooth through BlueZ on the system bus.
 pub struct Bluez {
     bus: Arc<Bus>,
 }
 
 impl Bluez {
+    /// A service over `bus`. Nothing is called until it is first used.
     pub fn new(bus: Arc<Bus>) -> Bluez {
         Bluez { bus }
     }
@@ -81,7 +85,7 @@ impl BluetoothService for Bluez {
         // Fails when the radio is blocked by a hardware switch or rfkill;
         // the tile then shows it still off.
         if let Err(error) = self.bus.set_flag(SERVICE, path, ADAPTER, "Powered", on) {
-            eprintln!("sengi-quick: switching Bluetooth: {error}");
+            eprintln!("{}: switching Bluetooth: {error}", crate::program_name());
         }
     }
 
@@ -92,9 +96,9 @@ impl BluetoothService for Bluez {
 
 #[cfg(test)]
 mod tests {
-    use super::bus::testing::{object, path, text};
-    use super::bus::Prop;
     use super::*;
+    use crate::bus::testing::{object, path, text};
+    use crate::bus::Prop;
 
     fn hci(index: u32, powered: bool) -> Object {
         object(

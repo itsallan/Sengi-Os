@@ -226,7 +226,7 @@ impl Properties {
             // Tooltips may carry a little markup; it is not interpreted.
             self.tooltip = line(tooltip.map(|text| strip_markup(&text)));
         }
-        // Names and paths are looked up, not drawn; icons.rs vets them.
+        // Names and paths are looked up, not drawn; sengi-apps vets them.
         if parts.contains(Parts::ICON) {
             self.icon_name = raw.icon_name.unwrap_or_default();
             self.icon_theme_path = raw.icon_theme_path.unwrap_or_default();
@@ -459,7 +459,7 @@ mod tests {
             tooltip: Some(("".into(), "<b>3 unread</b><br/>from Sam".into())),
             ..Raw::default()
         });
-        assert_eq!(properties.id, "chat client");
+        assert_eq!(properties.id, "chatclient");
         assert_eq!(properties.title, "Chat evil");
         assert_eq!(properties.tooltip, "3 unread from Sam");
 
