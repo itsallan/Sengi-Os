@@ -1,6 +1,10 @@
 // The context menu of a tray item. The bar is too short to hold one, so it
 // is drawn by a helper on a surface of its own that covers the output: the
 // menu hangs under the icon and a click anywhere else closes it.
+//
+// Rows are sized and lit like the rows of the session menu that
+// sengi-launcher draws, and the keys do the same: the arrows move the
+// highlight, Return chooses, Escape closes.
 
 import { Tokens, SengiText, SengiSurface } from "components.slint";
 
@@ -14,14 +18,19 @@ export struct MenuRow {
     radio: bool,
     // Whether a check or radio row is switched on.
     on: bool,
+    // Neither on nor off: it stands for several things that disagree.
+    mixed: bool,
 }
 
 export struct MenuPanel {
     rows: [MenuRow],
     // Some row has a check or radio mark, so all rows leave room for one.
     marks: bool,
-    // The row whose submenu is open, or -1.
+    // The row whose submenu is open, the highlighted row, and a row the
+    // program wants to know the place of. Each is an id, or -1.
     open-id: int,
+    selected-id: int,
+    request-id: int,
     // For the menu itself, left is where the icon is. For a submenu these
     // are the edges of the panel it hangs off and the top of its row.
     left: length,
@@ -46,31 +55,43 @@ component Mark inherits Path {
 component Row inherits Rectangle {
     in property <MenuRow> entry;
     in property <bool> marks;
-    in property <bool> open;
+    // Highlighted: under the pointer, reached with the keys, or the row
+    // an open submenu hangs off.
+    in property <bool> selected;
+    // The program is asking where this row is.
+    in property <bool> requested;
     callback chosen();
+    // The pointer came over the row, or the program asked for its place.
     callback entered();
 
-    private property <bool> live: root.entry.enabled && !root.entry.separator;
     private property <color> ink: root.entry.enabled ? Tokens.color-text : Tokens.color-text-disabled;
 
-    height: root.entry.separator ? Tokens.space-sm + Tokens.border-width : Tokens.bar-height;
+    // The launcher's row: a line of large text with small space above and
+    // below it.
+    height: root.entry.separator ? Tokens.space-sm + Tokens.border-width
+        : Tokens.font-size-lg + Tokens.space-sm * 2;
     min-width: line.min-width;
     preferred-width: line.preferred-width;
     border-radius: Tokens.radius;
-    background: root.live && (touch.has-hover || root.open) ? Tokens.color-surface-hover : transparent;
-    animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+    background: root.selected && !root.entry.separator ? Tokens.color-surface-hover : transparent;
+
+    changed requested => {
+        if root.requested {
+            root.entered();
+        }
+    }
 
     if root.entry.separator: Rectangle {
-        x: Tokens.space-sm;
+        x: Tokens.space-md;
         y: (parent.height - self.height) / 2;
-        width: parent.width - Tokens.space-sm * 2;
+        width: parent.width - Tokens.space-md * 2;
         height: Tokens.border-width;
         background: Tokens.color-border;
     }
 
     line := HorizontalLayout {
-        padding-left: Tokens.space-sm;
-        padding-right: Tokens.space-sm;
+        padding-left: Tokens.space-md;
+        padding-right: Tokens.space-md;
         spacing: Tokens.space-sm;
 
         if root.marks: Rectangle {
@@ -80,11 +101,22 @@ component Row inherits Rectangle {
                 ink: root.ink;
                 commands: "M3.5 8.5l3 3 6-7";
             }
+            if root.entry.check && root.entry.mixed: Mark {
+                ink: root.ink;
+                commands: "M4 8h8";
+            }
             if root.entry.radio && root.entry.on: Rectangle {
-                width: Tokens.space-xs + Tokens.space-xxs;
+                width: Tokens.space-sm;
                 height: self.width;
                 border-radius: self.width / 2;
                 background: root.ink;
+            }
+            if root.entry.radio && root.entry.mixed: Rectangle {
+                width: Tokens.space-sm;
+                height: self.width;
+                border-radius: self.width / 2;
+                border-width: Tokens.icon-stroke;
+                border-color: root.ink;
             }
         }
 
@@ -92,6 +124,7 @@ component Row inherits Rectangle {
             horizontal-stretch: 1;
             text: root.entry.label;
             color: root.ink;
+            font-size: Tokens.font-size-lg;
             vertical-alignment: center;
             overflow: elide;
         }
@@ -109,7 +142,7 @@ component Row inherits Rectangle {
     touch := TouchArea {
         enabled: !root.entry.separator;
         clicked => {
-            if root.live {
+            if root.entry.enabled {
                 root.chosen();
             }
         }
@@ -127,9 +160,12 @@ export component TrayMenu inherits Window {
 
     // A row was chosen, by id.
     callback chosen(int);
-    // The pointer is over a row: the panel's index, the row's id, the left
-    // and right edges of the panel and the top of the row.
+    // The pointer is over a row, or the program asked where it is: the
+    // panel's index, the row's id, the left and right edges of the panel
+    // and the top of the row.
     callback entered(int, int, length, length, length);
+    // "up", "down", "left", "right" or "return" was pressed.
+    callback key(string);
     callback dismiss();
 
     private property <length> gap: Tokens.space-xs;
@@ -144,9 +180,21 @@ export component TrayMenu inherits Window {
         key-pressed(event) => {
             if event.text == Key.Escape {
                 root.dismiss();
-                return accept;
+            } else if event.text == Key.Return {
+                root.key("return");
+            } else if event.text == Key.UpArrow || event.text == Key.Backtab
+                || (event.text == Key.Tab && event.modifiers.shift) {
+                root.key("up");
+            } else if event.text == Key.DownArrow || event.text == Key.Tab {
+                root.key("down");
+            } else if event.text == Key.RightArrow {
+                root.key("right");
+            } else if event.text == Key.LeftArrow {
+                root.key("left");
+            } else {
+                return reject;
             }
-            reject
+            accept
         }
     }
 
@@ -169,7 +217,7 @@ export component TrayMenu inherits Window {
         x: index == 0 ? Math.clamp(panel.left, root.gap, Math.max(root.gap, root.width - self.width - root.gap))
             : self.fits-right ? panel.right : Math.max(root.gap, panel.left - self.width);
         y: index == 0 ? Tokens.bar-height + Tokens.space-xxs
-            : Math.clamp(panel.top - Tokens.space-xs, root.gap, Math.max(root.gap, root.height - self.height - root.gap));
+            : Math.clamp(panel.top - Tokens.space-sm, root.gap, Math.max(root.gap, root.height - self.height - root.gap));
 
         // Clicks between rows are not clicks outside the menu.
         TouchArea { }
@@ -179,12 +227,13 @@ export component TrayMenu inherits Window {
             content-height: list.preferred-height;
 
             list := VerticalLayout {
-                padding: Tokens.space-xs;
+                padding: Tokens.space-sm;
 
                 for row in panel.rows: item := Row {
                     entry: row;
                     marks: panel.marks;
-                    open: !row.separator && row.id == panel.open-id;
+                    selected: row.id == panel.selected-id || row.id == panel.open-id;
+                    requested: row.id == panel.request-id;
                     chosen => { root.chosen(row.id); }
                     entered => {
                         root.entered(index, row.id, box.x, box.x + box.width, item.absolute-position.y);

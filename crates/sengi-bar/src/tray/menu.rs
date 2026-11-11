@@ -36,6 +36,16 @@ pub enum Toggle {
     Radio,
 }
 
+/// Whether a check or radio row is switched on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum State {
+    #[default]
+    Off,
+    On,
+    /// Neither: a check row standing for several things that disagree.
+    Mixed,
+}
+
 /// One row of a menu.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Entry {
@@ -44,8 +54,7 @@ pub struct Entry {
     pub enabled: bool,
     pub separator: bool,
     pub toggle: Toggle,
-    /// Whether a check or radio row is switched on.
-    pub on: bool,
+    pub state: State,
     /// Opens a submenu. The children may arrive only once it is opened.
     pub submenu: bool,
     /// Kept for whoever draws menu icons; nothing does yet.
@@ -128,7 +137,15 @@ fn entry(node: &Value<'_>, depth: usize, budget: &mut usize) -> Option<Entry> {
                         _ => Toggle::None,
                     }
                 }
-                "toggle-state" => entry.on = matches!(inner(value), Value::I32(1)),
+                "toggle-state" => {
+                    entry.state = match inner(value) {
+                        Value::I32(1) => State::On,
+                        Value::I32(0) => State::Off,
+                        // The protocol says anything else is indeterminate.
+                        Value::I32(_) => State::Mixed,
+                        _ => State::Off,
+                    }
+                }
                 "children-display" => entry.submenu = string(value) == Some("submenu"),
                 "icon-name" => {
                     entry.icon = text::clean(string(value).unwrap_or_default(), text::MAX_TEXT)
@@ -200,7 +217,8 @@ pub fn encode(entries: &[Entry]) -> String {
                 (entry.submenu, 'm'),
                 (entry.toggle == Toggle::Check, 'c'),
                 (entry.toggle == Toggle::Radio, 'r'),
-                (entry.on, 'x'),
+                (entry.state == State::On, 'x'),
+                (entry.state == State::Mixed, 'i'),
             ] {
                 if set {
                     flags.push(flag);
@@ -265,7 +283,13 @@ pub fn decode<'a>(lines: impl IntoIterator<Item = &'a str>) -> Vec<Entry> {
             } else {
                 Toggle::None
             },
-            on: flags.contains('x'),
+            state: if flags.contains('x') {
+                State::On
+            } else if flags.contains('i') {
+                State::Mixed
+            } else {
+                State::Off
+            },
             icon: String::new(),
             children: Vec::new(),
         });
@@ -391,21 +415,24 @@ mod tests {
                 toggle(1, "checkmark", 1),
                 toggle(2, "checkmark", 0),
                 toggle(3, "radio", 1),
-                // Indeterminate reads as off.
-                toggle(4, "radio", -1),
+                toggle(4, "checkmark", -1),
                 toggle(5, "", 1),
             ],
         );
         let menu = parse(&layout);
-        let state: Vec<_> = menu.iter().map(|entry| (entry.toggle, entry.on)).collect();
+        let state: Vec<_> = menu
+            .iter()
+            .map(|entry| (entry.toggle, entry.state))
+            .collect();
         assert_eq!(
             state,
             [
-                (Toggle::Check, true),
-                (Toggle::Check, false),
-                (Toggle::Radio, true),
-                (Toggle::Radio, false),
-                (Toggle::None, true),
+                (Toggle::Check, State::On),
+                (Toggle::Check, State::Off),
+                (Toggle::Radio, State::On),
+                // Neither on nor off, and drawn as such.
+                (Toggle::Check, State::Mixed),
+                (Toggle::None, State::On),
             ]
         );
     }
@@ -534,7 +561,7 @@ mod tests {
         );
         let menu = parse(&node(0, &[], vec![odd]));
         assert_eq!(menu[0].label, "");
-        assert!(menu[0].enabled && !menu[0].on);
+        assert!(menu[0].enabled && menu[0].state == State::Off);
     }
 
     #[test]
@@ -552,6 +579,15 @@ mod tests {
                         ("toggle-type", Value::from("checkmark")),
                         ("toggle-state", Value::from(1i32)),
                         ("enabled", Value::from(false)),
+                    ],
+                    Vec::new(),
+                ),
+                node(
+                    9,
+                    &[
+                        ("label", Value::from("Some")),
+                        ("toggle-type", Value::from("checkmark")),
+                        ("toggle-state", Value::from(-1i32)),
                     ],
                     Vec::new(),
                 ),

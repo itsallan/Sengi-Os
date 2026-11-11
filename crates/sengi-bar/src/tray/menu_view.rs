@@ -7,6 +7,11 @@
 //! app changes it. What the user does is reported on standard output, one
 //! line each: `opened <id>` when a submenu is opened and `clicked <id>`
 //! when a row is chosen. Closing without choosing says nothing.
+//!
+//! The menu works like the session menu sengi-launcher draws: one row is
+//! highlighted, the pointer or the arrow keys move the highlight, Return
+//! or a click chooses, Escape closes. Right and Left go into and out of
+//! submenus.
 
 use std::cell::RefCell;
 use std::io::{BufRead, BufReader, Read};
@@ -51,6 +56,42 @@ struct Open {
     top: f32,
 }
 
+/// A key the menu acts on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Key {
+    Up,
+    Down,
+    /// Into the highlighted row's submenu.
+    Right,
+    /// Out of the submenu the highlight is in.
+    Left,
+    Return,
+}
+
+impl Key {
+    fn named(name: &str) -> Option<Key> {
+        Some(match name {
+            "up" => Key::Up,
+            "down" => Key::Down,
+            "right" => Key::Right,
+            "left" => Key::Left,
+            "return" => Key::Return,
+            _ => return None,
+        })
+    }
+}
+
+/// What a key or the pointer led to.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Outcome {
+    /// A submenu opened; the bar is told so the app can fill it.
+    opened: Option<i32>,
+    /// A row was chosen.
+    chosen: Option<i32>,
+    /// What is on screen needs bringing up to date.
+    changed: bool,
+}
+
 #[derive(Default)]
 struct State {
     tree: Vec<Entry>,
@@ -58,6 +99,12 @@ struct State {
     open: Vec<Open>,
     /// Where the tray icon is.
     anchor: f32,
+    /// The highlighted row: which panel it is in and its id.
+    selected: Option<(usize, i32)>,
+    /// A submenu row the keyboard wants opened. Only the UI knows where
+    /// the row is on screen, so it is asked to report the row as if the
+    /// pointer had come over it.
+    request: Option<(usize, i32)>,
 }
 
 /// What one panel shows, before it is handed to the UI.
@@ -65,9 +112,16 @@ struct State {
 struct Panel<'a> {
     entries: &'a [Entry],
     open_id: i32,
+    selected_id: i32,
+    request_id: i32,
     left: f32,
     right: f32,
     top: f32,
+}
+
+/// Whether the highlight can rest on a row.
+fn selectable(entry: &Entry) -> bool {
+    entry.enabled && !entry.separator
 }
 
 impl State {
@@ -78,6 +132,10 @@ impl State {
             level = &level.iter().find(|entry| entry.id == open.id)?.children;
         }
         Some(level)
+    }
+
+    fn entry(&self, (panel, id): (usize, i32)) -> Option<&Entry> {
+        self.level(panel)?.iter().find(|entry| entry.id == id)
     }
 
     /// The panels to draw. Submenus that are gone from the tree are
@@ -93,11 +151,28 @@ impl State {
             depth += 1;
         }
         self.open.truncate(depth);
+        // A highlight or a request on a row that is gone is dropped.
+        let gone = |state: &State, at: Option<(usize, i32)>| {
+            at.is_some_and(|at| !state.entry(at).is_some_and(selectable))
+        };
+        if gone(self, self.selected) {
+            self.selected = None;
+        }
+        if gone(self, self.request) {
+            self.request = None;
+        }
 
+        // The id marked in panel `index`, or -1.
+        let of = |at: Option<(usize, i32)>, index: usize| match at {
+            Some((panel, id)) if panel == index => id,
+            _ => -1,
+        };
         let open_id = |index: usize| self.open.get(index).map_or(-1, |open| open.id);
         let mut panels = vec![Panel {
             entries: &self.tree,
             open_id: open_id(0),
+            selected_id: of(self.selected, 0),
+            request_id: of(self.request, 0),
             left: self.anchor,
             right: self.anchor,
             top: 0.0,
@@ -110,6 +185,8 @@ impl State {
             panels.push(Panel {
                 entries,
                 open_id: open_id(index + 1),
+                selected_id: of(self.selected, index + 1),
+                request_id: of(self.request, index + 1),
                 left: open.left,
                 right: open.right,
                 top: open.top,
@@ -118,30 +195,128 @@ impl State {
         panels
     }
 
-    /// The pointer came over a row of panel `index`. Returns the id to
-    /// report as opened, if a submenu opened, and whether anything changed.
-    fn entered(&mut self, index: usize, open: Open) -> (Option<i32>, bool) {
-        let Some((opens, separator)) = self
-            .level(index)
-            .and_then(|level| level.iter().find(|entry| entry.id == open.id))
-            .map(|entry| (entry.submenu && entry.enabled, entry.separator))
+    /// The pointer came over a row of panel `index`, or the UI is
+    /// answering a request to say where a row is.
+    fn pointed(&mut self, index: usize, at: Open) -> Outcome {
+        let key = (index, at.id);
+        let Some((opens, rests)) = self
+            .entry(key)
+            .map(|entry| (entry.submenu && entry.enabled, selectable(entry)))
         else {
-            return (None, false);
+            return Outcome::default();
         };
+        let asked = self.request.take() == Some(key);
+        let mut outcome = Outcome::default();
+        if rests && self.selected != Some(key) {
+            self.selected = Some(key);
+            outcome.changed = true;
+        }
         if opens {
-            if self.open.get(index).is_some_and(|held| held.id == open.id) {
-                return (None, false);
+            if !self.open.get(index).is_some_and(|held| held.id == at.id) {
+                outcome.opened = Some(at.id);
+                outcome.changed = true;
+                self.open.truncate(index);
+                self.open.push(at);
             }
-            let id = open.id;
-            self.open.truncate(index);
-            self.open.push(open);
-            (Some(id), true)
-        } else if self.open.len() > index && !separator {
+            if asked {
+                // Opened from the keyboard: the highlight goes in.
+                let first = self
+                    .level(index + 1)
+                    .and_then(|rows| rows.iter().find(|entry| selectable(entry)))
+                    .map(|entry| entry.id);
+                if let Some(first) = first {
+                    self.selected = Some((index + 1, first));
+                }
+                outcome.changed = true;
+            }
+        } else if self.open.len() > index && rests {
             // Another row of the same panel: its submenu closes.
             self.open.truncate(index);
-            (None, true)
-        } else {
-            (None, false)
+            outcome.changed = true;
+        }
+        outcome
+    }
+
+    /// Moves the highlight `step` rows within its panel, round the ends.
+    fn step(&mut self, step: isize) -> Outcome {
+        let panel = match self.selected {
+            Some((panel, _)) => panel,
+            // Nothing highlighted yet: start in the innermost panel.
+            None => self.panels().len() - 1,
+        };
+        let Some(rows) = self.level(panel) else {
+            return Outcome::default();
+        };
+        let stops: Vec<i32> = rows
+            .iter()
+            .filter(|entry| selectable(entry))
+            .map(|entry| entry.id)
+            .collect();
+        if stops.is_empty() {
+            return Outcome::default();
+        }
+        let held = self
+            .selected
+            .and_then(|(_, id)| stops.iter().position(|stop| *stop == id));
+        let next = match held {
+            Some(at) => (at as isize + step).rem_euclid(stops.len() as isize) as usize,
+            None if step > 0 => 0,
+            None => stops.len() - 1,
+        };
+        self.selected = Some((panel, stops[next]));
+        // The highlight has left the row a submenu hung off.
+        if self
+            .open
+            .get(panel)
+            .is_some_and(|open| open.id != stops[next])
+        {
+            self.open.truncate(panel);
+        }
+        Outcome {
+            changed: true,
+            ..Outcome::default()
+        }
+    }
+
+    fn key(&mut self, key: Key) -> Outcome {
+        match key {
+            Key::Down => self.step(1),
+            Key::Up => self.step(-1),
+            Key::Right | Key::Return => {
+                let Some(at) = self.selected else {
+                    return Outcome::default();
+                };
+                let Some(entry) = self.entry(at).filter(|entry| selectable(entry)) else {
+                    return Outcome::default();
+                };
+                if entry.submenu {
+                    self.request = Some(at);
+                    Outcome {
+                        changed: true,
+                        ..Outcome::default()
+                    }
+                } else if key == Key::Return {
+                    Outcome {
+                        chosen: Some(at.1),
+                        ..Outcome::default()
+                    }
+                } else {
+                    Outcome::default()
+                }
+            }
+            Key::Left => {
+                let Some((panel, _)) = self.selected.filter(|(panel, _)| *panel > 0) else {
+                    return Outcome::default();
+                };
+                // Back to the row this panel hangs off.
+                let parent = self.open[panel - 1].id;
+                self.open.truncate(panel - 1);
+                self.selected = Some((panel - 1, parent));
+                Outcome {
+                    changed: true,
+                    ..Outcome::default()
+                }
+            }
         }
     }
 
@@ -162,7 +337,8 @@ fn rows(entries: &[Entry]) -> ModelRc<MenuRow> {
             submenu: entry.submenu,
             check: entry.toggle == Toggle::Check,
             radio: entry.toggle == Toggle::Radio,
-            on: entry.on,
+            on: entry.state == menu::State::On,
+            mixed: entry.state == menu::State::Mixed,
         })
         .collect();
     ModelRc::new(VecModel::from(rows))
@@ -182,12 +358,16 @@ fn sync(model: &VecModel<MenuPanel>, state: &mut State, keep: usize) {
                 .iter()
                 .any(|entry| entry.toggle != Toggle::None),
             open_id: panel.open_id,
+            selected_id: panel.selected_id,
+            request_id: panel.request_id,
             left: panel.left,
             right: panel.right,
             top: panel.top,
         };
         if index < model.row_count() {
-            model.set_row_data(index, shown);
+            if model.row_data(index).as_ref() != Some(&shown) {
+                model.set_row_data(index, shown);
+            }
         } else {
             model.push(shown);
         }
@@ -242,8 +422,8 @@ fn show(output: &str, anchor: f32) -> Result<(), sengi_layer::Error> {
     };
     let state = Rc::new(RefCell::new(State {
         tree,
-        open: Vec::new(),
         anchor,
+        ..State::default()
     }));
     let model = Rc::new(VecModel::<MenuPanel>::default());
     sync(&model, &mut state.borrow_mut(), 0);
@@ -273,7 +453,7 @@ fn show(output: &str, anchor: f32) -> Result<(), sengi_layer::Error> {
     });
 
     // Like the launcher: over everything, covering the output so a click
-    // anywhere reaches us, and holding the keyboard for Escape.
+    // anywhere reaches us, and holding the keyboard.
     let config = Config::new("sengi-bar-menu")
         .layer(Layer::Overlay)
         .anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT)
@@ -291,39 +471,66 @@ fn show(output: &str, anchor: f32) -> Result<(), sengi_layer::Error> {
         window.set_panels(ModelRc::from(model.clone()));
 
         let handle = context.handle();
+        // Says what happened and brings the screen up to date. `keep` is
+        // the number of panels whose rows cannot have changed.
+        let act = Rc::new({
+            let (model, handle) = (model.clone(), handle.clone());
+            move |state: &mut State, outcome: Outcome, keep: usize| {
+                if let Some(id) = outcome.opened {
+                    println!("opened {id}");
+                }
+                if let Some(id) = outcome.chosen.filter(|id| state.can_choose(*id)) {
+                    println!("clicked {id}");
+                    handle.quit();
+                }
+                if outcome.changed {
+                    sync(&model, state, keep);
+                }
+            }
+        });
         window.on_dismiss({
             let handle = handle.clone();
             move || handle.quit()
         });
         window.on_chosen({
-            let (state, handle) = (state.clone(), handle.clone());
+            let (state, act) = (state.clone(), act.clone());
             move |id| {
-                if state.borrow().can_choose(id) {
-                    println!("clicked {id}");
-                    handle.quit();
-                }
+                let outcome = Outcome {
+                    chosen: Some(id),
+                    ..Outcome::default()
+                };
+                act(&mut state.borrow_mut(), outcome, 0);
             }
         });
         window.on_entered({
-            let (state, model) = (state.clone(), model.clone());
+            let (state, act) = (state.clone(), act.clone());
             move |index, id, left, right, top| {
                 let Ok(index) = usize::try_from(index) else {
                     return;
                 };
-                let open = Open {
+                let at = Open {
                     id,
                     left,
                     right,
                     top,
                 };
                 let mut state = state.borrow_mut();
-                let (opened, changed) = state.entered(index, open);
-                if let Some(id) = opened {
-                    println!("opened {id}");
-                }
-                if changed {
-                    sync(&model, &mut state, index + 1);
-                }
+                let outcome = state.pointed(index, at);
+                act(&mut state, outcome, index + 1);
+            }
+        });
+        window.on_key({
+            let (state, act) = (state.clone(), act.clone());
+            move |name| {
+                let Some(key) = Key::named(name.as_str()) else {
+                    return;
+                };
+                let mut state = state.borrow_mut();
+                let outcome = state.key(key);
+                // Rows do not change on a key; only what is open and what
+                // is highlighted.
+                let panels = state.open.len() + 1;
+                act(&mut state, outcome, panels);
             }
         });
         // The keyboard going elsewhere means something else has opened.
@@ -357,6 +564,14 @@ mod tests {
         }
     }
 
+    fn separator(id: i32) -> Entry {
+        Entry {
+            id,
+            separator: true,
+            ..Entry::default()
+        }
+    }
+
     fn open(id: i32) -> Open {
         Open {
             id,
@@ -371,14 +586,15 @@ mod tests {
             tree: vec![
                 row(1),
                 sub(2, vec![row(3), sub(4, vec![row(5)])]),
+                separator(10),
                 sub(6, vec![row(7)]),
                 Entry {
                     enabled: false,
                     ..sub(8, vec![row(9)])
                 },
             ],
-            open: Vec::new(),
             anchor: 900.0,
+            ..State::default()
         }
     }
 
@@ -389,6 +605,8 @@ mod tests {
             .map(|panel| panel.entries.iter().map(|entry| entry.id).collect())
             .collect()
     }
+
+    const TOP: [i32; 5] = [1, 2, 10, 6, 8];
 
     #[test]
     fn reports_parse_back() {
@@ -406,81 +624,169 @@ mod tests {
         let panels = state.panels();
         assert_eq!(panels.len(), 1);
         assert_eq!((panels[0].left, panels[0].open_id), (900.0, -1));
+        assert_eq!(panels[0].selected_id, -1);
+    }
+
+    #[test]
+    fn the_pointer_moves_the_highlight() {
+        let mut state = state();
+        assert!(state.pointed(0, open(1)).changed);
+        assert_eq!(state.panels()[0].selected_id, 1);
+        // Staying on the row is not news.
+        assert_eq!(state.pointed(0, open(1)), Outcome::default());
+        // Separators and disabled rows do not take the highlight.
+        assert_eq!(state.pointed(0, open(10)), Outcome::default());
+        assert_eq!(state.pointed(0, open(8)), Outcome::default());
+        assert_eq!(state.selected, Some((0, 1)));
     }
 
     #[test]
     fn entering_a_submenu_row_opens_it_beside_the_row() {
         let mut state = state();
-        assert_eq!(state.entered(0, open(2)), (Some(2), true));
-        assert_eq!(ids(&mut state), [vec![1, 2, 6, 8], vec![3, 4]]);
+        let outcome = state.pointed(0, open(2));
+        assert_eq!((outcome.opened, outcome.changed), (Some(2), true));
+        assert_eq!(ids(&mut state), [TOP.to_vec(), vec![3, 4]]);
         let panels = state.panels();
         assert_eq!(panels[0].open_id, 2);
         assert_eq!(
             (panels[1].left, panels[1].right, panels[1].top),
             (100.0, 260.0, 42.0)
         );
-        // Staying on the row is not news.
-        assert_eq!(state.entered(0, open(2)), (None, false));
+        // Opened with the pointer, the highlight stays on the row.
+        assert_eq!(state.selected, Some((0, 2)));
+        assert_eq!(state.pointed(0, open(2)), Outcome::default());
 
         // A level deeper.
-        assert_eq!(state.entered(1, open(4)), (Some(4), true));
-        assert_eq!(ids(&mut state), [vec![1, 2, 6, 8], vec![3, 4], vec![5]]);
+        assert_eq!(state.pointed(1, open(4)).opened, Some(4));
+        assert_eq!(ids(&mut state), [TOP.to_vec(), vec![3, 4], vec![5]]);
     }
 
     #[test]
     fn moving_to_another_row_closes_what_hung_off_the_old_one() {
         let mut state = state();
-        state.entered(0, open(2));
-        state.entered(1, open(4));
+        state.pointed(0, open(2));
+        state.pointed(1, open(4));
         // A plain row of the submenu closes the one below it only.
-        assert_eq!(state.entered(1, open(3)), (None, true));
+        assert!(state.pointed(1, open(3)).changed);
         assert_eq!(ids(&mut state).len(), 2);
         // Another submenu of the menu replaces the lot.
-        assert_eq!(state.entered(0, open(6)), (Some(6), true));
-        assert_eq!(ids(&mut state), [vec![1, 2, 6, 8], vec![7]]);
-        assert_eq!(state.entered(0, open(1)), (None, true));
+        assert_eq!(state.pointed(0, open(6)).opened, Some(6));
+        assert_eq!(ids(&mut state), [TOP.to_vec(), vec![7]]);
+        assert!(state.pointed(0, open(1)).changed);
         assert_eq!(ids(&mut state).len(), 1);
-        // With nothing open, plain rows change nothing.
-        assert_eq!(state.entered(0, open(1)), (None, false));
     }
 
     #[test]
     fn disabled_submenus_and_unknown_rows_do_not_open() {
         let mut state = state();
-        assert_eq!(state.entered(0, open(8)), (None, false));
-        assert_eq!(state.entered(0, open(77)), (None, false));
+        assert_eq!(state.pointed(0, open(8)), Outcome::default());
+        assert_eq!(state.pointed(0, open(77)), Outcome::default());
         // A panel that is not there.
-        assert_eq!(state.entered(3, open(5)), (None, false));
+        assert_eq!(state.pointed(3, open(5)), Outcome::default());
+    }
+
+    #[test]
+    fn the_arrow_keys_move_the_highlight_past_what_cannot_be_chosen() {
+        let mut state = state();
+        // With nothing highlighted, Down starts at the top, Up at the end.
+        assert!(state.key(Key::Down).changed);
+        assert_eq!(state.selected, Some((0, 1)));
+        state.key(Key::Down);
+        assert_eq!(state.selected, Some((0, 2)));
+        // Over the separator, and round the end past the disabled row.
+        state.key(Key::Down);
+        assert_eq!(state.selected, Some((0, 6)));
+        state.key(Key::Down);
+        assert_eq!(state.selected, Some((0, 1)));
+        state.key(Key::Up);
+        assert_eq!(state.selected, Some((0, 6)));
+
+        let mut fresh = self::state();
+        fresh.key(Key::Up);
+        assert_eq!(fresh.selected, Some((0, 6)));
+    }
+
+    #[test]
+    fn return_chooses_the_highlighted_row() {
+        let mut state = state();
+        // Nothing highlighted: nothing to choose.
+        assert_eq!(state.key(Key::Return), Outcome::default());
+        state.key(Key::Down);
+        assert_eq!(state.key(Key::Return).chosen, Some(1));
+        // Right on a plain row does nothing.
+        assert_eq!(state.key(Key::Right), Outcome::default());
+    }
+
+    #[test]
+    fn right_goes_into_a_submenu_and_left_comes_back_out() {
+        let mut state = state();
+        state.key(Key::Down);
+        state.key(Key::Down);
+        // The keyboard cannot know where the row is on screen; the UI is
+        // asked, and answers as if the pointer were there.
+        assert!(state.key(Key::Right).changed);
+        assert_eq!(state.panels()[0].request_id, 2);
+        let outcome = state.pointed(0, open(2));
+        assert_eq!(outcome.opened, Some(2));
+        assert_eq!(ids(&mut state), [TOP.to_vec(), vec![3, 4]]);
+        // The highlight has gone in, and the request is spent.
+        assert_eq!(state.selected, Some((1, 3)));
+        assert_eq!(state.panels()[0].request_id, -1);
+
+        // Return on a submenu row does the same as Right.
+        state.key(Key::Down);
+        assert_eq!(state.selected, Some((1, 4)));
+        assert_eq!(state.key(Key::Return).chosen, None);
+        state.pointed(1, open(4));
+        assert_eq!(state.selected, Some((2, 5)));
+        assert_eq!(state.key(Key::Return).chosen, Some(5));
+
+        // Left closes one level at a time and lands on its row.
+        state.key(Key::Left);
+        assert_eq!((state.selected, state.open.len()), (Some((1, 4)), 1));
+        state.key(Key::Left);
+        assert_eq!((state.selected, state.open.len()), (Some((0, 2)), 0));
+        assert_eq!(state.key(Key::Left), Outcome::default());
+    }
+
+    #[test]
+    fn moving_the_highlight_off_a_row_closes_its_submenu() {
+        let mut state = state();
+        state.pointed(0, open(2));
+        assert_eq!(ids(&mut state).len(), 2);
+        state.key(Key::Down);
+        assert_eq!(state.selected, Some((0, 6)));
+        assert_eq!(ids(&mut state).len(), 1);
     }
 
     #[test]
     fn a_new_tree_keeps_open_what_is_still_there() {
         let mut state = state();
-        state.entered(0, open(2));
-        state.entered(1, open(4));
+        state.pointed(0, open(2));
+        state.pointed(1, open(4));
         // The app renames a row: everything stays open.
         state.tree[0].label = "renamed".into();
         assert_eq!(ids(&mut state).len(), 3);
-        // It drops the inner submenu.
+        // It drops the inner submenu, and the highlight that was on it.
         state.tree[1].children.pop();
-        assert_eq!(ids(&mut state), [vec![1, 2, 6, 8], vec![3]]);
-        assert_eq!(state.open.len(), 1);
+        assert_eq!(ids(&mut state), [TOP.to_vec(), vec![3]]);
+        assert_eq!((state.open.len(), state.selected), (1, None));
         // And then the outer one.
         state.tree.remove(1);
-        assert_eq!(ids(&mut state), [vec![1, 6, 8]]);
+        assert_eq!(ids(&mut state), [vec![1, 10, 6, 8]]);
         assert!(state.open.is_empty());
     }
 
     #[test]
     fn an_empty_submenu_waits_to_be_filled() {
         let mut state = state();
-        state.tree[2].children.clear();
-        assert_eq!(state.entered(0, open(6)), (Some(6), true));
+        state.tree[3].children.clear();
+        assert_eq!(state.pointed(0, open(6)).opened, Some(6));
         // Reported as opened, but there is nothing to draw yet.
         assert_eq!(ids(&mut state).len(), 1);
         assert_eq!(state.panels()[0].open_id, 6);
-        state.tree[2].children = vec![row(7)];
-        assert_eq!(ids(&mut state), [vec![1, 2, 6, 8], vec![7]]);
+        state.tree[3].children = vec![row(7)];
+        assert_eq!(ids(&mut state), [TOP.to_vec(), vec![7]]);
     }
 
     #[test]
@@ -506,5 +812,22 @@ mod tests {
         assert_eq!(read_menu(&mut input), None);
         // Cut off before the marker: not a menu.
         assert_eq!(read_menu(&mut "0\t1\te\thalf".as_bytes()), None);
+    }
+
+    #[test]
+    fn a_menu_bigger_than_a_pipe_holds_is_read_whole() {
+        // The bar writes it from a thread that may wait; this end only
+        // has to cope with the size.
+        let long = "\u{1d11e}".repeat(crate::tray::text::MAX_TEXT);
+        let many: Vec<Entry> = (0..menu::MAX_ENTRIES as i32)
+            .map(|id| Entry {
+                label: long.clone(),
+                ..row(id + 1)
+            })
+            .collect();
+        let wire = menu::encode(&many);
+        assert!(wire.len() > 64 * 1024 && wire.len() < MAX_INPUT as usize);
+        let read = read_menu(&mut wire.as_bytes()).unwrap();
+        assert_eq!(read.len(), menu::MAX_ENTRIES);
     }
 }
