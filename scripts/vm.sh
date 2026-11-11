@@ -35,7 +35,7 @@ up() {
 	[ -f "$dir/base.qcow2" ] || curl -fL --retry 3 -o "$dir/base.qcow2" "$image_url"
 	[ -f "$key" ] || ssh-keygen -q -t ed25519 -N '' -f "$key"
 	if [ ! -f "$dir/disk.qcow2" ]; then
-		qemu-img create -q -f qcow2 -b base.qcow2 -F qcow2 "$dir/disk.qcow2" 40G
+		qemu-img create -q -f qcow2 -b base.qcow2 -F qcow2 "$dir/disk.qcow2" 80G
 	fi
 	mkdir -p "$dir/seed"
 	printf 'instance-id: sengi-builder\nlocal-hostname: sengi-builder\n' >"$dir/seed/meta-data"

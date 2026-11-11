@@ -24,6 +24,8 @@ export global Tokens {
 
     out property <length> radius: @{radius.base}px;
     out property <length> border-width: @{border.width}px;
+    out property <length> icon-stroke: @{border.icon-stroke}px;
+    out property <length> focus-ring-width: @{border.focus-ring}px;
 
     out property <length> space-xxs: @{space.xxs}px;
     out property <length> space-xs: @{space.xs}px;
@@ -47,9 +49,16 @@ export global Tokens {
     out property <length> dock-padding: @{size.dock-padding}px;
     out property <length> titlebar-height: @{size.titlebar-height}px;
     out property <length> launcher-width: @{size.launcher-width}px;
+    out property <length> menu-width: @{size.menu-width}px;
+    out property <int> launcher-lines: @{size.launcher-lines};
     out property <length> notification-width: @{size.notification-width}px;
+    out property <length> bar-icon: @{size.bar-icon}px;
+    out property <length> button: @{size.button}px;
 
     out property <duration> motion-fast: @{motion.fast}ms;
     out property <duration> motion-base: @{motion.base}ms;
     out property <duration> motion-slow: @{motion.slow}ms;
+    out property <easing> motion-easing: @{motion.easing};
+    out property <duration> click-guard: @{timing.click-guard}ms;
+    out property <duration> notification-timeout: @{timing.notification-timeout}ms;
 }

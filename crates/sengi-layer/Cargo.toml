@@ -1,0 +1,13 @@
+[package]
+name = "sengi-layer"
+description = "Runs Slint components on wlr-layer-shell surfaces for the Sengi OS shell"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Not the workspace entry: that one pulls in the winit backend, which this
+# crate replaces with its own.
+slint = { version = "1.18", default-features = false, features = ["compat-1-2", "std", "renderer-software", "software-renderer-systemfonts", "software-renderer-path"] }
+smithay-client-toolkit = { version = "0.19", default-features = false, features = ["calloop", "xkbcommon"] }
+wayland-client = "0.31"

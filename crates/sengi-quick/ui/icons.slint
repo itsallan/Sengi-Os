@@ -1,0 +1,126 @@
+// Glyphs for the quick settings panel. Like the bar's, they are stroked
+// paths on a 16 unit grid, drawn in token colours.
+
+import { Tokens } from "components.slint";
+
+export component Icon inherits Path {
+    in property <brush> ink: Tokens.color-text;
+
+    width: Tokens.bar-icon;
+    height: Tokens.bar-icon;
+    viewbox-width: 16;
+    viewbox-height: 16;
+    stroke: root.ink;
+    stroke-width: Tokens.icon-stroke;
+    stroke-line-cap: round;
+    stroke-line-join: round;
+    fill: transparent;
+}
+
+// Wi-Fi: a dot and three arcs. `level` of them are lit, from the dot up;
+// the rest are drawn faint, so the shape stays the same at every strength.
+export component SignalIcon inherits Rectangle {
+    in property <int> level: 4;
+    in property <brush> ink: Tokens.color-text;
+    in property <brush> faint: Tokens.color-text-disabled;
+
+    width: Tokens.bar-icon;
+    height: Tokens.bar-icon;
+
+    Icon {
+        commands: "M1.65 6.15a9 9 0 0 1 12.7 0";
+        ink: root.level >= 4 ? root.ink : root.faint;
+    }
+
+    Icon {
+        commands: "M3.75 8.25a6 6 0 0 1 8.5 0";
+        ink: root.level >= 3 ? root.ink : root.faint;
+    }
+
+    Icon {
+        commands: "M5.9 10.4a3 3 0 0 1 4.2 0";
+        ink: root.level >= 2 ? root.ink : root.faint;
+    }
+
+    Icon {
+        commands: "M8 12.6h0.01";
+        ink: root.level >= 1 ? root.ink : root.faint;
+    }
+}
+
+// A cabled network: one box feeding two.
+export component WiredIcon inherits Icon {
+    commands: "M6 2.5h4v3.5H6z M2.5 10.5h4V14h-4z M9.5 10.5h4V14h-4z M8 6v2.25 M4.5 10.5V8.25h7v2.25";
+}
+
+export component BluetoothIcon inherits Icon {
+    commands: "M4.5 5l7 6L8 14V2l3.5 3-7 6";
+}
+
+export component SpeakerIcon inherits Rectangle {
+    in property <bool> muted: false;
+    in property <brush> ink: Tokens.color-text;
+
+    width: Tokens.bar-icon;
+    height: Tokens.bar-icon;
+
+    Icon {
+        commands: "M2.5 6.25h2.25L8 3.5v9L4.75 9.75H2.5z";
+        ink: root.ink;
+    }
+
+    if !root.muted: Icon {
+        commands: "M10.5 6a2.8 2.8 0 0 1 0 4 M12.2 4.2a5.4 5.4 0 0 1 0 7.6";
+        ink: root.ink;
+    }
+
+    if root.muted: Icon {
+        commands: "M10.75 6.25l3.5 3.5 M14.25 6.25l-3.5 3.5";
+        ink: root.ink;
+    }
+}
+
+export component SunIcon inherits Icon {
+    commands: "M8 5.25a2.75 2.75 0 1 0 0 5.5a2.75 2.75 0 1 0 0-5.5z M8 1.5v1.25 M8 13.25v1.25 M1.5 8h1.25 M13.25 8h1.25 M3.4 3.4l.9.9 M11.7 11.7l.9.9 M3.4 12.6l.9-.9 M11.7 4.3l.9-.9";
+}
+
+export component MoonIcon inherits Icon {
+    commands: "M13.5 9.6A5.75 5.75 0 0 1 6.4 2.5a5.75 5.75 0 1 0 7.1 7.1z";
+}
+
+export component LockIcon inherits Icon {
+    commands: "M4.5 7.5h7v6h-7z M6 7.5V5.5a2 2 0 0 1 4 0v2";
+}
+
+// The outline, with either a bar for the charge or a bolt while charging.
+export component BatteryIcon inherits Rectangle {
+    in property <int> percent: 100;
+    in property <bool> charging: false;
+    in property <brush> ink: Tokens.color-text;
+    // The colour of the charge bar; the outline keeps `ink`.
+    in property <brush> charge: root.ink;
+
+    // One unit of the 16 unit grid.
+    private property <length> unit: self.width / 16;
+
+    width: Tokens.bar-icon;
+    height: Tokens.bar-icon;
+
+    Icon {
+        commands: "M2.5 5h9.5a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H2.5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z M14.75 7v2";
+        ink: root.ink;
+    }
+
+    if !root.charging: Rectangle {
+        x: root.unit * 3;
+        y: root.unit * 6.5;
+        width: root.unit * 8.5 * Math.clamp(root.percent, 0, 100) / 100;
+        height: root.unit * 3;
+        background: root.charge;
+    }
+
+    if root.charging: Icon {
+        commands: "M8.25 6L6 8.25h2.5L6.25 10.5";
+        ink: root.ink;
+    }
+}

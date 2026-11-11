@@ -26,7 +26,11 @@ printf '127.0.0.1\tlocalhost\n127.0.1.1\tsengios\n::1\tlocalhost ip6-localhost i
 
 # Live user. The password is "live" so the lock screen can be unlocked; the
 # hash is fixed to keep the image reproducible.
-chroot "$root" useradd -m -u 1000 -s /bin/bash -c "Sengi OS" -G sudo,audio,video,input,render live
+# netdev is the group iwd lets manage Wi-Fi, and bluetooth the one Debian's
+# BlueZ policy lets talk to the Bluetooth service.
+chroot "$root" groupadd -f -r netdev
+chroot "$root" groupadd -f -r bluetooth
+chroot "$root" useradd -m -u 1000 -s /bin/bash -c "Sengi OS" -G sudo,audio,video,input,render,netdev,bluetooth live
 echo 'live:$6$sengioslive$upm4wU690nU7M6MY.tBcr8eE3usBYMTsW9k9mOAJ6ihPIEp1TGfFGJ0VTE30AUgz3f89ilMcM0KlC2ZSayiAz.' |
 	chroot "$root" chpasswd -e
 chroot "$root" passwd -l root >/dev/null
@@ -53,10 +57,4 @@ chroot "$root" systemctl set-default graphical.target
 # The initramfs was built when the kernel was installed, before our boot
 # script and hook were in place.
 chroot "$root" update-initramfs -u
-
-# See the note in /etc/xdg/labwc/autostart.
-mkdir -p "$root/usr/share/sengi-os/dbus"
-chroot "$root" dpkg-divert --quiet --rename \
-	--divert /usr/share/sengi-os/dbus/org.freedesktop.portal.Desktop.service \
-	--add /usr/share/dbus-1/services/org.freedesktop.portal.Desktop.service
 

@@ -1,16 +1,16 @@
 [workspace]
 resolver = "2"
-members = ["crates/sengi-focus", "crates/sengi-tokens", "crates/sengi-ui"]
+members = ["crates/sengi-bar", "crates/sengi-dock", "crates/sengi-focus", "crates/sengi-launcher", "crates/sengi-layer", "crates/sengi-notify", "crates/sengi-quick", "crates/sengi-tokens", "crates/sengi-ui"]
 exclude = ["crates/sengi-compositor"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.4.0"
 edition = "2021"
 repository = "https://github.com/itsallan/Sengi-Os"
 
 [workspace.dependencies]
-slint = { version = "1.8", default-features = false, features = ["compat-1-2", "std", "backend-winit", "renderer-software"] }
-slint-build = "1.8"
+slint = { version = "1.18", default-features = false, features = ["compat-1-2", "std", "backend-winit", "renderer-software"] }
+slint-build = "1.18"
 
 [profile.release]
 opt-level = "s"

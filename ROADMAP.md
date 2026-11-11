@@ -31,18 +31,20 @@ each `- [ ]` line is an issue.
 
 ## 0.2
 
-- [ ] sengi-bar replaces Waybar
-- [ ] sengi-compositor branch opened (Rust + Smithay, long-lived)
+- [x] sengi-bar replaces Waybar
+- [x] sengi-compositor branch opened (Rust + Smithay, long-lived)
 
 ## 0.3
 
-- [ ] sengi-dock replaces the 0.1 dock
-- [ ] sengi-launcher replaces fuzzel
+- [x] A sengi-bar on every monitor
+- [x] sengi-dock replaces the 0.1 dock
+- [x] sengi-launcher replaces fuzzel
 
 ## 0.4
 
-- [ ] sengi-notify replaces mako
-- [ ] Quick settings panel
+- [x] sengi-notify replaces mako
+- [x] Quick settings panel
+- [x] System tray in sengi-bar
 
 ## 0.5
 

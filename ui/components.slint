@@ -32,10 +32,14 @@ export component SengiButton inherits Rectangle {
     in property <string> text;
     in property <bool> primary: false;
     in property <bool> enabled: true;
+    out property <bool> has-focus: scope.has-focus;
     callback clicked();
 
-    min-height: Tokens.bar-height;
+    forward-focus: scope;
+    min-height: Tokens.button;
     border-radius: Tokens.radius;
+    border-width: scope.has-focus ? Tokens.focus-ring-width : 0;
+    border-color: Tokens.color-focus-ring;
     background: !root.enabled ? Tokens.color-surface
         : root.primary ? (touch.has-hover ? Tokens.color-accent-hover : Tokens.color-accent)
         : (touch.has-hover ? Tokens.color-surface-hover : Tokens.color-surface-raised);
@@ -53,6 +57,19 @@ export component SengiButton inherits Rectangle {
             font-weight: Tokens.font-weight-medium;
             horizontal-alignment: center;
             vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    // Return and Space press the button when it has keyboard focus.
+    scope := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.clicked();
+                return accept;
+            }
+            return reject;
         }
     }
 
@@ -64,12 +81,23 @@ export component SengiButton inherits Rectangle {
 
 export component SengiToggle inherits Rectangle {
     in-out property <bool> checked: false;
+    in property <bool> enabled: true;
+    out property <bool> has-focus: scope.has-focus;
     callback toggled(bool);
 
+    function flip() {
+        root.checked = !root.checked;
+        root.toggled(root.checked);
+    }
+
+    forward-focus: scope;
     width: Tokens.space-xl * 1.5;
     height: Tokens.space-lg + Tokens.space-xs;
     border-radius: self.height / 2;
-    background: root.checked ? Tokens.color-accent : Tokens.color-surface-raised;
+    border-width: scope.has-focus ? Tokens.focus-ring-width : 0;
+    border-color: Tokens.color-focus-ring;
+    background: !root.enabled ? Tokens.color-surface
+        : root.checked ? Tokens.color-accent : Tokens.color-surface-raised;
     animate background { duration: Tokens.motion-fast; easing: cubic-bezier(0.2, 0, 0, 1); }
 
     knob := Rectangle {
@@ -78,14 +106,23 @@ export component SengiToggle inherits Rectangle {
         y: Tokens.space-xxs;
         x: root.checked ? parent.width - self.width - Tokens.space-xxs : Tokens.space-xxs;
         border-radius: self.height / 2;
-        background: Tokens.color-text;
+        background: root.enabled ? Tokens.color-text : Tokens.color-text-disabled;
         animate x { duration: Tokens.motion-base; easing: cubic-bezier(0.2, 0, 0, 1); }
     }
 
-    TouchArea {
-        clicked => {
-            root.checked = !root.checked;
-            root.toggled(root.checked);
+    scope := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.flip();
+                return accept;
+            }
+            return reject;
         }
+    }
+
+    TouchArea {
+        enabled: root.enabled;
+        clicked => { root.flip(); }
     }
 }

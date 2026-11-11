@@ -2,7 +2,7 @@
 <openbox_menu>
   <menu id="root-menu" label="">
     <item label="Search">
-      <action name="Execute" command="fuzzel" />
+      <action name="Execute" command="sengi-launcher" />
     </item>
     <item label="Terminal">
       <action name="Execute" command="sengi-run foot" />
