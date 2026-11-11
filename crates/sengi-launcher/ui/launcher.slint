@@ -99,8 +99,10 @@ export component LauncherWindow inherits Window {
     // The narrow menu width, for menus with a few short lines.
     in property <bool> compact: false;
 
-    // The window is always full-height tall and see-through below the panel,
-    // so the search field stays put while the list under it grows and shrinks.
+    // The window covers the whole output and is see-through around the
+    // panel. The panel sits where a full list would be centred, so the search
+    // field stays put while the list under it grows and shrinks, and a click
+    // anywhere else lands on the window and closes it.
     out property <length> panel-width: root.compact ? Tokens.menu-width : Tokens.launcher-width;
     out property <length> full-height: root.height-for(root.max-lines);
     out property <length> panel-height: root.height-for(Math.clamp(root.rows.length, 1, root.max-lines));
@@ -130,19 +132,19 @@ export component LauncherWindow inherits Window {
     no-frame: true;
     background: transparent;
     default-font-family: Tokens.font-family;
-    width: root.panel-width;
-    height: root.full-height;
+    preferred-width: root.panel-width;
+    preferred-height: root.full-height;
     forward-focus: input;
 
-    // A click beside the panel closes it.
+    // A click outside the panel closes it.
     TouchArea {
         clicked => { root.dismiss(); }
     }
 
     SengiSurface {
-        x: 0;
-        y: 0;
-        width: root.width;
+        x: (root.width - self.width) / 2;
+        y: (root.height - root.full-height) / 2;
+        width: root.panel-width;
         height: root.panel-height;
 
         TouchArea {

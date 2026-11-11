@@ -88,10 +88,6 @@ fn show(invocation: &Invocation) -> u8 {
     }
 }
 
-fn pixels(length: f32) -> u32 {
-    length.round().max(1.0) as u32
-}
-
 /// Show the panel and run until a result is picked or it is dismissed.
 fn open(
     invocation: &Invocation,
@@ -110,10 +106,15 @@ fn open(
         let _ = close.send(());
     });
 
-    // Centred, above everything, and typing goes nowhere else.
+    // Above everything, typing goes nowhere else, and the surface covers the
+    // whole output (bar and dock included) so that a click anywhere outside
+    // the panel reaches us and closes it. The component draws the panel in
+    // the middle and leaves the rest transparent.
     let config = Config::new("sengi-launcher")
         .layer(Layer::Overlay)
-        .anchor(Anchor::NONE)
+        .anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT)
+        .size(0, 0)
+        .exclusive_zone(-1)
         .keyboard(KeyboardMode::Exclusive);
 
     let outcome = Rc::new(Cell::new(Outcome::Dismissed));
@@ -132,12 +133,6 @@ fn open(
                     handle.quit();
                 }
             });
-            // Tall enough for a full list and see-through below a short one,
-            // so the search field does not move as the results change.
-            handle.set_size(
-                pixels(window.get_panel_width()),
-                pixels(window.get_full_height()),
-            )?;
             Ok(window)
         }
     })?;
