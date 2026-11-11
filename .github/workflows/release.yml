@@ -9,6 +9,11 @@ on:
 permissions:
   contents: write
 
+# GitHub's package mirror stalls now and then. Give up on a stuck download
+# quickly and try again instead of hanging the job.
+env:
+  APT_OPTS: -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::ForceIPv4=true
+
 jobs:
   release:
     runs-on: ubuntu-24.04
@@ -21,8 +26,8 @@ jobs:
         run: scripts/build-iso.sh
       - name: Install QEMU and allow KVM
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils
+          sudo apt-get $APT_OPTS update -q
+          sudo apt-get $APT_OPTS install -y -q --no-install-recommends qemu-system-x86 qemu-utils
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
             sudo tee /etc/udev/rules.d/99-kvm.rules
           sudo udevadm control --reload-rules
