@@ -2,7 +2,7 @@
 vt = 7
 
 [default_session]
-command = "agreety --cmd /usr/bin/sengi-session"
+command = "/usr/sbin/agreety --cmd /usr/bin/sengi-session"
 user = "_greetd"
 
 # The live image logs straight in. The installer will drop this section.

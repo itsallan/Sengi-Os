@@ -1,3 +1,4 @@
 [D-BUS Service]
 Name=org.freedesktop.Notifications
 Exec=/usr/bin/sengi-notify
+SystemdService=sengi-notify.service
