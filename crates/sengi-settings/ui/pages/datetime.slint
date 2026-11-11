@@ -1,0 +1,75 @@
+// The Date & Time page: the time zone, the clock's format, and what the
+// system says about its own zone and network time.
+
+import { Tokens, SengiToggle } from "components.slint";
+import { InfoRow, InfoCard, Page, PageColumn, Card, Divider, SettingRow, RowValue, SectionLabel, Note, Gap, Metrics, ChoiceButton } from "../kit.slint";
+
+export global DateTimeData {
+    in property <string> zone;
+    // A zone of the user's own is set, apart from the system's.
+    in property <bool> own-zone: false;
+    in property <string> now;
+    in property <bool> twelve-hour: false;
+    in property <[InfoRow]> system;
+
+    callback choose-zone();
+    callback set-twelve-hour(bool);
+}
+
+export component DateTimePage inherits Page {
+    title: "Date & Time";
+    content-height: column.preferred-height;
+
+    column := PageColumn {
+        Card {
+            SettingRow {
+                title: "Time zone";
+                detail: DateTimeData.now;
+
+                VerticalLayout {
+                    alignment: center;
+                    ChoiceButton {
+                        width: Metrics.control + Tokens.dock-icon;
+                        text: DateTimeData.zone;
+                        clicked => { DateTimeData.choose-zone(); }
+                    }
+                }
+            }
+
+            Divider { }
+
+            SettingRow {
+                title: "12-hour clock";
+                detail: "Show the time in the bar as 2:30 PM, not 14:30";
+
+                VerticalLayout {
+                    alignment: center;
+                    SengiToggle {
+                        checked: DateTimeData.twelve-hour;
+                        toggled(on) => { DateTimeData.set-twelve-hour(on); }
+                    }
+                }
+            }
+        }
+
+        Note {
+            text: DateTimeData.own-zone
+                ? "This time zone is yours: it applies to your session, and to programs started from now on. Ones already running keep the old zone until you log in again."
+                : "Choosing a time zone here sets it for your account. Programs already running keep the old zone until you log in again.";
+        }
+
+        Gap { }
+
+        SectionLabel {
+            text: "This computer";
+        }
+
+        InfoCard {
+            rows: DateTimeData.system;
+        }
+
+        Note {
+            text: "The computer's own time zone and network time are shared by everyone who uses it, and changing them needs an administrator: timedatectl set-timezone, timedatectl set-ntp.";
+        }
+    }
+}

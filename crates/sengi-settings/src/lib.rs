@@ -10,6 +10,7 @@ pub mod app;
 pub mod bluetooth;
 pub mod bus;
 pub mod cli;
+pub mod datetime;
 pub mod derive;
 pub mod display;
 pub mod held;

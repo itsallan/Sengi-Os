@@ -307,6 +307,32 @@ impl Bus {
         )
     }
 
+    /// As [`Bus::properties`], for a service that is meant to be started
+    /// by being asked: timedated is not kept running, it is brought up
+    /// for each question and leaves again. This must never be used for
+    /// iwd or BlueZ.
+    pub fn properties_of_helper(
+        &self,
+        service: &str,
+        path: &str,
+        interface: &str,
+    ) -> Option<Props> {
+        let proxy = Proxy::new(
+            self.connection()?,
+            service.to_string(),
+            path.to_string(),
+            "org.freedesktop.DBus.Properties",
+        )
+        .ok()?;
+        let all: HashMap<String, OwnedValue> = proxy.call("GetAll", &(interface,)).ok()?;
+        Some(
+            all.iter()
+                .take(MAX_OBJECTS)
+                .map(|(key, value)| (key.clone(), prop(value)))
+                .collect(),
+        )
+    }
+
     pub fn set_flag(
         &self,
         service: &str,

@@ -14,6 +14,7 @@ use slint::ComponentHandle;
 use sengi_settings::app::{self, App};
 use sengi_settings::bluetooth::page::BluetoothPage;
 use sengi_settings::cli::{self, Action, Page};
+use sengi_settings::datetime::DateTimePage;
 use sengi_settings::display::page::DisplayPage;
 use sengi_settings::instance::{self, Claim};
 use sengi_settings::network::page::NetworkPage;
@@ -208,5 +209,9 @@ fn register_pages(app: &std::rc::Rc<App>, services: Services) {
     app.register(
         Page::Power,
         PowerPage::attach(app, services.bus.clone(), services.class.clone()),
+    );
+    app.register(
+        Page::DateTime,
+        DateTimePage::attach(app, services.bus.clone()),
     );
 }

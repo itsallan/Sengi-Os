@@ -10,8 +10,9 @@ import { BluetoothData, BluetoothPage } from "pages/bluetooth.slint";
 import { SoundData, SoundSide, SoundPage } from "pages/sound.slint";
 import { DisplayData, DisplayOutput, DisplayPage } from "pages/display.slint";
 import { PowerData, PowerPage } from "pages/power.slint";
+import { DateTimeData, DateTimePage } from "pages/datetime.slint";
 
-export { Item, InfoRow, DialogSpec, PowerData, NetworkData, BluetoothData, SoundData, SoundSide, DisplayData, DisplayOutput }
+export { Item, InfoRow, DialogSpec, PowerData, DateTimeData, NetworkData, BluetoothData, SoundData, SoundSide, DisplayData, DisplayOutput }
 
 export struct PageEntry {
     name: string,
@@ -187,6 +188,7 @@ export component SettingsWindow inherits Window {
         if root.page == "sound": SoundPage { }
         if root.page == "display": DisplayPage { }
         if root.page == "power": PowerPage { }
+        if root.page == "date-time": DateTimePage { }
     }
 
     if ChooserState.open: ChooserLayer {

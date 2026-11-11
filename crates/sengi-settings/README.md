@@ -205,6 +205,20 @@ given only until it exits; a kept mode is not written to a file yet).
   `HandleLidSwitch`), the same for every user and changed only as root.
   They are shown, read from logind, with where to change them.
 
+### Date & Time
+
+- The time zone chosen here is the user's own: `clock.time-zone`, written
+  as `TZ` into labwc's environment, so that everything the session
+  starts from then on has it. Programs already running keep the old zone
+  until the next login. The list is tzdata's `zone1970.tab`, searched by
+  typing.
+- `clock.format` is `24h` or `12h`, for the clock in the bar.
+- The system's zone and the state of network time are read from
+  timedated and shown. Changing them (`SetTimezone`, `SetNTP`) is guarded
+  by polkit actions that want an administrator; the image has no polkit,
+  so systemd refuses everyone but root, and Settings does not offer what
+  would only fail. `src/datetime.rs` has the details.
+
 ## Building and testing
 
     cargo build -p sengi-settings
