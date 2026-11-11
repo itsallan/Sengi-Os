@@ -1,0 +1,16 @@
+[Unit]
+Description=Sengi OS notifications
+# Without a compositor it cannot start; do not keep trying every two seconds.
+StartLimitIntervalSec=30
+StartLimitBurst=5
+
+# Started over D-Bus the first time something sends a notification or opens
+# the notification centre, so it costs nothing until then.
+[Service]
+Type=dbus
+BusName=org.freedesktop.Notifications
+ExecStart=/usr/bin/sengi-notify
+Restart=on-failure
+RestartSec=2
+# Status 3 means another notification service already has the name.
+RestartPreventExitStatus=3

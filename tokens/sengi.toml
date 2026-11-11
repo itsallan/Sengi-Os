@@ -40,6 +40,8 @@ xl = 24
 width = 1
 # Line weight of drawn icons.
 icon-stroke = 1.5
+# Outline on the control that has keyboard focus.
+focus-ring = 2
 
 [type]
 family = "Inter"
@@ -48,7 +50,7 @@ size-sm = 11
 size-md = 13
 size-lg = 16
 size-xl = 22
-# Point sizes for programs that do not take px (labwc, mako, foot).
+# Point sizes for programs that do not take px (labwc, foot).
 pt-sm = 8
 pt-md = 10
 pt-lg = 12
@@ -78,4 +80,7 @@ easing = "cubic-bezier(0.2, 0, 0, 1)"
 
 [timing]
 notification-timeout = 5000
+# How long a card that just appeared, changed or moved ignores clicks, so
+# it cannot be slipped under a click that was meant for something else.
+click-guard = 400
 idle-lock = 300

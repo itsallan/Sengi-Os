@@ -5,17 +5,29 @@
 //! Tab hides the surface for a second. Escape prints the text and quits.
 //!
 //!     cargo run -p sengi-layer --example typing
+//!
+//! With `--fill` the surface covers the whole output and is transparent
+//! around the box, the way a launcher that closes on a click outside has
+//! to be built. It is also the costly case for drawing.
+//!
+//!     cargo run -p sengi-layer --example typing -- --fill
+//!
+//! F1 switches between the two while it runs.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::Duration;
 
-use sengi_layer::{Config, KeyboardMode, Layer};
+use sengi_layer::{Anchor, Config, KeyboardMode, Layer};
 use slint::{ComponentHandle, Timer};
 
 slint::slint! {
     import { Tokens, SengiSurface, SengiLabel, SengiText } from "../../../ui/components.slint";
 
     export component Typing inherits Window {
+        in property <bool> fill;
         callback dismissed();
+        callback toggled();
         callback blinked();
         callback edited();
         out property <string> text <=> input.text;
@@ -30,6 +42,10 @@ slint::slint! {
 
         SengiSurface {
             raised: true;
+            // On a surface that covers the output the box sits in the
+            // middle; otherwise it is the surface.
+            width: root.fill ? root.surface-width : parent.width;
+            height: root.fill ? root.surface-height : parent.height;
 
             VerticalLayout {
                 padding-left: Tokens.space-md;
@@ -49,6 +65,10 @@ slint::slint! {
                         key-pressed(event) => {
                             if event.text == Key.Escape {
                                 root.dismissed();
+                                return accept;
+                            }
+                            if event.text == Key.F1 {
+                                root.toggled();
                                 return accept;
                             }
                             if event.text == Key.Tab {
@@ -86,24 +106,56 @@ fn pixels(length: f32) -> u32 {
 }
 
 fn main() -> Result<(), sengi_layer::Error> {
-    let config = Config::new("sengi-layer-typing")
+    let everywhere = Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT;
+    let fill = Rc::new(Cell::new(
+        std::env::args().any(|argument| argument == "--fill"),
+    ));
+    let mut config = Config::new("sengi-layer-typing")
         .layer(Layer::Overlay)
         .keyboard(KeyboardMode::Exclusive);
+    if fill.get() {
+        config = config.anchor(everywhere).size(0, 0);
+    }
 
-    sengi_layer::run(config, |context| {
+    sengi_layer::run(config, move |context| {
         let typing = Typing::new()?;
         let handle = context.handle();
         let surface = context.surface();
-        let width = pixels(typing.get_surface_width());
-        surface.set_size(width, pixels(typing.get_surface_height()))?;
+        typing.set_fill(fill.get());
 
+        // The box grows with what is typed. Covering the output, the
+        // surface stays as it is and the box grows inside it.
+        let width = pixels(typing.get_surface_width());
+        if !fill.get() {
+            surface.set_size(width, pixels(typing.get_surface_height()))?;
+        }
         typing.on_edited({
+            let fill = fill.clone();
             let surface = surface.clone();
             let weak = typing.as_weak();
             move || {
-                if let Some(typing) = weak.upgrade() {
+                if let (false, Some(typing)) = (fill.get(), weak.upgrade()) {
                     let _ = surface.set_size(width, pixels(typing.get_surface_height()));
                 }
+            }
+        });
+
+        typing.on_toggled({
+            let fill = fill.clone();
+            let handle = handle.clone();
+            let weak = typing.as_weak();
+            move || {
+                let Some(typing) = weak.upgrade() else {
+                    return;
+                };
+                fill.set(!fill.get());
+                typing.set_fill(fill.get());
+                let _ = if fill.get() {
+                    handle.set_anchor_and_size(everywhere, 0, 0)
+                } else {
+                    let height = pixels(typing.get_surface_height());
+                    handle.set_anchor_and_size(Anchor::NONE, width, height)
+                };
             }
         });
 

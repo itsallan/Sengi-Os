@@ -1,5 +1,8 @@
 # Started by labwc once the compositor is up.
-dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP >/dev/null 2>&1 &
+# Services the user manager starts on demand, such as notifications, need to
+# know where the compositor is. This has to finish before anything can ask
+# for them, so it is not run in the background.
+dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP >/dev/null 2>&1
 # The software renderer smears swaybg's one-pixel colour buffer into a
 # gradient, so give it a real image there.
 if [ "${WLR_RENDERER:-}" = pixman ]; then
@@ -29,6 +32,5 @@ for program in sengi-bar sengi-dock; do
 		done
 	) >/dev/null 2>&1 &
 done
-mako -c /etc/xdg/mako/config >/dev/null 2>&1 &
 sengi-focus >/dev/null 2>&1 &
 swayidle -w timeout @{timing.idle-lock} 'swaylock -f' before-sleep 'swaylock -f' >/dev/null 2>&1 &

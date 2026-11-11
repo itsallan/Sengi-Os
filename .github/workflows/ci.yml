@@ -52,6 +52,31 @@ jobs:
       - name: Tests
         run: cargo test --workspace --locked
 
+  # Types into a real layer surface under a headless compositor. New, so it
+  # reports without blocking until it has proved steady on the runners.
+  keyboard:
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain and tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            pkg-config libfontconfig1-dev libxkbcommon-dev labwc wtype libx11-data fonts-inter
+          rustup show active-toolchain || rustup toolchain install
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-keyboard-${{ hashFiles('Cargo.lock') }}
+      - name: Build the typing example
+        run: cargo build --locked -p sengi-layer --example typing
+      - name: Keyboard input
+        run: crates/sengi-layer/tests/keyboard.sh target/debug/examples/typing
+
   iso:
     runs-on: ubuntu-24.04
     needs: lint

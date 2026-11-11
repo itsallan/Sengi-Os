@@ -267,8 +267,8 @@ fn run() -> Result<(), sengi_layer::Error> {
 
         bar.on_open_launcher(|| spawn("sengi-launcher"));
         bar.on_open_network(|| spawn("sengi-run foot -e iwctl"));
-        bar.on_show_notifications(|| spawn("makoctl restore"));
-        bar.on_dismiss_notifications(|| spawn("makoctl dismiss --all"));
+        bar.on_show_notifications(|| spawn("sengi-notify --toggle-centre"));
+        bar.on_dismiss_notifications(|| spawn("sengi-notify --dismiss-all"));
         bar.on_open_session(|| spawn("sengi-power"));
         let mute = mute.clone();
         bar.on_toggle_mute(move || {
