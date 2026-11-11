@@ -59,6 +59,8 @@ pub(crate) struct SurfaceShared {
     pub scale: u32,
     pub output: Option<Output>,
     pub on_output: Hook<Output>,
+    pub focused: bool,
+    pub on_focus: Hook<bool>,
 }
 
 impl SurfaceShared {
@@ -71,6 +73,8 @@ impl SurfaceShared {
             scale: 1,
             output: None,
             on_output: None,
+            focused: false,
+            on_focus: None,
         }
     }
 
@@ -153,6 +157,22 @@ impl SurfaceHandle {
     /// sizes itself to the screen.
     pub fn on_output_changed(&self, changed: impl FnMut(Output) + 'static) {
         self.own.borrow_mut().on_output = Some(Box::new(changed));
+    }
+
+    /// True while this surface has the keyboard.
+    pub fn has_focus(&self) -> bool {
+        self.own.borrow().focused
+    }
+
+    /// Calls `changed` with `true` when the surface gets the keyboard and
+    /// `false` when it loses it, including when it is hidden. A second
+    /// call replaces the hook.
+    ///
+    /// A launcher uses this to dismiss itself when the user turns to
+    /// something else. Only surfaces with a keyboard mode other than
+    /// `None` ever get the keyboard.
+    pub fn on_focus_changed(&self, changed: impl FnMut(bool) + 'static) {
+        self.own.borrow_mut().on_focus = Some(Box::new(changed));
     }
 
     /// Takes this surface off the screen and keeps its component alive.

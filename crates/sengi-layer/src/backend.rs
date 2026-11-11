@@ -132,6 +132,12 @@ struct Surface {
     retry: Option<Duration>,
 }
 
+struct Focus {
+    surface: wl_surface::WlSurface,
+    window: Rc<MinimalSoftwareWindow>,
+    own: Rc<RefCell<SurfaceShared>>,
+}
+
 struct Repeat {
     raw_code: u32,
     text: SharedString,
@@ -161,8 +167,9 @@ pub(crate) struct State {
     shown: bool,
     pixels: Vec<PremultipliedRgbaColor>,
 
-    /// The surface with keyboard focus and the window it feeds.
-    focus: Option<(wl_surface::WlSurface, Rc<MinimalSoftwareWindow>)>,
+    /// The surface with keyboard focus, the window it feeds and the
+    /// instance to tell about it.
+    focus: Option<Focus>,
     /// Modifier keys Slint has seen go down and not come up.
     held_modifiers: Vec<char>,
     /// The text sent for each key that is down, so its release matches.
@@ -381,7 +388,7 @@ impl State {
         // No leave events arrive for a surface that is gone.
         let window = surface.window.clone();
         window.dispatch_event(WindowEvent::PointerExited);
-        if self.focus.as_ref().map(|(focused, _)| focused) == Some(layer.wl_surface()) {
+        if self.focus.as_ref().map(|focus| &focus.surface) == Some(layer.wl_surface()) {
             self.focus_lost();
         }
     }
@@ -559,8 +566,15 @@ impl State {
             return;
         };
         let window = surface.window.clone();
-        self.focus = Some((layer.wl_surface().clone(), window.clone()));
+        let own = surface.own.clone();
+        self.focus = Some(Focus {
+            surface: layer.wl_surface().clone(),
+            window: window.clone(),
+            own: own.clone(),
+        });
         window.dispatch_event(WindowEvent::WindowActiveChanged(true));
+        own.borrow_mut().focused = true;
+        call_hook(&own, |own| &mut own.on_focus, true);
     }
 
     /// Keys only reach the client that has the keyboard, so a key press
@@ -577,7 +591,7 @@ impl State {
     }
 
     fn focus_lost(&mut self) {
-        let Some((_, window)) = self.focus.take() else {
+        let Some(Focus { window, own, .. }) = self.focus.take() else {
             return;
         };
         self.repeat = None;
@@ -586,6 +600,8 @@ impl State {
             window.dispatch_event(WindowEvent::KeyReleased { text: key.into() });
         }
         window.dispatch_event(WindowEvent::WindowActiveChanged(false));
+        own.borrow_mut().focused = false;
+        call_hook(&own, |own| &mut own.on_focus, false);
     }
 
     /// Maps the surfaces whose wait after a close is over.
@@ -603,7 +619,7 @@ impl State {
 
     /// Sends the repeats a held key has built up.
     fn fire_repeats(&mut self) {
-        let (Some(timing), Some(repeat), Some((_, window))) =
+        let (Some(timing), Some(repeat), Some(Focus { window, .. })) =
             (self.repeat_timing, &mut self.repeat, &self.focus)
         else {
             self.repeat = None;
@@ -874,7 +890,7 @@ impl KeyboardHandler for State {
         surface: &wl_surface::WlSurface,
         _: u32,
     ) {
-        if self.focus.as_ref().map(|(focused, _)| focused) == Some(surface) {
+        if self.focus.as_ref().map(|focus| &focus.surface) == Some(surface) {
             self.focus_lost();
         }
     }
@@ -890,7 +906,7 @@ impl KeyboardHandler for State {
         if self.focus.is_none() {
             self.assume_focus();
         }
-        let Some((_, window)) = self.focus.clone() else {
+        let Some(window) = self.focus.as_ref().map(|focus| focus.window.clone()) else {
             return;
         };
         let Some(text) = key_text(event.keysym, event.utf8.as_deref()) else {
@@ -927,7 +943,7 @@ impl KeyboardHandler for State {
         {
             self.repeat = None;
         }
-        let Some((_, window)) = self.focus.clone() else {
+        let Some(window) = self.focus.as_ref().map(|focus| focus.window.clone()) else {
             return;
         };
         // A release carries no text; it repeats what the press sent. A
@@ -951,7 +967,7 @@ impl KeyboardHandler for State {
         modifiers: Modifiers,
         _: u32,
     ) {
-        let Some((_, window)) = self.focus.clone() else {
+        let Some(window) = self.focus.as_ref().map(|focus| focus.window.clone()) else {
             return;
         };
         let actual = ModifierState {
