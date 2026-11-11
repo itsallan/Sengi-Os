@@ -12,6 +12,8 @@ export struct NetworkItem {
     id: string,
     // Out of range since the list was last free to change: an empty row.
     gone: bool,
+    // Why it is gone: it has been joined, and is named in the header.
+    joined: bool,
     name: string,
     secured: bool,
     // iwd has joined it before and needs nothing typed.
@@ -125,7 +127,8 @@ component NetworkList inherits Rectangle {
                         - (item.confirm ? root.button + Tokens.space-xs * 2 : root.icons);
                     width: self.preferred-width;
                     height: parent.height;
-                    text: item.gone ? "Out of range" : item.confirm ? "Not encrypted"
+                    text: item.joined ? "Connected" : item.gone ? "Out of range"
+                        : item.confirm ? "Not encrypted"
                         : item.busy ? "Connecting\u{2026}" : item.known ? "Saved" : "";
                     color: item.gone ? Tokens.color-text-disabled
                         : item.confirm ? Tokens.color-warning : Tokens.color-text-muted;

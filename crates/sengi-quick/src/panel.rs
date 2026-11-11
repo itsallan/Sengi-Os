@@ -55,6 +55,8 @@ struct Shown {
     /// Out of range since the list was last free to change. The row keeps
     /// its place, empty, so that nothing moves up under the pointer.
     gone: bool,
+    /// Gone from the list because it is now the connected network.
+    joined: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -62,6 +64,8 @@ pub struct NetworkRow {
     /// Names the network to [`Panel::choose_network`].
     pub id: String,
     pub gone: bool,
+    /// The reason it is gone: it was joined, and is in the header now.
+    pub joined: bool,
     pub name: String,
     pub secured: bool,
     pub known: bool,
@@ -230,18 +234,27 @@ impl Panel {
     /// that have gone leave an empty row, new ones join at the end, and
     /// the proper order comes back when the list is let go.
     fn relist(&mut self) {
-        let mut fresh: Vec<Network> = match &self.wifi {
-            Reading::Known(Wifi::On { networks, .. }) => networks
-                .iter()
-                .filter(|network| !network.connected)
-                .cloned()
-                .collect(),
-            _ => Vec::new(),
+        let networks = match &self.wifi {
+            Reading::Known(Wifi::On { networks, .. }) => networks.as_slice(),
+            _ => &[],
         };
+        let connected = networks.iter().find(|network| network.connected);
+        let mut fresh: Vec<Network> = networks
+            .iter()
+            .filter(|network| !network.connected)
+            .cloned()
+            .collect();
+        // The list is not on screen while the passphrase field is, and
+        // nothing can be holding what is not there. The window cannot be
+        // relied on to say so: the list goes away without a parting word.
+        if self.prompt().is_some() || fresh.is_empty() {
+            self.held = false;
+        }
         if !self.held {
             self.shown.clear();
         }
         for row in &mut self.shown {
+            row.joined = connected.is_some_and(|network| network.id == row.network.id);
             match fresh
                 .iter()
                 .position(|network| network.id == row.network.id)
@@ -258,6 +271,7 @@ impl Panel {
             .extend(fresh.into_iter().take(room).map(|network| Shown {
                 network,
                 gone: false,
+                joined: false,
             }));
     }
 
@@ -451,9 +465,10 @@ impl Panel {
                 let rows: Vec<NetworkRow> = self
                     .shown
                     .iter()
-                    .map(|Shown { network, gone }| NetworkRow {
+                    .map(|Shown { network, gone, joined }| NetworkRow {
                         id: network.id.clone(),
                         gone: *gone,
+                        joined: *joined,
                         name: network.name.clone(),
                         secured: network.security != Security::Open,
                         known: network.known,
@@ -1011,6 +1026,55 @@ mod tests {
         // Let go, and the list is as a fresh one would be.
         panel.hold_list(false, false);
         assert_eq!(row_names(&panel), ["Bakery", "Cellar"]);
+    }
+
+    #[test]
+    fn a_network_joined_from_a_held_list_says_so_in_its_row() {
+        let mut panel = Panel::new(laptop(), false);
+        let home = network("Home", Security::Passphrase, true, -5000);
+        let cellar = fresh("Cellar", -7500);
+        panel.apply(Event::Wifi(on(
+            Link::Disconnected,
+            vec![home.clone(), cellar.clone()],
+        )));
+        panel.hold_list(true, true);
+        pick(&mut panel, 0);
+        let mut joined = home.clone();
+        joined.connected = true;
+        panel.apply(Event::Wifi(on(Link::Connected, vec![joined, cellar])));
+        panel.apply(Event::Joined {
+            id: "/Home".to_string(),
+            result: Ok(()),
+        });
+        // Its row stays, so Cellar does not jump up under the pointer, but
+        // it is not "out of range": it is the network in the header.
+        let rows = panel.view().wifi.rows;
+        assert!(rows[0].gone && rows[0].joined);
+        assert!(!rows[1].gone && !rows[1].joined);
+        assert_eq!(panel.view().wifi.detail, "Home");
+    }
+
+    #[test]
+    fn the_passphrase_field_lets_go_of_the_list() {
+        let mut panel = Panel::new(laptop(), false);
+        let mut home = network("Home", Security::Passphrase, true, -5000);
+        panel.apply(Event::Wifi(on(
+            Link::Disconnected,
+            vec![home.clone(), fresh("Cellar", -7500)],
+        )));
+        // The keyboard is in the list when a row opens the field, and the
+        // list is gone from the window before it can say it lost the focus.
+        panel.hold_list(true, true);
+        pick(&mut panel, 1);
+        assert!(panel.view().wifi.prompt.is_some());
+        home.connected = true;
+        panel.apply(Event::Wifi(on(
+            Link::Connected,
+            vec![home, fresh("Cellar", -7500), fresh("Attic", -5000)],
+        )));
+        panel.cancel_prompt();
+        // Back to an ordinary list: sorted, and nothing marked as gone.
+        assert_eq!(row_names(&panel), ["Attic", "Cellar"]);
     }
 
     #[test]

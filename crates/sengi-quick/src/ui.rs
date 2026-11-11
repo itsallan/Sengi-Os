@@ -28,6 +28,7 @@ fn item(row: &NetworkRow) -> NetworkItem {
     NetworkItem {
         id: row.id.as_str().into(),
         gone: row.gone,
+        joined: row.joined,
         name: row.name.as_str().into(),
         secured: row.secured,
         known: row.known,
