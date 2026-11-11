@@ -84,7 +84,7 @@ jobs:
         with:
           name: boot-test
           path: |
-            test-output/desktop.png
+            test-output/*.png
             test-output/metrics.txt
             test-output/guest-info.txt
             test-output/serial.log
