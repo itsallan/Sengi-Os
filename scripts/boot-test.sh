@@ -18,11 +18,16 @@ budget_boot_s=${SENGI_BUDGET_BOOT_S:-10}
 budget_ram_mb=${SENGI_BUDGET_RAM_MB:-400}
 timeout_s=${SENGI_BOOT_TIMEOUT_S:-300}
 
+# Guest display size, needed to turn pixels into pointer coordinates.
+screen_w=1280
+screen_h=800
+
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
-rm -f "$out/serial.log" "$out"/*.png "$out/metrics.txt" "$out/mon.in"
+rm -f "$out/serial.log" "$out"/*.png "$out/metrics.txt" \
+	"$out/mon.in" "$out/qmp.in" "$out/qmp.out"
 : >"$out/serial.log"
-mkfifo "$out/mon.in"
+mkfifo "$out/mon.in" "$out/qmp.in" "$out/qmp.out"
 
 accel=tcg cpu=max
 if [ -w /dev/kvm ]; then accel=kvm cpu=host; fi
@@ -34,6 +39,11 @@ cat "$iso" >/dev/null
 
 # The sound card plays into nothing. It is there so PipeWire finds a sink and
 # the bar shows its volume item, which it hides on a machine with no audio.
+#
+# The monitor's mouse_move only sends relative motion, and the guest ignores
+# that anyway once it has switched the PS/2 mouse to the absolute VMware
+# protocol, which QEMU's PC machines offer by default. So the pointer is placed
+# with absolute coordinates over a second, QMP, channel. No extra device needed.
 start=$(now)
 qemu-system-x86_64 -machine q35,accel=$accel -cpu $cpu -smp 2 -m 4096 \
 	-drive file="$iso",format=raw,if=virtio,readonly=on \
@@ -44,15 +54,21 @@ qemu-system-x86_64 -machine q35,accel=$accel -cpu $cpu -smp 2 -m 4096 \
 	-smbios type=11,value=io.systemd.credential:sengi.test=1 \
 	${SENGI_TEST_DEBUG:+-smbios "type=11,value=io.systemd.credential:sengi.test.debug=$SENGI_TEST_DEBUG"} \
 	-serial file:"$out/serial.log" \
+	-qmp pipe:"$out/qmp" \
 	-monitor stdio <"$out/mon.in" >"$out/monitor.log" 2>&1 &
 qemu=$!
 exec 3>"$out/mon.in"
+# QEMU blocks once the reply pipe fills up, so keep it drained.
+cat "$out/qmp.out" >"$out/qmp.log" &
+exec 4>"$out/qmp.in"
+echo '{"execute":"qmp_capabilities"}' >&4
 
 stop() {
 	echo quit >&3 2>/dev/null || true
 	exec 3>&-
+	exec 4>&-
 	wait "$qemu" 2>/dev/null || true
-	rm -f "$out/mon.in"
+	rm -f "$out/mon.in" "$out/qmp.in" "$out/qmp.out"
 }
 
 wait_for() {
@@ -84,7 +100,26 @@ key() {
 	echo "sendkey $1" >&3
 	sleep "${2:-2}"
 }
+# Put the pointer on a pixel. QMP wants each axis scaled to 0..32767.
+pointer() {
+	printf '{"execute":"input-send-event","arguments":{"events":[{"type":"abs","data":{"axis":"x","value":%d}},{"type":"abs","data":{"axis":"y","value":%d}}]}}\n' \
+		$(($1 * 32767 / (screen_w - 1))) $(($2 * 32767 / (screen_h - 1))) >&4
+	sleep 1
+}
 shot desktop
+
+# Without an absolute pointer the hover shot would quietly show nothing.
+echo "info mice" >&3
+sleep 1
+grep -q '(absolute)' "$out/monitor.log" ||
+	echo "warning: guest has no absolute pointer, the hover shot will miss" >&2
+
+# Rest on the power icon at the right end of the bar.
+pointer $((screen_w - 20)) 14
+shot hover
+# Park the pointer on empty desktop so the hover does not follow us around.
+pointer $((screen_w / 8)) $((screen_h / 2))
+
 key meta_l-ret 3
 shot terminal
 key meta_l-spc
