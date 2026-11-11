@@ -109,8 +109,9 @@ pub struct State {
     pub hovered_button: Option<(Window, Button)>,
     /// A move, resize or button press the pointer is in the middle of.
     pub drag: Option<Drag>,
-    /// The button whose release ends `drag`.
-    pub drag_button: u32,
+    /// The pointer may be over something else than its focus says, and
+    /// has to be looked at again even though it did not move.
+    pub pointer_stale: bool,
     pub swallowed_keys: Swallowed,
     /// Alt+Tab in progress: the windows in the order they had when it
     /// started, and which one is selected.
@@ -225,7 +226,7 @@ impl State {
             layer_focus: None,
             hovered_button: None,
             drag: None,
-            drag_button: 0,
+            pointer_stale: false,
             swallowed_keys: Swallowed::default(),
             cycle: None,
             children: Vec::new(),

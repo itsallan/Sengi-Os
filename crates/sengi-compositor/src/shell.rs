@@ -8,7 +8,7 @@ use smithay::{
         PopupKeyboardGrab, PopupKind, PopupPointerGrab, PopupUngrabStrategy, Window,
         WindowSurfaceType,
     },
-    input::pointer::Focus,
+    input::pointer::{Focus, GrabStartData},
     reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
     reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as ToplevelState,
     reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::{ResizeEdge, WmCapabilities},
@@ -31,6 +31,7 @@ use smithay::{
 
 use crate::{
     frame::Edges,
+    input::cell,
     layout::{self, Rect},
     state::{has_buffer, ClientState, State},
     window,
@@ -98,13 +99,14 @@ impl XdgShellHandler for State {
         let Some(window) = self.window_for_surface(surface.wl_surface()) else {
             return;
         };
-        let Some(button) = self.press_owned_by(surface.wl_surface(), serial) else {
+        let Some(start) = self.press_owned_by(surface.wl_surface(), serial) else {
             return;
         };
-        let at = self.pointer_cell();
-        self.release_pointer_from_client();
-        self.drag_button = button;
-        self.start_move(&window, at);
+        self.start_move(&window, cell(start.location));
+        if self.drag.is_some() {
+            // Replaces the client's implicit grab, which ends its click.
+            self.grab_for_drag(start, serial);
+        }
     }
 
     fn resize_request(
@@ -117,7 +119,7 @@ impl XdgShellHandler for State {
         let Some(window) = self.window_for_surface(surface.wl_surface()) else {
             return;
         };
-        let Some(button) = self.press_owned_by(surface.wl_surface(), serial) else {
+        let Some(start) = self.press_owned_by(surface.wl_surface(), serial) else {
             return;
         };
         let has = |part: ResizeEdge| edges as u32 & part as u32 != 0;
@@ -127,10 +129,10 @@ impl XdgShellHandler for State {
             top: has(ResizeEdge::Top),
             bottom: has(ResizeEdge::Bottom),
         };
-        let at = self.pointer_cell();
-        self.release_pointer_from_client();
-        self.drag_button = button;
-        self.start_resize(&window, edges, at);
+        self.start_resize(&window, edges, cell(start.location));
+        if self.drag.is_some() {
+            self.grab_for_drag(start, serial);
+        }
     }
 
     fn maximize_request(&mut self, surface: ToplevelSurface) {
@@ -240,26 +242,17 @@ impl XdgShellHandler for State {
 }
 
 impl State {
-    /// The button of the press that `serial` names, if that press went to
-    /// the client owning `surface` and still holds the pointer. Anything
-    /// else is a client trying to start a drag it has no claim to.
-    fn press_owned_by(&self, surface: &WlSurface, serial: Serial) -> Option<u32> {
+    /// The press that `serial` names, if it went to the client owning
+    /// `surface` and still holds the pointer. Anything else is a client
+    /// trying to start a drag it has no claim to.
+    fn press_owned_by(&self, surface: &WlSurface, serial: Serial) -> Option<GrabStartData<Self>> {
         let pointer = self.seat.get_pointer()?;
         if self.drag.is_some() || !pointer.has_grab(serial) {
             return None;
         }
         let start = pointer.grab_start_data()?;
         let (focus, _) = start.focus.as_ref()?;
-        focus
-            .id()
-            .same_client_as(&surface.id())
-            .then_some(start.button)
-    }
-
-    fn pointer_cell(&self) -> (i32, i32) {
-        let pointer = self.seat.get_pointer().expect("seat has a pointer");
-        let at = pointer.current_location();
-        (at.x.floor() as i32, at.y.floor() as i32)
+        focus.id().same_client_as(&surface.id()).then_some(start)
     }
 
     /// The window whose toplevel is `surface`, mapped or not.

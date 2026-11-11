@@ -6,10 +6,16 @@ use smithay::{
     desktop::{layer_map_for_output, Window, WindowSurfaceType},
     input::{
         keyboard::FilterResult,
-        pointer::{ButtonEvent, CursorImageStatus, MotionEvent},
+        pointer::{
+            AxisFrame, ButtonEvent, CursorImageStatus, Focus, GestureHoldBeginEvent,
+            GestureHoldEndEvent, GesturePinchBeginEvent, GesturePinchEndEvent,
+            GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
+            GestureSwipeUpdateEvent, GrabStartData, MotionEvent, PointerGrab, PointerInnerHandle,
+            RelativeMotionEvent,
+        },
     },
     reexports::wayland_server::{protocol::wl_surface::WlSurface, Resource},
-    utils::{Logical, Point, SERIAL_COUNTER},
+    utils::{Logical, Point, Serial, SERIAL_COUNTER},
     wayland::shell::wlr_layer::Layer,
 };
 
@@ -44,6 +50,144 @@ pub enum Drag {
     Press { window: Window, button: Button },
 }
 
+/// Holds the pointer for the drag in `State::drag`, so that a move, resize
+/// or button press shares Smithay's grab bookkeeping with popup grabs and
+/// client clicks: one of them at a time, started by a known press, ended by
+/// that button or by whoever takes the pointer next.
+struct FrameGrab {
+    start: GrabStartData<State>,
+}
+
+impl PointerGrab<State> for FrameGrab {
+    fn motion(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        _focus: Option<(WlSurface, Point<f64, Logical>)>,
+        event: &MotionEvent,
+    ) {
+        // No client has the pointer while a frame is being dragged.
+        handle.motion(data, None, event);
+        data.drag_motion(event.location);
+    }
+
+    fn relative_motion(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        _focus: Option<(WlSurface, Point<f64, Logical>)>,
+        event: &RelativeMotionEvent,
+    ) {
+        handle.relative_motion(data, None, event);
+    }
+
+    fn button(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        event: &ButtonEvent,
+    ) {
+        handle.button(data, event);
+        if event.state == ButtonState::Released && event.button == self.start.button {
+            data.finish_drag(handle.current_location());
+            handle.unset_grab(self, data, event.serial, event.time, true);
+        }
+    }
+
+    fn axis(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        details: AxisFrame,
+    ) {
+        handle.axis(data, details);
+    }
+
+    fn frame(&mut self, data: &mut State, handle: &mut PointerInnerHandle<'_, State>) {
+        handle.frame(data);
+    }
+
+    fn gesture_swipe_begin(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        event: &GestureSwipeBeginEvent,
+    ) {
+        handle.gesture_swipe_begin(data, event);
+    }
+
+    fn gesture_swipe_update(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        event: &GestureSwipeUpdateEvent,
+    ) {
+        handle.gesture_swipe_update(data, event);
+    }
+
+    fn gesture_swipe_end(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        event: &GestureSwipeEndEvent,
+    ) {
+        handle.gesture_swipe_end(data, event);
+    }
+
+    fn gesture_pinch_begin(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        event: &GesturePinchBeginEvent,
+    ) {
+        handle.gesture_pinch_begin(data, event);
+    }
+
+    fn gesture_pinch_update(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        event: &GesturePinchUpdateEvent,
+    ) {
+        handle.gesture_pinch_update(data, event);
+    }
+
+    fn gesture_pinch_end(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        event: &GesturePinchEndEvent,
+    ) {
+        handle.gesture_pinch_end(data, event);
+    }
+
+    fn gesture_hold_begin(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        event: &GestureHoldBeginEvent,
+    ) {
+        handle.gesture_hold_begin(data, event);
+    }
+
+    fn gesture_hold_end(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        event: &GestureHoldEndEvent,
+    ) {
+        handle.gesture_hold_end(data, event);
+    }
+
+    fn start_data(&self) -> &GrabStartData<State> {
+        &self.start
+    }
+
+    fn unset(&mut self, data: &mut State) {
+        data.drag_ended();
+    }
+}
+
 /// What the pointer is over.
 enum Target {
     /// A client surface and where its origin is on the desktop.
@@ -56,7 +200,7 @@ enum Target {
     Frame { window: Window, hit: Hit },
 }
 
-fn cell(location: Point<f64, Logical>) -> (i32, i32) {
+pub fn cell(location: Point<f64, Logical>) -> (i32, i32) {
     (location.x.floor() as i32, location.y.floor() as i32)
 }
 
@@ -156,7 +300,7 @@ impl State {
     /// maximised, or the session locked.
     pub fn sync_pointer_focus(&mut self) {
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
-        if !self.pointer_seen || self.drag.is_some() || pointer.is_grabbed() {
+        if !self.pointer_seen || pointer.is_grabbed() {
             return;
         }
         let location = pointer.current_location();
@@ -164,7 +308,7 @@ impl State {
             Some(Target::Surface { surface, .. }) => Some(surface),
             _ => None,
         };
-        if pointer.current_focus() != wanted {
+        if self.pointer_stale || pointer.current_focus() != wanted {
             let time = self.start_time.elapsed().as_millis() as u32;
             self.pointer_motion(location, time);
         }
@@ -172,40 +316,15 @@ impl State {
 
     pub fn pointer_motion(&mut self, location: Point<f64, Logical>, time: u32) {
         self.note_activity();
-        let (x, y) = cell(location);
-        let mut focus = None;
-        let mut hovered = None;
-        let mut frame_cursor = None;
+        self.pointer_seen = true;
+        self.pointer_stale = false;
 
-        match &self.drag {
-            Some(Drag::Move { window, offset }) => {
-                let (window, offset) = (window.clone(), *offset);
-                self.move_frame_to(&window, x + offset.0, y + offset.1);
-            }
-            Some(Drag::Resize {
-                window,
-                edges,
-                initial,
-                start,
-            }) => {
-                let (min, max) = self.size_limits(window);
-                let outline = if window::data(window).decorated.get() {
-                    self.theme.metrics.frame(*initial)
-                } else {
-                    *initial
-                };
-                let delta = (x - start.0, y - start.1);
-                let delta = frame::limit_resize(outline, *edges, delta, self.usable_area());
-                let wanted = frame::resize(*initial, *edges, delta, min, max);
-                window::request_size(window, (wanted.w, wanted.h), true);
-            }
-            Some(Drag::Press { window, button }) => {
-                // Shown as pressed only while the pointer is still on it.
-                if self.button_at(window, x, y) == Some(*button) {
-                    hovered = Some((window.clone(), *button));
-                }
-            }
-            None => match self.target_at(location) {
+        // During a drag the grab does the work, see `FrameGrab`.
+        let mut focus = None;
+        if self.drag.is_none() {
+            let mut hovered = None;
+            let mut frame_cursor = None;
+            match self.target_at(location) {
                 Some(Target::Surface {
                     surface, origin, ..
                 }) => focus = Some((surface, origin)),
@@ -218,11 +337,10 @@ impl State {
                     ..
                 }) => frame_cursor = Some(resize_cursor(edges)),
                 _ => {}
-            },
+            }
+            self.hovered_button = hovered;
+            self.frame_cursor = frame_cursor;
         }
-        self.hovered_button = hovered;
-        self.frame_cursor = frame_cursor;
-        self.pointer_seen = true;
 
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
         // The cursor a client set is its own; the next client under the
@@ -250,34 +368,29 @@ impl State {
     pub fn pointer_button(&mut self, button: u32, state: ButtonState, time: u32) {
         self.note_activity();
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
-        let location = pointer.current_location();
+        let serial = SERIAL_COUNTER.next_serial();
 
-        if state == ButtonState::Pressed && self.drag.is_none() && !pointer.is_grabbed() {
-            self.press(button, location);
+        if state == ButtonState::Pressed && !pointer.is_grabbed() {
+            self.press(button, pointer.current_location(), serial);
         }
 
-        // Presses on a frame reach no client, the pointer has no focus there.
+        // Presses on a frame reach no client, the pointer has no focus
+        // there; a release that ends a drag is seen by the grab.
         pointer.button(
             self,
             &ButtonEvent {
                 button,
                 state,
-                serial: SERIAL_COUNTER.next_serial(),
+                serial,
                 time,
             },
         );
         pointer.frame(self);
-
-        if state == ButtonState::Released && button == self.drag_button && self.drag.is_some() {
-            self.finish_drag(location);
-            // Whatever is under the pointer now gets it back.
-            self.pointer_motion(location, time);
-        }
     }
 
-    /// A button went down with no drag in progress: focus what was clicked
-    /// and start a drag if it was part of a frame.
-    fn press(&mut self, button: u32, location: Point<f64, Logical>) {
+    /// A button went down with nothing holding the pointer: focus what was
+    /// clicked and start a drag if it was part of a frame.
+    fn press(&mut self, button: u32, location: Point<f64, Logical>, serial: Serial) {
         // A click on the lock screen changes nothing behind it.
         if self.is_locked() {
             return;
@@ -298,7 +411,6 @@ impl State {
                 if button != BTN_LEFT {
                     return;
                 }
-                self.drag_button = button;
                 match hit {
                     Hit::Titlebar => self.start_move(&window, (x, y)),
                     Hit::Resize(edges) => self.start_resize(&window, edges, (x, y)),
@@ -308,6 +420,14 @@ impl State {
                     }
                     Hit::Client => {}
                 }
+                if self.drag.is_some() {
+                    let start = GrabStartData {
+                        focus: None,
+                        button,
+                        location,
+                    };
+                    self.grab_for_drag(start, serial);
+                }
             }
             None => {
                 self.layer_focus = None;
@@ -316,7 +436,17 @@ impl State {
         }
     }
 
-    /// Starts dragging `window` by its title bar from `pointer`.
+    /// Hands the pointer to the drag in `self.drag` until the button that
+    /// started it is released. `start` is the press it began with: ours for
+    /// a press on a frame, the client's when the client asked for the drag.
+    pub fn grab_for_drag(&mut self, start: GrabStartData<Self>, serial: Serial) {
+        let pointer = self.seat.get_pointer().expect("seat has a pointer");
+        let grab = FrameGrab { start };
+        pointer.set_grab(self, grab, serial, Focus::Clear);
+    }
+
+    /// Prepares dragging `window` by its title bar from `pointer`. The
+    /// caller installs the grab.
     pub fn start_move(&mut self, window: &Window, pointer: (i32, i32)) {
         // A maximised window stays where it is.
         if window::data(window).restore.get().is_some() {
@@ -332,7 +462,8 @@ impl State {
         });
     }
 
-    /// Starts dragging the given edges of `window` from `pointer`.
+    /// Prepares dragging the given edges of `window` from `pointer`. The
+    /// caller installs the grab.
     pub fn start_resize(&mut self, window: &Window, edges: Edges, pointer: (i32, i32)) {
         if !edges.any() || window::data(window).restore.get().is_some() {
             return;
@@ -351,26 +482,43 @@ impl State {
         });
     }
 
-    /// For moves and resizes a client asks for: the client has the pointer,
-    /// so take it away first.
-    pub fn release_pointer_from_client(&mut self) {
-        let pointer = self.seat.get_pointer().expect("seat has a pointer");
-        let location = pointer.current_location();
-        let time = self.start_time.elapsed().as_millis() as u32;
-        let serial = SERIAL_COUNTER.next_serial();
-        pointer.unset_grab(self, serial, time);
-        pointer.motion(
-            self,
-            None,
-            &MotionEvent {
-                location,
-                serial,
-                time,
-            },
-        );
-        pointer.frame(self);
+    /// The pointer moved during a drag. Called by the grab, so nothing in
+    /// here may use the pointer handle.
+    fn drag_motion(&mut self, location: Point<f64, Logical>) {
+        let (x, y) = cell(location);
+        match &self.drag {
+            Some(Drag::Move { window, offset }) => {
+                let (window, offset) = (window.clone(), *offset);
+                self.move_frame_to(&window, x + offset.0, y + offset.1);
+            }
+            Some(Drag::Resize {
+                window,
+                edges,
+                initial,
+                start,
+            }) => {
+                let (min, max) = self.size_limits(window);
+                let outline = if window::data(window).decorated.get() {
+                    self.theme.metrics.frame(*initial)
+                } else {
+                    *initial
+                };
+                let delta = (x - start.0, y - start.1);
+                let delta = frame::limit_resize(outline, *edges, delta, self.usable_area());
+                let wanted = frame::resize(*initial, *edges, delta, min, max);
+                window::request_size(window, (wanted.w, wanted.h), true);
+            }
+            Some(Drag::Press { window, button }) => {
+                // Shown as pressed only while the pointer is still on it.
+                let on_it = self.button_at(window, x, y) == Some(*button);
+                self.hovered_button = on_it.then(|| (window.clone(), *button));
+            }
+            None => {}
+        }
     }
 
+    /// The button that started the drag came up. Called by the grab, so
+    /// nothing in here may use the pointer handle.
     fn finish_drag(&mut self, location: Point<f64, Logical>) {
         let (x, y) = cell(location);
         match self.drag.take() {
@@ -382,6 +530,17 @@ impl State {
             }
             Some(Drag::Move { .. }) | None => {}
         }
+    }
+
+    /// The grab is gone, by release or because something took the pointer
+    /// away (the lock, a popup). Whatever was in progress stops here.
+    fn drag_ended(&mut self) {
+        if let Some(Drag::Resize { window, .. }) = self.drag.take() {
+            window::finish_resize(&window);
+        }
+        // What is under the pointer may be something else by now.
+        self.pointer_stale = true;
+        self.request_redraw();
     }
 
     fn press_button(&mut self, window: &Window, button: Button) {
