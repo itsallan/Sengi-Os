@@ -84,7 +84,7 @@ mod real {
     /// `DBUS_SYSTEM_BUS_ADDRESS`. A release build reads the real `/sys` and
     /// nothing else, so a program cannot be made to show an invented machine.
     #[cfg(debug_assertions)]
-    const SYS_CLASS_VARIABLE: &str = "SENGI_QUICK_SYS_CLASS";
+    const SYS_CLASS_VARIABLE: &str = "SENGI_SYS_CLASS";
 
     fn sys_class() -> PathBuf {
         #[cfg(debug_assertions)]

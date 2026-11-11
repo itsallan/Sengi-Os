@@ -118,6 +118,7 @@ fn kind(event: &Event) -> &'static str {
         Event::Volume { .. } => "volume",
         Event::Hardware { .. } => "hardware",
         Event::Dnd(_) => "do not disturb",
+        _ => "something new",
     }
 }
 

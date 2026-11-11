@@ -116,6 +116,7 @@ pub fn arrange(mut networks: Vec<Network>) -> Vec<Network> {
 
 /// Why an attempt to join failed, in iwd's terms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum JoinError {
     /// The network refused, which for a typed passphrase nearly always
     /// means it was wrong.

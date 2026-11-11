@@ -85,7 +85,7 @@ that the shipped panel can only ever show the real machine:
   `changed-passphrase`, `failed`, `bluetooth`, `low-battery`, `charging`,
   `off`, `blocked`, `desktop`, `hostile`. Its Lock and Session buttons are
   real.
-- `SENGI_QUICK_SYS_CLASS=DIR` reads `DIR` in place of `/sys/class`. With
+- `SENGI_SYS_CLASS=DIR` reads `DIR` in place of `/sys/class`. With
   `DBUS_SYSTEM_BUS_ADDRESS` pointing at a private bus this lets the real
   bus code be run against stand-ins for iwd, BlueZ and logind.
 

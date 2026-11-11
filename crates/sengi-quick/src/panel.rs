@@ -225,6 +225,8 @@ impl Panel {
                 self.dnd_asked = Some(answer.is_some());
                 self.dnd = answer.or(self.dnd);
             }
+            // News of a kind this panel has no tile for.
+            _ => {}
         }
         self.relist();
     }
@@ -540,13 +542,12 @@ impl Panel {
         };
         let name = isolate(name);
         match error {
-            JoinError::Failed | JoinError::Aborted | JoinError::NeedsPassphrase => {
-                format!("Could not connect to {name}")
-            }
             JoinError::Timeout => format!("{name} did not answer"),
             JoinError::NotConfigured => format!("{name} has to be set up before it can be joined"),
             JoinError::NotSupported => format!("{name} uses security that is not supported"),
             JoinError::Unavailable => "Wi-Fi is not available".to_string(),
+            // Failed, Aborted, NeedsPassphrase, and any reason added later.
+            _ => format!("Could not connect to {name}"),
         }
     }
 

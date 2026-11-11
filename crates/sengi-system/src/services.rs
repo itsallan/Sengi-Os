@@ -132,6 +132,7 @@ pub struct Services {
 
 /// News for the panel.
 #[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Event {
     /// Wi-Fi as it now reads.
     Wifi(Wifi),
@@ -164,6 +165,7 @@ pub enum Event {
 
 /// What the panel asks for.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Command {
     /// Switch the Wi-Fi radio on or off.
     WifiPower(bool),
@@ -203,7 +205,7 @@ pub const POLL: Duration = Duration::from_secs(2);
 
 /// What the Wi-Fi worker takes in.
 #[derive(Debug)]
-pub enum WifiMessage {
+enum WifiMessage {
     /// The service says a read could now differ.
     Changed,
     /// Switch the radio on or off.
@@ -214,7 +216,7 @@ pub enum WifiMessage {
 
 /// What the Bluetooth worker takes in.
 #[derive(Debug)]
-pub enum BluetoothMessage {
+enum BluetoothMessage {
     /// The service says a read could now differ.
     Changed,
     /// Switch the adapter on or off.
@@ -223,7 +225,7 @@ pub enum BluetoothMessage {
 
 /// What the audio worker takes in.
 #[derive(Debug)]
-pub enum AudioMessage {
+enum AudioMessage {
     /// Set the volume.
     Volume(Step),
     /// Mute or unmute.
@@ -239,7 +241,7 @@ pub enum AudioMessage {
 
 /// What the machine worker takes in.
 #[derive(Debug)]
-pub enum MachineMessage {
+enum MachineMessage {
     /// Set the brightness.
     Brightness(Step),
     /// The panel is closing: apply what is queued and end.
@@ -352,9 +354,8 @@ fn burst<T>(inbox: &Receiver<T>) -> Option<Vec<T>> {
     Some(messages)
 }
 
-/// The Wi-Fi worker's loop. [`Workers::start`] runs it; it is public so a
-/// test can run it over a fake service.
-pub fn wifi_worker(
+/// The Wi-Fi worker's loop, run by [`Workers::start`].
+fn wifi_worker(
     service: Arc<dyn WifiService>,
     inbox: Receiver<WifiMessage>,
     own: Sender<WifiMessage>,
@@ -415,9 +416,8 @@ pub fn wifi_worker(
     }
 }
 
-/// The Bluetooth worker's loop. [`Workers::start`] runs it; it is public
-/// so a test can run it over a fake service.
-pub fn bluetooth_worker(
+/// The Bluetooth worker's loop, run by [`Workers::start`].
+fn bluetooth_worker(
     service: Arc<dyn BluetoothService>,
     inbox: Receiver<BluetoothMessage>,
     own: Sender<BluetoothMessage>,
@@ -452,7 +452,7 @@ pub fn bluetooth_worker(
 
 /// What a batch of slider and mute messages comes to: the newest volume
 /// and the last mute state. Everything in between was overtaken.
-pub fn settle(batch: impl IntoIterator<Item = AudioMessage>) -> Settled {
+fn settle(batch: impl IntoIterator<Item = AudioMessage>) -> Settled {
     let mut steps = Vec::new();
     let mut settled = Settled::default();
     for message in batch {
@@ -474,7 +474,7 @@ pub fn settle(batch: impl IntoIterator<Item = AudioMessage>) -> Settled {
 
 /// What [`settle`] makes of a batch.
 #[derive(Debug, Default, PartialEq, Eq)]
-pub struct Settled {
+struct Settled {
     /// The newest volume asked for, if any was.
     pub volume: Option<Step>,
     /// The last mute state asked for, if any was.
@@ -499,9 +499,8 @@ fn waiting<T>(inbox: &Receiver<T>, poll: Duration) -> Result<Vec<T>, ()> {
     }
 }
 
-/// The audio worker's loop. [`Workers::start`] runs it; it is public so a
-/// test can run it over a fake service.
-pub fn audio_worker(
+/// The audio worker's loop, run by [`Workers::start`].
+fn audio_worker(
     service: &dyn AudioService,
     inbox: Receiver<AudioMessage>,
     emit: impl Emit,
@@ -544,9 +543,8 @@ pub fn audio_worker(
     }
 }
 
-/// The machine worker's loop. [`Workers::start`] runs it; it is public so
-/// a test can run it over a fake service.
-pub fn machine_worker(
+/// The machine worker's loop, run by [`Workers::start`].
+fn machine_worker(
     service: &dyn Machine,
     inbox: Receiver<MachineMessage>,
     emit: impl Emit,
@@ -594,9 +592,8 @@ pub fn machine_worker(
     }
 }
 
-/// The do-not-disturb worker's loop. [`Workers::start`] runs it; it is
-/// public so a test can run it over a fake service.
-pub fn dnd_worker(service: &dyn DndService, inbox: Receiver<bool>, emit: impl Emit) {
+/// The do-not-disturb worker's loop, run by [`Workers::start`].
+fn dnd_worker(service: &dyn DndService, inbox: Receiver<bool>, emit: impl Emit) {
     if !service.available() {
         return;
     }

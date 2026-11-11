@@ -63,3 +63,10 @@ What it is careful about:
 
 A program names itself for the crate's messages on standard error with
 `set_program_name("sengi-quick")`.
+
+`Event`, `Command` and `JoinError` are `#[non_exhaustive]`: match them with
+a wildcard arm, so a new kind of news does not break the program reading it.
+
+In debug builds only, `SENGI_SYS_CLASS=DIR` reads `DIR` in place of
+`/sys/class`, for trying the battery and backlight code on a machine that
+has neither. A release build ignores it.
