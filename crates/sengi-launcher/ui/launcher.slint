@@ -22,6 +22,7 @@ component ResultRow inherits Rectangle {
     in property <Row> data;
     in property <bool> selected: false;
     callback clicked();
+    callback scrolled(length);
 
     border-radius: Tokens.radius;
     background: root.selected ? Tokens.color-surface-hover : transparent;
@@ -78,6 +79,10 @@ component ResultRow inherits Rectangle {
 
     TouchArea {
         clicked => { root.clicked(); }
+        scroll-event(event) => {
+            root.scrolled(event.delta-y);
+            return EventResult.accept;
+        }
     }
 }
 
@@ -124,6 +129,24 @@ export component LauncherWindow inherits Window {
     private property <length> row-height: Tokens.font-size-lg + Tokens.space-sm * 2;
     private property <length> list-top: root.field-height + Tokens.border-width + Tokens.space-sm;
 
+    // Touchpad scrolling that has not yet added up to a row.
+    private property <length> scroll-rest;
+
+    // Scrolling moves the highlight: one row for a notch of a wheel, and one
+    // row for each row's height of touchpad travel.
+    function wheel(delta: length) {
+        if delta >= root.row-height || delta <= -root.row-height {
+            root.scroll-rest = 0;
+            root.move-selection(delta < 0 ? 1 : -1);
+        } else {
+            root.scroll-rest += delta;
+            if root.scroll-rest >= root.row-height || root.scroll-rest <= -root.row-height {
+                root.move-selection(root.scroll-rest < 0 ? 1 : -1);
+                root.scroll-rest = 0;
+            }
+        }
+    }
+
     pure function height-for(lines: int) -> length {
         root.list-top + lines * root.row-height + Tokens.space-sm
     }
@@ -149,6 +172,10 @@ export component LauncherWindow inherits Window {
 
         TouchArea {
             clicked => { input.focus(); }
+            scroll-event(event) => {
+                root.wheel(event.delta-y);
+                return EventResult.accept;
+            }
         }
 
         HorizontalLayout {
@@ -247,6 +274,7 @@ export component LauncherWindow inherits Window {
                 data: row;
                 selected: index == root.selected;
                 clicked => { root.row-clicked(index); }
+                scrolled(delta) => { root.wheel(delta); }
             }
 
             if root.rows.length == 0: SengiText {
