@@ -125,9 +125,11 @@ fn split_words(exec: &str) -> Result<Vec<Word>, ExecError> {
     Ok(args)
 }
 
-/// Expand field codes in arguments that were not quoted. There are never
-/// files or URLs to pass, so `%f %F %u %U` vanish, as do the deprecated
-/// codes.
+/// Expand the field codes in `args`. There are never files or URLs to pass,
+/// so `%f %F %u %U` vanish, as do the deprecated codes.
+///
+/// This expands whatever it is given. [`command_line`] passes it only the
+/// arguments of an Exec line that were not quoted.
 pub fn expand(args: &[String], entry: &DesktopEntry) -> Vec<String> {
     let mut out = Vec::with_capacity(args.len());
     for arg in args {
