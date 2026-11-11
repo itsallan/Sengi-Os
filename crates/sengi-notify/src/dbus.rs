@@ -41,7 +41,7 @@ const PENDING_MAX: usize = 256;
 
 /// What the bus thread tells the UI.
 pub enum ToUi {
-    Notify(Notification),
+    Notify(Box<Notification>),
     Close(u32),
     Command(Command),
     /// The name was taken away; there is nothing left to answer for.
@@ -173,7 +173,7 @@ impl Notifications {
         let mut note = request.into_notification(admitted.id, self.default_timeout);
         note.sender = sender.to_string();
         note.token = admitted.token;
-        if let Err(error) = self.link.send(ToUi::Notify(note)) {
+        if let Err(error) = self.link.send(ToUi::Notify(Box::new(note))) {
             self.intake.withdraw(admitted);
             return Err(error);
         }
@@ -572,7 +572,7 @@ mod tests {
         receiver
             .try_iter()
             .filter_map(|message| match message {
-                ToUi::Notify(note) => Some(note),
+                ToUi::Notify(note) => Some(*note),
                 _ => None,
             })
             .collect()

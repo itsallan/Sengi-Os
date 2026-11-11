@@ -237,7 +237,8 @@ impl Ui {
         let mut closed = Vec::new();
         let now = self.now();
         match message {
-            ToUi::Notify(mut note) => {
+            ToUi::Notify(note) => {
+                let mut note = *note;
                 note.time = chrono::Local::now().format("%H:%M").to_string();
                 self.store.add(note, now, &mut closed);
             }
