@@ -38,7 +38,16 @@
 //!     sengi_layer::run(config, |context| {
 //!         let prompt = Prompt::new()?;
 //!         let handle = context.handle();
-//!         prompt.on_dismissed(move || handle.quit());
+//!         prompt.on_dismissed({
+//!             let handle = handle.clone();
+//!             move || handle.quit()
+//!         });
+//!         // Go away when the user turns to something else.
+//!         context.surface().on_focus_changed(move |focused| {
+//!             if !focused {
+//!                 handle.quit();
+//!             }
+//!         });
 //!         Ok(prompt)
 //!     })
 //! }
@@ -53,10 +62,13 @@
 //!   and runs the loop until [`Handle::quit`]. [`App`] is the same in two
 //!   steps, for programs that need the [`Handle`] before the loop starts,
 //!   for example to open a channel for a worker thread.
-//! * [`Handle`] changes the surface while it runs: resize, hide and show,
-//!   keyboard mode, quit. It also opens channels into the loop and hands
-//!   out the Wayland [`Connection`](wayland_client::Connection) for
-//!   protocols this crate does not speak.
+//! * [`Handle`] changes the surfaces while they run: size, anchor, layer,
+//!   margins, input region, keyboard mode, hide and show, quit. It also
+//!   opens channels into the loop and hands out the Wayland
+//!   [`Connection`](wayland_client::Connection) for protocols this crate
+//!   does not speak.
+//! * [`SurfaceHandle`] does the same for one instance's surface, and tells
+//!   the app about its output and its keyboard focus.
 //! * [`Instances`] keeps track of every live copy of the component, which
 //!   matters once there is one per output.
 //!
@@ -67,13 +79,28 @@
 //!
 //! Only one [`App`] can exist in a process, because Slint takes one platform
 //! per process.
+//!
+//! # Things to know
+//!
+//! * Never call `show()`, `hide()` or `run()` on the component. The loop
+//!   shows it, and Slint treats hiding the last window as a request to quit
+//!   the program. Use [`Handle::hide`] or [`SurfaceHandle::hide`].
+//! * A layer surface is never told about clicks outside itself. A launcher
+//!   that should close on a click elsewhere needs a surface that covers the
+//!   output, anchored to all four edges with size `(0, 0)`, drawing its box
+//!   in the middle and handling the click around it in its own UI. Closing
+//!   when the keyboard goes elsewhere is [`SurfaceHandle::on_focus_changed`].
+//! * Sizes can come from the component: read them in the build closure and
+//!   call [`SurfaceHandle::set_size`] on [`Context::surface`] before
+//!   returning. The surface is created after the closure returns.
 
 mod backend;
 mod config;
 mod convert;
+mod outputs;
 mod platform;
+mod surface;
 
-use std::any::Any;
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
@@ -95,10 +122,11 @@ use smithay_client_toolkit::shm::Shm;
 use wayland_client::globals::registry_queue_init;
 use wayland_client::Connection;
 
-use backend::{Builder, Shared, State};
-use platform::{LayerPlatform, ProxyEvent, Unclaimed};
+use backend::{Builder, Instance, Shared, State};
+use platform::{LayerPlatform, ProxyEvent, QuitGuard, Unclaimed};
 
 pub use config::{Anchor, Config, ConfigError, KeyboardMode, Layer, Margins, Outputs};
+pub use surface::{Output, Rect, SurfaceHandle};
 /// The version of wayland-client the connection from [`Handle::connection`]
 /// belongs to. Use this instead of a dependency of your own so the types
 /// match.
@@ -132,7 +160,16 @@ impl fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::Config(error) => Some(error),
+            Error::Wayland(_) => None,
+            Error::Platform(error) => Some(error),
+            Error::Build(error) => Some(error.as_ref()),
+        }
+    }
+}
 
 impl From<ConfigError> for Error {
     fn from(error: ConfigError) -> Error {
@@ -150,7 +187,8 @@ fn wayland(what: &str, error: impl fmt::Display) -> Error {
 /// `build` is called after the Slint platform is installed, so it is the
 /// place to create the component and wire up its callbacks. With
 /// [`Outputs::All`] it is called once for every output. The component it
-/// returns is shown and kept alive by the loop.
+/// returns is shown and kept alive by the loop; do not call `show()`,
+/// `hide()` or `run()` on it yourself.
 ///
 /// This is [`App::new`] followed by [`App::run`].
 pub fn run<C, F>(config: Config, build: F) -> Result<(), Error>
@@ -238,10 +276,12 @@ impl App {
 
         let started = Instant::now();
         let unclaimed = Unclaimed::default();
+        let quits = QuitGuard::default();
         slint::platform::set_platform(Box::new(LayerPlatform {
             unclaimed: unclaimed.clone(),
             started,
             proxy,
+            quits: quits.clone(),
             clipboard: RefCell::new(None),
         }))
         .map_err(|error| Error::Platform(PlatformError::Other(error.to_string())))?;
@@ -250,6 +290,10 @@ impl App {
             config: Config::new(""),
             visible: true,
             revision: 1,
+            size_stamp: 0,
+            size_overridden: false,
+            input_region: None,
+            input_stamp: 0,
             quit: false,
         }));
         let handle = Handle {
@@ -268,6 +312,7 @@ impl App {
             queue_handle,
             shared,
             handle.clone(),
+            quits,
             started,
         );
 
@@ -308,7 +353,7 @@ impl App {
             let window = claim(&unclaimed, component.window())
                 .ok_or("the component returned by the build closure has no window here")?;
             component.show()?;
-            Ok((Box::new(component) as Box<dyn Any>, window))
+            Ok((Box::new(component) as Box<dyn Instance>, window))
         });
         backend::run(self.event_loop, self.state, builder)
     }
@@ -329,18 +374,36 @@ fn claim(unclaimed: &Unclaimed, wanted: &slint::Window) -> Option<Rc<MinimalSoft
 /// What the build closure is told about the instance it is building.
 pub struct Context {
     pub(crate) handle: Handle,
+    pub(crate) surface: SurfaceHandle,
     pub(crate) output_name: Option<String>,
 }
 
 impl Context {
-    /// The app's handle; clone it into callbacks.
+    /// The app's handle; clone it into callbacks. What it changes applies
+    /// to every surface of the app.
     pub fn handle(&self) -> Handle {
         self.handle.clone()
     }
 
+    /// The handle for the surface of the instance being built. Use it to
+    /// size the surface from the component, and for anything that should
+    /// affect this instance only.
+    pub fn surface(&self) -> SurfaceHandle {
+        self.surface.clone()
+    }
+
+    /// The output this instance is for: its name, logical size and scale.
+    /// `None` with [`Outputs::Auto`], where the compositor has not picked
+    /// yet; use [`SurfaceHandle::on_output_changed`] to hear when it has,
+    /// and when the output later changes.
+    pub fn output(&self) -> Option<Output> {
+        self.surface.output()
+    }
+
     /// The name of the output this instance is for, such as `eDP-1`, when
-    /// running with [`Outputs::All`] and the compositor names its outputs.
-    /// Always `None` with [`Outputs::Primary`].
+    /// running with [`Outputs::All`] or [`Outputs::Named`] and the compositor
+    /// names its outputs.
+    /// Always `None` with [`Outputs::Auto`].
     pub fn output_name(&self) -> Option<&str> {
         self.output_name.as_deref()
     }
@@ -365,20 +428,57 @@ impl Handle {
     /// Asks for a new size in logical pixels; 0 stretches along that axis
     /// and needs both edges of the axis anchored. The component is resized
     /// when the compositor confirms, usually within a frame.
+    ///
+    /// This replaces any size a surface was given on its own through
+    /// [`SurfaceHandle::set_size`].
     pub fn set_size(&self, width: u32, height: u32) -> Result<(), ConfigError> {
         let mut shared = self.shared.borrow_mut();
         config::validate_size(shared.config.anchor, (width, height))?;
-        if shared.config.size != (width, height) {
-            shared.config.size = (width, height);
-            shared.revision += 1;
-        }
+        shared.set_size((width, height));
         Ok(())
     }
 
-    /// The size last asked for, as passed to [`Config::size`] or
-    /// [`Handle::set_size`].
+    /// The app-wide size last asked for, as passed to [`Config::size`] or
+    /// [`Handle::set_size`]. For the size a surface really has, see
+    /// [`SurfaceHandle::size`].
     pub fn size(&self) -> (u32, u32) {
         self.shared.borrow().config.size
+    }
+
+    /// Changes the edges the surface is attached to. Fails if the current
+    /// size stretches along an axis the new anchor does not span; use
+    /// [`Handle::set_anchor_and_size`] to change both at once.
+    pub fn set_anchor(&self, anchor: Anchor) -> Result<(), ConfigError> {
+        let size = self.size();
+        self.set_anchor_and_size(anchor, size.0, size.1)
+    }
+
+    /// Changes the anchored edges and the size together, for moves where
+    /// neither is valid with the other's old value, such as turning a
+    /// centred box into a strip along an edge.
+    pub fn set_anchor_and_size(
+        &self,
+        anchor: Anchor,
+        width: u32,
+        height: u32,
+    ) -> Result<(), ConfigError> {
+        config::validate_size(anchor, (width, height))?;
+        let mut shared = self.shared.borrow_mut();
+        if shared.config.anchor != anchor {
+            shared.config.anchor = anchor;
+            shared.revision += 1;
+        }
+        shared.set_size((width, height));
+        Ok(())
+    }
+
+    /// Moves the surface to another layer.
+    pub fn set_layer(&self, layer: Layer) {
+        let mut shared = self.shared.borrow_mut();
+        if shared.config.layer != layer {
+            shared.config.layer = layer;
+            shared.revision += 1;
+        }
     }
 
     /// Changes how much of the screen edge is reserved. See
@@ -407,6 +507,21 @@ impl Handle {
             shared.config.keyboard = keyboard;
             shared.revision += 1;
         }
+    }
+
+    /// Limits where the surface takes pointer input to the given
+    /// rectangles; clicks and hover anywhere else pass through to whatever
+    /// is underneath. `None` goes back to the whole surface, and an empty
+    /// list makes it take no pointer input at all.
+    ///
+    /// A dock wider than its icons passes clicks through beside them this
+    /// way. The region is in logical pixels and does not follow a resize;
+    /// set it again when the layout changes.
+    pub fn set_input_region(&self, region: Option<&[Rect]>) {
+        let mut shared = self.shared.borrow_mut();
+        shared.input_region = region.map(<[Rect]>::to_vec);
+        shared.input_stamp += 1;
+        shared.revision += 1;
     }
 
     /// Takes the surface off the screen. The component, its state and its
@@ -450,13 +565,27 @@ impl Handle {
         Ok(Sender(sender))
     }
 
-    /// The Wayland connection, for protocols this crate does not handle.
+    /// The Wayland connection, for protocols this crate does not handle,
+    /// such as wlr-foreign-toplevel-management.
     ///
-    /// Create your own event queue on it (`connection.new_event_queue()`),
-    /// bind what you need from your own registry, and dispatch that queue
-    /// on a thread of your own with `blocking_dispatch`. Pass what you
-    /// learn to the UI through [`Handle::channel`]. Do not dispatch on the
-    /// UI thread: the loop would not see the events.
+    /// Use it from a thread of your own, with an event queue of your own:
+    /// `connection.new_event_queue()`, a registry on that queue, and a loop
+    /// around `blocking_dispatch`. Pass what you learn to the UI through
+    /// [`Handle::channel`]. `examples/soak.rs` does exactly this.
+    ///
+    /// The rules that keep the two threads out of each other's way:
+    ///
+    /// * Do not dispatch the queue on the UI thread, and do not create
+    ///   objects on the UI loop's queue; it would never see their events.
+    /// * On the worker, wait only inside `blocking_dispatch`. Never hold a
+    ///   read guard from `prepare_read` while waiting for anything else, a
+    ///   lock or a channel included: every other reader of the connection,
+    ///   the UI loop among them, waits for that guard.
+    /// * A protocol error on one of the worker's objects ends the whole
+    ///   connection and with it the UI. Bind only versions you handle.
+    /// * The worker is not told when the UI loop ends. It finds out when a
+    ///   [`Sender::send`] fails or `blocking_dispatch` returns an error;
+    ///   blocked with nothing arriving, it ends with the process.
     pub fn connection(&self) -> Connection {
         self.connection.clone()
     }
@@ -499,8 +628,8 @@ impl std::error::Error for LoopEnded {}
 /// all from timers and channels without caring how many there are. It
 /// works the same with a single instance.
 ///
-/// Instances are held weakly: one that the loop has dropped is skipped and
-/// forgotten.
+/// Instances are held weakly: one that the loop has let go of, because its
+/// output was unplugged, is freed, skipped and forgotten.
 pub struct Instances<C: ComponentHandle>(Rc<RefCell<Vec<slint::Weak<C>>>>);
 
 impl<C: ComponentHandle> Instances<C> {
@@ -536,5 +665,57 @@ impl<C: ComponentHandle> Clone for Instances<C> {
 impl<C: ComponentHandle> Default for Instances<C> {
     fn default() -> Instances<C> {
         Instances::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    slint::slint! {
+        export component Probe inherits Window { }
+    }
+
+    // Slint keeps one platform per thread of tests, so everything that
+    // needs one lives in this single test.
+    #[test]
+    fn a_retired_instance_is_freed_and_does_not_quit_the_loop() {
+        let (proxy, events) = channel::channel();
+        let unclaimed = Unclaimed::default();
+        let quits = QuitGuard::default();
+        slint::platform::set_platform(Box::new(LayerPlatform {
+            unclaimed: unclaimed.clone(),
+            started: Instant::now(),
+            proxy,
+            quits: quits.clone(),
+            clipboard: RefCell::new(None),
+        }))
+        .expect("no platform is set yet");
+
+        let instances = Instances::new();
+        let probe = Probe::new().expect("the component builds");
+        let weak = probe.as_weak();
+        instances.add(&probe);
+        let window = claim(&unclaimed, probe.window()).expect("the window is claimed");
+        probe.show().expect("the component shows");
+
+        // What the loop holds for an instance: the component and its window.
+        let held: Box<dyn Instance> = Box::new(probe);
+        assert!(weak.upgrade().is_some());
+
+        backend::retire(held, &quits);
+        drop(window);
+        assert!(weak.upgrade().is_none(), "the component is still alive");
+        let mut visited = 0;
+        instances.for_each(|_| visited += 1);
+        assert_eq!(visited, 0);
+        assert!(
+            events.try_recv().is_err(),
+            "hiding it asked the loop to quit"
+        );
+
+        // A quit the app asks for still gets through.
+        slint::quit_event_loop().expect("the proxy takes the request");
+        assert!(matches!(events.try_recv(), Ok(ProxyEvent::Quit)));
     }
 }

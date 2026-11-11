@@ -1,7 +1,6 @@
 //! The Wayland side: layer surfaces, input and the loop that ties them to
 //! Slint.
 
-use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -10,7 +9,7 @@ use std::time::{Duration, Instant};
 use slint::platform::software_renderer::{MinimalSoftwareWindow, PremultipliedRgbaColor};
 use slint::platform::WindowEvent;
 use slint::{LogicalPosition, PhysicalSize, SharedString};
-use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState};
+use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState, Region};
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
@@ -37,13 +36,22 @@ use wayland_client::{Connection, QueueHandle};
 
 use crate::config::{Anchor, Config, KeyboardMode, Layer, Outputs};
 use crate::convert::{
-    is_modifier, key_text, modifier_fixes, pointer_button, repeats_due, scroll_delta,
+    is_modifier, key_repeats, key_text, modifier_fixes, pointer_button, repeats_due, scroll_delta,
     write_argb8888, ModifierState, RepeatTiming,
 };
+use crate::outputs::{plan, retry_delay};
+use crate::platform::QuitGuard;
+use crate::surface::{call_hook, Output, Rect, SurfaceHandle, SurfaceShared};
 use crate::{Context, Error, Handle};
 
-/// How long to sleep between frames while something is animating.
+/// How often to look again while something animates without drawing, so
+/// that no frame callback is on its way to wake the loop.
 const FRAME: Duration = Duration::from_millis(16);
+
+/// How long to wait for a frame callback before drawing regardless. A
+/// compositor drops the callback when the surface's output goes away, and
+/// labwc then shows the surface elsewhere only after its next commit.
+const FRAME_PATIENCE: Duration = Duration::from_secs(1);
 
 /// What the app has asked for through its [`Handle`]. Slint callbacks run
 /// while the Wayland state is borrowed, so requests are left here and the
@@ -54,16 +62,55 @@ pub(crate) struct Shared {
     /// Counts changes to the size, margins, exclusive zone and keyboard
     /// mode, so each surface can tell whether it has sent the latest.
     pub revision: u64,
+    /// Counts app-wide size changes, so that a surface's own size is
+    /// dropped when a newer app-wide one arrives.
+    pub size_stamp: u64,
+    /// Some surface has asked for a size of its own.
+    pub size_overridden: bool,
+    /// Where the surfaces take pointer input. None is everywhere.
+    pub input_region: Option<Vec<Rect>>,
+    /// Counts app-wide input region changes, like `size_stamp`.
+    pub input_stamp: u64,
     pub quit: bool,
 }
 
-pub(crate) type Built = (Box<dyn Any>, Rc<MinimalSoftwareWindow>);
+/// A component the loop is showing, with its type forgotten.
+pub(crate) trait Instance {
+    /// Lets go of the component. Slint keeps a shown component alive from
+    /// its window, so only hiding it frees it.
+    fn retire(&self);
+}
+
+impl<C: slint::ComponentHandle> Instance for C {
+    fn retire(&self) {
+        let _ = self.hide();
+    }
+}
+
+/// Hides a component for good without Slint taking the hiding of its last
+/// window as a request to quit.
+pub(crate) fn retire(component: Box<dyn Instance>, quits: &QuitGuard) {
+    quits.hold(|| component.retire());
+}
+
+impl Shared {
+    /// Sets the app-wide size, which takes over from any surface's own.
+    pub(crate) fn set_size(&mut self, size: (u32, u32)) {
+        if self.config.size != size || self.size_overridden {
+            self.revision += 1;
+        }
+        self.config.size = size;
+        self.size_stamp += 1;
+        self.size_overridden = false;
+    }
+}
+
+pub(crate) type Built = (Box<dyn Instance>, Rc<MinimalSoftwareWindow>);
 pub(crate) type Builder = Box<dyn FnMut(&Context) -> Result<Built, Box<dyn std::error::Error>>>;
 
 /// One instance of the app's component and the layer surface showing it.
 struct Surface {
-    /// Held only to keep the component alive.
-    _component: Box<dyn Any>,
+    component: Box<dyn Instance>,
     window: Rc<MinimalSoftwareWindow>,
     /// The output this instance belongs to. None when the compositor picks.
     output: Option<wl_output::WlOutput>,
@@ -74,8 +121,34 @@ struct Surface {
     height: u32,
     scale: u32,
     configured: bool,
-    /// The `Shared::revision` the compositor was last told about.
-    sent: u64,
+    /// The output the surface was last seen entering, for a surface whose
+    /// output the compositor picks.
+    entered: Option<wl_output::WlOutput>,
+    /// The current layer surface has been on some output.
+    was_on_screen: bool,
+    /// What the instance has asked for through its `SurfaceHandle`.
+    own: Rc<RefCell<SurfaceShared>>,
+    /// The `Shared::revision` and `SurfaceShared::revision` the compositor
+    /// was last told about.
+    sent: (u64, u64),
+    /// A frame was committed and the compositor has not yet said it is
+    /// time for the next. Nothing is drawn meanwhile, which paces drawing
+    /// to the display and stops it while the surface cannot be seen.
+    /// Holds the time, measured from `State::started`, at which to stop
+    /// waiting for the callback.
+    frame_pending: Option<Duration>,
+    /// How many times in a row the compositor has closed the surface
+    /// without its output going away.
+    closes: u32,
+    /// When to try mapping again after such a close, measured from
+    /// `State::started`.
+    retry: Option<Duration>,
+}
+
+struct Focus {
+    surface: wl_surface::WlSurface,
+    window: Rc<MinimalSoftwareWindow>,
+    own: Rc<RefCell<SurfaceShared>>,
 }
 
 struct Repeat {
@@ -99,6 +172,7 @@ pub(crate) struct State {
 
     pub(crate) shared: Rc<RefCell<Shared>>,
     handle: Handle,
+    quits: QuitGuard,
     builder: Option<Builder>,
     surfaces: Vec<Surface>,
     /// Whether the surfaces are currently meant to be mapped. Follows
@@ -106,8 +180,9 @@ pub(crate) struct State {
     shown: bool,
     pixels: Vec<PremultipliedRgbaColor>,
 
-    /// The surface with keyboard focus and the window it feeds.
-    focus: Option<(wl_surface::WlSurface, Rc<MinimalSoftwareWindow>)>,
+    /// The surface with keyboard focus, the window it feeds and the
+    /// instance to tell about it.
+    focus: Option<Focus>,
     /// Modifier keys Slint has seen go down and not come up.
     held_modifiers: Vec<char>,
     /// The text sent for each key that is down, so its release matches.
@@ -153,9 +228,10 @@ impl From<KeyboardMode> for KeyboardInteractivity {
 }
 
 /// Sends everything about the surface that can change while it is mapped.
-fn send_geometry(layer: &LayerSurface, config: &Config) {
+fn send_geometry(layer: &LayerSurface, config: &Config, size: (u32, u32)) {
+    layer.set_layer(config.layer.into());
     layer.set_anchor(config.anchor.into());
-    layer.set_size(config.size.0, config.size.1);
+    layer.set_size(size.0, size.1);
     layer.set_margin(
         config.margins.top,
         config.margins.right,
@@ -164,6 +240,24 @@ fn send_geometry(layer: &LayerSurface, config: &Config) {
     );
     layer.set_exclusive_zone(config.exclusive_zone);
     layer.set_keyboard_interactivity(config.keyboard.into());
+}
+
+/// Says where the surface takes pointer input. Clicks elsewhere pass
+/// through to whatever is below. It takes effect with the next commit.
+fn send_input_region(compositor: &CompositorState, layer: &LayerSurface, region: Option<&[Rect]>) {
+    let Some(rectangles) = region else {
+        layer.wl_surface().set_input_region(None);
+        return;
+    };
+    let Ok(region) = Region::new(compositor) else {
+        return;
+    };
+    for rectangle in rectangles {
+        region.add(rectangle.x, rectangle.y, rectangle.width, rectangle.height);
+    }
+    layer
+        .wl_surface()
+        .set_input_region(Some(region.wl_region()));
 }
 
 impl State {
@@ -179,6 +273,7 @@ impl State {
         queue: QueueHandle<State>,
         shared: Rc<RefCell<Shared>>,
         handle: Handle,
+        quits: QuitGuard,
         started: Instant,
     ) -> State {
         State {
@@ -194,6 +289,7 @@ impl State {
             keyboard: None,
             shared,
             handle,
+            quits,
             builder: None,
             surfaces: Vec::new(),
             shown: false,
@@ -209,7 +305,7 @@ impl State {
     }
 
     fn mode(&self) -> Outputs {
-        self.shared.borrow().config.outputs
+        self.shared.borrow().config.outputs.clone()
     }
 
     fn index_of(&self, surface: &wl_surface::WlSurface) -> Option<usize> {
@@ -224,8 +320,14 @@ impl State {
             .as_ref()
             .and_then(|output| self.outputs.info(output))
             .and_then(|info| info.name);
+        let own = Rc::new(RefCell::new(SurfaceShared::new()));
+        own.borrow_mut().output = output.as_ref().and_then(|output| self.describe(output));
         let context = Context {
             handle: self.handle.clone(),
+            surface: SurfaceHandle {
+                app: self.shared.clone(),
+                own: own.clone(),
+            },
             output_name,
         };
         let builder = self
@@ -234,7 +336,7 @@ impl State {
             .expect("the builder is set before the loop runs");
         let (component, window) = builder(&context).map_err(Error::Build)?;
         self.surfaces.push(Surface {
-            _component: component,
+            component,
             window,
             output,
             layer: None,
@@ -242,9 +344,90 @@ impl State {
             height: 0,
             scale: 1,
             configured: false,
-            sent: 0,
+            entered: None,
+            was_on_screen: false,
+            own,
+            sent: (0, 0),
+            frame_pending: None,
+            closes: 0,
+            retry: None,
         });
         Ok(self.surfaces.len() - 1)
+    }
+
+    fn describe(&self, output: &wl_output::WlOutput) -> Option<Output> {
+        let info = self.outputs.info(output)?;
+        let scale = info.scale_factor.max(1);
+        // The logical size comes from xdg-output and can arrive a moment
+        // after the rest. Until then work it out from the current mode.
+        let from_mode = || {
+            let mode = info.modes.iter().find(|mode| mode.current)?;
+            let (width, height) = mode.dimensions;
+            let turned = matches!(
+                info.transform,
+                wl_output::Transform::_90
+                    | wl_output::Transform::_270
+                    | wl_output::Transform::Flipped90
+                    | wl_output::Transform::Flipped270
+            );
+            let (width, height) = if turned {
+                (height, width)
+            } else {
+                (width, height)
+            };
+            Some((width / scale, height / scale))
+        };
+        let size = info.logical_size.or_else(from_mode);
+        Some(Output {
+            name: info.name,
+            size: size.map(|(width, height)| (width.max(0) as u32, height.max(0) as u32)),
+            scale: scale as u32,
+        })
+    }
+
+    /// Not every compositor closes a surface whose output goes away. labwc
+    /// keeps it, off screen, until that same output returns. A surface that
+    /// left the choice of output to the compositor asks again instead, so
+    /// it turns up on an output that is there. `gone` is an output that is
+    /// being removed but may still be listed.
+    fn rescue_stranded(&mut self, gone: Option<&wl_output::WlOutput>) {
+        if !self.outputs.outputs().any(|output| Some(&output) != gone) {
+            return;
+        }
+        for index in 0..self.surfaces.len() {
+            let surface = &self.surfaces[index];
+            let stranded = surface.output.is_none()
+                && surface.layer.is_some()
+                && surface.was_on_screen
+                && surface
+                    .entered
+                    .as_ref()
+                    .is_none_or(|entered| Some(entered) == gone);
+            if stranded {
+                self.unmap(index);
+                if self.wants_mapping(index) {
+                    self.map(index);
+                }
+            }
+        }
+    }
+
+    /// Looks up the surface's output again and tells the app if what is
+    /// known about it has changed.
+    fn refresh_output(&mut self, index: usize) {
+        let surface = &self.surfaces[index];
+        let Some(output) = surface.output.as_ref().or(surface.entered.as_ref()) else {
+            return;
+        };
+        let Some(described) = self.describe(output) else {
+            return;
+        };
+        let own = surface.own.clone();
+        if own.borrow().output.as_ref() == Some(&described) {
+            return;
+        }
+        own.borrow_mut().output = Some(described.clone());
+        call_hook(&own, |own| &mut own.on_output, described);
     }
 
     /// Gives the instance a layer surface. Nothing is drawn until the
@@ -260,12 +443,21 @@ impl State {
             Some(config.namespace.clone()),
             surface.output.as_ref(),
         );
-        send_geometry(&layer, config);
+        let own = surface.own.borrow();
+        send_geometry(&layer, config, own.wanted_size(&shared));
+        send_input_region(
+            &self.compositor,
+            &layer,
+            own.wanted_input_region(&shared).as_deref(),
+        );
         layer.commit();
         surface.layer = Some(layer);
-        surface.sent = shared.revision;
+        surface.sent = (shared.revision, own.revision);
         // A new surface starts at scale 1 until the compositor says more.
         surface.scale = 1;
+        surface.frame_pending = None;
+        drop(own);
+        surface.own.borrow_mut().scale = 1;
     }
 
     /// Takes the instance off the screen but keeps its component.
@@ -275,10 +467,12 @@ impl State {
             return;
         };
         surface.configured = false;
+        surface.entered = None;
+        surface.was_on_screen = false;
         // No leave events arrive for a surface that is gone.
         let window = surface.window.clone();
         window.dispatch_event(WindowEvent::PointerExited);
-        if self.focus.as_ref().map(|(focused, _)| focused) == Some(layer.wl_surface()) {
+        if self.focus.as_ref().map(|focus| &focus.surface) == Some(layer.wl_surface()) {
             self.focus_lost();
         }
     }
@@ -287,7 +481,9 @@ impl State {
     fn wants_mapping(&self, index: usize) -> bool {
         let surface = &self.surfaces[index];
         self.shown
+            && surface.own.borrow().visible
             && surface.layer.is_none()
+            && surface.retry.is_none()
             && (surface.output.is_some() || self.outputs.outputs().next().is_some())
     }
 
@@ -297,38 +493,39 @@ impl State {
         if self.builder.is_none() {
             return;
         }
-        if self.mode() == Outputs::All {
-            let outputs: Vec<wl_output::WlOutput> = self
-                .outputs
-                .outputs()
-                .filter(|output| Some(output) != gone)
-                .collect();
+        // An output counts once the compositor has described it, which is
+        // also when its name is known.
+        let ready: Vec<(wl_output::WlOutput, Option<String>)> = self
+            .outputs
+            .outputs()
+            .filter(|output| Some(output) != gone)
+            .filter_map(|output| {
+                let info = self.outputs.info(&output)?;
+                Some((output, info.name))
+            })
+            .collect();
+        let instances: Vec<wl_output::WlOutput> = self
+            .surfaces
+            .iter()
+            .filter_map(|surface| surface.output.clone())
+            .collect();
+        let plan = plan(&self.mode(), &ready, &instances);
 
-            let mut index = 0;
-            while index < self.surfaces.len() {
-                let alive = self.surfaces[index]
-                    .output
-                    .as_ref()
-                    .is_some_and(|output| outputs.contains(output));
-                if alive {
-                    index += 1;
-                } else {
-                    self.unmap(index);
-                    self.surfaces.remove(index);
-                }
+        for output in plan.remove {
+            let position = self
+                .surfaces
+                .iter()
+                .position(|surface| surface.output.as_ref() == Some(&output));
+            if let Some(index) = position {
+                self.unmap(index);
+                let surface = self.surfaces.remove(index);
+                retire(surface.component, &self.quits);
             }
-
-            for output in outputs {
-                let known = self
-                    .surfaces
-                    .iter()
-                    .any(|surface| surface.output.as_ref() == Some(&output));
-                if !known {
-                    if let Err(error) = self.build(Some(output)) {
-                        self.failure = Some(error);
-                        return;
-                    }
-                }
+        }
+        for output in plan.add {
+            if let Err(error) = self.build(Some(output)) {
+                self.failure = Some(error);
+                return;
             }
         }
         for index in 0..self.surfaces.len() {
@@ -349,18 +546,21 @@ impl State {
             surface.width * surface.scale,
             surface.height * surface.scale,
         ));
-        if let Some(layer) = &surface.layer {
-            layer.wl_surface().set_buffer_scale(surface.scale as i32);
-        }
+        // The compositor is told the new scale in `draw`, together with
+        // the first buffer rendered at it.
+        surface.window.request_redraw();
     }
 
     /// Renders a frame if Slint has anything new to show.
     fn draw(&mut self, index: usize) {
-        let surface = &self.surfaces[index];
+        let surface = &mut self.surfaces[index];
         let Some(layer) = &surface.layer else {
             return;
         };
         if !surface.configured || surface.width == 0 || surface.height == 0 {
+            return;
+        }
+        if surface.frame_pending.is_some() {
             return;
         }
         let width = (surface.width * surface.scale) as usize;
@@ -388,38 +588,50 @@ impl State {
         };
         write_argb8888(&self.pixels, canvas);
 
+        // The scale goes out in the same commit as the buffer it describes.
+        // Sent on its own it could be committed against the previous
+        // buffer, whose size need not be a multiple of the new scale, and
+        // that is a protocol error.
         let wl_surface = layer.wl_surface();
+        wl_surface.set_buffer_scale(surface.scale as i32);
         wl_surface.damage_buffer(0, 0, width as i32, height as i32);
         if buffer.attach_to(wl_surface).is_ok() {
+            wl_surface.frame(&self.queue, wl_surface.clone());
+            surface.frame_pending = Some(self.started.elapsed() + FRAME_PATIENCE);
             layer.commit();
         }
     }
 
     /// Acts on what the app asked for through its handle since last time.
     fn apply_requests(&mut self) {
-        let visible = self.shared.borrow().visible;
-        if visible != self.shown {
-            self.shown = visible;
-            for index in 0..self.surfaces.len() {
-                if !visible {
-                    self.unmap(index);
-                } else if self.wants_mapping(index) {
-                    self.map(index);
-                }
+        // Before the commit that asks for keyboard focus: a surface focused
+        // while there is no wl_keyboard gets no enter event.
+        self.bind_keyboard();
+        self.shown = self.shared.borrow().visible;
+        for index in 0..self.surfaces.len() {
+            if !(self.shown && self.surfaces[index].own.borrow().visible) {
+                self.unmap(index);
+            } else if self.wants_mapping(index) {
+                self.map(index);
             }
         }
         let shared = self.shared.borrow();
         for surface in &mut self.surfaces {
             if let Some(layer) = &surface.layer {
-                if surface.sent != shared.revision {
-                    send_geometry(layer, &shared.config);
+                let own = surface.own.borrow();
+                let latest = (shared.revision, own.revision);
+                if surface.sent != latest {
+                    send_geometry(layer, &shared.config, own.wanted_size(&shared));
+                    send_input_region(
+                        &self.compositor,
+                        layer,
+                        own.wanted_input_region(&shared).as_deref(),
+                    );
                     layer.commit();
-                    surface.sent = shared.revision;
+                    surface.sent = latest;
                 }
             }
         }
-        drop(shared);
-        self.bind_keyboard();
     }
 
     /// Asks for the keyboard once the app wants key presses. A bar never
@@ -443,8 +655,15 @@ impl State {
             return;
         };
         let window = surface.window.clone();
-        self.focus = Some((layer.wl_surface().clone(), window.clone()));
+        let own = surface.own.clone();
+        self.focus = Some(Focus {
+            surface: layer.wl_surface().clone(),
+            window: window.clone(),
+            own: own.clone(),
+        });
         window.dispatch_event(WindowEvent::WindowActiveChanged(true));
+        own.borrow_mut().focused = true;
+        call_hook(&own, |own| &mut own.on_focus, true);
     }
 
     /// Keys only reach the client that has the keyboard, so a key press
@@ -461,7 +680,7 @@ impl State {
     }
 
     fn focus_lost(&mut self) {
-        let Some((_, window)) = self.focus.take() else {
+        let Some(Focus { window, own, .. }) = self.focus.take() else {
             return;
         };
         self.repeat = None;
@@ -470,11 +689,33 @@ impl State {
             window.dispatch_event(WindowEvent::KeyReleased { text: key.into() });
         }
         window.dispatch_event(WindowEvent::WindowActiveChanged(false));
+        own.borrow_mut().focused = false;
+        call_hook(&own, |own| &mut own.on_focus, false);
+    }
+
+    /// Maps the surfaces whose wait after a close is over, and gives up on
+    /// frame callbacks that are overdue.
+    fn fire_retries(&mut self) {
+        let now = self.started.elapsed();
+        for index in 0..self.surfaces.len() {
+            if self.surfaces[index]
+                .frame_pending
+                .is_some_and(|due| due <= now)
+            {
+                self.surfaces[index].frame_pending = None;
+            }
+            if self.surfaces[index].retry.is_some_and(|due| due <= now) {
+                self.surfaces[index].retry = None;
+                if self.wants_mapping(index) {
+                    self.map(index);
+                }
+            }
+        }
     }
 
     /// Sends the repeats a held key has built up.
     fn fire_repeats(&mut self) {
-        let (Some(timing), Some(repeat), Some((_, window))) =
+        let (Some(timing), Some(repeat), Some(Focus { window, .. })) =
             (self.repeat_timing, &mut self.repeat, &self.focus)
         else {
             self.repeat = None;
@@ -491,22 +732,35 @@ impl State {
 
     /// How long the loop may sleep before something needs doing.
     fn timeout(&self) -> Option<Duration> {
-        let animating = self
-            .surfaces
-            .iter()
-            .any(|surface| surface.layer.is_some() && surface.window.has_active_animations());
-        let timers = if animating {
+        // An animating surface that has just drawn is woken by its frame
+        // callback. One that has not, because the animation changed nothing
+        // visible yet, has to be looked at again.
+        let polling = self.surfaces.iter().any(|surface| {
+            surface.layer.is_some()
+                && surface.frame_pending.is_none()
+                && surface.window.has_active_animations()
+        });
+        let timers = if polling {
             Some(FRAME)
         } else {
             slint::platform::duration_until_next_timer_update()
         };
-        let repeat = self
-            .repeat
-            .as_ref()
-            .map(|repeat| repeat.next.saturating_sub(self.started.elapsed()));
-        match (timers, repeat) {
-            (Some(timers), Some(repeat)) => Some(timers.min(repeat)),
-            (timers, repeat) => timers.or(repeat),
+        let now = self.started.elapsed();
+        let repeat = self.repeat.as_ref().map(|repeat| repeat.next);
+        let retries = self.surfaces.iter().filter_map(|surface| surface.retry);
+        let frames = self
+            .surfaces
+            .iter()
+            .filter_map(|surface| surface.frame_pending);
+        let deadline = repeat
+            .into_iter()
+            .chain(retries)
+            .chain(frames)
+            .min()
+            .map(|due| due.saturating_sub(now));
+        match (timers, deadline) {
+            (Some(timers), Some(deadline)) => Some(timers.min(deadline)),
+            (timers, deadline) => timers.or(deadline),
         }
     }
 }
@@ -519,7 +773,7 @@ pub(crate) fn run(
 ) -> Result<(), Error> {
     state.builder = Some(builder);
     state.shown = state.shared.borrow().visible;
-    if state.mode() == Outputs::Primary {
+    if state.mode() == Outputs::Auto {
         // Built before any output is known, so a build error is reported
         // at once. The surface follows when the first output is announced.
         state.build(None)?;
@@ -529,6 +783,7 @@ pub(crate) fn run(
     loop {
         slint::platform::update_timers_and_animations();
         state.fire_repeats();
+        state.fire_retries();
         state.apply_requests();
         if let Some(error) = state.failure.take() {
             return Err(error);
@@ -559,6 +814,7 @@ impl CompositorHandler for State {
         let factor = factor.max(1) as u32;
         if factor != self.surfaces[index].scale {
             self.surfaces[index].scale = factor;
+            self.surfaces[index].own.borrow_mut().scale = factor;
             self.resize(index);
         }
     }
@@ -572,24 +828,47 @@ impl CompositorHandler for State {
     ) {
     }
 
-    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {}
+    fn frame(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        surface: &wl_surface::WlSurface,
+        _: u32,
+    ) {
+        if let Some(index) = self.index_of(surface) {
+            self.surfaces[index].frame_pending = None;
+        }
+    }
 
     fn surface_enter(
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_surface::WlSurface,
-        _: &wl_output::WlOutput,
+        surface: &wl_surface::WlSurface,
+        output: &wl_output::WlOutput,
     ) {
+        if let Some(index) = self.index_of(surface) {
+            self.surfaces[index].entered = Some(output.clone());
+            self.surfaces[index].was_on_screen = true;
+            // A callback asked for on the previous output may never come.
+            self.surfaces[index].frame_pending = None;
+            self.surfaces[index].window.request_redraw();
+            self.refresh_output(index);
+        }
     }
 
     fn surface_leave(
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_surface::WlSurface,
-        _: &wl_output::WlOutput,
+        surface: &wl_surface::WlSurface,
+        output: &wl_output::WlOutput,
     ) {
+        if let Some(index) = self.index_of(surface) {
+            if self.surfaces[index].entered.as_ref() == Some(output) {
+                self.surfaces[index].entered = None;
+            }
+        }
     }
 }
 
@@ -598,14 +877,22 @@ impl LayerShellHandler for State {
     // example when an external monitor is unplugged. A surface that follows
     // the compositor's choice moves to an output that is left; with none
     // left a new surface would be closed straight away, so it waits for
-    // `new_output`. A surface tied to one output waits for that output's
-    // removal or its next update.
+    // `new_output`.
+    //
+    // A surface tied to one output cannot tell yet whether the output is
+    // going. It waits a moment: if the output is removed the instance goes
+    // with it, and if it is still there the surface is put back, with a
+    // longer wait each time the compositor closes it again.
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
         let Some(index) = self.index_of(layer.wl_surface()) else {
             return;
         };
         self.unmap(index);
-        if self.surfaces[index].output.is_none() && self.wants_mapping(index) {
+        if self.surfaces[index].output.is_some() {
+            let surface = &mut self.surfaces[index];
+            surface.closes += 1;
+            surface.retry = Some(self.started.elapsed() + retry_delay(surface.closes));
+        } else if self.wants_mapping(index) {
             self.map(index);
         }
     }
@@ -622,12 +909,16 @@ impl LayerShellHandler for State {
             return;
         };
         // Zero from the compositor means the choice is ours.
-        let requested = self.shared.borrow().config.size;
-        let (width, height) = configure.new_size;
         let surface = &mut self.surfaces[index];
+        let requested = surface.own.borrow().wanted_size(&self.shared.borrow());
+        let (width, height) = configure.new_size;
         surface.width = if width != 0 { width } else { requested.0 };
         surface.height = if height != 0 { height } else { requested.1 };
+        surface.own.borrow_mut().configured = (surface.width, surface.height);
         surface.configured = true;
+        surface.closes = 0;
+        // A new size is drawn at once rather than after the next callback.
+        surface.frame_pending = None;
         self.resize(index);
         self.surfaces[index].window.request_redraw();
     }
@@ -704,7 +995,7 @@ impl KeyboardHandler for State {
         surface: &wl_surface::WlSurface,
         _: u32,
     ) {
-        if self.focus.as_ref().map(|(focused, _)| focused) == Some(surface) {
+        if self.focus.as_ref().map(|focus| &focus.surface) == Some(surface) {
             self.focus_lost();
         }
     }
@@ -720,7 +1011,7 @@ impl KeyboardHandler for State {
         if self.focus.is_none() {
             self.assume_focus();
         }
-        let Some((_, window)) = self.focus.clone() else {
+        let Some(window) = self.focus.as_ref().map(|focus| focus.window.clone()) else {
             return;
         };
         let Some(text) = key_text(event.keysym, event.utf8.as_deref()) else {
@@ -732,7 +1023,7 @@ impl KeyboardHandler for State {
             if !self.held_modifiers.contains(&key) {
                 self.held_modifiers.push(key);
             }
-        } else if let Some(timing) = self.repeat_timing {
+        } else if let (Some(timing), true) = (self.repeat_timing, key_repeats(&text)) {
             self.repeat = Some(Repeat {
                 raw_code: event.raw_code,
                 text: text.clone(),
@@ -757,14 +1048,12 @@ impl KeyboardHandler for State {
         {
             self.repeat = None;
         }
-        let Some((_, window)) = self.focus.clone() else {
+        let Some(window) = self.focus.as_ref().map(|focus| focus.window.clone()) else {
             return;
         };
-        let text = self
-            .pressed
-            .remove(&event.raw_code)
-            .or_else(|| key_text(event.keysym, None));
-        let Some(text) = text else {
+        // A release carries no text; it repeats what the press sent. A
+        // press that typed nothing has nothing to release.
+        let Some(text) = self.pressed.remove(&event.raw_code) else {
             return;
         };
         if is_modifier(&text) {
@@ -783,7 +1072,7 @@ impl KeyboardHandler for State {
         modifiers: Modifiers,
         _: u32,
     ) {
-        let Some((_, window)) = self.focus.clone() else {
+        let Some(window) = self.focus.as_ref().map(|focus| focus.window.clone()) else {
             return;
         };
         let actual = ModifierState {
@@ -858,6 +1147,10 @@ impl SeatHandler for State {
     ) {
         if capability == Capability::Pointer {
             self.pointer = None;
+            // The pointer went without leaving; do not let hover stick.
+            for surface in &self.surfaces {
+                surface.window.dispatch_event(WindowEvent::PointerExited);
+            }
         }
         if capability == Capability::Keyboard {
             if let Some(keyboard) = self.keyboard.take() {
@@ -877,11 +1170,15 @@ impl OutputHandler for State {
 
     fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
         self.sync_outputs(None);
+        self.rescue_stranded(None);
     }
 
     fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
-        if self.mode() == Outputs::All {
+        if self.mode() != Outputs::Auto {
             self.sync_outputs(None);
+        }
+        for index in 0..self.surfaces.len() {
+            self.refresh_output(index);
         }
     }
 
@@ -891,9 +1188,11 @@ impl OutputHandler for State {
         _: &QueueHandle<Self>,
         output: wl_output::WlOutput,
     ) {
-        if self.mode() == Outputs::All {
+        if self.mode() != Outputs::Auto {
             self.sync_outputs(Some(&output));
+            return;
         }
+        self.rescue_stranded(Some(&output));
     }
 }
 
