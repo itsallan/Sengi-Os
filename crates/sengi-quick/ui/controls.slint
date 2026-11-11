@@ -241,13 +241,19 @@ export component ListRow inherits Rectangle {
     // A row that is not enabled keeps its place but cannot be clicked.
     in property <bool> enabled: true;
     in property <bool> strong: false;
+    // For a list that follows the pointer itself, with one touch area over
+    // all its rows: the row takes no clicks of its own and is told when
+    // the pointer is on it.
+    in property <bool> passive: false;
+    in property <bool> hovered: false;
     // Room kept free at the right for the children.
     in property <length> trailing;
     callback clicked();
 
     height: Metrics.row;
     border-radius: Tokens.radius;
-    background: (touch.has-hover && root.enabled) || root.current ? Tokens.color-surface-hover : transparent;
+    background: ((touch.has-hover || root.hovered) && root.enabled) || root.current
+        ? Tokens.color-surface-hover : transparent;
     animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
 
     SengiText {
@@ -262,7 +268,7 @@ export component ListRow inherits Rectangle {
     }
 
     touch := TouchArea {
-        enabled: root.enabled;
+        enabled: root.enabled && !root.passive;
         clicked => { root.clicked(); }
     }
 

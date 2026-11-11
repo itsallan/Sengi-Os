@@ -95,6 +95,9 @@ pub struct WifiView {
     pub level: i32,
     /// Index into `rows` of the keyboard's row, or -1.
     pub current: i32,
+    /// Index into `rows` of the row that is asking before it joins an
+    /// open network, or -1.
+    pub confirming: i32,
     /// A link that is not Wi-Fi, shown as a line of its own: "Wired,
     /// connected", or just "Connected" for one that is not a cable. Empty
     /// when there is none.
@@ -250,7 +253,10 @@ impl Panel {
         if self.prompt().is_some() || fresh.is_empty() {
             self.held = false;
         }
-        if !self.held {
+        // A row that is asking has a button on it, which must not slide
+        // out from under the pointer either.
+        let asking = matches!(self.join, Join::Confirming { .. });
+        if !self.held && !asking {
             self.shown.clear();
         }
         for row in &mut self.shown {
@@ -346,7 +352,10 @@ impl Panel {
         self.shown
             .iter()
             .find(|row| row.network.id == id && !row.gone)?;
-        self.join.confirm(id).map(Command::Join)
+        let command = self.join.confirm(id).map(Command::Join);
+        // The row no longer has a button to keep still.
+        self.relist();
+        command
     }
 
     pub fn submit_passphrase(&mut self, passphrase: Secret) -> Option<Command> {
@@ -356,6 +365,7 @@ impl Panel {
     /// Escape in the passphrase field, or its Cancel button.
     pub fn cancel_prompt(&mut self) {
         self.join.cancel();
+        self.relist();
     }
 
     pub fn toggle_bluetooth(&mut self, on: bool) -> Option<Command> {
@@ -492,6 +502,10 @@ impl Panel {
                         _ => 0,
                     },
                     current: self.selected_row().map_or(-1, |row| row as i32),
+                    confirming: rows
+                        .iter()
+                        .position(|row| row.confirm && !row.gone)
+                        .map_or(-1, |row| row as i32),
                     link: uplink.clone(),
                     rows,
                     note: note.to_string(),
@@ -913,7 +927,14 @@ mod tests {
         assert!(pick(&mut panel, 1).is_none());
         let view = panel.view().wifi;
         assert!(view.rows[1].confirm && !view.rows[0].confirm);
+        assert_eq!(view.confirming, 1);
         assert!(view.prompt.is_none());
+        // The row with the button on it stays put, pointer or no pointer.
+        let mut networks = home_and_cafe();
+        networks.push(network("Aardvark", Security::Open, false, -3000));
+        panel.apply(Event::Wifi(on(Link::Connected, networks)));
+        assert_eq!(row_names(&panel), ["Office", "Cafe", "Aardvark"]);
+        assert_eq!(panel.view().wifi.confirming, 1);
         // Clicking the row again changes nothing.
         assert!(pick(&mut panel, 1).is_none());
         assert!(panel.confirm_network("/Office").is_none());
@@ -923,7 +944,11 @@ mod tests {
         };
         assert_eq!(request.id, "/Cafe");
         let view = panel.view().wifi;
-        assert!(view.rows[1].busy && !view.rows[1].confirm);
+        let cafe = view.rows.iter().find(|row| row.name == "Cafe").unwrap();
+        assert!(cafe.busy && !cafe.confirm);
+        assert_eq!(view.confirming, -1);
+        // With the question answered the list is free again.
+        assert_eq!(row_names(&panel), ["Aardvark", "Office", "Cafe"]);
     }
 
     #[test]
