@@ -71,7 +71,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         })?;
     }
 
-    crate::start_clients(&state, &options)?;
+    crate::start_clients(&mut state, &options);
     state.run(event_loop)
 }
 

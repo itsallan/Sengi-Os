@@ -79,6 +79,15 @@ impl<T: PartialEq> FocusStack<T> {
     pub fn current(&self) -> Option<&T> {
         self.items.last()
     }
+
+    /// Every window, the focused one first, then by how recently each was
+    /// used. This is the order Alt+Tab steps through.
+    pub fn recent_first(&self) -> Vec<T>
+    where
+        T: Clone,
+    {
+        self.items.iter().rev().cloned().collect()
+    }
 }
 
 #[cfg(test)]
@@ -131,6 +140,16 @@ mod tests {
         assert_eq!(stack.current(), Some(&'a'));
         assert!(stack.remove(&'a'));
         assert_eq!(stack.current(), Some(&'c'));
+    }
+
+    #[test]
+    fn recent_first_lists_the_focused_window_first() {
+        let mut stack = FocusStack::default();
+        stack.focus('a');
+        stack.focus('b');
+        stack.focus('c');
+        stack.focus('b');
+        assert_eq!(stack.recent_first(), vec!['b', 'c', 'a']);
     }
 
     #[test]

@@ -8,7 +8,7 @@ use smithay::{
     },
     desktop::{layer_map_for_output, Window, WindowSurfaceType},
     input::{
-        keyboard::{FilterResult, Keysym},
+        keyboard::FilterResult,
         pointer::{AxisFrame, ButtonEvent, MotionEvent},
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
@@ -19,6 +19,7 @@ use smithay::{
 use crate::{
     cursor::resize_cursor,
     frame::{self, Button, Edges, Hit},
+    keys::{self, Action, Mods},
     layout::Rect,
     state::State,
     window,
@@ -56,10 +57,6 @@ enum Target {
     },
     /// Part of a frame the compositor draws.
     Frame { window: Window, hit: Hit },
-}
-
-enum KeyAction {
-    CloseWindow,
 }
 
 fn cell(location: Point<f64, Logical>) -> (i32, i32) {
@@ -112,29 +109,86 @@ impl State {
 
     pub fn key(&mut self, keycode: Keycode, state: KeyState, time: u32) {
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
+        let code = keycode.raw();
         let action = keyboard.input(
             self,
             keycode,
             state,
             SERIAL_COUNTER.next_serial(),
             time,
-            |_, modifiers, key| {
-                let sym = key.modified_sym();
-                let is_q = sym == Keysym::q || sym == Keysym::Q;
-                if state == KeyState::Pressed && modifiers.logo && is_q {
-                    FilterResult::Intercept(KeyAction::CloseWindow)
-                } else {
-                    FilterResult::Forward
+            |data, modifiers, key| {
+                if state == KeyState::Released {
+                    // The client never saw the press of a bound key.
+                    return if data.swallowed_keys.release(code) {
+                        FilterResult::Intercept(None)
+                    } else {
+                        FilterResult::Forward
+                    };
+                }
+                let mods = Mods {
+                    logo: modifiers.logo,
+                    alt: modifiers.alt,
+                    ctrl: modifiers.ctrl,
+                    shift: modifiers.shift,
+                };
+                match keys::binding(mods, key.modified_sym().raw()) {
+                    Some(action) => {
+                        data.swallowed_keys.press(code);
+                        FilterResult::Intercept(Some(action))
+                    }
+                    None => FilterResult::Forward,
                 }
             },
         );
+        if let Some(action) = action.flatten() {
+            self.run_action(action);
+        }
+        // Letting go of Alt settles on the window Alt+Tab stopped at.
+        if !keyboard.modifier_state().alt {
+            self.cycle = None;
+        }
+    }
+
+    fn run_action(&mut self, action: Action) {
+        if let Some(command) = keys::command(action) {
+            self.spawn(command);
+            return;
+        }
         match action {
-            Some(KeyAction::CloseWindow) => {
-                if let Some(toplevel) = self.focus_stack.current().and_then(Window::toplevel) {
-                    toplevel.send_close();
+            Action::CloseWindow => {
+                // Only a window that has the keyboard: with the launcher
+                // open, Super+Q is not aimed at the window behind it.
+                let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
+                let focused = keyboard.current_focus();
+                let toplevel = self.focus_stack.current().and_then(Window::toplevel);
+                if let Some(toplevel) = toplevel {
+                    if focused.as_ref() == Some(toplevel.wl_surface()) {
+                        toplevel.send_close();
+                    }
                 }
             }
-            None => {}
+            Action::NextWindow | Action::PreviousWindow => {
+                let forward = action == Action::NextWindow;
+                let (order, index) = self
+                    .cycle
+                    .take()
+                    .unwrap_or_else(|| (self.focus_stack.recent_first(), 0));
+                // Windows may have closed since the cycle began.
+                let order: Vec<Window> = order
+                    .into_iter()
+                    .filter(|w| self.space.element_location(w).is_some())
+                    .collect();
+                let index = keys::cycle(
+                    order.len(),
+                    index.min(order.len().saturating_sub(1)),
+                    forward,
+                );
+                if let Some(window) = order.get(index).cloned() {
+                    self.focus_window(&window);
+                }
+                self.cycle = Some((order, index));
+            }
+            Action::Launcher | Action::Terminal | Action::Lock => {}
         }
     }
 

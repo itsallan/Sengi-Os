@@ -11,6 +11,7 @@ mod headless;
 // Only the winit backend delivers input so far.
 #[cfg_attr(not(feature = "winit"), allow(dead_code))]
 mod input;
+mod keys;
 mod layer;
 mod layout;
 mod png;
@@ -23,7 +24,7 @@ mod window;
 #[cfg(feature = "winit")]
 mod winit;
 
-use std::{error::Error, process::ExitCode};
+use std::process::ExitCode;
 
 use cli::{Backend, Command, Options};
 use state::State;
@@ -66,16 +67,10 @@ fn main() -> ExitCode {
 }
 
 /// Prints the socket name and launches the `--startup` commands against it.
-fn start_clients(state: &State, options: &Options) -> Result<(), Box<dyn Error>> {
+fn start_clients(state: &mut State, options: &Options) {
     println!("{}", state.socket_name.to_string_lossy());
 
     for command in &options.startup {
-        std::process::Command::new("sh")
-            .arg("-c")
-            .arg(command)
-            .env("WAYLAND_DISPLAY", &state.socket_name)
-            .spawn()
-            .map_err(|err| format!("cannot start `{command}`: {err}"))?;
+        state.spawn(command);
     }
-    Ok(())
 }

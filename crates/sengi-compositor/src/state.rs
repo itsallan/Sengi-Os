@@ -1,6 +1,12 @@
 //! Compositor state shared by every backend.
 
-use std::{error::Error, ffi::OsString, sync::Arc, time::Instant};
+use std::{
+    error::Error,
+    ffi::OsString,
+    process::{Child, Command},
+    sync::Arc,
+    time::Instant,
+};
 
 use sengi_tokens::{Rgba, Tokens};
 use smithay::{
@@ -49,6 +55,7 @@ use crate::{
     foreign_toplevel::ForeignToplevelState,
     frame::Button,
     input::Drag,
+    keys::Swallowed,
     layout::FocusStack,
     text::Font,
 };
@@ -84,6 +91,12 @@ pub struct State {
     pub drag: Option<Drag>,
     /// The button whose release ends `drag`.
     pub drag_button: u32,
+    pub swallowed_keys: Swallowed,
+    /// Alt+Tab in progress: the windows in the order they had when it
+    /// started, and which one is selected.
+    pub cycle: Option<(Vec<Window>, usize)>,
+    /// Programs we started and still have to collect when they exit.
+    children: Vec<Child>,
     pub cursors: Cursors,
     /// The cursor the client under the pointer asked for.
     pub client_cursor: CursorImageStatus,
@@ -182,6 +195,9 @@ impl State {
             hovered_button: None,
             drag: None,
             drag_button: 0,
+            swallowed_keys: Swallowed::default(),
+            cycle: None,
+            children: Vec::new(),
             cursors,
             client_cursor: CursorImageStatus::default_named(),
             frame_cursor: None,
@@ -207,6 +223,7 @@ impl State {
             state.space.refresh();
             state.popups.cleanup();
             state.refresh_foreign_toplevels();
+            state.reap_children();
             let _ = state.display_handle.flush_clients();
         })?;
 
@@ -308,6 +325,26 @@ impl State {
             Some(next) => self.focus_window(&next),
             None => self.update_keyboard_focus(),
         }
+    }
+
+    /// Runs `command` with the shell as a client of this compositor.
+    pub fn spawn(&mut self, command: &str) {
+        let child = Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .env("WAYLAND_DISPLAY", &self.socket_name)
+            .spawn();
+        match child {
+            Ok(child) => self.children.push(child),
+            Err(err) => eprintln!("sengi-compositor: cannot start `{command}`: {err}"),
+        }
+    }
+
+    /// Collects the programs that have exited, so they do not stay around
+    /// as zombies.
+    fn reap_children(&mut self) {
+        self.children
+            .retain_mut(|child| !matches!(child.try_wait(), Ok(Some(_))));
     }
 
     /// What to draw at the pointer right now.
