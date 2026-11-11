@@ -1,0 +1,8 @@
+# Sengi OS dock. Copy this file to ~/.config/sengi-os/dock.toml to change it
+# for one user.
+#
+# Apps pinned to the dock, in order, by desktop-file ID (the name of the
+# app's .desktop file, with or without the suffix). The search button always
+# comes first and is not listed here.
+
+pinned = ["foot"]

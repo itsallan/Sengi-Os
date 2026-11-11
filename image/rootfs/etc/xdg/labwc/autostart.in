@@ -7,29 +7,18 @@ if [ "${WLR_RENDERER:-}" = pixman ]; then
 else
 	swaybg -c '@{color.desktop}' >/dev/null 2>&1 &
 fi
-# Bring the bar back if it ever dies, for as long as this compositor is
-# running. Watching the compositor's own process, not its socket, keeps a
-# loop left over from a crashed session from joining the next one.
-(
-	while kill -0 "$LABWC_PID" 2>/dev/null; do
-		sengi-bar
-		sleep 1
-	done
-) >/dev/null 2>&1 &
-waybar >/dev/null 2>&1 &
-# Waybar asks the desktop portal for the colour scheme as it starts, which
-# would wake about 50 MB of portal services on every login. The portal's
-# D-Bus activation file is diverted at build time and only put in place here,
-# once Waybar is up, so apps still get the portal on demand. This goes away
-# with Waybar in 0.3.
-(
-	sleep 5
-	mkdir -p "$XDG_RUNTIME_DIR/dbus-1/services"
-	cp /usr/share/sengi-os/dbus/org.freedesktop.portal.Desktop.service \
-		"$XDG_RUNTIME_DIR/dbus-1/services/"
-	dbus-send --session --dest=org.freedesktop.DBus --type=method_call \
-		/org/freedesktop/DBus org.freedesktop.DBus.ReloadConfig
-) >/dev/null 2>&1 &
+# Bring the bar and dock back if either ever dies, for as long as this
+# compositor is running. Watching the compositor's own process, not its
+# socket, keeps a loop left over from a crashed session from joining the
+# next one.
+for program in sengi-bar sengi-dock; do
+	(
+		while kill -0 "$LABWC_PID" 2>/dev/null; do
+			$program
+			sleep 1
+		done
+	) >/dev/null 2>&1 &
+done
 mako -c /etc/xdg/mako/config >/dev/null 2>&1 &
 sengi-focus >/dev/null 2>&1 &
 swayidle -w timeout @{timing.idle-lock} 'swaylock -f' before-sleep 'swaylock -f' >/dev/null 2>&1 &

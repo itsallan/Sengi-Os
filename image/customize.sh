@@ -56,9 +56,3 @@ chroot "$root" systemctl set-default graphical.target
 # script and hook were in place.
 chroot "$root" update-initramfs -u
 
-# See the note in /etc/xdg/labwc/autostart.
-mkdir -p "$root/usr/share/sengi-os/dbus"
-chroot "$root" dpkg-divert --quiet --rename \
-	--divert /usr/share/sengi-os/dbus/org.freedesktop.portal.Desktop.service \
-	--add /usr/share/dbus-1/services/org.freedesktop.portal.Desktop.service
-
