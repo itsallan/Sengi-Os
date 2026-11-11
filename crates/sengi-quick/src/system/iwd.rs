@@ -130,6 +130,8 @@ pub fn join_error(name: Option<&str>) -> JoinError {
 
 /// A passphrase waiting to be asked for.
 struct Waiting {
+    /// Which call to `put` this is from.
+    ticket: u64,
     network: String,
     /// The bus name of the iwd the request went to. Nobody else gets it.
     asker: String,
@@ -141,15 +143,27 @@ struct Waiting {
 #[derive(Default)]
 struct Desk {
     waiting: Option<Waiting>,
+    tickets: u64,
 }
 
 impl Desk {
-    fn put(&mut self, network: &str, asker: &str, passphrase: Secret) {
+    /// Leave a passphrase to be asked for. The ticket is for taking it
+    /// back if nobody did.
+    fn put(&mut self, network: &str, asker: &str, passphrase: Secret) -> u64 {
+        self.tickets += 1;
         self.waiting = Some(Waiting {
+            ticket: self.tickets,
             network: network.to_string(),
             asker: asker.to_string(),
             passphrase,
         });
+        self.tickets
+    }
+
+    /// The join that left a passphrase is over. Whatever a later join has
+    /// left since is not this one's to remove.
+    fn take_back(&mut self, ticket: u64) {
+        self.waiting.take_if(|waiting| waiting.ticket == ticket);
     }
 
     /// The passphrase, if `sender` is the iwd it was meant for and
@@ -339,16 +353,20 @@ impl WifiService for Iwd {
         {
             return Err(JoinError::Unavailable);
         }
+        let mut ticket = None;
         if let Some(passphrase) = request.passphrase {
             if let Err(error) = self.register_agent() {
                 eprintln!("sengi-quick: registering with iwd: {error}");
                 return Err(JoinError::Unavailable);
             }
-            slot(&self.slot).put(&request.id, &asker, passphrase);
+            ticket = Some(slot(&self.slot).put(&request.id, &asker, passphrase));
         }
         let result: zbus::Result<()> = self.bus.call(SERVICE, &request.id, NETWORK, "Connect", &());
-        // Whether or not iwd asked for it.
-        slot(&self.slot).cancel();
+        // Whether or not iwd asked for it. Another join may have started
+        // while this one was waiting; its passphrase stays.
+        if let Some(ticket) = ticket {
+            slot(&self.slot).take_back(ticket);
+        }
         result.map_err(|error| join_error(bus::error_name(&error)))
     }
 
@@ -454,6 +472,26 @@ mod tests {
         desk.put("/net/a_psk", ":1.7", secret("correct horse"));
         assert!(desk.answer("/net/b_psk", IWD).is_none());
         assert!(desk.answer("/net/a_psk", IWD).is_some());
+    }
+
+    #[test]
+    fn a_join_that_ends_late_leaves_the_next_ones_passphrase_alone() {
+        let mut desk = Desk::default();
+        let first = desk.put("/net/a_psk", ":1.7", secret("for network a"));
+        // The first join is still in flight when a second is typed.
+        let second = desk.put("/net/b_psk", ":1.7", secret("for network b"));
+        desk.take_back(first);
+        assert_eq!(
+            desk.answer("/net/b_psk", IWD).unwrap().expose(),
+            "for network b"
+        );
+
+        // The same network twice over is no different.
+        let third = desk.put("/net/b_psk", ":1.7", secret("second try"));
+        desk.take_back(second);
+        assert!(desk.waiting.is_some());
+        desk.take_back(third);
+        assert!(desk.waiting.is_none());
     }
 
     #[test]
