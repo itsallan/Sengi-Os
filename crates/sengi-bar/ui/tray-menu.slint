@@ -1,0 +1,196 @@
+// The context menu of a tray item. The bar is too short to hold one, so it
+// is drawn by a helper on a surface of its own that covers the output: the
+// menu hangs under the icon and a click anywhere else closes it.
+
+import { Tokens, SengiText, SengiSurface } from "components.slint";
+
+export struct MenuRow {
+    id: int,
+    label: string,
+    enabled: bool,
+    separator: bool,
+    submenu: bool,
+    check: bool,
+    radio: bool,
+    // Whether a check or radio row is switched on.
+    on: bool,
+}
+
+export struct MenuPanel {
+    rows: [MenuRow],
+    // Some row has a check or radio mark, so all rows leave room for one.
+    marks: bool,
+    // The row whose submenu is open, or -1.
+    open-id: int,
+    // For the menu itself, left is where the icon is. For a submenu these
+    // are the edges of the panel it hangs off and the top of its row.
+    left: length,
+    right: length,
+    top: length,
+}
+
+// Marks are drawn as stroked paths on the same 16 unit grid as bar icons.
+component Mark inherits Path {
+    in property <color> ink;
+    width: Tokens.bar-icon;
+    height: Tokens.bar-icon;
+    viewbox-width: 16;
+    viewbox-height: 16;
+    stroke: root.ink;
+    stroke-width: Tokens.icon-stroke;
+    stroke-line-cap: round;
+    stroke-line-join: round;
+    fill: transparent;
+}
+
+component Row inherits Rectangle {
+    in property <MenuRow> entry;
+    in property <bool> marks;
+    in property <bool> open;
+    callback chosen();
+    callback entered();
+
+    private property <bool> live: root.entry.enabled && !root.entry.separator;
+    private property <color> ink: root.entry.enabled ? Tokens.color-text : Tokens.color-text-disabled;
+
+    height: root.entry.separator ? Tokens.space-sm + Tokens.border-width : Tokens.bar-height;
+    min-width: line.min-width;
+    preferred-width: line.preferred-width;
+    border-radius: Tokens.radius;
+    background: root.live && (touch.has-hover || root.open) ? Tokens.color-surface-hover : transparent;
+    animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+
+    if root.entry.separator: Rectangle {
+        x: Tokens.space-sm;
+        y: (parent.height - self.height) / 2;
+        width: parent.width - Tokens.space-sm * 2;
+        height: Tokens.border-width;
+        background: Tokens.color-border;
+    }
+
+    line := HorizontalLayout {
+        padding-left: Tokens.space-sm;
+        padding-right: Tokens.space-sm;
+        spacing: Tokens.space-sm;
+
+        if root.marks: Rectangle {
+            width: Tokens.bar-icon;
+
+            if root.entry.check && root.entry.on: Mark {
+                ink: root.ink;
+                commands: "M3.5 8.5l3 3 6-7";
+            }
+            if root.entry.radio && root.entry.on: Rectangle {
+                width: Tokens.space-xs + Tokens.space-xxs;
+                height: self.width;
+                border-radius: self.width / 2;
+                background: root.ink;
+            }
+        }
+
+        SengiText {
+            horizontal-stretch: 1;
+            text: root.entry.label;
+            color: root.ink;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        if root.entry.submenu: Rectangle {
+            width: Tokens.bar-icon;
+
+            Mark {
+                ink: root.ink;
+                commands: "M6 3.5l4.5 4.5-4.5 4.5";
+            }
+        }
+    }
+
+    touch := TouchArea {
+        enabled: !root.entry.separator;
+        clicked => {
+            if root.live {
+                root.chosen();
+            }
+        }
+        changed has-hover => {
+            if self.has-hover {
+                root.entered();
+            }
+        }
+    }
+}
+
+export component TrayMenu inherits Window {
+    // The menu, then each open submenu.
+    in property <[MenuPanel]> panels;
+
+    // A row was chosen, by id.
+    callback chosen(int);
+    // The pointer is over a row: the panel's index, the row's id, the left
+    // and right edges of the panel and the top of the row.
+    callback entered(int, int, length, length, length);
+    callback dismiss();
+
+    private property <length> gap: Tokens.space-xs;
+
+    title: "Sengi OS tray menu";
+    no-frame: true;
+    background: transparent;
+    default-font-family: Tokens.font-family;
+    forward-focus: keys;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.dismiss();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    // A press outside the menu closes it, whichever button it is.
+    TouchArea {
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                root.dismiss();
+            }
+        }
+    }
+
+    for panel[index] in root.panels: box := SengiSurface {
+        property <bool> fits-right: panel.right + self.width + root.gap <= root.width;
+        property <length> room: root.height - root.gap * 2
+            - (index == 0 ? Tokens.bar-height : 0);
+
+        width: Math.clamp(list.preferred-width, Tokens.menu-width / 2, Tokens.menu-width);
+        height: Math.min(list.preferred-height, self.room);
+        x: index == 0 ? Math.clamp(panel.left, root.gap, Math.max(root.gap, root.width - self.width - root.gap))
+            : self.fits-right ? panel.right : Math.max(root.gap, panel.left - self.width);
+        y: index == 0 ? Tokens.bar-height + Tokens.space-xxs
+            : Math.clamp(panel.top - Tokens.space-xs, root.gap, Math.max(root.gap, root.height - self.height - root.gap));
+
+        // Clicks between rows are not clicks outside the menu.
+        TouchArea { }
+
+        Flickable {
+            content-width: self.width;
+            content-height: list.preferred-height;
+
+            list := VerticalLayout {
+                padding: Tokens.space-xs;
+
+                for row in panel.rows: item := Row {
+                    entry: row;
+                    marks: panel.marks;
+                    open: !row.separator && row.id == panel.open-id;
+                    chosen => { root.chosen(row.id); }
+                    entered => {
+                        root.entered(index, row.id, box.x, box.x + box.width, item.absolute-position.y);
+                    }
+                }
+            }
+        }
+    }
+}

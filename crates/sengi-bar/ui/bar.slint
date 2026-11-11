@@ -1,6 +1,10 @@
 // The Sengi OS top bar: menu on the left, status and session on the right.
 
 import { Tokens, SengiText } from "components.slint";
+import { TrayMenu, MenuPanel, MenuRow } from "tray-menu.slint";
+
+// The menu is drawn by this same program, started again for the purpose.
+export { TrayMenu, MenuPanel, MenuRow }
 
 // A piece of the bar that can be clicked.
 component BarItem inherits Rectangle {

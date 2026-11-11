@@ -3517,12 +3517,14 @@ name = "sengi-bar"
 version = "0.3.0"
 dependencies = [
  "chrono",
+ "enumflags2",
  "libc",
  "png",
  "resvg",
  "sengi-layer",
  "slint",
  "slint-build",
+ "zbus",
 ]
 
 [[package]]

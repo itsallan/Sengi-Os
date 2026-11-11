@@ -18,6 +18,12 @@ sengi-layer = { path = "../sengi-layer" }
 # is the backend here and turns on the software renderer.
 slint = { version = "1.18", default-features = false, features = ["compat-1-2", "std"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# The tray speaks D-Bus. The notification service and quick settings use the
+# same crate with the same features, so the image carries one D-Bus stack.
+zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
+# zbus takes its name-request flags as this crate's type and does not
+# re-export it.
+enumflags2 = "0.7"
 libc = "0.2"
 # Tray icons named by file are decoded here, in a child process, straight to
 # the size they are drawn at.

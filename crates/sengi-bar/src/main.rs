@@ -215,10 +215,13 @@ fn run() -> Result<(), sengi_layer::Error> {
 }
 
 fn main() -> ExitCode {
-    // The bar runs itself again to decode an icon file, which it will not
-    // do in its own process.
+    // The bar runs itself again for two jobs it will not do in its own
+    // process: decoding an icon file and drawing a tray menu.
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(code) = tray::icons::run_decoder(&args) {
+        return code;
+    }
+    if let Some(code) = tray::menu_view::run(&args) {
         return code;
     }
     match run() {
