@@ -104,6 +104,9 @@ pub enum JoinError {
     /// The network refused, which for a typed passphrase nearly always
     /// means it was wrong.
     Failed,
+    /// iwd wanted a passphrase and none had been typed. It asks again for
+    /// a network it knows once the stored one has failed.
+    NeedsPassphrase,
     /// Another request took over, or the passphrase was not supplied.
     Aborted,
     Timeout,
@@ -123,6 +126,9 @@ pub enum Problem {
     NotPlain,
     /// The network turned it down.
     Rejected,
+    /// The one iwd had stored stopped working: it was changed at the
+    /// router since.
+    Stale,
 }
 
 /// WPA's rules: 8 to 63 printable ASCII characters. iwd applies the same
@@ -162,6 +168,9 @@ pub enum Join {
         name: String,
         /// A passphrase was typed for this attempt.
         typed: bool,
+        /// The network takes a passphrase, so one can be asked for if
+        /// this attempt shows it is needed.
+        secured: bool,
     },
     /// The last attempt failed and there is nothing to retype.
     Failed {
@@ -187,6 +196,7 @@ impl Join {
                 id,
                 name,
                 typed: false,
+                secured: network.security == Security::Passphrase,
             },
             Security::Passphrase => Join::Asking {
                 id,
@@ -222,6 +232,7 @@ impl Join {
             id: std::mem::take(id),
             name: std::mem::take(name),
             typed: true,
+            secured: true,
         };
         Some(request)
     }
@@ -235,7 +246,13 @@ impl Join {
 
     /// The service has finished with the request for `finished_id`.
     pub fn finished(&mut self, finished_id: &str, result: Result<(), JoinError>) {
-        let Join::Joining { id, name, typed } = self else {
+        let Join::Joining {
+            id,
+            name,
+            typed,
+            secured,
+        } = self
+        else {
             return;
         };
         if id != finished_id {
@@ -243,10 +260,16 @@ impl Join {
         }
         *self = match result {
             Ok(()) | Err(JoinError::Aborted) => Join::Idle,
-            Err(JoinError::Failed) if *typed => Join::Asking {
+            // Wrong, whether it was typed just now or stored long ago.
+            // Either way the cure is to type the right one.
+            Err(JoinError::Failed | JoinError::NeedsPassphrase) if *secured => Join::Asking {
                 id: std::mem::take(id),
                 name: std::mem::take(name),
-                problem: Some(Problem::Rejected),
+                problem: Some(if *typed {
+                    Problem::Rejected
+                } else {
+                    Problem::Stale
+                }),
             },
             Err(error) => Join::Failed {
                 name: std::mem::take(name),
@@ -474,15 +497,39 @@ mod tests {
     }
 
     #[test]
-    fn a_known_network_that_fails_has_nothing_to_retype() {
+    fn a_saved_network_whose_passphrase_changed_asks_for_the_new_one() {
         let home = network("Home", Security::Passphrase, true, -5000);
+        // iwd tries the stored passphrase and fails; or, having failed
+        // before, wants to be told and was not.
+        for error in [JoinError::Failed, JoinError::NeedsPassphrase] {
+            let mut join = Join::Idle;
+            assert!(join.choose(&home).unwrap().passphrase.is_none());
+            join.finished(&home.id, Err(error));
+            assert_eq!(
+                join,
+                Join::Asking {
+                    id: home.id.clone(),
+                    name: "Home".to_string(),
+                    problem: Some(Problem::Stale)
+                }
+            );
+            let request = join.submit(secret("the new passphrase")).unwrap();
+            assert_eq!(request.id, home.id);
+            join.finished(&home.id, Ok(()));
+            assert_eq!(join, Join::Idle);
+        }
+    }
+
+    #[test]
+    fn a_saved_open_network_that_fails_has_nothing_to_retype() {
+        let cafe = network("Cafe", Security::Open, true, -5000);
         let mut join = Join::Idle;
-        join.choose(&home);
-        join.finished(&home.id, Err(JoinError::Failed));
+        join.choose(&cafe);
+        join.finished(&cafe.id, Err(JoinError::Failed));
         assert_eq!(
             join,
             Join::Failed {
-                name: "Home".to_string(),
+                name: "Cafe".to_string(),
                 error: JoinError::Failed
             }
         );

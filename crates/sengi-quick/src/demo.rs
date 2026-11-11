@@ -22,6 +22,7 @@ pub const SCENARIOS: &[&str] = &[
     "passphrase",
     "wrong-passphrase",
     "joining",
+    "changed-passphrase",
     "failed",
     "bluetooth",
     "low-battery",
@@ -108,11 +109,14 @@ impl WifiService for FakeWifi {
             .position(|network| network.id == request.id)
             .ok_or(JoinError::Unavailable)?;
         let typed = request.passphrase.as_ref().map(|secret| secret.expose());
+        if networks[target].name == "Far shed" {
+            return Err(JoinError::Timeout);
+        }
         let accepted = match networks[target].security {
             Security::Open => true,
+            _ if typed.is_some() => typed == Some(PASSPHRASE),
             // "Old router" is known, and has since changed its passphrase.
-            _ if networks[target].known => networks[target].name != "Old router",
-            _ => typed == Some(PASSPHRASE),
+            _ => networks[target].known && networks[target].name != "Old router",
         };
         if !accepted {
             return Err(JoinError::Failed);
@@ -301,10 +305,15 @@ pub fn scenario(name: &str) -> Option<Demo> {
             script.push(Action::Choose(0));
             script.push(Action::Submit(PASSPHRASE));
         }
-        "failed" => {
+        "changed-passphrase" => {
             link = Link::Disconnected;
             networks[0].signal = -9000;
-            // Old router, known, refuses.
+            // Old router, known, refuses what iwd has stored for it.
+            script.push(Action::Choose(0));
+        }
+        "failed" => {
+            link = Link::Disconnected;
+            networks.insert(0, network("Far shed", Security::Open, true, -4000));
             script.push(Action::Choose(0));
         }
         "bluetooth" => {

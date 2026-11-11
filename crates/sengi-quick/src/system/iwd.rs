@@ -120,6 +120,8 @@ pub fn join_error(name: Option<&str>) -> JoinError {
     match name.and_then(|name| name.strip_prefix("net.connman.iwd.")) {
         // InvalidFormat is a passphrase iwd would not even try.
         Some("Failed" | "InvalidFormat") => JoinError::Failed,
+        // iwd wanted to ask for a passphrase and had nobody to ask.
+        Some("NoAgent") => JoinError::NeedsPassphrase,
         Some("Aborted" | "Busy" | "InProgress") => JoinError::Aborted,
         Some("Timeout") => JoinError::Timeout,
         Some("NotConfigured") => JoinError::NotConfigured,
@@ -144,6 +146,10 @@ struct Waiting {
 struct Desk {
     waiting: Option<Waiting>,
     tickets: u64,
+    /// The network iwd last asked about when there was nothing to give.
+    /// iwd reports that to the caller only as "aborted", which could be
+    /// anything; this says the join needs a passphrase typed.
+    unanswered: Option<String>,
 }
 
 impl Desk {
@@ -170,9 +176,18 @@ impl Desk {
     /// `network` the one it was typed for. Anyone else asking gets
     /// nothing and leaves it in place.
     fn answer(&mut self, network: &str, sender: Option<&str>) -> Option<Secret> {
+        if self.waiting.is_none() {
+            self.unanswered = Some(network.to_string());
+        }
         self.waiting
             .take_if(|waiting| waiting.network == network && Some(waiting.asker.as_str()) == sender)
             .map(|waiting| waiting.passphrase)
+    }
+
+    /// Whether a passphrase for `network` was asked for in vain since the
+    /// last time this was called.
+    fn asked_in_vain(&mut self, network: &str) -> bool {
+        self.unanswered.take_if(|asked| asked == network).is_some()
     }
 
     /// iwd has given up on the request, or is done with the agent.
@@ -353,10 +368,18 @@ impl WifiService for Iwd {
         {
             return Err(JoinError::Unavailable);
         }
+        // The agent is there for every join, typed passphrase or not. iwd
+        // asks it about a network it already knows when the stored
+        // passphrase has stopped working, and with no agent at all the
+        // only way out would be to forget the network by hand.
+        let registered = self.register_agent();
+        if let Err(error) = &registered {
+            eprintln!("sengi-quick: registering with iwd: {error}");
+        }
+        slot(&self.slot).asked_in_vain(&request.id);
         let mut ticket = None;
         if let Some(passphrase) = request.passphrase {
-            if let Err(error) = self.register_agent() {
-                eprintln!("sengi-quick: registering with iwd: {error}");
+            if registered.is_err() {
                 return Err(JoinError::Unavailable);
             }
             ticket = Some(slot(&self.slot).put(&request.id, &asker, passphrase));
@@ -367,7 +390,13 @@ impl WifiService for Iwd {
         if let Some(ticket) = ticket {
             slot(&self.slot).take_back(ticket);
         }
-        result.map_err(|error| join_error(bus::error_name(&error)))
+        result.map_err(|error| {
+            if slot(&self.slot).asked_in_vain(&request.id) {
+                JoinError::NeedsPassphrase
+            } else {
+                join_error(bus::error_name(&error))
+            }
+        })
     }
 
     fn watch(&self, changed: Notify) {
@@ -492,6 +521,22 @@ mod tests {
         assert!(desk.waiting.is_some());
         desk.take_back(third);
         assert!(desk.waiting.is_none());
+    }
+
+    #[test]
+    fn the_agent_remembers_being_asked_with_nothing_to_give() {
+        let mut desk = Desk::default();
+        assert!(!desk.asked_in_vain("/net/a_psk"));
+        // iwd asks about a saved network whose passphrase has failed.
+        assert!(desk.answer("/net/a_psk", IWD).is_none());
+        assert!(!desk.asked_in_vain("/net/b_psk"));
+        assert!(desk.asked_in_vain("/net/a_psk"));
+        // Told once.
+        assert!(!desk.asked_in_vain("/net/a_psk"));
+        // Being asked and answering is not asking in vain.
+        desk.put("/net/a_psk", ":1.7", secret("correct horse"));
+        assert!(desk.answer("/net/a_psk", IWD).is_some());
+        assert!(!desk.asked_in_vain("/net/a_psk"));
     }
 
     #[test]
@@ -675,6 +720,10 @@ mod tests {
         assert_eq!(
             join_error(Some("net.connman.iwd.Aborted")),
             JoinError::Aborted
+        );
+        assert_eq!(
+            join_error(Some("net.connman.iwd.NoAgent")),
+            JoinError::NeedsPassphrase
         );
         assert_eq!(
             join_error(Some("net.connman.iwd.Timeout")),

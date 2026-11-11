@@ -356,7 +356,9 @@ impl Panel {
             return String::new();
         };
         match error {
-            JoinError::Failed | JoinError::Aborted => format!("Could not connect to {name}"),
+            JoinError::Failed | JoinError::Aborted | JoinError::NeedsPassphrase => {
+                format!("Could not connect to {name}")
+            }
             JoinError::Timeout => format!("{name} did not answer"),
             JoinError::NotConfigured => format!("{name} has to be set up before it can be joined"),
             JoinError::NotSupported => format!("{name} uses security that is not supported"),
@@ -418,6 +420,7 @@ fn problem_text(problem: Problem) -> &'static str {
         Problem::TooLong => "A passphrase has at most 63 characters",
         Problem::NotPlain => "Only unaccented letters, digits and symbols",
         Problem::Rejected => "That passphrase was not accepted",
+        Problem::Stale => "The saved passphrase no longer works",
     }
 }
 
@@ -648,11 +651,23 @@ mod tests {
         assert!(view.prompt.is_none());
         assert_eq!(view.detail, "Connecting to Home\u{2026}");
 
+        // The stored passphrase is refused: the field opens for a new one.
         panel.apply(Event::Joined {
             id: "/Home".to_string(),
             result: Err(JoinError::Failed),
         });
-        assert_eq!(panel.view().wifi.alert, "Could not connect to Home");
+        let prompt = panel.view().wifi.prompt.unwrap();
+        assert_eq!(prompt.name, "Home");
+        assert_eq!(prompt.problem, "The saved passphrase no longer works");
+        panel.cancel_prompt();
+
+        // Anything else is reported and left at that.
+        panel.choose_network(0);
+        panel.apply(Event::Joined {
+            id: "/Home".to_string(),
+            result: Err(JoinError::Timeout),
+        });
+        assert_eq!(panel.view().wifi.alert, "Home did not answer");
         // Trying something else clears the complaint.
         panel.cancel_prompt();
         assert_eq!(panel.view().wifi.alert, "");
