@@ -974,7 +974,7 @@ impl Bus {
         // A menu can be bigger than a pipe holds and a helper can stop
         // reading, so writing has a thread of its own that may wait.
         let (menus, queued) = mpsc::sync_channel::<String>(MAX_QUEUED_MENUS);
-        thread::Builder::new()
+        let writer = thread::Builder::new()
             .name("tray-menu-out".into())
             .spawn(move || {
                 for text in queued {
@@ -982,10 +982,10 @@ impl Bus {
                         return;
                     }
                 }
-            })?;
+            });
 
         let events = self.events.clone();
-        thread::Builder::new()
+        let reader = thread::Builder::new()
             .name("tray-menu-in".into())
             .spawn(move || {
                 let mut reports = BufReader::new(stdout);
@@ -1005,7 +1005,14 @@ impl Bus {
                     let _ = events.send(event);
                 }
                 let _ = events.send(Event::MenuClosed { serial });
-            })?;
+            });
+        // A helper nobody is writing to or listening to is not left
+        // running. Killing it ends whichever thread did start.
+        if let Err(error) = writer.and(reader) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
         Ok(Helper { child, menus })
     }
 }
