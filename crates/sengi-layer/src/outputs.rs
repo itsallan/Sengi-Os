@@ -1,5 +1,7 @@
 //! Deciding which outputs get an instance of the component.
 
+use std::time::Duration;
+
 use crate::config::Outputs;
 
 /// The changes that bring the instances in line with the outputs.
@@ -43,9 +45,28 @@ pub(crate) fn plan<T: Clone + PartialEq>(
     }
 }
 
+/// How long to wait before putting a surface back after the compositor
+/// closed it for the `closes`-th time in a row while its output stayed.
+/// The wait doubles each time so a compositor that keeps refusing is not
+/// pestered.
+pub(crate) fn retry_delay(closes: u32) -> Duration {
+    let doublings = closes.saturating_sub(1).min(5);
+    Duration::from_millis(500) * 2u32.pow(doublings)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retries_back_off_and_level_out() {
+        assert_eq!(retry_delay(1), Duration::from_millis(500));
+        assert_eq!(retry_delay(2), Duration::from_secs(1));
+        assert_eq!(retry_delay(4), Duration::from_secs(4));
+        assert_eq!(retry_delay(6), Duration::from_secs(16));
+        assert_eq!(retry_delay(60), Duration::from_secs(16));
+        assert_eq!(retry_delay(0), Duration::from_millis(500));
+    }
 
     fn named(outputs: &[(u32, &str)]) -> Vec<(u32, Option<String>)> {
         outputs

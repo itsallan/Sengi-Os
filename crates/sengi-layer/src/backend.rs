@@ -39,7 +39,7 @@ use crate::convert::{
     is_modifier, key_repeats, key_text, modifier_fixes, pointer_button, repeats_due, scroll_delta,
     write_argb8888, ModifierState, RepeatTiming,
 };
-use crate::outputs::plan;
+use crate::outputs::{plan, retry_delay};
 use crate::platform::QuitGuard;
 use crate::{Context, Error, Handle};
 
@@ -100,6 +100,12 @@ struct Surface {
     /// time for the next. Nothing is drawn meanwhile, which paces drawing
     /// to the display and stops it while the surface cannot be seen.
     frame_pending: bool,
+    /// How many times in a row the compositor has closed the surface
+    /// without its output going away.
+    closes: u32,
+    /// When to try mapping again after such a close, measured from
+    /// `State::started`.
+    retry: Option<Duration>,
 }
 
 struct Repeat {
@@ -271,6 +277,8 @@ impl State {
             configured: false,
             sent: 0,
             frame_pending: false,
+            closes: 0,
+            retry: None,
         });
         Ok(self.surfaces.len() - 1)
     }
@@ -317,6 +325,7 @@ impl State {
         let surface = &self.surfaces[index];
         self.shown
             && surface.layer.is_none()
+            && surface.retry.is_none()
             && (surface.output.is_some() || self.outputs.outputs().next().is_some())
     }
 
@@ -513,6 +522,19 @@ impl State {
         window.dispatch_event(WindowEvent::WindowActiveChanged(false));
     }
 
+    /// Maps the surfaces whose wait after a close is over.
+    fn fire_retries(&mut self) {
+        let now = self.started.elapsed();
+        for index in 0..self.surfaces.len() {
+            if self.surfaces[index].retry.is_some_and(|due| due <= now) {
+                self.surfaces[index].retry = None;
+                if self.wants_mapping(index) {
+                    self.map(index);
+                }
+            }
+        }
+    }
+
     /// Sends the repeats a held key has built up.
     fn fire_repeats(&mut self) {
         let (Some(timing), Some(repeat), Some((_, window))) =
@@ -545,13 +567,17 @@ impl State {
         } else {
             slint::platform::duration_until_next_timer_update()
         };
-        let repeat = self
-            .repeat
-            .as_ref()
-            .map(|repeat| repeat.next.saturating_sub(self.started.elapsed()));
-        match (timers, repeat) {
-            (Some(timers), Some(repeat)) => Some(timers.min(repeat)),
-            (timers, repeat) => timers.or(repeat),
+        let now = self.started.elapsed();
+        let repeat = self.repeat.as_ref().map(|repeat| repeat.next);
+        let retries = self.surfaces.iter().filter_map(|surface| surface.retry);
+        let deadline = repeat
+            .into_iter()
+            .chain(retries)
+            .min()
+            .map(|due| due.saturating_sub(now));
+        match (timers, deadline) {
+            (Some(timers), Some(deadline)) => Some(timers.min(deadline)),
+            (timers, deadline) => timers.or(deadline),
         }
     }
 }
@@ -574,6 +600,7 @@ pub(crate) fn run(
     loop {
         slint::platform::update_timers_and_animations();
         state.fire_repeats();
+        state.fire_retries();
         state.apply_requests();
         if let Some(error) = state.failure.take() {
             return Err(error);
@@ -653,14 +680,22 @@ impl LayerShellHandler for State {
     // example when an external monitor is unplugged. A surface that follows
     // the compositor's choice moves to an output that is left; with none
     // left a new surface would be closed straight away, so it waits for
-    // `new_output`. A surface tied to one output waits for that output's
-    // removal or its next update.
+    // `new_output`.
+    //
+    // A surface tied to one output cannot tell yet whether the output is
+    // going. It waits a moment: if the output is removed the instance goes
+    // with it, and if it is still there the surface is put back, with a
+    // longer wait each time the compositor closes it again.
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
         let Some(index) = self.index_of(layer.wl_surface()) else {
             return;
         };
         self.unmap(index);
-        if self.surfaces[index].output.is_none() && self.wants_mapping(index) {
+        if self.surfaces[index].output.is_some() {
+            let surface = &mut self.surfaces[index];
+            surface.closes += 1;
+            surface.retry = Some(self.started.elapsed() + retry_delay(surface.closes));
+        } else if self.wants_mapping(index) {
             self.map(index);
         }
     }
@@ -683,6 +718,7 @@ impl LayerShellHandler for State {
         surface.width = if width != 0 { width } else { requested.0 };
         surface.height = if height != 0 { height } else { requested.1 };
         surface.configured = true;
+        surface.closes = 0;
         // A new size is drawn at once rather than after the next callback.
         surface.frame_pending = false;
         self.resize(index);
