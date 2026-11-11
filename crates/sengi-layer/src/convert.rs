@@ -3,7 +3,6 @@
 
 use std::time::Duration;
 
-use slint::platform::software_renderer::PremultipliedRgbaColor;
 use slint::platform::{Key, PointerEventButton};
 use slint::SharedString;
 use smithay_client_toolkit::seat::keyboard::Keysym;
@@ -21,17 +20,6 @@ const WHEEL_NOTCH: f32 = 60.0;
 /// The most repeats delivered in one go after the loop has been held up, so
 /// a stall does not turn into a burst of characters.
 const MAX_REPEATS_AT_ONCE: u32 = 4;
-
-/// Copies a rendered frame into a wl_shm Argb8888 buffer, which is stored
-/// little-endian: the bytes run B, G, R, A.
-pub(crate) fn write_argb8888(pixels: &[PremultipliedRgbaColor], canvas: &mut [u8]) {
-    for (out, pixel) in canvas.as_chunks_mut::<4>().0.iter_mut().zip(pixels) {
-        out[0] = pixel.blue;
-        out[1] = pixel.green;
-        out[2] = pixel.red;
-        out[3] = pixel.alpha;
-    }
-}
 
 pub(crate) fn pointer_button(code: u32) -> Option<PointerEventButton> {
     match code {
@@ -254,40 +242,6 @@ mod tests {
 
     fn text(key: Key) -> SharedString {
         key.into()
-    }
-
-    #[test]
-    fn frames_are_written_as_bgra_bytes() {
-        let pixels = [
-            PremultipliedRgbaColor {
-                red: 1,
-                green: 2,
-                blue: 3,
-                alpha: 4,
-            },
-            PremultipliedRgbaColor {
-                red: 10,
-                green: 20,
-                blue: 30,
-                alpha: 40,
-            },
-        ];
-        let mut canvas = [0u8; 8];
-        write_argb8888(&pixels, &mut canvas);
-        assert_eq!(canvas, [3, 2, 1, 4, 30, 20, 10, 40]);
-    }
-
-    #[test]
-    fn a_short_canvas_is_filled_without_overrunning() {
-        let pixels = [PremultipliedRgbaColor {
-            red: 9,
-            green: 8,
-            blue: 7,
-            alpha: 6,
-        }; 3];
-        let mut canvas = [0u8; 6];
-        write_argb8888(&pixels, &mut canvas);
-        assert_eq!(canvas, [7, 8, 9, 6, 0, 0]);
     }
 
     #[test]

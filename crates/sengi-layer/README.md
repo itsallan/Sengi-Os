@@ -53,7 +53,8 @@ the keyboard goes elsewhere.
 
 The component needs `forward-focus` to its text input, and gets Escape and
 the other keys through `FocusScope`/`key-pressed` as in any Slint program.
-`examples/typing.rs` is a complete program of this kind.
+`examples/typing.rs` is a complete program of this kind; with `--fill` it
+covers the output the way a launcher that closes on a click outside does.
 
 A bar-like client: one per output, stretched along the top, reserves its
 height, no keyboard, fed by a worker thread.
@@ -211,28 +212,67 @@ A list of the live component instances: `add(&component)` in the build
 closure, `for_each(|component| ...)` from timers and channel callbacks. An
 instance whose output has gone has been freed and is not visited.
 
-### Other protocols: `Handle::connection()`
+### Other protocols: `Handle::connection()` and `dispatch_queue`
 
 `sengi_layer::wayland_client` re-exports the crate the connection belongs
 to. Use the connection from a thread of your own with an event queue of your
-own: `connection.new_event_queue()`, a registry on that queue, and a loop
-around `blocking_dispatch`; send results to the UI with `Handle::channel`.
-`examples/soak.rs` does this next to an animating, resizing UI.
+own, and run that queue with `sengi_layer::dispatch_queue`:
 
-- Do not dispatch on the UI thread or create objects on the UI's queue.
-- On the worker, wait only inside `blocking_dispatch`. Never hold a read
-  guard from `prepare_read` while waiting on anything else: the UI loop
-  waits for that guard too.
+    fn track(connection: Connection, updates: sengi_layer::Sender<Vec<Window>>) {
+        let mut queue = connection.new_event_queue::<Tracker>();
+        connection.display().get_registry(&queue.handle(), ());
+        let mut tracker = Tracker::default();
+        let _ = sengi_layer::dispatch_queue(&mut queue, &mut tracker, |tracker| {
+            // Everything that has arrived so far has been handled.
+            if tracker.take_changed() && updates.send(tracker.windows()).is_err() {
+                return ControlFlow::Break(()); // the UI loop has ended
+            }
+            ControlFlow::Continue(())
+        });
+    }
+
+    let connection = app.handle().connection();
+    std::thread::spawn(move || track(connection, updates));
+
+`dispatch_queue(queue, state, drained) -> Result<(), DispatchError>` handles
+every event waiting on the queue, calls `drained(state)`, sends the requests
+made so far and sleeps until the UI loop has put more events on the queue.
+It returns when `drained` breaks or the connection fails. `examples/soak.rs`
+runs it next to a busy UI and next to an idle one.
+
+Do not use `blocking_dispatch`, `roundtrip` or `prepare_read` on the worker.
+The UI loop reads the socket for the whole connection and files each event
+on the queue it belongs to. `blocking_dispatch` reads the socket as well: it
+handles what is queued and then waits for the socket to become readable. If
+the UI loop reads in between, the worker's event is already on its queue and
+the worker sleeps on a socket with nothing left on it, until something
+unrelated arrives. With an animating UI that is a short delay and easy to
+miss. With an idle one it is a stall: under labwc a worker doing round trips
+this way stopped within ten seconds in every run, and stayed stopped
+(`soak --blocking-dispatch` shows it). `dispatch_queue` never touches the
+socket; it waits for the queue itself.
+
+The other rules:
+
+- Do not dispatch your queue on the UI thread or create objects on the UI's
+  queue.
+- Requests can be sent from any thread; follow them with
+  `connection.flush()` unless they are made inside the worker.
 - A protocol error on one of the worker's objects ends the shared
   connection and with it the UI.
-- The worker is not told when the UI loop ends. It finds out when
-  `Sender::send` fails or `blocking_dispatch` errors.
+- The worker only makes progress while the UI loop runs, and is not told
+  when it ends. It finds out when `Sender::send` fails.
 
 ### Slint integration
 
 - Timers and animations work as usual. The loop sleeps until the next timer
   or event. Drawing is paced by the compositor's frame callbacks, so it
   follows the display and stops while the surface cannot be seen.
+- Only what changed is drawn. Each surface keeps two or three buffers, Slint
+  repaints the dirty part straight into one of them, and only that part is
+  reported to the compositor. A frame that changes nothing is not committed.
+  A blinking cursor on a surface covering the output costs the cursor, not
+  the output.
 - `slint::invoke_from_event_loop`, `Weak::upgrade_in_event_loop` and
   `slint::quit_event_loop` work from any thread.
 - Pointer: move, enter and leave, left, right, middle, back and forward
@@ -255,6 +295,7 @@ around `blocking_dispatch`; send results to the UI with `Handle::channel`.
     cargo build -p sengi-layer --examples
     crates/sengi-layer/tests/keyboard.sh target/debug/examples/typing
     target/debug/examples/soak 120      # inside a Wayland session
+    target/debug/examples/soak 20 --blocking-dispatch   # the stall; fails
 
 `keyboard.sh` starts its own headless labwc and needs `labwc` and `wtype`.
 
