@@ -4,8 +4,9 @@ The Wayland compositor that will replace labwc in Sengi OS. It is built on
 [Smithay](https://github.com/Smithay/smithay) 0.7. The programs the live
 session starts (sengi-bar, sengi-dock, sengi-launcher, mako, swaybg,
 swayidle, swaylock, sengi-focus) run on it, it sleeps when nothing changes,
-and it drives a screen through DRM/KMS with software rendering. It does not
-use the GPU yet.
+and it drives screens through DRM/KMS: with GLES where there is a GPU, with
+pixman on the CPU where there is none. It has not run on real hardware yet;
+everything below was seen in virtual machines.
 
 It is not part of the ISO. The crate is its own Cargo workspace, excluded from
 the main one, so the normal build does not compile Smithay.
@@ -44,8 +45,16 @@ to it. `--no-default-features` builds without winit and GLES, headless only.
 With the `drm` feature (on by default) and started on a virtual terminal
 with no `WAYLAND_DISPLAY` or `DISPLAY` set, the compositor takes the seat
 through libseat (logind or seatd), opens the seat's primary display device,
-uses the first connected connector at its preferred mode, and reads
-keyboards, mice and touchpads through libinput.
+lights every connected connector at its preferred mode, side by side in the
+order found, and reads keyboards, mice and touchpads through libinput.
+
+The renderer is chosen at start and named in the log. Kernel drivers that
+never have a GPU get pixman on dumb buffers. Otherwise a child process
+(`--probe-gl`) asks Mesa what GL would run on, so Mesa is only loaded into
+the compositor when the answer is hardware; llvmpipe and the like are
+refused. `--renderer gles|pixman` or `SENGI_COMPOSITOR_RENDERER` override
+the choice. With GLES, clients can hand over dmabufs (linux-dmabuf with
+feedback) and the cursor goes on its own plane where KMS offers one.
 
 Build for the image, without the development window backend:
 
@@ -71,8 +80,45 @@ the session, or SIGTERM, logs out and gives the terminal back.
 Ctrl+Alt+F1..F12 switch virtual terminals. The keyboard layout follows
 `XKB_DEFAULT_LAYOUT` and the other `XKB_DEFAULT_*` variables.
 
-`--backend drm --exit-after SEC --screenshot PNG` saves what was drawn by
-rendering the same frame once more into memory.
+`--backend drm --screenshot PNG` saves what is drawn, by rendering the same
+frame once more into memory, whenever the compositor gets SIGUSR2, and at
+the end with `--exit-after SEC`. Several screens come out as one picture,
+laid out as they are on the desktop. SIGUSR1 prints how many page flips
+there were, how many of them had the cursor on its own plane, how many
+dmabufs were imported and where the pointer is. Smithay's warnings and
+errors go to stderr; `SENGI_COMPOSITOR_LOG=info|debug|trace` shows more.
+
+### A test guest with a GPU
+
+The GPU path was checked in a KVM guest with a virgl GPU, booted from the
+released ISO, with the compositor and the test script on a second disk
+that the image's `sengi.test.debug` hook mounts and runs:
+
+    qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp 2 -m 4096 \
+        -drive file=sengi-os-0.3.0-amd64.iso,format=raw,if=virtio,readonly=on \
+        -drive file=share.img,format=raw,if=virtio \
+        -device virtio-vga-gl,id=gpu0,max_outputs=2 \
+        -display egl-headless,rendernode=/dev/dri/renderD128 \
+        -vnc unix:vnc.sock -vnc unix:vnc2.sock,id=v2,display=gpu0,head=1 \
+        -machine vmport=off -device virtio-tablet-pci -device virtio-mouse-pci \
+        -nic none -serial file:serial.log -qmp pipe:qmp -monitor stdio \
+        -smbios type=11,value=io.systemd.credential:sengi.test=1 \
+        -smbios 'type=11,value=io.systemd.credential:sengi.test.debug=mount /dev/vdb /mnt; sh /mnt/guest.sh'
+
+Notes for whoever repeats it. The credential text must not contain a
+comma. QEMU's `screendump` has no picture of a GL scanout ("no surface");
+a VNC client gets one, and it shows the primary plane only, which is how a
+cursor on its own plane can be told from a composed one. The second head
+is "plugged in" by a VNC client on `vnc2.sock` that announces the extended
+desktop size encoding and sends SetDesktopSize; nothing found unplugs it
+again. Keys go in with the monitor's `sendkey`, absolute and relative
+pointer events with QMP `input-send-event`. On virtual GPUs the kernel
+hides the cursor plane from compositors that do not set the cursor hotspot
+property, which Smithay does not; `SENGI_COMPOSITOR_VIRTUAL_CURSOR_PLANE=1`
+claims that support so the cursor plane can be exercised there (a host
+that draws the guest's cursor may then show it a few pixels off).
+virtio-gpu completes page flips at once, so a client that draws
+continuously runs faster than the 75 Hz the mode claims.
 
 ### Scripted input
 
@@ -165,6 +211,32 @@ swaylock, swayidle, sengi-focus, wlrctl and gtk3-widget-factory:
   Run as root on libseat's builtin backend, Ctrl+Alt+F2 switched to the
   text login on tty2 and Ctrl+Alt+F7 came back to a repainted desktop,
   and `--screenshot` saved the frame.
+- GLES on GBM, checked in a KVM guest with a virgl GPU (host: Intel HD 620)
+  running the image's session. The compositor's own screenshots of the
+  desktop, a terminal, a window mid-drag, a resize cursor and the launcher
+  are pixel for pixel what QEMU's VNC server shows of the scanout, and
+  differ from the same scenes on pixman only in the clock, a text caret
+  and about fifty pixels by one or two levels. Idle, ten seconds: no page
+  flips, no CPU time.
+- linux-dmabuf on GLES: `weston-simple-egl` attached dmabufs
+  (`zwp_linux_buffer_params_v1.create_immed`, ARGB8888, no modifier) and
+  no shm buffers, and was drawn. On pixman the global is not offered and
+  the same client falls back to software.
+- Cursor plane, with the virtual cursor switch described above: the log
+  counts one cursor plane, every frame with the pointer in it had the
+  cursor on that plane, DRM's debugfs state shows the plane following the
+  pointer, and the primary plane's picture lacks the cursor, also for the
+  resize cursor and the launcher's.
+- Terminal switching and exit on GLES, as root on libseat's builtin
+  backend: Ctrl+Alt+F2 reached tty2, Ctrl+Alt+F7 came back to a picture
+  identical to the one before, typing still worked, SIGTERM gave the text
+  console back.
+- A second display plugged in while running was lit next to the first,
+  swaybg and sengi-bar put their surfaces on it, and a terminal dragged
+  across the edge showed on both.
+- Relative pointer motion through libinput, with its acceleration: 100
+  units sent slowly moved the pointer 58 to 74 pixels, the same distance
+  sent in two steps 129 to 198.
 - `sengi-compositor --exit` and SIGTERM end the session; started programs
   get `SENGI_COMPOSITOR_PID`.
 - Only a locker the compositor started may take over the session of a
@@ -180,16 +252,23 @@ swaylock, swayidle, sengi-focus, wlrctl and gtk3-widget-factory:
 
 ## What does not work
 
-- No GPU rendering: the DRM backend composes with pixman on the CPU into
-  dumb buffers. No GLES/GBM path, no dmabuf import, no hardware cursor
-  plane (the cursor is composed like everything else), no direct scanout.
-  This is the right path for VMs and has not been tried on real hardware,
-  where full-screen updates at 1080p will cost CPU.
-- DRM: one output only, chosen at start. Connectors appearing or
-  disappearing later are not handled, a second display stays dark, and
-  there is no way to pick a mode. Relative pointer motion and the touchpad
-  settings are implemented but have not been seen working: the test
-  guest's only pointer is an absolute one.
+- Nothing has run on real hardware. Unseen there: GLES on i915, the
+  cursor plane without the virtual switch, overlay planes and direct
+  scanout (virtio-gpu offers none), suspend and resume, real vertical
+  blanks.
+- GLES costs memory that is Mesa's, not ours: Debian's `libgallium` links
+  libLLVM, and about 42 MB of it are resident in any process that opens
+  EGL, labwc included. See "Memory" below.
+- Unplugging a display is handled (bars closed, windows moved to a screen
+  that is left) but only unit-tested; the test guest cannot unplug.
+- With several screens: new windows open on the first one, absolute
+  pointing devices map to the first one, there is one lock surface and
+  the other screens go plain while locked, popups are constrained to the
+  first screen, screens line up left to right in the order found with no
+  way to arrange them or pick a mode, and a gap left by an unplugged
+  screen is not closed.
+- The touchpad settings (tap to click, disable while typing) have not
+  been seen working: there is no touchpad in a VM.
 - In the 0.3.0 live image, Ctrl+Alt+Fn is refused by logind ("failed to
   change vt") for the session user; it works when the compositor runs on
   libseat's builtin backend. The image probably has the same limit under
@@ -217,26 +296,53 @@ swaylock, swayidle, sengi-focus, wlrctl and gtk3-widget-factory:
   fonts, and long titles are cut off without an ellipsis.
 - Keyboard layout is fixed to the xkb default (US). Nested under winit the
   host layout is not followed.
-- No dmabuf, so GPU clients fall back to software or fail.
+- No dmabuf on the pixman path, so GPU clients fall back to software
+  there. No `wl_drm`; Mesa finds the device through dmabuf feedback.
 - Missing protocols: primary selection, xdg-activation, fractional-scale,
   viewporter, text-input, screencopy, output management, idle-inhibit,
   virtual keyboard and pointer, ext-foreign-toplevel-list.
 - No XWayland.
-- One output only. No HiDPI scale: frames and cursors are drawn for scale 1.
+- No HiDPI scale: frames and cursors are drawn for scale 1.
 - Clients started with `-s` or a key binding are not stopped when the
   compositor exits; they quit on their own when the socket closes.
-- RAM and frame time have not been measured.
+- Frame time has not been measured.
+
+## Memory
+
+Measured in the GPU guest above with the whole session running and idle
+(swaybg, sengi-bar, sengi-dock, mako, swayidle, sengi-focus, PipeWire),
+release build, from `/proc/PID/smaps_rollup` and `smaps`, in MB:
+
+| compositor                 | Rss | Pss | private dirty | libLLVM resident | heap | session Pss |
+|----------------------------|-----|-----|---------------|------------------|------|-------------|
+| sengi-compositor on pixman |  15 |  11 |             9 |                0 |    1 |          58 |
+| sengi-compositor on GLES   |  88 |  83 |            31 |               42 |   13 |         130 |
+| labwc on GLES              | 100 |  92 |            30 |               42 |   19 |         130 |
+
+The 73 MB between pixman and GLES are Mesa: 42 MB of libLLVM (5.5 MB of
+it dirty from relocations, the rest clean file pages that the kernel can
+drop and that other GL programs share), 10 MB of libgallium, and 12 MB
+of heap that Mesa allocates for its context and shaders. `ldd` on
+`libgallium-25.0.7` in the image lists `libLLVM.so.19.1` and `libz3`;
+virgl and iris do not use LLVM, the library is simply linked in.
+Switching off Mesa's shader disk cache and GL threading changed nothing.
+labwc pays the same on the same renderer. What would help is a Mesa
+built without LLVM in the image, which is a packaging question and not
+something the compositor can do. In all three rows 4 MB are the
+wallpaper's shm buffer, mapped while swaybg keeps it attached; in ours
+3 MB are the binary itself, which in the test sits on a tmpfs overlay
+and so counts as dirty.
 
 ## Next steps toward replacing labwc
 
-1. GLES on GBM for machines with a GPU, chosen automatically and never
-   falling into llvmpipe, with dmabuf import and a hardware cursor plane.
-2. Connector hotplug, a second output, mode selection, and proof on real
-   hardware of VT switching, touchpads and suspend.
+1. Run it on the target laptop: GLES on i915, the cursor plane, VT
+   switching under logind, the touchpad, suspend, idle RAM and frame time.
+2. Arranging screens and choosing modes, windows and popups that know
+   which screen they are on, a lock surface per screen.
 3. Restrict foreign-toplevel and locking an unlocked session to the
    clients meant to use them.
 3. screencopy (grim, and the CI screenshot), output management, primary
-   selection, xdg-activation, dmabuf, fractional scale, idle-inhibit.
+   selection, xdg-activation, fractional scale, idle-inhibit.
 4. Fullscreen, popup constraining, double-click to maximise, edge snapping,
    an Alt+Tab switcher.
 5. Rounded bottom corners and shadows.
@@ -267,4 +373,7 @@ swaylock, swayidle, sengi-focus, wlrctl and gtk3-widget-factory:
   that has devices.
 - `src/render.rs`: drawing an output and frame callbacks.
 - `src/headless.rs`, `src/winit.rs`, `src/drm.rs`: the backends.
+- `src/gpu.rs`: choosing between GLES and pixman. Pure, unit-tested.
+- `src/dmabuf.rs`: linux-dmabuf.
+- `src/log.rs`: printing what Smithay logs.
 - `src/png.rs`: minimal PNG writer for screenshots.
