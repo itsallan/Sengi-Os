@@ -42,9 +42,9 @@ each `- [ ]` line is an issue.
 
 ## 0.4
 
-- [ ] sengi-notify replaces mako
-- [ ] Quick settings panel
-- [ ] System tray in sengi-bar
+- [x] sengi-notify replaces mako
+- [x] Quick settings panel
+- [x] System tray in sengi-bar
 
 ## 0.5
 
