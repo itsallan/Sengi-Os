@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::env::Env;
+use crate::files::read_limited;
 
 /// An application the launcher can show and start.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +36,14 @@ pub enum Parsed {
 
 // Deep enough for vendor subdirectories.
 const MAX_DEPTH: usize = 6;
+/// Directory entries looked at in one scan. A large system has a few
+/// thousand desktop files at the very most.
+const MAX_VISITED: usize = 10_000;
+/// Desktop files are a few kilobytes; translations push some to 100 kB.
+const MAX_FILE_BYTES: u64 = 1 << 20;
+/// Characters kept of a name, generic name, comment or keyword.
+const MAX_TEXT_CHARS: usize = 256;
+const MAX_KEYWORDS: usize = 64;
 
 /// Every application to show, from all application directories. A file in an
 /// earlier directory replaces files with the same ID in later ones.
@@ -43,27 +52,36 @@ pub fn load(env: &Env) -> Vec<DesktopEntry> {
 }
 
 pub fn scan(dirs: &[PathBuf], env: &Env) -> Vec<DesktopEntry> {
+    scan_limited(dirs, env, MAX_VISITED)
+}
+
+/// `scan`, looking at no more than `max_visited` directory entries in all.
+fn scan_limited(dirs: &[PathBuf], env: &Env, max_visited: usize) -> Vec<DesktopEntry> {
     let locales = locale_variants(env.locale.as_deref());
     let mut seen = HashSet::new();
-    let mut visited = HashSet::new();
+    let mut walk = Walk {
+        visited: HashSet::new(),
+        budget: max_visited,
+        files: Vec::new(),
+    };
     let mut entries = Vec::new();
     for dir in dirs {
-        let mut files = Vec::new();
-        walk(dir, "", 0, &mut visited, &mut files);
-        for (id, path) in files {
-            if seen.contains(&id) {
+        walk.files.clear();
+        walk.directory(dir, "", 0);
+        for (id, path) in &walk.files {
+            if seen.contains(id) {
                 continue;
             }
-            let Ok(bytes) = std::fs::read(&path) else {
+            let Some(bytes) = read_limited(path, MAX_FILE_BYTES) else {
                 continue;
             };
-            match parse(&id, &path, &bytes, &locales, env) {
+            match parse(id, path, &bytes, &locales, env) {
                 Parsed::Invalid => {}
                 Parsed::Hidden => {
-                    seen.insert(id);
+                    seen.insert(id.clone());
                 }
                 Parsed::Visible(entry) => {
-                    seen.insert(id);
+                    seen.insert(id.clone());
                     entries.push(*entry);
                 }
             }
@@ -72,40 +90,49 @@ pub fn scan(dirs: &[PathBuf], env: &Env) -> Vec<DesktopEntry> {
     entries
 }
 
-fn walk(
-    dir: &Path,
-    prefix: &str,
-    depth: usize,
-    visited: &mut HashSet<PathBuf>,
-    out: &mut Vec<(String, PathBuf)>,
-) {
-    // Each real directory is read once, so a symlink back up the tree or the
-    // same directory listed twice cannot produce duplicates.
-    let Ok(real) = std::fs::canonicalize(dir) else {
-        return;
-    };
-    if !visited.insert(real) {
-        return;
-    }
-    let Ok(read) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut paths: Vec<PathBuf> = read.flatten().map(|e| e.path()).collect();
-    paths.sort();
-    for path in paths {
-        let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
-            continue;
+struct Walk {
+    /// Real paths of the directories already read.
+    visited: HashSet<PathBuf>,
+    /// Directory entries that may still be looked at.
+    budget: usize,
+    /// Desktop file IDs and paths found in the directory being walked.
+    files: Vec<(String, PathBuf)>,
+}
+
+impl Walk {
+    fn directory(&mut self, dir: &Path, prefix: &str, depth: usize) {
+        // Each real directory is read once, so a symlink back up the tree or
+        // the same directory listed twice cannot produce duplicates.
+        let Ok(real) = std::fs::canonicalize(dir) else {
+            return;
         };
-        // metadata() follows symlinks, which is how Flatpak exports its files.
-        let Ok(meta) = std::fs::metadata(&path) else {
-            continue;
+        if !self.visited.insert(real) {
+            return;
+        }
+        let Ok(read) = std::fs::read_dir(dir) else {
+            return;
         };
-        if meta.is_dir() {
-            if depth < MAX_DEPTH {
-                walk(&path, &format!("{prefix}{name}-"), depth + 1, visited, out);
+        // The budget keeps a stray link to a huge tree from being walked on
+        // every start.
+        let mut paths: Vec<PathBuf> = read.flatten().take(self.budget).map(|e| e.path()).collect();
+        self.budget -= paths.len();
+        paths.sort();
+        for path in paths {
+            let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+                continue;
+            };
+            // metadata() follows symlinks, which is how Flatpak exports its
+            // files.
+            let Ok(meta) = std::fs::metadata(&path) else {
+                continue;
+            };
+            if meta.is_dir() {
+                if depth < MAX_DEPTH {
+                    self.directory(&path, &format!("{prefix}{name}-"), depth + 1);
+                }
+            } else if meta.is_file() && name.ends_with(".desktop") {
+                self.files.push((format!("{prefix}{name}"), path));
             }
-        } else if meta.is_file() && name.ends_with(".desktop") {
-            out.push((format!("{prefix}{name}"), path));
         }
     }
 }
@@ -228,6 +255,7 @@ fn display_text(value: &str) -> String {
             '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' => None,
             c => Some(c),
         })
+        .take(MAX_TEXT_CHARS)
         .collect();
     cleaned.trim().to_owned()
 }
@@ -259,6 +287,7 @@ fn split_list(value: &str) -> Vec<String> {
         .iter()
         .map(|item| display_text(&unescape(item)))
         .filter(|item| !item.is_empty())
+        .take(MAX_KEYWORDS)
         .collect()
 }
 
@@ -660,5 +689,56 @@ mod tests {
             ),
             Parsed::Hidden
         );
+    }
+
+    #[test]
+    fn oversized_files_are_skipped_and_long_values_cut() {
+        let tmp = TempDir::new();
+        let long = "n".repeat(5000);
+        tmp.write(
+            "apps/long.desktop",
+            format!(
+                "[Desktop Entry]\nType=Application\nName={long}\nGenericName={long}\n\
+                 Comment={long}\nKeywords={}\nExec=x\n",
+                format!("{long};").repeat(100)
+            ),
+        );
+        let mut huge = entry("Huge").into_bytes();
+        huge.resize(MAX_FILE_BYTES as usize + 1, b'\n');
+        tmp.write("apps/huge.desktop", huge);
+        // Sparse: enormous on paper, nothing on disk.
+        let sparse = std::fs::File::create(tmp.path().join("apps/sparse.desktop")).unwrap();
+        sparse.set_len(16 << 30).unwrap();
+        // The too-large file in front does not hide a sane one behind it.
+        tmp.write("later/huge.desktop", entry("Sane"));
+
+        let dirs = vec![tmp.path().join("apps"), tmp.path().join("later")];
+        let found = scan(&dirs, &plain_env());
+        let names: Vec<usize> = found.iter().map(|e| e.name.chars().count()).collect();
+        assert_eq!(names, vec![MAX_TEXT_CHARS, 4]);
+        let long = &found[0];
+        assert_eq!(long.generic_name.chars().count(), MAX_TEXT_CHARS);
+        assert_eq!(long.comment.chars().count(), MAX_TEXT_CHARS);
+        assert_eq!(long.keywords.len(), MAX_KEYWORDS);
+        assert!(long
+            .keywords
+            .iter()
+            .all(|k| k.chars().count() == MAX_TEXT_CHARS));
+    }
+
+    #[test]
+    fn a_scan_looks_at_a_bounded_number_of_entries() {
+        let tmp = TempDir::new();
+        for i in 0..40 {
+            tmp.write(
+                &format!("apps/sub{}/app{i:02}.desktop", i % 4),
+                entry("App"),
+            );
+        }
+        let dirs = vec![tmp.path().join("apps")];
+        assert_eq!(scan(&dirs, &plain_env()).len(), 40);
+        // Four directory entries at the top, then six more below them.
+        assert_eq!(scan_limited(&dirs, &plain_env(), 10).len(), 6);
+        assert!(scan_limited(&dirs, &plain_env(), 0).is_empty());
     }
 }
