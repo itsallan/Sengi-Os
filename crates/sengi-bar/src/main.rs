@@ -180,7 +180,7 @@ fn run() -> Result<(), sengi_layer::Error> {
         handle.set_size(0, height)?;
         handle.set_exclusive_zone(height as i32);
 
-        bar.on_open_launcher(|| spawn("fuzzel"));
+        bar.on_open_launcher(|| spawn("sengi-launcher"));
         bar.on_open_network(|| spawn("sengi-run foot -e iwctl"));
         bar.on_show_notifications(|| spawn("makoctl restore"));
         bar.on_dismiss_notifications(|| spawn("makoctl dismiss --all"));

@@ -13,7 +13,7 @@
       "path": "/usr/share/sengi-os/icons/launcher.svg",
       "size": @{size.dock-icon},
       "tooltip": false,
-      "on-click": "fuzzel"
+      "on-click": "sengi-launcher"
     },
     "image#terminal": {
       "path": "/usr/share/sengi-os/icons/terminal.svg",

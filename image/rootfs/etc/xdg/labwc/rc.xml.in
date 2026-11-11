@@ -35,7 +35,7 @@
   <keyboard>
     <default />
     <keybind key="W-space">
-      <action name="Execute" command="fuzzel" />
+      <action name="Execute" command="sengi-launcher" />
     </keybind>
     <keybind key="W-Return">
       <action name="Execute" command="sengi-run foot" />
