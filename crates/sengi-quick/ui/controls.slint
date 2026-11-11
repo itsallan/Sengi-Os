@@ -297,9 +297,11 @@ export component TextField inherits Rectangle {
     background: Tokens.color-surface;
     animate border-color { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
 
+    // Starts clear of the caret, which sits at the left edge of an empty
+    // field and would otherwise cut through the first letter.
     if input.text == "": SengiText {
-        x: Tokens.space-sm;
-        width: parent.width - Tokens.space-sm * 2;
+        x: Tokens.space-sm + Tokens.space-xs;
+        width: parent.width - Tokens.space-sm * 2 - Tokens.space-xs;
         height: parent.height;
         text: root.placeholder;
         color: Tokens.color-text-disabled;
