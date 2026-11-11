@@ -3,7 +3,7 @@
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
-        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+        KeyState, KeyboardKeyEvent, Keycode, PointerAxisEvent, PointerButtonEvent,
     },
     desktop::{layer_map_for_output, WindowSurfaceType},
     input::{
@@ -21,15 +21,7 @@ impl State {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
         match event {
             InputEvent::Keyboard { event } => {
-                let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
-                keyboard.input::<(), _>(
-                    self,
-                    event.key_code(),
-                    event.state(),
-                    SERIAL_COUNTER.next_serial(),
-                    event.time_msec(),
-                    |_, _, _| FilterResult::Forward,
-                );
+                self.key(event.key_code(), event.state(), event.time_msec());
             }
             InputEvent::PointerMotionAbsolute { event } => {
                 let Some(output) = self.output() else { return };
@@ -37,34 +29,10 @@ impl State {
                     return;
                 };
                 let location = event.position_transformed(geometry.size) + geometry.loc.to_f64();
-                let under = self.surface_under(location);
-                let pointer = self.seat.get_pointer().expect("seat has a pointer");
-                pointer.motion(
-                    self,
-                    under,
-                    &MotionEvent {
-                        location,
-                        serial: SERIAL_COUNTER.next_serial(),
-                        time: event.time_msec(),
-                    },
-                );
-                pointer.frame(self);
+                self.pointer_motion(location, event.time_msec());
             }
             InputEvent::PointerButton { event } => {
-                let pointer = self.seat.get_pointer().expect("seat has a pointer");
-                if event.state() == ButtonState::Pressed && !pointer.is_grabbed() {
-                    self.click_to_focus(pointer.current_location());
-                }
-                pointer.button(
-                    self,
-                    &ButtonEvent {
-                        button: event.button_code(),
-                        state: event.state(),
-                        serial: SERIAL_COUNTER.next_serial(),
-                        time: event.time_msec(),
-                    },
-                );
-                pointer.frame(self);
+                self.pointer_button(event.button_code(), event.state(), event.time_msec());
             }
             InputEvent::PointerAxis { event } => {
                 let mut frame = AxisFrame::new(event.time_msec()).source(event.source());
@@ -91,6 +59,50 @@ impl State {
             }
             _ => {}
         }
+    }
+
+    pub fn key(&mut self, keycode: Keycode, state: KeyState, time: u32) {
+        let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
+        keyboard.input::<(), _>(
+            self,
+            keycode,
+            state,
+            SERIAL_COUNTER.next_serial(),
+            time,
+            |_, _, _| FilterResult::Forward,
+        );
+    }
+
+    pub fn pointer_motion(&mut self, location: Point<f64, Logical>, time: u32) {
+        let under = self.surface_under(location);
+        let pointer = self.seat.get_pointer().expect("seat has a pointer");
+        pointer.motion(
+            self,
+            under,
+            &MotionEvent {
+                location,
+                serial: SERIAL_COUNTER.next_serial(),
+                time,
+            },
+        );
+        pointer.frame(self);
+    }
+
+    pub fn pointer_button(&mut self, button: u32, state: ButtonState, time: u32) {
+        let pointer = self.seat.get_pointer().expect("seat has a pointer");
+        if state == ButtonState::Pressed && !pointer.is_grabbed() {
+            self.click_to_focus(pointer.current_location());
+        }
+        pointer.button(
+            self,
+            &ButtonEvent {
+                button,
+                state,
+                serial: SERIAL_COUNTER.next_serial(),
+                time,
+            },
+        );
+        pointer.frame(self);
     }
 
     fn click_to_focus(&mut self, location: Point<f64, Logical>) {

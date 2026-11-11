@@ -4,8 +4,9 @@
 //! clients in CI and to save a screenshot of what a real output would show.
 
 use std::{
+    collections::VecDeque,
     error::Error,
-    fs::File,
+    fs::{self, File},
     io::BufWriter,
     path::Path,
     time::{Duration, Instant},
@@ -14,6 +15,7 @@ use std::{
 use smithay::{
     backend::{
         allocator::Fourcc,
+        input::{ButtonState, KeyState, Keycode},
         renderer::{
             damage::OutputDamageTracker,
             pixman::{PixmanRenderer, PixmanTarget},
@@ -32,7 +34,12 @@ use smithay::{
     utils::{Buffer, Rectangle, Size, Transform},
 };
 
-use crate::{png, render, state::State, Options};
+use crate::{
+    png, render,
+    script::{self, Action, Step},
+    state::State,
+    Options,
+};
 
 const FRAME: Duration = Duration::from_micros(16_667);
 
@@ -42,11 +49,14 @@ struct Headless {
     size: Size<i32, Buffer>,
     damage: OutputDamageTracker,
     output: Output,
-    options: Options,
+    /// What is left of the script, soonest step first.
+    steps: VecDeque<Step>,
     started: Instant,
 }
 
 pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
+    let steps = steps(&options)?;
+
     let mut event_loop: EventLoop<State> = EventLoop::try_new()?;
     let display = Display::new()?;
     let mut state = State::new(&mut event_loop, display)?;
@@ -68,7 +78,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         size,
         damage: OutputDamageTracker::from_output(&output),
         output,
-        options: options.clone(),
+        steps,
         started: Instant::now(),
     };
 
@@ -94,13 +104,71 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
     state.run(event_loop)
 }
 
+/// The script, with `--screenshot` and `--exit-after` folded in as steps.
+fn steps(options: &Options) -> Result<VecDeque<Step>, Box<dyn Error>> {
+    let mut steps = match &options.script {
+        Some(path) => {
+            let text = fs::read_to_string(path)
+                .map_err(|err| format!("cannot read {}: {err}", path.display()))?;
+            script::parse(&text)?
+        }
+        None => Vec::new(),
+    };
+    if let Some(at) = options.exit_after {
+        if let Some(path) = &options.screenshot {
+            let action = Action::Screenshot(path.clone());
+            steps.push(Step { at, action });
+        }
+        let action = Action::Exit;
+        steps.push(Step { at, action });
+    }
+    // Stable, so steps at the same time keep the order they were written in.
+    steps.sort_by_key(|step| step.at);
+    Ok(steps.into())
+}
+
 impl Headless {
-    /// Draws one frame. Returns false once `--exit-after` has passed.
+    /// Plays the script steps that are due and draws one frame. Returns
+    /// false when the script asked to exit.
     fn frame(&mut self, state: &mut State) -> Result<bool, Box<dyn Error>> {
-        let last = self
-            .options
-            .exit_after
-            .is_some_and(|after| self.started.elapsed() >= after);
+        let now = self.started.elapsed();
+        let time = now.as_millis() as u32;
+        let mut screenshot = None;
+        let mut exit = false;
+
+        while self.steps.front().is_some_and(|step| step.at <= now) {
+            let Some(step) = self.steps.pop_front() else {
+                break;
+            };
+            let key_state = |pressed| match pressed {
+                true => KeyState::Pressed,
+                false => KeyState::Released,
+            };
+            let button_state = |pressed| match pressed {
+                true => ButtonState::Pressed,
+                false => ButtonState::Released,
+            };
+            match step.action {
+                Action::Key { code, pressed } => {
+                    // xkb keycodes are evdev codes plus eight.
+                    state.key(Keycode::new(code + 8), key_state(pressed), time);
+                }
+                Action::Move { x, y } => state.pointer_motion((x, y).into(), time),
+                Action::Button { code, pressed } => {
+                    state.pointer_button(code, button_state(pressed), time);
+                }
+                // The picture has to show the steps before it, so draw first
+                // and leave the rest for the next frame.
+                Action::Screenshot(path) => {
+                    screenshot = Some(path);
+                    break;
+                }
+                Action::Exit => {
+                    exit = true;
+                    break;
+                }
+            }
+        }
 
         let mut target = self.renderer.bind(&mut self.image)?;
         // The image is reused, so it always holds the previous frame.
@@ -112,15 +180,13 @@ impl Headless {
             1,
             &mut self.damage,
         )?;
-        if last {
-            if let Some(path) = &self.options.screenshot {
-                save(&mut self.renderer, &target, self.size, path)?;
-            }
+        if let Some(path) = screenshot {
+            save(&mut self.renderer, &target, self.size, &path)?;
         }
         drop(target);
 
         render::send_frames(state, &self.output);
-        Ok(!last)
+        Ok(!exit)
     }
 }
 

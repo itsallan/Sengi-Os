@@ -11,6 +11,7 @@ mod layer;
 mod layout;
 mod png;
 mod render;
+mod script;
 mod shell;
 mod state;
 #[cfg(feature = "winit")]

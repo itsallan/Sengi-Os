@@ -11,6 +11,7 @@ Usage: sengi-compositor [options]
       --size WxH        output size in pixels (default 1280x720)
       --screenshot PNG  save the last frame to PNG on exit (headless only)
       --exit-after SEC  stop after SEC seconds
+      --script FILE     play scripted input and screenshots (headless only)
   -h, --help            show this help
   -V, --version         show the version";
 
@@ -28,14 +29,24 @@ pub struct Options {
     pub startup: Vec<String>,
     pub screenshot: Option<PathBuf>,
     pub exit_after: Option<Duration>,
+    pub script: Option<PathBuf>,
 }
 
 impl Options {
+    /// The option given that only the headless backend supports, if any.
+    fn headless_only(&self) -> Option<&'static str> {
+        match (&self.screenshot, &self.script) {
+            (Some(_), _) => Some("--screenshot"),
+            (_, Some(_)) => Some("--script"),
+            _ => None,
+        }
+    }
+
     /// Settles `Auto`. `has_display` says whether we were started from
     /// inside a desktop session that a window could be opened on.
     pub fn resolve_backend(&self, has_display: bool) -> Backend {
         match self.backend {
-            Backend::Auto if self.screenshot.is_none() && has_display => Backend::Winit,
+            Backend::Auto if self.headless_only().is_none() && has_display => Backend::Winit,
             Backend::Auto => Backend::Headless,
             chosen => chosen,
         }
@@ -50,6 +61,7 @@ impl Default for Options {
             startup: Vec::new(),
             screenshot: None,
             exit_after: None,
+            script: None,
         }
     }
 }
@@ -81,6 +93,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             }
             "--size" => options.size = parse_size(&value()?)?,
             "--screenshot" => options.screenshot = Some(PathBuf::from(value()?)),
+            "--script" => options.script = Some(PathBuf::from(value()?)),
             "--exit-after" => {
                 let text = value()?;
                 let seconds: f64 = text
@@ -97,8 +110,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
     if options.screenshot.is_some() && options.exit_after.is_none() {
         return Err("--screenshot needs --exit-after".into());
     }
-    if options.screenshot.is_some() && options.backend == Backend::Winit {
-        return Err("--screenshot only works with the headless backend".into());
+    if let (Some(option), Backend::Winit) = (options.headless_only(), options.backend) {
+        return Err(format!("{option} only works with the headless backend"));
     }
     Ok(Command::Run(options))
 }
@@ -143,6 +156,8 @@ mod tests {
             "out.png",
             "--exit-after",
             "2.5",
+            "--script",
+            "steps.txt",
         ]);
         assert_eq!(
             parsed,
@@ -152,6 +167,7 @@ mod tests {
                 startup: vec!["foot".into(), "sengi-bar".into()],
                 screenshot: Some("out.png".into()),
                 exit_after: Some(Duration::from_millis(2500)),
+                script: Some("steps.txt".into()),
             }))
         );
     }
@@ -201,8 +217,12 @@ mod tests {
         options.screenshot = Some("a.png".into());
         assert_eq!(options.resolve_backend(true), Backend::Headless);
 
-        options.backend = Backend::Winit;
         options.screenshot = None;
+        options.script = Some("steps.txt".into());
+        assert_eq!(options.resolve_backend(true), Backend::Headless);
+
+        options.backend = Backend::Winit;
+        options.script = None;
         assert_eq!(options.resolve_backend(false), Backend::Winit);
     }
 }
