@@ -5,6 +5,31 @@ and the measured idle RAM and boot time.
 
 ## Unreleased
 
+## 0.2.0
+
+The top bar is now our own program.
+
+### Added
+
+- sengi-bar, the Sengi OS top bar, written in Rust with Slint and drawn into
+  a layer-shell surface. It shows the menu, network (with the Wi-Fi network
+  name), volume, battery, clock, notifications and session items.
+- One pinned Rust toolchain for local builds, CI and the ISO builder.
+
+### Changed
+
+- Waybar no longer draws the top bar. It stays only for the dock until
+  sengi-dock replaces it.
+
+### Known limits
+
+- There is no system tray yet. Apps that close to the tray keep running with
+  no icon to bring them back; start them again from search. Planned for 0.4.
+- Only one monitor gets a bar.
+- Wi-Fi cards that need non-free firmware (most Intel cards) do not work yet.
+- Secure Boot has to be turned off to boot the ISO.
+- The clock shows UTC.
+
 ## 0.1.0
 
 The first bootable Sengi OS: a live ISO with the desktop layout in place,

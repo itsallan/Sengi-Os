@@ -36,6 +36,7 @@ each `- [ ]` line is an issue.
 
 ## 0.3
 
+- [ ] A sengi-bar on every monitor
 - [ ] sengi-dock replaces the 0.1 dock
 - [ ] sengi-launcher replaces fuzzel
 
@@ -43,6 +44,7 @@ each `- [ ]` line is an issue.
 
 - [ ] sengi-notify replaces mako
 - [ ] Quick settings panel
+- [ ] System tray in sengi-bar
 
 ## 0.5
 
