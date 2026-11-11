@@ -1,0 +1,145 @@
+// The Sound page: which device sound goes to and comes from, and how
+// loud each is.
+
+import { Tokens, SengiText } from "components.slint";
+import { NamedIcon } from "../icons.slint";
+import { Page, PageColumn, Card, Divider, SettingRow, RowValue, SectionLabel, Note, Gap, Metrics, IconButton, Slider, ChoiceButton } from "../kit.slint";
+
+// One direction of sound: its device, volume and mute.
+export struct SoundSide {
+    // There is at least one device.
+    present: bool,
+    device: string,
+    // More than one device to choose from.
+    choice: bool,
+    muted: bool,
+}
+
+export global SoundData {
+    // Why sound cannot be controlled, when it cannot. Empty otherwise.
+    in property <string> note;
+    in property <SoundSide> output;
+    in property <SoundSide> input;
+    in-out property <int> output-volume;
+    in-out property <int> input-volume;
+    // A slider is being dragged; what PipeWire reports must not move it.
+    in-out property <bool> output-held: false;
+    in-out property <bool> input-held: false;
+
+    // The bool is true for output, false for input.
+    callback choose(bool);
+    callback volume(bool, int);
+    callback mute(bool, bool);
+}
+
+component VolumeRow inherits SettingRow {
+    in property <bool> output;
+    in property <SoundSide> side;
+    in-out property <int> value;
+    out property <bool> held: slider.pressed;
+
+    title: root.output ? "Volume" : "Input volume";
+    detail: root.side.muted ? "Muted" : "";
+    enabled: root.side.present;
+
+    VerticalLayout {
+        alignment: center;
+        IconButton {
+            enabled: root.side.present;
+            clicked => { SoundData.mute(root.output, !root.side.muted); }
+            NamedIcon {
+                name: root.output ? (root.side.muted ? "muted" : "speaker") : "microphone";
+                ink: !root.side.present ? Tokens.color-text-disabled
+                    : root.side.muted ? Tokens.color-text-muted : Tokens.color-text;
+            }
+        }
+    }
+
+    VerticalLayout {
+        alignment: center;
+        slider := Slider {
+            width: Metrics.control;
+            value <=> root.value;
+            enabled: root.side.present;
+            dim: root.side.muted;
+            changed(to) => { SoundData.volume(root.output, to); }
+        }
+    }
+
+    RowValue {
+        width: Tokens.dock-icon;
+        text: root.side.present ? root.value + "%" : "";
+    }
+}
+
+component DeviceRow inherits SettingRow {
+    in property <bool> output;
+    in property <SoundSide> side;
+
+    title: root.output ? "Output device" : "Input device";
+    enabled: root.side.present;
+
+    VerticalLayout {
+        alignment: center;
+        ChoiceButton {
+            width: Metrics.control + Tokens.dock-icon;
+            text: root.side.present ? root.side.device : "None";
+            enabled: root.side.choice;
+            clicked => { SoundData.choose(root.output); }
+        }
+    }
+}
+
+export component SoundPage inherits Page {
+    title: "Sound";
+    content-height: column.preferred-height;
+
+    column := PageColumn {
+        if SoundData.note != "": Note {
+            text: SoundData.note;
+            warning: true;
+        }
+
+        SectionLabel {
+            text: "Output";
+        }
+
+        Card {
+            DeviceRow {
+                output: true;
+                side: SoundData.output;
+            }
+
+            Divider { }
+
+            out := VolumeRow {
+                output: true;
+                side: SoundData.output;
+                value <=> SoundData.output-volume;
+                changed held => { SoundData.output-held = self.held; }
+            }
+        }
+
+        Gap { }
+
+        SectionLabel {
+            text: "Input";
+        }
+
+        Card {
+            DeviceRow {
+                output: false;
+                side: SoundData.input;
+            }
+
+            Divider { }
+
+            VolumeRow {
+                output: false;
+                side: SoundData.input;
+                value <=> SoundData.input-volume;
+                changed held => { SoundData.input-held = self.held; }
+            }
+        }
+    }
+}

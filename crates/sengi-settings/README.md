@@ -146,6 +146,23 @@ BlueZ on the system bus (`org.bluez`).
 Not done: more than one adapter, making this computer discoverable,
 renaming devices, battery levels of devices.
 
+### Sound
+
+PipeWire through WirePlumber's `wpctl`: `wpctl status` for the outputs and
+inputs, `set-default`, `set-volume -l 1` and `set-mute` to change them.
+
+- Each direction has its device, a volume slider and a mute button. The
+  slider stops at 100%; a drag runs one `wpctl` at a time and skips the
+  positions it has already moved on from.
+- Changes made elsewhere (the volume keys, headphones plugged in) show at
+  once. `wpctl` cannot wait for a change, so a `pw-dump --monitor` child
+  is kept for as long as the page has been opened and read only for the
+  fact that it printed something. It is killed when the window closes,
+  and by the kernel if Settings dies first.
+
+Not done: a level meter (it would need a capture stream of its own, which
+is not cheap), per-application volumes, device profiles.
+
 ## Building and testing
 
     cargo build -p sengi-settings

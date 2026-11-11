@@ -7,8 +7,9 @@ import { NamedIcon } from "icons.slint";
 import { Metrics, Nudge, Item, DialogSpec, DialogLayer, ChooserLayer } from "kit.slint";
 import { NetworkData, NetworkPage } from "pages/network.slint";
 import { BluetoothData, BluetoothPage } from "pages/bluetooth.slint";
+import { SoundData, SoundSide, SoundPage } from "pages/sound.slint";
 
-export { Item, DialogSpec, NetworkData, BluetoothData }
+export { Item, DialogSpec, NetworkData, BluetoothData, SoundData, SoundSide }
 
 export struct PageEntry {
     name: string,
@@ -181,6 +182,7 @@ export component SettingsWindow inherits Window {
 
         if root.page == "network": NetworkPage { }
         if root.page == "bluetooth": BluetoothPage { }
+        if root.page == "sound": SoundPage { }
     }
 
     if ChooserState.open: ChooserLayer {

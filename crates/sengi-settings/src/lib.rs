@@ -17,6 +17,7 @@ pub mod network;
 pub mod secret;
 pub mod services;
 pub mod settings;
+pub mod sound;
 pub mod store;
 pub mod text;
 pub mod worker;

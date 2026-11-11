@@ -7,10 +7,12 @@ use std::sync::Arc;
 use crate::bluetooth::{self, BluetoothService};
 use crate::bus::Bus;
 use crate::network::{self, NetworkService};
+use crate::sound::{self, AudioService};
 
 pub struct Services {
     pub network: Arc<dyn NetworkService>,
     pub bluetooth: Arc<dyn BluetoothService>,
+    pub sound: Arc<dyn AudioService>,
 }
 
 /// Names a directory to read in place of `/sys/class`, in debug builds
@@ -38,6 +40,7 @@ pub fn real() -> Services {
     Services {
         network: Arc::new(network::iwd::Iwd::new(bus.clone(), class.clone())),
         bluetooth: Arc::new(bluetooth::bluez::Bluez::new(bus, class)),
+        sound: Arc::new(sound::wpctl::Wpctl::default()),
     }
 }
 
@@ -48,6 +51,7 @@ pub const DEMOS: &[&str] = &[
     "network-none",
     "bluetooth",
     "bluetooth-off",
+    "sound",
 ];
 
 /// The services of a made-up machine, and the page that shows them off.
@@ -130,6 +134,18 @@ pub fn demo(name: &str) -> Option<(crate::cli::Page, Services)> {
             }
             services.bluetooth = fake;
             Page::Bluetooth
+        }
+        "sound" => {
+            use sound::testing::{node, Fake};
+            services.sound = Fake::with(sound::Audio {
+                outputs: vec![
+                    node(40, "Built-in speakers", 65, true),
+                    node(41, "HDMI / DisplayPort", 100, false),
+                    node(42, "Trail headphones", 40, false),
+                ],
+                inputs: vec![node(50, "Built-in microphone", 80, true)],
+            });
+            Page::Sound
         }
         _ => return None,
     };
