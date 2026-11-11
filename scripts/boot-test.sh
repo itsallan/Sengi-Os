@@ -32,11 +32,14 @@ now() { date +%s.%N; }
 # Read the ISO once so the host's disk cache does not count against the guest.
 cat "$iso" >/dev/null
 
+# The sound card plays into nothing. It is there so PipeWire finds a sink and
+# the bar shows its volume item, which it hides on a machine with no audio.
 start=$(now)
 qemu-system-x86_64 -machine q35,accel=$accel -cpu $cpu -smp 2 -m 4096 \
 	-drive file="$iso",format=raw,if=virtio,readonly=on \
 	${SENGI_UEFI:+-bios "$SENGI_UEFI"} \
 	-device virtio-vga -display none \
+	-audiodev none,id=snd -device intel-hda -device hda-output,audiodev=snd \
 	-nic user,model=virtio-net-pci \
 	-smbios type=11,value=io.systemd.credential:sengi.test=1 \
 	${SENGI_TEST_DEBUG:+-smbios "type=11,value=io.systemd.credential:sengi.test.debug=$SENGI_TEST_DEBUG"} \
