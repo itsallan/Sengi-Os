@@ -132,7 +132,16 @@ impl fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::Config(error) => Some(error),
+            Error::Wayland(_) => None,
+            Error::Platform(error) => Some(error),
+            Error::Build(error) => Some(error.as_ref()),
+        }
+    }
+}
 
 impl From<ConfigError> for Error {
     fn from(error: ConfigError) -> Error {
