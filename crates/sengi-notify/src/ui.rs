@@ -17,9 +17,19 @@ use crate::store::{Closed, Limits, Popup, Reason, Store};
 
 slint::include_modules!();
 
+/// How long the countdowns stay stopped after the pointer has left the
+/// cards, so that brushing past the edge does not cost the card its time.
+const HOVER_GRACE: Duration = Duration::from_secs(1);
+
+/// Cards that may be fading out at once. Any beyond that are removed on
+/// the spot, so a client that opens and closes notifications as fast as
+/// it can does not get a strip full of ghosts.
+const LEAVING_MAX: usize = 2;
+
 /// A card in the Slint list. `rows` runs parallel to the `cards` model.
 struct Row {
     serial: i32,
+    generation: u64,
     id: u32,
     version: u64,
     leaving: bool,
@@ -42,11 +52,20 @@ pub struct Ui {
     history: Rc<VecModel<HistoryItem>>,
     signals: mpsc::Sender<Signal>,
     expiry: Timer,
+    grace: Timer,
     started: Instant,
     last_serial: i32,
     centre: bool,
     hover: bool,
     shape: Shape,
+    /// The height of the output, once known. The strip is never taller.
+    tallest: Option<u32>,
+    /// Until when clicks on the cards, and on the centre, are ignored
+    /// because what is under the pointer has just changed.
+    cards_guard: u64,
+    centre_guard: u64,
+    /// The do-not-disturb state and unread count last put on the bus.
+    announced: (bool, u32),
     this: Weak<RefCell<Ui>>,
 }
 
@@ -72,6 +91,11 @@ fn card(popup: &Popup, serial: i32, leaving: bool) -> Card {
     }
 }
 
+/// Whether a click at `now` falls inside a guard that lasts until `until`.
+fn guarded(now: u64, until: u64) -> bool {
+    now < until
+}
+
 impl Ui {
     /// Wires `window` up. The surface starts hidden and stays hidden until
     /// there is something to show.
@@ -84,6 +108,10 @@ impl Ui {
         let history = Rc::new(VecModel::default());
         window.set_cards(ModelRc::from(cards.clone()));
         window.set_history(ModelRc::from(history.clone()));
+        // Not in the shared Slint tokens yet, so it is read here.
+        if let Some(button) = sengi_tokens::Tokens::builtin().px("size.button") {
+            window.global::<Metrics>().set_button(button as f32);
+        }
 
         let ui = Rc::new_cyclic(|this| {
             RefCell::new(Ui {
@@ -95,11 +123,16 @@ impl Ui {
                 history,
                 signals,
                 expiry: Timer::default(),
+                grace: Timer::default(),
                 started: Instant::now(),
                 last_serial: 0,
                 centre: false,
                 hover: false,
                 shape: Shape::Hidden,
+                tallest: None,
+                cards_guard: 0,
+                centre_guard: 0,
+                announced: (false, 0),
                 this: this.clone(),
             })
         });
@@ -113,8 +146,12 @@ impl Ui {
             }
         };
         window.on_cards_resized(with(Ui::reshape));
+        window.on_open_centre(with(|ui| ui.set_centre(true)));
         window.on_close_centre(with(|ui| ui.set_centre(false)));
         window.on_clear_all(with(|ui| {
+            if ui.centre_is_guarded() {
+                return;
+            }
             let mut closed = Vec::new();
             ui.store.clear(&mut closed);
             ui.refresh(closed);
@@ -149,10 +186,7 @@ impl Ui {
             let weak = weak.clone();
             move |hover| {
                 if let Some(ui) = weak.upgrade() {
-                    let mut ui = ui.borrow_mut();
-                    ui.hover = hover;
-                    ui.pause();
-                    ui.arm();
+                    ui.borrow_mut().set_hover(hover);
                 }
             }
         });
@@ -160,17 +194,20 @@ impl Ui {
             let weak = weak.clone();
             move |key| {
                 if let Some(ui) = weak.upgrade() {
-                    let mut ui = ui.borrow_mut();
-                    let mut closed = Vec::new();
-                    let now = ui.now();
-                    ui.store.forget(key as u64, now, &mut closed);
-                    ui.refresh(closed);
+                    ui.borrow_mut().forget(key);
                 }
             }
         });
         window.on_dnd_toggled(move |dnd| {
             if let Some(ui) = weak.upgrade() {
-                ui.borrow_mut().set_dnd(dnd);
+                let mut ui = ui.borrow_mut();
+                if ui.centre_is_guarded() {
+                    // The switch has already moved; put it back.
+                    let dnd = ui.store.dnd();
+                    ui.window.set_dnd(dnd);
+                } else {
+                    ui.set_dnd(dnd);
+                }
             }
         });
         ui
@@ -178,6 +215,21 @@ impl Ui {
 
     fn now(&self) -> u64 {
         self.started.elapsed().as_millis() as u64
+    }
+
+    fn guard_time(&self) -> u64 {
+        self.window.get_click_guard().max(0) as u64
+    }
+
+    fn centre_is_guarded(&self) -> bool {
+        guarded(self.now(), self.centre_guard)
+    }
+
+    /// The output the surface is on has this height. The strip of cards is
+    /// kept within it whatever the cards add up to.
+    pub fn set_output_height(&mut self, height: Option<u32>) {
+        self.tallest = height.filter(|height| *height > 0);
+        self.reshape();
     }
 
     /// Handles a message from the bus thread.
@@ -206,11 +258,8 @@ impl Ui {
                 self.set_dnd(dnd);
                 return;
             }
-            ToUi::NameLost => {
-                eprintln!("sengi-notify: another notification service took over");
-                self.handle.quit();
-                return;
-            }
+            // These end the program and are dealt with before they get here.
+            ToUi::NameLost | ToUi::BusClosed => return,
         }
         self.refresh(closed);
     }
@@ -232,13 +281,40 @@ impl Ui {
             return;
         }
         self.centre = open;
+        // Seen now, and whatever comes in while it is open is seen too.
+        self.store.mark_read();
+        if open {
+            self.centre_guard = self.now() + self.guard_time();
+            self.window.set_centre_focus(-1);
+        }
         self.window.set_centre_open(open);
         if open {
             self.window.invoke_take_keyboard();
         }
         self.pause();
         self.arm();
+        self.announce();
         self.reshape();
+    }
+
+    fn set_hover(&mut self, hover: bool) {
+        if hover {
+            self.grace.stop();
+            self.hover = true;
+            self.pause();
+            self.arm();
+            return;
+        }
+        let this = self.this.clone();
+        self.grace
+            .start(TimerMode::SingleShot, HOVER_GRACE, move || {
+                if let Some(ui) = this.upgrade() {
+                    let mut ui = ui.borrow_mut();
+                    ui.hover = false;
+                    ui.pause();
+                    ui.arm();
+                }
+            });
     }
 
     /// The countdowns stand still while the pointer is on the cards and
@@ -250,6 +326,11 @@ impl Ui {
 
     /// A card was clicked, closed or had one of its buttons pressed.
     fn dismiss(&mut self, serial: i32, action: Option<&str>) {
+        // What is under the pointer has only just got there. The click was
+        // aimed at whatever was there before.
+        if guarded(self.now(), self.cards_guard) {
+            return;
+        }
         let Some(id) = self
             .rows
             .iter()
@@ -258,20 +339,22 @@ impl Ui {
         else {
             return;
         };
+        let Some(note) = self.store.active(id) else {
+            return;
+        };
         // Only an action the notification really offers is passed on.
         let invoked = action.filter(|key| {
-            self.store.active(id).is_some_and(|note| {
-                if *key == DEFAULT_ACTION {
-                    note.has_default
-                } else {
-                    note.actions.iter().any(|action| action.key == *key)
-                }
-            })
+            if *key == DEFAULT_ACTION {
+                note.has_default
+            } else {
+                note.actions.iter().any(|action| action.key == *key)
+            }
         });
         if let Some(key) = invoked {
             let _ = self.signals.send(Signal::Action {
                 id,
                 key: key.to_string(),
+                sender: note.sender.clone(),
             });
         }
         let mut closed = Vec::new();
@@ -280,34 +363,84 @@ impl Ui {
         self.refresh(closed);
     }
 
+    /// A line in the centre was dismissed. Slint knows it by the low bits
+    /// of its key.
+    fn forget(&mut self, key: i32) {
+        if self.centre_is_guarded() {
+            return;
+        }
+        let Some(key) = self
+            .store
+            .history()
+            .map(|entry| entry.key)
+            .find(|entry| *entry as i32 == key)
+        else {
+            return;
+        };
+        let mut closed = Vec::new();
+        let now = self.now();
+        self.store.forget(key, now, &mut closed);
+        self.refresh(closed);
+    }
+
     /// Brings everything in line with the store after a change.
     fn refresh(&mut self, closed: Vec<Closed>) {
-        for Closed { id, reason } in closed {
+        for closed in closed {
             let _ = self.signals.send(Signal::Closed {
-                id,
-                reason: reason as u32,
+                id: closed.id,
+                reason: closed.reason as u32,
+                sender: closed.sender,
+                token: closed.token,
             });
         }
         self.sync_cards();
         self.sync_history();
         self.window.set_queued(self.store.queued() as i32);
         self.arm();
+        self.announce();
         self.reshape();
     }
 
+    /// Tells the bus side when do-not-disturb or the unread count changed.
+    fn announce(&mut self) {
+        if self.centre {
+            self.store.mark_read();
+        }
+        let state = (self.store.dnd(), self.store.unread() as u32);
+        if state != self.announced {
+            self.announced = state;
+            let _ = self.signals.send(Signal::State {
+                dnd: state.0,
+                unread: state.1,
+            });
+        }
+    }
+
     fn sync_cards(&mut self) {
+        let mut moved = false;
+
         // Cards the store no longer shows start to leave.
-        for index in 0..self.rows.len() {
-            let row = &mut self.rows[index];
-            if row.leaving
-                || self
-                    .store
-                    .shown()
-                    .iter()
-                    .any(|popup| popup.note.id == row.id)
-            {
+        let mut leaving = self.rows.iter().filter(|row| row.leaving).count();
+        let mut index = 0;
+        while index < self.rows.len() {
+            let (generation, already) = {
+                let row = &self.rows[index];
+                (row.generation, row.leaving)
+            };
+            let shown = self.store.shown();
+            let stays = already || shown.iter().any(|popup| popup.generation == generation);
+            if stays {
+                index += 1;
                 continue;
             }
+            moved = true;
+            if leaving >= LEAVING_MAX {
+                self.rows.remove(index);
+                self.cards.remove(index);
+                continue;
+            }
+            leaving += 1;
+            let row = &mut self.rows[index];
             row.leaving = true;
             let serial = row.serial;
             if let Some(mut data) = self.cards.row_data(index) {
@@ -315,6 +448,7 @@ impl Ui {
                 self.cards.set_row_data(index, data);
             }
             self.remove_later(serial);
+            index += 1;
         }
 
         // The store only ever adds at the top and removes, so walking both
@@ -325,11 +459,12 @@ impl Ui {
                 index += 1;
             }
             match self.rows.get_mut(index) {
-                Some(row) if row.id == popup.note.id => {
+                Some(row) if row.generation == popup.generation => {
                     if row.version != popup.version {
                         row.version = popup.version;
                         self.cards
                             .set_row_data(index, card(popup, row.serial, false));
+                        moved = true;
                     }
                 }
                 _ => {
@@ -339,15 +474,23 @@ impl Ui {
                         index,
                         Row {
                             serial,
+                            generation: popup.generation,
                             id: popup.note.id,
                             version: popup.version,
                             leaving: false,
                         },
                     );
                     self.cards.insert(index, card(popup, serial, false));
+                    moved = true;
                 }
             }
             index += 1;
+        }
+
+        // A card that appeared, changed or shifted is not what the user
+        // was aiming at a moment ago.
+        if moved {
+            self.cards_guard = self.now() + self.guard_time();
         }
     }
 
@@ -381,6 +524,15 @@ impl Ui {
                 critical: entry.note.urgency == Urgency::Critical,
             })
             .collect();
+        // Lines that moved under the pointer get the same guard as cards.
+        let same = items.len() == self.history.row_count()
+            && items
+                .iter()
+                .zip(self.history.iter())
+                .all(|(new, old)| new.key == old.key);
+        if !same && self.centre {
+            self.centre_guard = self.now() + self.guard_time();
+        }
         self.history.set_vec(items);
     }
 
@@ -413,10 +565,12 @@ impl Ui {
             Shape::Hidden
         } else {
             let top = self.window.get_strip_top();
+            let wanted = (top + self.window.get_cards_height()).ceil() as u32;
             Shape::Strip {
                 width: self.window.get_strip_width().ceil() as u32,
-                // Never zero, which would ask for a stretched surface.
-                height: ((top + self.window.get_cards_height()).ceil() as u32).max(1),
+                // Never zero, which would ask for a stretched surface, and
+                // never taller than the screen.
+                height: wanted.min(self.tallest.unwrap_or(u32::MAX)).max(1),
             }
         };
         if shape == self.shape {
@@ -459,5 +613,20 @@ impl Ui {
         if let Err(error) = applied {
             eprintln!("sengi-notify: could not place the surface: {error}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_click_inside_the_guard_is_ignored_and_one_after_it_is_not() {
+        assert!(guarded(0, 400));
+        assert!(guarded(399, 400));
+        assert!(!guarded(400, 400));
+        assert!(!guarded(1_000, 400));
+        // Nothing has moved yet.
+        assert!(!guarded(0, 0));
     }
 }
