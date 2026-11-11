@@ -1,0 +1,18 @@
+[package]
+name = "sengi-launcher"
+description = "The Sengi OS search launcher and menu"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[dependencies]
+# No windowing backend here: the surface comes from sengi-layer.
+slint = { version = "1.18", default-features = false, features = ["compat-1-2", "std", "renderer-software", "software-renderer-systemfonts"] }
+
+[dev-dependencies]
+# Only examples/preview.rs opens a normal window.
+slint = { version = "1.18", default-features = false, features = ["compat-1-2", "std", "backend-winit", "renderer-software", "software-renderer-systemfonts"] }
+
+[build-dependencies]
+slint-build.workspace = true
