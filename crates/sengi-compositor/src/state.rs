@@ -2,7 +2,7 @@
 
 use std::{error::Error, ffi::OsString, sync::Arc, time::Instant};
 
-use sengi_tokens::Tokens;
+use sengi_tokens::{Rgba, Tokens};
 use smithay::{
     backend::renderer::Color32F,
     delegate_data_device, delegate_output, delegate_seat, delegate_shm,
@@ -31,14 +31,14 @@ use smithay::{
         },
         shell::{
             wlr_layer::{KeyboardInteractivity, Layer, WlrLayerShellState},
-            xdg::XdgShellState,
+            xdg::{decoration::XdgDecorationState, XdgShellState},
         },
         shm::{ShmHandler, ShmState},
         socket::ListeningSocketSource,
     },
 };
 
-use crate::layout::FocusStack;
+use crate::{decoration::Theme, frame::Button, input::Drag, layout::FocusStack, text::Font};
 
 /// Refresh rate reported for outputs that have no real one, in mHz.
 pub const REFRESH_MHZ: i32 = 60_000;
@@ -49,6 +49,9 @@ pub struct State {
     pub display_handle: DisplayHandle,
     pub loop_signal: LoopSignal,
     pub tokens: Tokens,
+    pub theme: Theme,
+    /// The title bar typeface, if it is installed.
+    pub font: Option<Font>,
     /// Set when the backend gave up, so the process exits non-zero.
     pub failed: bool,
 
@@ -60,11 +63,16 @@ pub struct State {
     pub focus_stack: FocusStack<Window>,
     /// A layer surface with on-demand keyboard focus that was clicked.
     pub layer_focus: Option<WlSurface>,
+    /// The title bar button under the pointer.
+    pub hovered_button: Option<(Window, Button)>,
+    /// A move, resize or button press the pointer is in the middle of.
+    pub drag: Option<Drag>,
     /// Counts mapped windows so new ones cascade.
     pub placed: usize,
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    _xdg_decoration_state: XdgDecorationState,
     pub layer_shell_state: WlrLayerShellState,
     pub shm_state: ShmState,
     pub seat_state: SeatState<Self>,
@@ -84,6 +92,7 @@ impl State {
 
         let compositor_state = CompositorState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
+        let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
         let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
@@ -114,21 +123,36 @@ impl State {
             },
         )?;
 
+        let tokens = Tokens::builtin();
+        let theme = Theme::from_tokens(&tokens);
+        let font = Font::load(&theme.font_family, theme.font_weight, theme.font_px);
+        if font.is_none() {
+            eprintln!(
+                "sengi-compositor: {} is not installed, title bars will have no text",
+                theme.font_family
+            );
+        }
+
         Ok(Self {
             start_time: Instant::now(),
             socket_name,
             display_handle: dh,
             loop_signal: event_loop.get_signal(),
-            tokens: Tokens::builtin(),
+            tokens,
+            theme,
+            font,
             failed: false,
             space: Space::default(),
             popups: PopupManager::default(),
             pending_windows: Vec::new(),
             focus_stack: FocusStack::default(),
             layer_focus: None,
+            hovered_button: None,
+            drag: None,
             placed: 0,
             compositor_state,
             xdg_shell_state,
+            _xdg_decoration_state: xdg_decoration_state,
             layer_shell_state,
             shm_state,
             seat_state,
@@ -154,16 +178,18 @@ impl State {
 
     /// The colour behind all windows.
     pub fn desktop_color(&self) -> Color32F {
-        let c = self
+        let desktop = self
             .tokens
             .color("color.desktop")
             .expect("tokens define color.desktop");
-        Color32F::new(
-            f32::from(c.r) / 255.0,
-            f32::from(c.g) / 255.0,
-            f32::from(c.b) / 255.0,
-            1.0,
-        )
+        self.color(desktop)
+    }
+
+    /// A token colour in the form the renderer takes: premultiplied floats.
+    pub fn color(&self, c: Rgba) -> Color32F {
+        let alpha = f32::from(c.a) / 255.0;
+        let channel = |value: u8| f32::from(value) / 255.0 * alpha;
+        Color32F::new(channel(c.r), channel(c.g), channel(c.b), alpha)
     }
 
     pub fn output(&self) -> Option<Output> {
@@ -210,6 +236,7 @@ impl State {
         output.change_current_state(Some(mode), None, None, None);
         output.set_preferred(mode);
         layer_map_for_output(output).arrange();
+        self.usable_area_changed();
     }
 
     /// Raises `window`, marks it active and gives it the keyboard.
@@ -232,6 +259,22 @@ impl State {
     pub fn remove_window(&mut self, window: &Window) {
         self.pending_windows.retain(|w| w != window);
         self.space.unmap_elem(window);
+        if self
+            .hovered_button
+            .as_ref()
+            .is_some_and(|(w, _)| w == window)
+        {
+            self.hovered_button = None;
+        }
+        let dragged = match &self.drag {
+            Some(Drag::Move { window: w, .. })
+            | Some(Drag::Resize { window: w, .. })
+            | Some(Drag::Press { window: w, .. }) => w == window,
+            None => false,
+        };
+        if dragged {
+            self.drag = None;
+        }
         if !self.focus_stack.remove(window) {
             return;
         }

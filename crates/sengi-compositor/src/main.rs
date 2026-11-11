@@ -3,6 +3,8 @@
 //! Still a skeleton. See README.md for what works and what is missing.
 
 mod cli;
+mod decoration;
+mod frame;
 mod headless;
 // Only the winit backend delivers input so far.
 #[cfg_attr(not(feature = "winit"), allow(dead_code))]
@@ -14,6 +16,8 @@ mod render;
 mod script;
 mod shell;
 mod state;
+mod text;
+mod window;
 #[cfg(feature = "winit")]
 mod winit;
 

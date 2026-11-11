@@ -53,8 +53,10 @@ impl WlrLayerShellHandler for State {
                 map.unmap_layer(&layer);
             }
         }
-        // The launcher closing hands the keyboard back to the window.
+        // The launcher closing hands the keyboard back to the window, the
+        // bar closing gives its space back.
         self.update_keyboard_focus();
+        self.usable_area_changed();
     }
 }
 
@@ -65,6 +67,7 @@ impl State {
         let Some(output) = self.output_for_layer(surface) else {
             return;
         };
+        let usable_before = self.usable_area();
         {
             let mut map = layer_map_for_output(&output);
             // Anchors, size and exclusive zone are double-buffered, so the
@@ -85,6 +88,9 @@ impl State {
         }
         // Keyboard interactivity is double-buffered too.
         self.update_keyboard_focus();
+        if self.usable_area() != usable_before {
+            self.usable_area_changed();
+        }
     }
 
     fn output_for_layer(&self, surface: &WlSurface) -> Option<Output> {

@@ -14,6 +14,20 @@ impl Rect {
     pub const fn new(x: i32, y: i32, w: i32, h: i32) -> Self {
         Self { x, y, w, h }
     }
+
+    /// One past the last column.
+    pub const fn right(&self) -> i32 {
+        self.x + self.w
+    }
+
+    /// One past the last row.
+    pub const fn bottom(&self) -> i32 {
+        self.y + self.h
+    }
+
+    pub const fn contains(&self, x: i32, y: i32) -> bool {
+        x >= self.x && x < self.right() && y >= self.y && y < self.bottom()
+    }
 }
 
 /// How many windows are cascaded before the pattern starts over.

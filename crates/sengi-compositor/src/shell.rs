@@ -2,8 +2,10 @@
 
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
-    delegate_compositor, delegate_xdg_shell,
+    delegate_compositor, delegate_xdg_decoration, delegate_xdg_shell,
     desktop::{layer_map_for_output, PopupKind, Window},
+    reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
+    reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge,
     reexports::wayland_server::{
         protocol::{wl_seat::WlSeat, wl_surface::WlSurface},
         Client,
@@ -15,14 +17,17 @@ use smithay::{
             CompositorState,
         },
         shell::xdg::{
-            PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+            decoration::XdgDecorationHandler, PopupSurface, PositionerState, ToplevelSurface,
+            XdgShellHandler, XdgShellState,
         },
     },
 };
 
 use crate::{
+    frame::Edges,
     layout::{self, Rect},
     state::{ClientState, State},
+    window,
 };
 
 impl CompositorHandler for State {
@@ -72,6 +77,66 @@ impl XdgShellHandler for State {
         }
     }
 
+    fn move_request(&mut self, surface: ToplevelSurface, _seat: WlSeat, _serial: Serial) {
+        let Some(window) = self.window_for_surface(surface.wl_surface()) else {
+            return;
+        };
+        let pointer = self.seat.get_pointer().expect("seat has a pointer");
+        // Only a press on the window can start a drag.
+        if self.drag.is_some() || !pointer.is_grabbed() {
+            return;
+        }
+        let at = pointer.current_location();
+        self.release_pointer_from_client();
+        self.start_move(&window, (at.x.floor() as i32, at.y.floor() as i32));
+    }
+
+    fn resize_request(
+        &mut self,
+        surface: ToplevelSurface,
+        _seat: WlSeat,
+        _serial: Serial,
+        edges: ResizeEdge,
+    ) {
+        let Some(window) = self.window_for_surface(surface.wl_surface()) else {
+            return;
+        };
+        let pointer = self.seat.get_pointer().expect("seat has a pointer");
+        if self.drag.is_some() || !pointer.is_grabbed() {
+            return;
+        }
+        let has = |part: ResizeEdge| edges as u32 & part as u32 != 0;
+        let edges = Edges {
+            left: has(ResizeEdge::Left),
+            right: has(ResizeEdge::Right),
+            top: has(ResizeEdge::Top),
+            bottom: has(ResizeEdge::Bottom),
+        };
+        let at = pointer.current_location();
+        self.release_pointer_from_client();
+        self.start_resize(&window, edges, (at.x.floor() as i32, at.y.floor() as i32));
+    }
+
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        match self.window_for_surface(surface.wl_surface()) {
+            Some(window) if self.space.element_location(&window).is_some() => {
+                self.set_maximised(&window, true);
+            }
+            // Not on screen yet; the protocol still wants an answer.
+            _ => {
+                if surface.is_initial_configure_sent() {
+                    surface.send_configure();
+                }
+            }
+        }
+    }
+
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        if let Some(window) = self.window_for_surface(surface.wl_surface()) {
+            self.set_maximised(&window, false);
+        }
+    }
+
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
         if let Err(err) = self.popups.track_popup(PopupKind::Xdg(surface)) {
             eprintln!("sengi-compositor: popup for a dead surface: {err}");
@@ -111,6 +176,12 @@ impl State {
             .iter()
             .position(|w| w.toplevel().is_some_and(|t| t.wl_surface() == surface))
         else {
+            // Already mapped: the client may have switched decoration mode.
+            if let Some(window) = self.window_for_surface(surface) {
+                let decorated = window::wants_server_decoration(&window);
+                window::data(&window).decorated.set(decorated);
+                self.apply_resize_anchor(&window);
+            }
             return;
         };
         let window = self.pending_windows[index].clone();
@@ -130,13 +201,26 @@ impl State {
         }
 
         self.pending_windows.remove(index);
-        let step = self
-            .tokens
-            .px("size.titlebar-height")
-            .expect("tokens define size.titlebar-height") as i32;
-        let location = layout::place(self.usable_area(), (size.w, size.h), self.placed, step);
+        let decorated = window::wants_server_decoration(&window);
+        window::data(&window).decorated.set(decorated);
+
+        // Place the whole frame, then put the client area inside it.
+        let metrics = self.theme.metrics;
+        let client = Rect::new(0, 0, size.w, size.h);
+        let outline = if decorated {
+            metrics.frame(client)
+        } else {
+            client
+        };
+        let (x, y) = layout::place(
+            self.usable_area(),
+            (outline.w, outline.h),
+            self.placed,
+            metrics.titlebar,
+        );
         self.placed += 1;
-        self.space.map_element(window.clone(), location, true);
+        self.space
+            .map_element(window.clone(), (x - outline.x, y - outline.y), true);
         self.focus_window(&window);
     }
 
@@ -170,5 +254,29 @@ impl State {
     }
 }
 
+impl XdgDecorationHandler for State {
+    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        // Ours unless the client insists on its own.
+        set_decoration_mode(&toplevel, Mode::ServerSide);
+    }
+
+    fn request_mode(&mut self, toplevel: ToplevelSurface, mode: Mode) {
+        set_decoration_mode(&toplevel, mode);
+    }
+
+    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
+        set_decoration_mode(&toplevel, Mode::ServerSide);
+    }
+}
+
+fn set_decoration_mode(toplevel: &ToplevelSurface, mode: Mode) {
+    toplevel.with_pending_state(|state| state.decoration_mode = Some(mode));
+    // Before the first configure the mode simply rides along with it.
+    if toplevel.is_initial_configure_sent() {
+        toplevel.send_pending_configure();
+    }
+}
+
+delegate_xdg_decoration!(State);
 delegate_compositor!(State);
 delegate_xdg_shell!(State);
