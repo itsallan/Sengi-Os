@@ -6,6 +6,19 @@
 //!                             given; the window must stay put
 //!     misbehave unmap         map a window, detach its buffer, then map it
 //!                             again; it must vanish cleanly and come back
+//!     misbehave locker [SEC]  lock the session with a red lock surface on
+//!                             every output, unlock after SEC (default 30)
+//!     misbehave steal-unlock  ask for the lock while someone holds it, then
+//!                             unlock with the refused lock object; the
+//!                             session must stay locked
+//!     misbehave fake-lock-surface
+//!                             the same, but put a green lock surface on
+//!                             the first output; it must never show or
+//!                             get the keyboard
+//!     misbehave spin          map a window, then commit with a frame
+//!                             callback and no damage as fast as callbacks
+//!                             come; prints callbacks per second, which
+//!                             must not exceed the refresh rate
 
 use std::{
     error::Error,
@@ -30,6 +43,10 @@ use wayland_protocols::xdg::shell::client::{
     xdg_toplevel::XdgToplevel,
     xdg_wm_base::{self, XdgWmBase},
 };
+
+#[path = "../tests/common/mod.rs"]
+mod client;
+use client::Client;
 
 const WIDTH: i32 = 300;
 const HEIGHT: i32 = 200;
@@ -137,10 +154,82 @@ fn run_for(
     Ok(())
 }
 
+/// The modes built on the shared test client.
+fn lock_modes(mode: &str) -> Result<bool, Box<dyn Error>> {
+    let mut client = Client::connect(None)?;
+    match mode {
+        "locker" => {
+            let hold = std::env::args()
+                .nth(2)
+                .and_then(|seconds| seconds.parse().ok())
+                .unwrap_or(30);
+            let lock = client.lock()?;
+            let mut surfaces = Vec::new();
+            for output in client.outputs() {
+                surfaces.push(client.lock_surface(&lock, &output, 0xffb0_2020)?);
+            }
+            let granted = client.wait(Duration::from_secs(5), |seen| seen.locked > 0);
+            println!("locker: granted {granted}, {} surfaces", surfaces.len());
+            client.wait(Duration::from_secs(hold), |_| false);
+            lock.unlock_and_destroy();
+            client.roundtrip()?;
+        }
+        "steal-unlock" => {
+            let lock = client.lock()?;
+            client.wait(Duration::from_secs(2), |seen| seen.finished > 0);
+            println!(
+                "steal-unlock: lock request refused {}",
+                client.seen.finished > 0 && client.seen.locked == 0
+            );
+            lock.unlock_and_destroy();
+            let answer = client.roundtrip();
+            println!("steal-unlock: unlock sent, compositor said {answer:?}");
+        }
+        "fake-lock-surface" => {
+            client.keyboard()?;
+            let lock = client.lock()?;
+            client.wait(Duration::from_secs(2), |seen| seen.finished > 0);
+            let output = client.outputs().into_iter().next().ok_or("no output")?;
+            let made = client.lock_surface(&lock, &output, 0xff20_b020);
+            println!("fake-lock-surface: surface {}", made.is_ok());
+            client.wait(Duration::from_secs(6), |_| false);
+            println!(
+                "fake-lock-surface: keyboard entered {} times, {} keys",
+                client.seen.keyboard_enters, client.seen.keys
+            );
+        }
+        "spin" => {
+            let (surface, _toplevel) = client.window(0xff3a_77d9)?;
+            client.wait(Duration::from_millis(500), |_| false);
+            let start = Instant::now();
+            let before = client.seen.frames;
+            let mut commits = 0u32;
+            while start.elapsed() < Duration::from_secs(3) {
+                let seen = client.seen.frames;
+                surface.frame(&client.handle, ());
+                surface.commit();
+                commits += 1;
+                while client.seen.frames == seen && start.elapsed() < Duration::from_secs(3) {
+                    client.queue.blocking_dispatch(&mut client.seen)?;
+                }
+            }
+            let rate = f64::from(client.seen.frames - before) / start.elapsed().as_secs_f64();
+            println!("spin: {commits} empty commits, {rate:.0} frame callbacks a second");
+        }
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let mode = std::env::args().nth(1).unwrap_or_default();
+    if lock_modes(&mode)? {
+        return Ok(());
+    }
     if mode != "forged-move" && mode != "unmap" {
-        return Err("usage: misbehave forged-move|unmap".into());
+        return Err(
+            "usage: misbehave forged-move|unmap|locker|steal-unlock|fake-lock-surface|spin".into(),
+        );
     }
 
     let connection = Connection::connect_to_env()?;

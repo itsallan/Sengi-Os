@@ -45,7 +45,7 @@ smithay = { version = "0.7", default-features = false, features = [
 # For examples/misbehave.rs, a client that tests how the compositor copes
 # with requests it should refuse.
 wayland-client = "0.31"
-wayland-protocols = { version = "0.32", features = ["client"] }
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 
 [profile.release]
 opt-level = "s"
