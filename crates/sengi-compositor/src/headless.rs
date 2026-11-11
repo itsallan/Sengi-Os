@@ -41,7 +41,7 @@ use smithay::{
 use crate::{
     png, render,
     script::{self, Action, Step},
-    state::State,
+    state::{State, REFRESH_MHZ},
     Options,
 };
 
@@ -76,6 +76,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         "HEADLESS-1",
         "Headless",
         (width, height).into(),
+        REFRESH_MHZ,
         Transform::Normal,
     );
 
@@ -264,7 +265,7 @@ impl Headless {
     }
 }
 
-fn save(
+pub fn save(
     renderer: &mut PixmanRenderer,
     target: &PixmanTarget<'_>,
     size: Size<i32, Buffer>,

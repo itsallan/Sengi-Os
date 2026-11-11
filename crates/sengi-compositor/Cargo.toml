@@ -10,9 +10,17 @@ publish = false
 [workspace]
 
 [features]
-default = ["winit"]
+default = ["winit", "drm"]
 # Runs the compositor in a window for development. Pulls in winit and GLES.
 winit = ["smithay/backend_winit"]
+# Runs the compositor on a real screen: libseat, udev, DRM/KMS and libinput.
+drm = [
+    "smithay/backend_drm",
+    "smithay/backend_gbm",
+    "smithay/backend_udev",
+    "smithay/backend_libinput",
+    "smithay/backend_session_libseat",
+]
 
 [dependencies]
 # Rasterises the title bar text.

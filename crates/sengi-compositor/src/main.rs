@@ -5,8 +5,10 @@
 mod cli;
 mod cursor;
 mod decoration;
-#[cfg(feature = "winit")]
+#[cfg(any(feature = "winit", feature = "drm"))]
 mod device_input;
+#[cfg(feature = "drm")]
+mod drm;
 mod foreign_toplevel;
 mod frame;
 mod headless;
@@ -51,7 +53,16 @@ fn main() -> ExitCode {
     let has_display = ["WAYLAND_DISPLAY", "DISPLAY"]
         .iter()
         .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()));
-    let result = match options.resolve_backend(has_display) {
+    // greetd and a login on a console both give the session a terminal.
+    let on_terminal = ["XDG_VTNR", "XDG_SEAT"]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()));
+    let on_terminal = on_terminal && cfg!(feature = "drm");
+    let result = match options.resolve_backend(has_display, on_terminal) {
+        #[cfg(feature = "drm")]
+        Backend::Drm => drm::run(options),
+        #[cfg(not(feature = "drm"))]
+        Backend::Drm => Err("this build has no drm backend".into()),
         #[cfg(feature = "winit")]
         Backend::Winit => winit::run(options),
         #[cfg(not(feature = "winit"))]

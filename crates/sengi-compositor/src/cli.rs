@@ -6,10 +6,11 @@ pub const USAGE: &str = "\
 Usage: sengi-compositor [options]
 
   -s, --startup CMD     run CMD with sh once the compositor is ready
-      --backend NAME    headless, winit or auto (default auto: a window when
-                        started from a desktop session, headless otherwise)
+      --backend NAME    headless, winit, drm or auto (default auto: a window
+                        when started from a desktop session, the screen when
+                        started on a terminal, headless otherwise)
       --size WxH        output size in pixels (default 1280x720)
-      --screenshot PNG  save the last frame to PNG on exit (headless only)
+      --screenshot PNG  save the last frame to PNG on exit (headless, drm)
       --exit-after SEC  stop after SEC seconds
       --script FILE     play scripted input and screenshots (headless only)
       --locker CMD      what Super+L runs to lock (default: swaylock -f)
@@ -22,6 +23,7 @@ pub enum Backend {
     Auto,
     Headless,
     Winit,
+    Drm,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,20 +38,17 @@ pub struct Options {
 }
 
 impl Options {
-    /// The option given that only the headless backend supports, if any.
-    fn headless_only(&self) -> Option<&'static str> {
-        match (&self.screenshot, &self.script) {
-            (Some(_), _) => Some("--screenshot"),
-            (_, Some(_)) => Some("--script"),
-            _ => None,
-        }
-    }
-
     /// Settles `Auto`. `has_display` says whether we were started from
-    /// inside a desktop session that a window could be opened on.
-    pub fn resolve_backend(&self, has_display: bool) -> Backend {
+    /// inside a desktop session that a window could be opened on,
+    /// `on_terminal` whether we were started on a virtual terminal with a
+    /// build that can drive a screen.
+    pub fn resolve_backend(&self, has_display: bool, on_terminal: bool) -> Backend {
         match self.backend {
-            Backend::Auto if self.headless_only().is_none() && has_display => Backend::Winit,
+            Backend::Auto if self.script.is_some() || self.screenshot.is_some() => {
+                Backend::Headless
+            }
+            Backend::Auto if has_display => Backend::Winit,
+            Backend::Auto if on_terminal => Backend::Drm,
             Backend::Auto => Backend::Headless,
             chosen => chosen,
         }
@@ -95,6 +94,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
                     "auto" => Backend::Auto,
                     "headless" => Backend::Headless,
                     "winit" => Backend::Winit,
+                    "drm" => Backend::Drm,
                     other => return Err(format!("unknown backend: {other}")),
                 }
             }
@@ -120,8 +120,15 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
     if options.screenshot.is_some() && options.exit_after.is_none() {
         return Err("--screenshot needs --exit-after".into());
     }
-    if let (Some(option), Backend::Winit) = (options.headless_only(), options.backend) {
-        return Err(format!("{option} only works with the headless backend"));
+    // Winit draws into someone else's window and has no script player;
+    // the drm backend can save what it drew but takes input from devices.
+    let unsupported = match options.backend {
+        Backend::Winit if options.screenshot.is_some() => Some("--screenshot"),
+        Backend::Winit | Backend::Drm if options.script.is_some() => Some("--script"),
+        _ => None,
+    };
+    if let Some(option) = unsupported {
+        return Err(format!("{option} does not work with that backend"));
     }
     Ok(Command::Run(options))
 }
@@ -202,12 +209,26 @@ mod tests {
         assert!(run(&["--exit-after", "-1"]).is_err());
         assert!(run(&["--exit-after", "1e30"]).is_err());
         assert!(run(&["--frobnicate"]).is_err());
-        assert!(run(&["--backend", "drm"]).is_err());
+        assert!(run(&["--backend", "x11"]).is_err());
     }
 
     #[test]
     fn screenshot_needs_an_exit_time() {
         assert!(run(&["--screenshot", "out.png"]).is_err());
+    }
+
+    #[test]
+    fn the_drm_backend_takes_a_screenshot_but_no_script() {
+        let shot = [
+            "--backend",
+            "drm",
+            "--screenshot",
+            "a.png",
+            "--exit-after",
+            "1",
+        ];
+        assert!(run(&shot).is_ok());
+        assert!(run(&["--backend", "drm", "--script", "steps.txt"]).is_err());
     }
 
     #[test]
@@ -224,20 +245,25 @@ mod tests {
     }
 
     #[test]
-    fn auto_picks_a_window_only_inside_a_session() {
+    fn auto_picks_the_backend_from_where_it_was_started() {
         let mut options = Options::default();
-        assert_eq!(options.resolve_backend(true), Backend::Winit);
-        assert_eq!(options.resolve_backend(false), Backend::Headless);
+        assert_eq!(options.resolve_backend(true, false), Backend::Winit);
+        assert_eq!(options.resolve_backend(false, true), Backend::Drm);
+        // A terminal inside a desktop session is still that session.
+        assert_eq!(options.resolve_backend(true, true), Backend::Winit);
+        assert_eq!(options.resolve_backend(false, false), Backend::Headless);
 
         options.screenshot = Some("a.png".into());
-        assert_eq!(options.resolve_backend(true), Backend::Headless);
+        assert_eq!(options.resolve_backend(true, true), Backend::Headless);
 
         options.screenshot = None;
         options.script = Some("steps.txt".into());
-        assert_eq!(options.resolve_backend(true), Backend::Headless);
+        assert_eq!(options.resolve_backend(true, true), Backend::Headless);
 
         options.backend = Backend::Winit;
         options.script = None;
-        assert_eq!(options.resolve_backend(false), Backend::Winit);
+        assert_eq!(options.resolve_backend(false, false), Backend::Winit);
+        options.backend = Backend::Drm;
+        assert_eq!(options.resolve_backend(true, false), Backend::Drm);
     }
 }

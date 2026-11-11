@@ -365,6 +365,7 @@ impl State {
         name: &str,
         model: &str,
         size: Size<i32, Physical>,
+        refresh_mhz: i32,
         transform: Transform,
     ) -> Output {
         let output = Output::new(
@@ -380,7 +381,7 @@ impl State {
         let _global = output.create_global::<Self>(&self.display_handle);
         let mode = OutputMode {
             size,
-            refresh: REFRESH_MHZ,
+            refresh: refresh_mhz,
         };
         output.change_current_state(Some(mode), Some(transform), None, Some((0, 0).into()));
         output.set_preferred(mode);

@@ -23,7 +23,11 @@ use smithay::{
     utils::Transform,
 };
 
-use crate::{render, state::State, Options};
+use crate::{
+    render,
+    state::{State, REFRESH_MHZ},
+    Options,
+};
 
 pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
     let mut event_loop: EventLoop<State> = EventLoop::try_new()?;
@@ -44,6 +48,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         "WINIT-1",
         "Window",
         backend.window_size(),
+        REFRESH_MHZ,
         Transform::Flipped180,
     );
     let mut damage = OutputDamageTracker::from_output(&output);
