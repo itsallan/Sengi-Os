@@ -58,6 +58,7 @@ const NAMED_KEYS: &[(&str, u32)] = &[
     ("shift", KEY_LEFTSHIFT),
     ("alt", 56),
     ("space", 57),
+    ("f4", 62),
     ("up", 103),
     ("left", 105),
     ("right", 106),
@@ -183,6 +184,14 @@ pub fn parse(text: &str) -> Result<Vec<Step>, String> {
                     });
                 }
             }
+            // One half of a key press, to hold a modifier across other steps.
+            "keydown" | "keyup" => {
+                let code = key_by_name(argument.trim()).ok_or_else(|| err("unknown key"))?;
+                push(Action::Key {
+                    code,
+                    pressed: command == "keydown",
+                });
+            }
             "type" => {
                 for c in argument.chars() {
                     let (code, shift) =
@@ -298,6 +307,15 @@ mod tests {
             ]
         );
         assert_eq!(actions("0 key Enter"), vec![key(28, true), key(28, false)]);
+    }
+
+    #[test]
+    fn a_key_can_be_held_across_steps() {
+        assert_eq!(
+            actions("10 keydown super\n20 keyup super"),
+            vec![key(125, true), key(125, false)]
+        );
+        assert!(parse("10 keydown nosuchkey").is_err());
     }
 
     #[test]

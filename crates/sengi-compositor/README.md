@@ -145,7 +145,8 @@ file: one step per line, the time in milliseconds since start, then a command.
 
 `move` takes output pixels. `press`, `release` and `click` take `left`,
 `right` or `middle`. `type` and `key` assume the US layout; `key` takes a
-key name or a chord. Lines starting with `#` are comments. Steps go through
+key name or a chord, `keydown` and `keyup` one key, to hold a modifier
+while the pointer does something. Lines starting with `#` are comments. Steps go through
 the same code as real input. Leave time between a step and the screenshot
 that should show its effect; clients answer asynchronously.
 
