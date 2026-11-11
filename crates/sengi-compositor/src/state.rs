@@ -29,7 +29,10 @@ use smithay::{
             },
             SelectionHandler,
         },
-        shell::{wlr_layer::WlrLayerShellState, xdg::XdgShellState},
+        shell::{
+            wlr_layer::{KeyboardInteractivity, Layer, WlrLayerShellState},
+            xdg::XdgShellState,
+        },
         shm::{ShmHandler, ShmState},
         socket::ListeningSocketSource,
     },
@@ -55,6 +58,8 @@ pub struct State {
     /// placed and mapped once their size is known.
     pub pending_windows: Vec<Window>,
     pub focus_stack: FocusStack<Window>,
+    /// A layer surface with on-demand keyboard focus that was clicked.
+    pub layer_focus: Option<WlSurface>,
     /// Counts mapped windows so new ones cascade.
     pub placed: usize,
 
@@ -120,6 +125,7 @@ impl State {
             popups: PopupManager::default(),
             pending_windows: Vec::new(),
             focus_stack: FocusStack::default(),
+            layer_focus: None,
             placed: 0,
             compositor_state,
             xdg_shell_state,
@@ -217,8 +223,9 @@ impl State {
         self.space.raise_element(window, true);
         set_activated(window, true);
 
-        let surface = window.toplevel().map(|t| t.wl_surface().clone());
-        self.set_keyboard_focus(surface);
+        // Choosing a window takes the keyboard back from an on-demand layer.
+        self.layer_focus = None;
+        self.update_keyboard_focus();
     }
 
     /// Forgets `window` and hands focus to the one used before it.
@@ -230,13 +237,44 @@ impl State {
         }
         match self.focus_stack.current().cloned() {
             Some(next) => self.focus_window(&next),
-            None => self.set_keyboard_focus(None),
+            None => self.update_keyboard_focus(),
         }
     }
 
-    fn set_keyboard_focus(&mut self, surface: Option<WlSurface>) {
+    /// Gives the keyboard to whoever should have it now: a layer surface
+    /// that demands it (the launcher), else a layer surface the user clicked,
+    /// else the focused window.
+    pub fn update_keyboard_focus(&mut self) {
+        if self.layer_focus.as_ref().is_some_and(|s| !s.is_alive()) {
+            self.layer_focus = None;
+        }
+        let target = self
+            .exclusive_layer()
+            .or_else(|| self.layer_focus.clone())
+            .or_else(|| {
+                let toplevel = self.focus_stack.current()?.toplevel()?;
+                Some(toplevel.wl_surface().clone())
+            });
+
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
-        keyboard.set_focus(self, surface, SERIAL_COUNTER.next_serial());
+        if keyboard.current_focus() != target {
+            keyboard.set_focus(self, target, SERIAL_COUNTER.next_serial());
+        }
+    }
+
+    /// The front-most layer surface asking for exclusive keyboard focus.
+    /// Only the layers above windows may do that.
+    fn exclusive_layer(&self) -> Option<WlSurface> {
+        let output = self.output()?;
+        let map = layer_map_for_output(&output);
+        [Layer::Overlay, Layer::Top].into_iter().find_map(|kind| {
+            map.layers_on(kind)
+                .rev()
+                .find(|layer| {
+                    layer.cached_state().keyboard_interactivity == KeyboardInteractivity::Exclusive
+                })
+                .map(|layer| layer.wl_surface().clone())
+        })
     }
 }
 

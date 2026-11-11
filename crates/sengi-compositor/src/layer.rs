@@ -53,6 +53,8 @@ impl WlrLayerShellHandler for State {
                 map.unmap_layer(&layer);
             }
         }
+        // The launcher closing hands the keyboard back to the window.
+        self.update_keyboard_focus();
     }
 }
 
@@ -60,15 +62,11 @@ impl State {
     /// Re-arranges the layers of the output `surface` sits on and answers the
     /// surface's first commit with a configure.
     pub fn layer_commit(&mut self, surface: &WlSurface) {
-        for output in self.space.outputs() {
-            let mut map = layer_map_for_output(output);
-            let Some(layer) = map
-                .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
-                .cloned()
-            else {
-                continue;
-            };
-
+        let Some(output) = self.output_for_layer(surface) else {
+            return;
+        };
+        {
+            let mut map = layer_map_for_output(&output);
             // Anchors, size and exclusive zone are double-buffered, so the
             // usable area can change on any commit.
             map.arrange();
@@ -80,10 +78,24 @@ impl State {
                     .is_some_and(|data| data.lock().unwrap().initial_configure_sent)
             });
             if !configured {
-                layer.layer_surface().send_configure();
+                if let Some(layer) = map.layer_for_surface(surface, WindowSurfaceType::TOPLEVEL) {
+                    layer.layer_surface().send_configure();
+                }
             }
-            return;
         }
+        // Keyboard interactivity is double-buffered too.
+        self.update_keyboard_focus();
+    }
+
+    fn output_for_layer(&self, surface: &WlSurface) -> Option<Output> {
+        self.space
+            .outputs()
+            .find(|output| {
+                layer_map_for_output(output)
+                    .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
+                    .is_some()
+            })
+            .cloned()
     }
 }
 

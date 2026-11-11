@@ -106,11 +106,12 @@ impl State {
     }
 
     fn click_to_focus(&mut self, location: Point<f64, Logical>) {
-        // A click on the bar or dock must not steal focus from the window.
-        if self
-            .layer_surface_under(location, &[Layer::Overlay, Layer::Top])
-            .is_some()
+        // A click on the bar or dock must not steal focus from the window,
+        // unless the surface says it takes keyboard input.
+        if let Some((surface, _)) =
+            self.layer_surface_under(location, &[Layer::Overlay, Layer::Top])
         {
+            self.click_layer(surface);
             return;
         }
         let window = self
@@ -119,6 +120,23 @@ impl State {
             .map(|(window, _)| window.clone());
         if let Some(window) = window {
             self.focus_window(&window);
+            return;
+        }
+        if let Some((surface, _)) =
+            self.layer_surface_under(location, &[Layer::Bottom, Layer::Background])
+        {
+            self.click_layer(surface);
+        }
+    }
+
+    fn click_layer(&mut self, surface: WlSurface) {
+        let Some(output) = self.output() else { return };
+        let wants_keyboard = layer_map_for_output(&output)
+            .layer_for_surface(&surface, WindowSurfaceType::ALL)
+            .is_some_and(|layer| layer.can_receive_keyboard_focus());
+        if wants_keyboard {
+            self.layer_focus = Some(surface);
+            self.update_keyboard_focus();
         }
     }
 
