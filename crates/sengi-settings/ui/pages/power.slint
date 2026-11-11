@@ -1,0 +1,108 @@
+// The Power page: the battery, what happens when the computer is left
+// alone, and what the power button and the lid do.
+
+import { Tokens, SengiToggle } from "components.slint";
+import { InfoRow, InfoCard, Page, PageColumn, Card, Divider, SettingRow, SectionLabel, Note, Gap, Metrics, ChoiceButton } from "../kit.slint";
+
+export global PowerData {
+    in property <bool> has-battery: false;
+    in property <[InfoRow]> battery;
+    in property <string> blank;
+    in property <string> lock;
+    in property <bool> lock-on-sleep: true;
+    // Said under the idle settings when a change could not reach the
+    // running session.
+    in property <string> idle-note;
+    in property <[InfoRow]> buttons;
+
+    // "blank-after" or "lock-after".
+    callback choose(string);
+    callback set-lock-on-sleep(bool);
+}
+
+export component PowerPage inherits Page {
+    title: "Power";
+    content-height: column.preferred-height;
+
+    column := PageColumn {
+        SectionLabel {
+            text: "Battery";
+        }
+
+        if !PowerData.has-battery: Card {
+            SettingRow {
+                title: "This computer has no battery";
+                enabled: false;
+            }
+        }
+
+        if PowerData.has-battery: InfoCard {
+            rows: PowerData.battery;
+        }
+
+        Gap { }
+
+        SectionLabel {
+            text: "When the computer is left alone";
+        }
+
+        Card {
+            SettingRow {
+                title: "Switch the screen off";
+                VerticalLayout {
+                    alignment: center;
+                    ChoiceButton {
+                        width: Metrics.control;
+                        text: PowerData.blank;
+                        clicked => { PowerData.choose("blank-after"); }
+                    }
+                }
+            }
+
+            Divider { }
+
+            SettingRow {
+                title: "Lock the screen";
+                VerticalLayout {
+                    alignment: center;
+                    ChoiceButton {
+                        width: Metrics.control;
+                        text: PowerData.lock;
+                        clicked => { PowerData.choose("lock-after"); }
+                    }
+                }
+            }
+
+            Divider { }
+
+            SettingRow {
+                title: "Lock when the computer goes to sleep";
+                VerticalLayout {
+                    alignment: center;
+                    SengiToggle {
+                        checked: PowerData.lock-on-sleep;
+                        toggled(on) => { PowerData.set-lock-on-sleep(on); }
+                    }
+                }
+            }
+        }
+
+        if PowerData.idle-note != "": Note {
+            text: PowerData.idle-note;
+        }
+
+        Gap { }
+
+        SectionLabel {
+            text: "Buttons";
+        }
+
+        InfoCard {
+            rows: PowerData.buttons;
+        }
+
+        Note {
+            text: "The power button and the lid are set for the whole computer, in /etc/systemd/logind.conf (HandlePowerKey, HandleLidSwitch). Changing them needs an administrator.";
+        }
+    }
+}

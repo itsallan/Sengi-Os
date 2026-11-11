@@ -15,6 +15,8 @@ pub mod display;
 pub mod held;
 pub mod instance;
 pub mod network;
+pub mod power;
+pub mod screen;
 pub mod secret;
 pub mod services;
 pub mod settings;

@@ -5,6 +5,7 @@ pub const USAGE: &str = "\
 Usage: sengi-settings [PAGE]
        sengi-settings --get SECTION.KEY
        sengi-settings --apply
+       sengi-settings --screen off|on
 
 Open Sengi OS Settings, at PAGE if one is named. If Settings is already
 open, that window is brought to the page instead.
@@ -14,6 +15,7 @@ Pages: network, bluetooth, sound, display, power, date-time, keyboard,
 
   --get SECTION.KEY  print the setting in effect, for scripts
   --apply            write the files other programs read from the settings
+  --screen off|on    switch every display off, or back on
   -h, --help         show this help
   -V, --version      show the version
 ";
@@ -108,6 +110,8 @@ pub enum Action {
     },
     /// Write the derived files and exit.
     Apply,
+    /// Switch the displays on or off and exit.
+    Screen(bool),
     /// Open the window over made-up services. Debug builds only, and not
     /// in the usage text.
     #[cfg(debug_assertions)]
@@ -123,6 +127,11 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Action, String> {
         Some("-h" | "--help") => Action::Help,
         Some("-V" | "--version") => Action::Version,
         Some("--apply") => Action::Apply,
+        Some("--screen") => match args.next().as_deref() {
+            Some("on") => Action::Screen(true),
+            Some("off") => Action::Screen(false),
+            _ => return Err("--screen takes on or off".to_string()),
+        },
         Some("--get") => {
             let name = args.next().ok_or("--get needs SECTION.KEY")?;
             let (section, key) = name
@@ -181,6 +190,10 @@ mod tests {
         assert_eq!(parsed(&["--help"]), Ok(Action::Help));
         assert_eq!(parsed(&["-V"]), Ok(Action::Version));
         assert_eq!(parsed(&["--apply"]), Ok(Action::Apply));
+        assert_eq!(parsed(&["--screen", "off"]), Ok(Action::Screen(false)));
+        assert_eq!(parsed(&["--screen", "on"]), Ok(Action::Screen(true)));
+        assert!(parsed(&["--screen"]).is_err());
+        assert!(parsed(&["--screen", "dim"]).is_err());
         assert_eq!(
             parsed(&["--get", "power.lock-after"]),
             Ok(Action::Get {

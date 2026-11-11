@@ -15,6 +15,9 @@ pub struct Services {
     pub bluetooth: Arc<dyn BluetoothService>,
     pub sound: Arc<dyn AudioService>,
     pub display: Arc<dyn DisplayService>,
+    /// For the pages that only read a few properties off the bus.
+    pub bus: Arc<Bus>,
+    pub class: PathBuf,
 }
 
 /// Names a directory to read in place of `/sys/class`, in debug builds
@@ -42,7 +45,9 @@ pub fn real() -> Services {
     Services {
         network: Arc::new(network::iwd::Iwd::new(bus.clone(), class.clone())),
         bluetooth: Arc::new(bluetooth::bluez::Bluez::new(bus.clone(), class.clone())),
-        display: Arc::new(display::wlr::Wlr::new(bus, class)),
+        display: Arc::new(display::wlr::Wlr::new(bus.clone(), class.clone())),
+        bus,
+        class,
         sound: Arc::new(sound::wpctl::Wpctl::default()),
     }
 }

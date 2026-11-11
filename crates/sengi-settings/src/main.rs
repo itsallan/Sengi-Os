@@ -17,6 +17,7 @@ use sengi_settings::cli::{self, Action, Page};
 use sengi_settings::display::page::DisplayPage;
 use sengi_settings::instance::{self, Claim};
 use sengi_settings::network::page::NetworkPage;
+use sengi_settings::power::PowerPage;
 use sengi_settings::services::{self, Services};
 use sengi_settings::settings::Settings;
 use sengi_settings::sound::page::SoundPage;
@@ -71,6 +72,15 @@ fn main() -> ExitCode {
                 None => {
                     eprintln!("sengi-settings: no setting called {section}.{key}");
                     ExitCode::from(2)
+                }
+            };
+        }
+        Action::Screen(on) => {
+            return match sengi_settings::screen::switch(on) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(problem) => {
+                    eprintln!("sengi-settings: {problem}");
+                    ExitCode::FAILURE
                 }
             };
         }
@@ -195,4 +205,8 @@ fn register_pages(app: &std::rc::Rc<App>, services: Services) {
     );
     app.register(Page::Sound, SoundPage::attach(app, services.sound));
     app.register(Page::Display, DisplayPage::attach(app, services.display));
+    app.register(
+        Page::Power,
+        PowerPage::attach(app, services.bus.clone(), services.class.clone()),
+    );
 }

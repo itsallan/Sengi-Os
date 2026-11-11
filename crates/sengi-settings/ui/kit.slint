@@ -397,6 +397,31 @@ export component RowValue inherits SengiText {
     overflow: elide;
 }
 
+// A fact: what it is and what it is.
+export struct InfoRow {
+    title: string,
+    value: string,
+}
+
+// A card of facts, one to a row.
+export component InfoCard inherits Card {
+    in property <[InfoRow]> rows;
+
+    for fact[index] in root.rows: VerticalLayout {
+        if index > 0: Divider { }
+
+        SettingRow {
+            title: fact.title;
+            RowValue {
+                horizontal-stretch: 2;
+                text: fact.value;
+                wrap: word-wrap;
+                overflow: clip;
+            }
+        }
+    }
+}
+
 // A few lines of explanation in a card of their own.
 export component Note inherits SengiSurface {
     in property <string> text;

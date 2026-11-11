@@ -139,7 +139,7 @@ export component NamedIcon inherits Rectangle {
     }
 
     if root.name == "battery": BatteryIcon {
-        percent: root.level;
+        percent: root.level <= 4 ? root.level * 25 : root.level;
         ink: root.ink;
     }
 

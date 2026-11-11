@@ -4,13 +4,14 @@
 
 import { Tokens, SengiText } from "components.slint";
 import { NamedIcon } from "icons.slint";
-import { Metrics, Nudge, Item, DialogSpec, DialogLayer, ChooserLayer } from "kit.slint";
+import { Metrics, Nudge, Item, InfoRow, DialogSpec, DialogLayer, ChooserLayer } from "kit.slint";
 import { NetworkData, NetworkPage } from "pages/network.slint";
 import { BluetoothData, BluetoothPage } from "pages/bluetooth.slint";
 import { SoundData, SoundSide, SoundPage } from "pages/sound.slint";
 import { DisplayData, DisplayOutput, DisplayPage } from "pages/display.slint";
+import { PowerData, PowerPage } from "pages/power.slint";
 
-export { Item, DialogSpec, NetworkData, BluetoothData, SoundData, SoundSide, DisplayData, DisplayOutput }
+export { Item, InfoRow, DialogSpec, PowerData, NetworkData, BluetoothData, SoundData, SoundSide, DisplayData, DisplayOutput }
 
 export struct PageEntry {
     name: string,
@@ -185,6 +186,7 @@ export component SettingsWindow inherits Window {
         if root.page == "bluetooth": BluetoothPage { }
         if root.page == "sound": SoundPage { }
         if root.page == "display": DisplayPage { }
+        if root.page == "power": PowerPage { }
     }
 
     if ChooserState.open: ChooserLayer {

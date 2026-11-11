@@ -184,6 +184,27 @@ Not done: arranging several displays, mirroring, rotation, switching an
 output off, saving the layout across sessions (labwc keeps what it is
 given only until it exits; a kept mode is not written to a file yet).
 
+### Power
+
+- The battery from `/sys/class/power_supply`: charge, state and time
+  left, health (what it holds now against what it held new), draw, cycle
+  count and type. Read when the page opens and every 30 seconds while it
+  is showing, not otherwise.
+- When to switch the screen off and when to lock it, and whether to lock
+  on sleep: `power.blank-after`, `power.lock-after`,
+  `power.lock-on-sleep`. The session's start-up script reads them with
+  `--get` and starts `swayidle` accordingly; `sengi-settings --screen
+  off|on` is the command that switches the displays, through
+  `wlr-output-power-management`. A running `swayidle` cannot be given new
+  times, so after a change Settings ends the session's one, which the
+  session starts again, but only one whose environment carries
+  `SENGI_IDLE_SUPERVISED=1`: ending one that nobody restarts would leave
+  the session never locking. Without the mark the page says the change
+  applies at the next login.
+- The power button and the lid are logind's (`HandlePowerKey`,
+  `HandleLidSwitch`), the same for every user and changed only as root.
+  They are shown, read from logind, with where to change them.
+
 ## Building and testing
 
     cargo build -p sengi-settings
