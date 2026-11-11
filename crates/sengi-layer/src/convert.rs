@@ -49,6 +49,10 @@ pub(crate) fn pointer_button(code: u32) -> Option<PointerEventButton> {
 /// Wayland counts scrolling down and right as positive, Slint counts it as
 /// negative. A wheel reports whole notches in `discrete`; a touchpad
 /// reports only a distance in `absolute`.
+///
+/// smithay-client-toolkit 0.19 binds wl_seat at version 7 at most, where
+/// `discrete` counts notches. From version 8 the protocol sends 120ths of
+/// a notch instead; if a later toolkit passes those through here, divide.
 pub(crate) fn scroll_delta(absolute: f64, discrete: i32) -> f32 {
     if discrete != 0 {
         -(discrete as f32) * WHEEL_NOTCH

@@ -218,38 +218,41 @@ fn run(seconds: u64) -> Result<Seen, sengi_layer::Error> {
     let status = Timer::default();
     let started = Instant::now();
     let for_build = seen.clone();
-    app.run(Config::new("sengi-layer-soak").layer(Layer::Top), move |context| {
-        let soak = Soak::new()?;
-        let surface = context.surface();
-        let sizes = [pixels(soak.get_narrow()), pixels(soak.get_wide())];
-        let height = pixels(soak.get_surface_height());
-        surface.set_size(sizes[0], height)?;
+    app.run(
+        Config::new("sengi-layer-soak").layer(Layer::Top),
+        move |context| {
+            let soak = Soak::new()?;
+            let surface = context.surface();
+            let sizes = [pixels(soak.get_narrow()), pixels(soak.get_wide())];
+            let height = pixels(soak.get_surface_height());
+            surface.set_size(sizes[0], height)?;
 
-        let seen = for_build.clone();
-        resizer.start(TimerMode::Repeated, Duration::from_millis(250), move || {
-            let mut seen = seen.borrow_mut();
-            seen.resizes += 1;
-            let _ = surface.set_size(sizes[(seen.resizes % 2) as usize], height);
-        });
+            let seen = for_build.clone();
+            resizer.start(TimerMode::Repeated, Duration::from_millis(250), move || {
+                let mut seen = seen.borrow_mut();
+                seen.resizes += 1;
+                let _ = surface.set_size(sizes[(seen.resizes % 2) as usize], height);
+            });
 
-        let seen = for_build.clone();
-        let weak = soak.as_weak();
-        status.start(TimerMode::Repeated, Duration::from_millis(500), move || {
-            if let Some(soak) = weak.upgrade() {
-                let seen = seen.borrow();
-                soak.set_status(
-                    format!(
-                        "{} s, {} round trips, {} resizes",
-                        started.elapsed().as_secs(),
-                        seen.round_trips,
-                        seen.resizes
-                    )
-                    .into(),
-                );
-            }
-        });
-        Ok(soak)
-    })?;
+            let seen = for_build.clone();
+            let weak = soak.as_weak();
+            status.start(TimerMode::Repeated, Duration::from_millis(500), move || {
+                if let Some(soak) = weak.upgrade() {
+                    let seen = seen.borrow();
+                    soak.set_status(
+                        format!(
+                            "{} s, {} round trips, {} resizes",
+                            started.elapsed().as_secs(),
+                            seen.round_trips,
+                            seen.resizes
+                        )
+                        .into(),
+                    );
+                }
+            });
+            Ok(soak)
+        },
+    )?;
 
     drop(ticker);
     drop(stop);

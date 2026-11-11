@@ -38,7 +38,16 @@
 //!     sengi_layer::run(config, |context| {
 //!         let prompt = Prompt::new()?;
 //!         let handle = context.handle();
-//!         prompt.on_dismissed(move || handle.quit());
+//!         prompt.on_dismissed({
+//!             let handle = handle.clone();
+//!             move || handle.quit()
+//!         });
+//!         // Go away when the user turns to something else.
+//!         context.surface().on_focus_changed(move |focused| {
+//!             if !focused {
+//!                 handle.quit();
+//!             }
+//!         });
 //!         Ok(prompt)
 //!     })
 //! }
@@ -53,10 +62,13 @@
 //!   and runs the loop until [`Handle::quit`]. [`App`] is the same in two
 //!   steps, for programs that need the [`Handle`] before the loop starts,
 //!   for example to open a channel for a worker thread.
-//! * [`Handle`] changes the surface while it runs: resize, hide and show,
-//!   keyboard mode, quit. It also opens channels into the loop and hands
-//!   out the Wayland [`Connection`](wayland_client::Connection) for
-//!   protocols this crate does not speak.
+//! * [`Handle`] changes the surfaces while they run: size, anchor, layer,
+//!   margins, input region, keyboard mode, hide and show, quit. It also
+//!   opens channels into the loop and hands out the Wayland
+//!   [`Connection`](wayland_client::Connection) for protocols this crate
+//!   does not speak.
+//! * [`SurfaceHandle`] does the same for one instance's surface, and tells
+//!   the app about its output and its keyboard focus.
 //! * [`Instances`] keeps track of every live copy of the component, which
 //!   matters once there is one per output.
 //!
@@ -67,6 +79,20 @@
 //!
 //! Only one [`App`] can exist in a process, because Slint takes one platform
 //! per process.
+//!
+//! # Things to know
+//!
+//! * Never call `show()`, `hide()` or `run()` on the component. The loop
+//!   shows it, and Slint treats hiding the last window as a request to quit
+//!   the program. Use [`Handle::hide`] or [`SurfaceHandle::hide`].
+//! * A layer surface is never told about clicks outside itself. A launcher
+//!   that should close on a click elsewhere needs a surface that covers the
+//!   output, anchored to all four edges with size `(0, 0)`, drawing its box
+//!   in the middle and handling the click around it in its own UI. Closing
+//!   when the keyboard goes elsewhere is [`SurfaceHandle::on_focus_changed`].
+//! * Sizes can come from the component: read them in the build closure and
+//!   call [`SurfaceHandle::set_size`] on [`Context::surface`] before
+//!   returning. The surface is created after the closure returns.
 
 mod backend;
 mod config;
@@ -161,7 +187,8 @@ fn wayland(what: &str, error: impl fmt::Display) -> Error {
 /// `build` is called after the Slint platform is installed, so it is the
 /// place to create the component and wire up its callbacks. With
 /// [`Outputs::All`] it is called once for every output. The component it
-/// returns is shown and kept alive by the loop.
+/// returns is shown and kept alive by the loop; do not call `show()`,
+/// `hide()` or `run()` on it yourself.
 ///
 /// This is [`App::new`] followed by [`App::run`].
 pub fn run<C, F>(config: Config, build: F) -> Result<(), Error>
@@ -538,13 +565,27 @@ impl Handle {
         Ok(Sender(sender))
     }
 
-    /// The Wayland connection, for protocols this crate does not handle.
+    /// The Wayland connection, for protocols this crate does not handle,
+    /// such as wlr-foreign-toplevel-management.
     ///
-    /// Create your own event queue on it (`connection.new_event_queue()`),
-    /// bind what you need from your own registry, and dispatch that queue
-    /// on a thread of your own with `blocking_dispatch`. Pass what you
-    /// learn to the UI through [`Handle::channel`]. Do not dispatch on the
-    /// UI thread: the loop would not see the events.
+    /// Use it from a thread of your own, with an event queue of your own:
+    /// `connection.new_event_queue()`, a registry on that queue, and a loop
+    /// around `blocking_dispatch`. Pass what you learn to the UI through
+    /// [`Handle::channel`]. `examples/soak.rs` does exactly this.
+    ///
+    /// The rules that keep the two threads out of each other's way:
+    ///
+    /// * Do not dispatch the queue on the UI thread, and do not create
+    ///   objects on the UI loop's queue; it would never see their events.
+    /// * On the worker, wait only inside `blocking_dispatch`. Never hold a
+    ///   read guard from `prepare_read` while waiting for anything else, a
+    ///   lock or a channel included: every other reader of the connection,
+    ///   the UI loop among them, waits for that guard.
+    /// * A protocol error on one of the worker's objects ends the whole
+    ///   connection and with it the UI. Bind only versions you handle.
+    /// * The worker is not told when the UI loop ends. It finds out when a
+    ///   [`Sender::send`] fails or `blocking_dispatch` returns an error;
+    ///   blocked with nothing arriving, it ends with the process.
     pub fn connection(&self) -> Connection {
         self.connection.clone()
     }
@@ -587,8 +628,8 @@ impl std::error::Error for LoopEnded {}
 /// all from timers and channels without caring how many there are. It
 /// works the same with a single instance.
 ///
-/// Instances are held weakly: one that the loop has dropped is skipped and
-/// forgotten.
+/// Instances are held weakly: one that the loop has let go of, because its
+/// output was unplugged, is freed, skipped and forgotten.
 pub struct Instances<C: ComponentHandle>(Rc<RefCell<Vec<slint::Weak<C>>>>);
 
 impl<C: ComponentHandle> Instances<C> {
