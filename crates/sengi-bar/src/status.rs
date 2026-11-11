@@ -7,6 +7,8 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use sengi_system::{commands, volume};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Network {
     Wired,
@@ -64,36 +66,20 @@ pub fn read_interfaces(root: &Path) -> Vec<Interface> {
         .collect()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Volume {
-    pub percent: u32,
-    pub muted: bool,
-}
+pub use sengi_system::volume::Volume;
 
-impl Volume {
-    pub fn label(&self) -> String {
-        if self.muted {
-            "Muted".to_string()
-        } else {
-            format!("Vol {}%", self.percent)
-        }
+/// What the bar says for a volume.
+pub fn volume_label(volume: &Volume) -> String {
+    if volume.muted {
+        "Muted".to_string()
+    } else {
+        format!("Vol {}%", volume.percent)
     }
 }
 
-/// Parses `wpctl get-volume` output, for example `Volume: 0.40 [MUTED]`.
-pub fn parse_volume(output: &str) -> Option<Volume> {
-    let rest = output.trim().strip_prefix("Volume:")?.trim();
-    let mut parts = rest.split_whitespace();
-    let level: f32 = parts.next()?.parse().ok()?;
-    Some(Volume {
-        percent: (level * 100.0).round().max(0.0) as u32,
-        muted: parts.any(|part| part == "[MUTED]"),
-    })
-}
-
 pub fn read_volume() -> Option<Volume> {
-    let output = Command::new("wpctl")
-        .args(["get-volume", "@DEFAULT_AUDIO_SINK@"])
+    let output = Command::new(commands::WPCTL)
+        .args(["get-volume", commands::SINK])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
@@ -101,12 +87,12 @@ pub fn read_volume() -> Option<Volume> {
     if !output.status.success() {
         return None;
     }
-    parse_volume(&String::from_utf8_lossy(&output.stdout))
+    volume::parse(&String::from_utf8_lossy(&output.stdout))
 }
 
 pub fn toggle_mute() {
-    let _ = Command::new("wpctl")
-        .args(["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"])
+    let _ = Command::new(commands::WPCTL)
+        .args(["set-mute", commands::SINK, "toggle"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -321,14 +307,14 @@ mod tests {
     #[test]
     fn volume_is_rounded_to_percent() {
         assert_eq!(
-            parse_volume("Volume: 0.40\n"),
+            volume::parse("Volume: 0.40\n"),
             Some(Volume {
                 percent: 40,
                 muted: false
             })
         );
         assert_eq!(
-            parse_volume("Volume: 0.335"),
+            volume::parse("Volume: 0.335"),
             Some(Volume {
                 percent: 34,
                 muted: false
@@ -338,19 +324,22 @@ mod tests {
 
     #[test]
     fn muted_volume() {
-        let volume = parse_volume("Volume: 0.65 [MUTED]\n").unwrap();
+        let volume = volume::parse("Volume: 0.65 [MUTED]\n").unwrap();
         assert!(volume.muted);
-        assert_eq!(volume.label(), "Muted");
+        assert_eq!(volume_label(&volume), "Muted");
     }
 
     #[test]
     fn volume_above_one_hundred() {
-        assert_eq!(parse_volume("Volume: 1.20").unwrap().label(), "Vol 120%");
+        assert_eq!(
+            volume_label(&volume::parse("Volume: 1.20").unwrap()),
+            "Vol 120%"
+        );
     }
 
     #[test]
     fn nonsense_is_not_a_volume() {
-        assert_eq!(parse_volume("Could not connect to PipeWire"), None);
+        assert_eq!(volume::parse("Could not connect to PipeWire"), None);
     }
 
     #[test]

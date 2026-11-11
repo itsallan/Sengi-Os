@@ -1,7 +1,8 @@
 //! What the Sengi OS shell needs from the system around it.
 //!
 //! [`instance`] is the socket by which a panel that is already open is
-//! found and told to close; it needs no feature and nothing but std.
+//! found and told to close, and [`volume`] reads what `wpctl` prints; they
+//! need no feature and nothing but std.
 //!
 //! With the `bus` feature, [`connect`] opens the D-Bus connections by hand
 //! so that no helper thread is left waking the machine.
@@ -35,7 +36,6 @@ pub mod bluetooth;
 pub mod bluez;
 #[cfg(feature = "services")]
 pub mod bus;
-#[cfg(feature = "services")]
 pub mod commands;
 #[cfg(feature = "services")]
 pub mod iwd;
@@ -49,7 +49,6 @@ pub mod programs;
 pub mod secret;
 #[cfg(feature = "services")]
 pub mod services;
-#[cfg(feature = "services")]
 pub mod volume;
 #[cfg(feature = "services")]
 pub mod wifi;

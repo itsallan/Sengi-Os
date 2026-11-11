@@ -103,7 +103,7 @@ fn apply_sys(bar: &Bar, sys: &Sys) {
 fn apply_slow(bar: &Bar, slow: &Slow) {
     match &slow.volume {
         Some(volume) => {
-            bar.set_volume(volume.label().into());
+            bar.set_volume(status::volume_label(volume).into());
             bar.set_muted(volume.muted);
         }
         None => bar.set_volume("".into()),

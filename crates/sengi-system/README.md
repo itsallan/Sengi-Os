@@ -3,12 +3,23 @@
 What the Sengi OS shell needs from the system around it: Wi-Fi, Bluetooth,
 brightness, audio, battery, link state, and the bus connections under them.
 
-Used by sengi-quick (everything), and by sengi-notify and sengi-bar for the
-bus connections. A settings application can build on the same traits.
+Used by sengi-quick (everything), by sengi-notify and sengi-bar for the bus
+connections, by sengi-launcher for the single-instance socket, and by
+sengi-bar for reading the volume. A settings application can build on the
+same traits.
 
 ## Features
 
-Nothing is on by default.
+Nothing is on by default. Without features the crate is plain std:
+
+- `instance`: one open panel per program. A socket under
+  `$XDG_RUNTIME_DIR`, with a lock file around asking, unlinking and
+  binding, so two invocations starting together cannot both open, and a
+  process only ever removes the socket it created.
+- `volume` and `commands`: parsing `wpctl get-volume`, the arguments for
+  setting it, and the names of the programs involved.
+
+The features add:
 
 - `bus`: `connect`, the D-Bus connections opened by hand. zbus's own connect
   starts a helper thread that wakes twice a second for as long as the
