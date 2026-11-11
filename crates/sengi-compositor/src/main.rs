@@ -3,7 +3,9 @@
 //! Still a skeleton. See README.md for what works and what is missing.
 
 mod cli;
+mod cursor;
 mod decoration;
+mod foreign_toplevel;
 mod frame;
 mod headless;
 // Only the winit backend delivers input so far.

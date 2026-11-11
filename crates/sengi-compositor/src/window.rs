@@ -26,7 +26,7 @@ use crate::{
     decoration::{self, Theme, Titlebar},
     frame::{self, Edges},
     layout::Rect,
-    state::State,
+    state::{set_activated, State},
 };
 
 #[derive(Default)]
@@ -40,6 +40,9 @@ pub struct WindowData {
     /// then the window is kept aligned to the opposite edges as the client
     /// catches up with new sizes.
     pub resize_anchor: Cell<Option<(Edges, Rect, Option<Instant>)>>,
+    /// Where the client area was when the window was minimised. Set for as
+    /// long as it is hidden.
+    pub minimised: Cell<Option<(i32, i32)>>,
     pub frame: RefCell<Option<FrameBuffers>>,
 }
 
@@ -110,7 +113,59 @@ pub fn title(window: &Window) -> String {
     })
 }
 
+pub fn app_id(window: &Window) -> String {
+    let Some(toplevel) = window.toplevel() else {
+        return String::new();
+    };
+    with_states(toplevel.wl_surface(), |states| {
+        states
+            .data_map
+            .get::<XdgToplevelSurfaceData>()
+            .and_then(|data| data.lock().unwrap().app_id.clone())
+            .unwrap_or_default()
+    })
+}
+
 impl State {
+    /// Every window the user can get at: on screen or minimised.
+    pub fn managed_windows(&self) -> Vec<Window> {
+        self.space
+            .elements()
+            .chain(self.minimised.iter())
+            .cloned()
+            .collect()
+    }
+
+    /// Hides a window without closing it, or brings it back where it was.
+    /// The dock is how it comes back, through foreign-toplevel activate.
+    pub fn set_minimised(&mut self, window: &Window, minimised: bool) {
+        let data = data(window);
+        match (minimised, data.minimised.get()) {
+            (true, None) => {
+                let Some(location) = self.space.element_location(window) else {
+                    return;
+                };
+                data.minimised.set(Some((location.x, location.y)));
+                self.forget_pointer_state(window);
+                self.space.unmap_elem(window);
+                self.minimised.push(window.clone());
+                set_activated(window, false);
+                if self.focus_stack.remove(window) {
+                    match self.focus_stack.current().cloned() {
+                        Some(next) => self.focus_window(&next),
+                        None => self.update_keyboard_focus(),
+                    }
+                }
+            }
+            (false, Some(location)) => {
+                data.minimised.set(None);
+                self.minimised.retain(|w| w != window);
+                self.space.map_element(window.clone(), location, true);
+            }
+            _ => {}
+        }
+    }
+
     /// The client area of a mapped window in desktop coordinates.
     pub fn client_rect(&self, window: &Window) -> Option<Rect> {
         let location = self.space.element_location(window)?;
@@ -150,8 +205,10 @@ impl State {
     /// Moves a window's client area to `(x, y)` without changing which
     /// window is on top.
     pub fn move_window(&mut self, window: &Window, x: i32, y: i32) {
-        if self.space.element_location(window) == Some((x, y).into()) {
-            return;
+        // Only windows on screen have a place; minimised ones keep theirs.
+        match self.space.element_location(window) {
+            Some(current) if current != (x, y).into() => {}
+            _ => return,
         }
         // Mapping at a new place also raises, so put the order back after.
         let order: Vec<Window> = self.space.elements().cloned().collect();

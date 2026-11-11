@@ -5,9 +5,12 @@ use std::{error::Error, ffi::OsString, sync::Arc, time::Instant};
 use sengi_tokens::{Rgba, Tokens};
 use smithay::{
     backend::renderer::Color32F,
-    delegate_data_device, delegate_output, delegate_seat, delegate_shm,
+    delegate_cursor_shape, delegate_data_device, delegate_output, delegate_seat, delegate_shm,
     desktop::{layer_map_for_output, PopupManager, Space, Window},
-    input::{Seat, SeatHandler, SeatState},
+    input::{
+        pointer::{CursorIcon, CursorImageStatus},
+        Seat, SeatHandler, SeatState,
+    },
     output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel},
     reexports::{
         calloop::{generic::Generic, EventLoop, Interest, LoopSignal, Mode, PostAction},
@@ -21,6 +24,7 @@ use smithay::{
     wayland::{
         buffer::BufferHandler,
         compositor::{CompositorClientState, CompositorState},
+        cursor_shape::CursorShapeManagerState,
         output::{OutputHandler, OutputManagerState},
         selection::{
             data_device::{
@@ -35,10 +39,19 @@ use smithay::{
         },
         shm::{ShmHandler, ShmState},
         socket::ListeningSocketSource,
+        tablet_manager::TabletSeatHandler,
     },
 };
 
-use crate::{decoration::Theme, frame::Button, input::Drag, layout::FocusStack, text::Font};
+use crate::{
+    cursor::{resize_cursor, Cursors},
+    decoration::Theme,
+    foreign_toplevel::ForeignToplevelState,
+    frame::Button,
+    input::Drag,
+    layout::FocusStack,
+    text::Font,
+};
 
 /// Refresh rate reported for outputs that have no real one, in mHz.
 pub const REFRESH_MHZ: i32 = 60_000;
@@ -60,6 +73,8 @@ pub struct State {
     /// Toplevels that exist but have not committed a buffer yet. They are
     /// placed and mapped once their size is known.
     pub pending_windows: Vec<Window>,
+    /// Windows hidden by minimise; they are not in `space` meanwhile.
+    pub minimised: Vec<Window>,
     pub focus_stack: FocusStack<Window>,
     /// A layer surface with on-demand keyboard focus that was clicked.
     pub layer_focus: Option<WlSurface>,
@@ -67,13 +82,23 @@ pub struct State {
     pub hovered_button: Option<(Window, Button)>,
     /// A move, resize or button press the pointer is in the middle of.
     pub drag: Option<Drag>,
+    pub cursors: Cursors,
+    /// The cursor the client under the pointer asked for.
+    pub client_cursor: CursorImageStatus,
+    /// The cursor for the frame part under the pointer, if it has its own.
+    pub frame_cursor: Option<CursorIcon>,
+    /// False until the pointer first moves, so a session without a mouse
+    /// has no cursor parked in the corner.
+    pub pointer_seen: bool,
     /// Counts mapped windows so new ones cascade.
     pub placed: usize,
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
     _xdg_decoration_state: XdgDecorationState,
+    _cursor_shape_state: CursorShapeManagerState,
     pub layer_shell_state: WlrLayerShellState,
+    pub foreign_toplevels: ForeignToplevelState,
     pub shm_state: ShmState,
     pub seat_state: SeatState<Self>,
     pub data_device_state: DataDeviceState,
@@ -93,6 +118,8 @@ impl State {
         let compositor_state = CompositorState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
+        let foreign_toplevels = ForeignToplevelState::new(&dh);
+        let cursor_shape_state = CursorShapeManagerState::new::<Self>(&dh);
         let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
@@ -133,6 +160,8 @@ impl State {
             );
         }
 
+        let cursors = Cursors::new(&theme);
+
         Ok(Self {
             start_time: Instant::now(),
             socket_name,
@@ -145,15 +174,22 @@ impl State {
             space: Space::default(),
             popups: PopupManager::default(),
             pending_windows: Vec::new(),
+            minimised: Vec::new(),
             focus_stack: FocusStack::default(),
             layer_focus: None,
             hovered_button: None,
             drag: None,
+            cursors,
+            client_cursor: CursorImageStatus::default_named(),
+            frame_cursor: None,
+            pointer_seen: false,
             placed: 0,
             compositor_state,
             xdg_shell_state,
             _xdg_decoration_state: xdg_decoration_state,
+            _cursor_shape_state: cursor_shape_state,
             layer_shell_state,
+            foreign_toplevels,
             shm_state,
             seat_state,
             data_device_state,
@@ -167,6 +203,7 @@ impl State {
         event_loop.run(None, &mut self, |state| {
             state.space.refresh();
             state.popups.cleanup();
+            state.refresh_foreign_toplevels();
             let _ = state.display_handle.flush_clients();
         })?;
 
@@ -259,6 +296,44 @@ impl State {
     pub fn remove_window(&mut self, window: &Window) {
         self.pending_windows.retain(|w| w != window);
         self.space.unmap_elem(window);
+        self.minimised.retain(|w| w != window);
+        self.forget_pointer_state(window);
+        if !self.focus_stack.remove(window) {
+            return;
+        }
+        match self.focus_stack.current().cloned() {
+            Some(next) => self.focus_window(&next),
+            None => self.update_keyboard_focus(),
+        }
+    }
+
+    /// What to draw at the pointer right now.
+    pub fn cursor(&self) -> CursorImageStatus {
+        if !self.pointer_seen {
+            return CursorImageStatus::Hidden;
+        }
+        if let Some(Drag::Resize { edges, .. }) = &self.drag {
+            return CursorImageStatus::Named(resize_cursor(*edges));
+        }
+        if let Some(icon) = self.frame_cursor {
+            return CursorImageStatus::Named(icon);
+        }
+        // Over the desktop or a frame nobody sets a cursor, and whatever the
+        // last client chose must not linger.
+        let pointer = self.seat.get_pointer().expect("seat has a pointer");
+        if self.drag.is_some() || pointer.current_focus().is_none() {
+            return CursorImageStatus::default_named();
+        }
+        match &self.client_cursor {
+            CursorImageStatus::Surface(surface) if !surface.is_alive() => {
+                CursorImageStatus::default_named()
+            }
+            other => other.clone(),
+        }
+    }
+
+    /// Drops any hover or drag that involves `window`.
+    pub fn forget_pointer_state(&mut self, window: &Window) {
         if self
             .hovered_button
             .as_ref()
@@ -274,13 +349,6 @@ impl State {
         };
         if dragged {
             self.drag = None;
-        }
-        if !self.focus_stack.remove(window) {
-            return;
-        }
-        match self.focus_stack.current().cloned() {
-            Some(next) => self.focus_window(&next),
-            None => self.update_keyboard_focus(),
         }
     }
 
@@ -321,7 +389,7 @@ impl State {
     }
 }
 
-fn set_activated(window: &Window, active: bool) {
+pub fn set_activated(window: &Window, active: bool) {
     window.set_activated(active);
     if let Some(toplevel) = window.toplevel() {
         // Before the first configure the state simply rides along with it.
@@ -365,7 +433,14 @@ impl SeatHandler for State {
         let client = focused.and_then(|surface| self.display_handle.get_client(surface.id()).ok());
         set_data_device_focus(&self.display_handle, seat, client);
     }
+
+    fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+        self.client_cursor = image;
+    }
 }
+
+// The cursor-shape protocol also covers tablet tools, which we do not have.
+impl TabletSeatHandler for State {}
 
 impl SelectionHandler for State {
     type SelectionUserData = ();
@@ -384,5 +459,6 @@ impl OutputHandler for State {}
 
 delegate_shm!(State);
 delegate_seat!(State);
+delegate_cursor_shape!(State);
 delegate_data_device!(State);
 delegate_output!(State);

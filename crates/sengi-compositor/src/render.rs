@@ -6,16 +6,19 @@ use smithay::{
     backend::renderer::{
         damage::OutputDamageTracker,
         element::{
-            memory::MemoryRenderBufferRenderElement, render_elements,
-            solid::SolidColorRenderElement, surface::WaylandSurfaceRenderElement, AsRenderElements,
-            Kind,
+            memory::MemoryRenderBufferRenderElement,
+            render_elements,
+            solid::SolidColorRenderElement,
+            surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
+            AsRenderElements, Kind,
         },
         ImportAll, ImportMem, Renderer, Texture,
     },
-    desktop::{layer_map_for_output, Window},
+    desktop::{layer_map_for_output, utils::send_frames_surface_tree, Window},
+    input::pointer::{CursorImageStatus, CursorImageSurfaceData},
     output::Output,
     utils::{Logical, Point, Scale},
-    wayland::shell::wlr_layer::Layer,
+    wayland::{compositor::with_states, shell::wlr_layer::Layer},
 };
 
 use crate::{state::State, window};
@@ -51,6 +54,7 @@ where
 
     // Front to back: overlay and top layers, windows, bottom and background.
     let mut elements: Vec<OutputElement<R>> = Vec::new();
+    cursor(state, origin, renderer, scale, &mut elements);
     layers(
         output,
         [Layer::Overlay, Layer::Top],
@@ -109,6 +113,60 @@ fn layers<R>(
                 geometry.loc.to_physical_precise_round(scale),
                 scale,
                 1.0,
+            ));
+        }
+    }
+}
+
+/// Adds the pointer cursor, which goes above everything else.
+fn cursor<R>(
+    state: &State,
+    origin: Point<i32, Logical>,
+    renderer: &mut R,
+    scale: Scale<f64>,
+    elements: &mut Vec<OutputElement<R>>,
+) where
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Clone + Send + Texture + 'static,
+{
+    let pointer = state.seat.get_pointer().expect("seat has a pointer");
+    let location = pointer.current_location() - origin.to_f64();
+    match state.cursor() {
+        CursorImageStatus::Hidden => {}
+        CursorImageStatus::Named(icon) => {
+            let sprite = state.cursors.get(icon);
+            let hotspot =
+                Point::<f64, Logical>::from((sprite.hotspot.0 as f64, sprite.hotspot.1 as f64));
+            let element = MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                (location - hotspot).to_physical_precise_round(scale),
+                &sprite.buffer,
+                None,
+                None,
+                None,
+                Kind::Cursor,
+            );
+            match element {
+                Ok(element) => elements.push(OutputElement::Memory(element)),
+                Err(err) => eprintln!("sengi-compositor: cannot draw the cursor: {err:?}"),
+            }
+        }
+        CursorImageStatus::Surface(surface) => {
+            let hotspot = with_states(&surface, |states| {
+                states
+                    .data_map
+                    .get::<CursorImageSurfaceData>()
+                    .map(|data| data.lock().unwrap().hotspot)
+                    .unwrap_or_default()
+            });
+            let position = location.to_i32_round() - hotspot;
+            elements.extend(render_elements_from_surface_tree(
+                renderer,
+                &surface,
+                position.to_physical_precise_round(scale),
+                scale,
+                1.0,
+                Kind::Cursor,
             ));
         }
     }
@@ -183,5 +241,11 @@ pub fn send_frames(state: &State, output: &Output) {
     }
     for layer in layer_map_for_output(output).layers() {
         layer.send_frame(output, time, throttle, |_, _| Some(output.clone()));
+    }
+    // Animated client cursors wait for frame callbacks like any surface.
+    if let CursorImageStatus::Surface(surface) = state.cursor() {
+        send_frames_surface_tree(&surface, output, time, throttle, |_, _| {
+            Some(output.clone())
+        });
     }
 }

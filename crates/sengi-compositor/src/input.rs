@@ -17,6 +17,7 @@ use smithay::{
 };
 
 use crate::{
+    cursor::resize_cursor,
     frame::{self, Button, Edges, Hit},
     layout::Rect,
     state::State,
@@ -141,6 +142,7 @@ impl State {
         let (x, y) = cell(location);
         let mut focus = None;
         let mut hovered = None;
+        let mut frame_cursor = None;
 
         match &self.drag {
             Some(Drag::Move { window, offset }) => {
@@ -172,10 +174,16 @@ impl State {
                     window,
                     hit: Hit::Button(button),
                 }) => hovered = Some((window, button)),
+                Some(Target::Frame {
+                    hit: Hit::Resize(edges),
+                    ..
+                }) => frame_cursor = Some(resize_cursor(edges)),
                 _ => {}
             },
         }
         self.hovered_button = hovered;
+        self.frame_cursor = frame_cursor;
+        self.pointer_seen = true;
 
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
         pointer.motion(
@@ -326,9 +334,7 @@ impl State {
                 }
             }
             Button::Maximise => self.toggle_maximise(window),
-            // Nothing can bring a minimised window back yet, so the button
-            // stays inert until the dock can.
-            Button::Minimise => {}
+            Button::Minimise => self.set_minimised(window, true),
         }
     }
 

@@ -35,6 +35,8 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         .with_title("Sengi OS");
     let (mut backend, events) = winit::init_from_attributes::<GlesRenderer>(attributes)
         .map_err(|err| format!("cannot open a window: {err}"))?;
+    // We draw our own.
+    backend.window().set_cursor_visible(false);
 
     // EGL surfaces have their origin at the bottom left.
     let output = state.add_output(

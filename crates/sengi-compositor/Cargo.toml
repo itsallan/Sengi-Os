@@ -17,6 +17,8 @@ winit = ["smithay/backend_winit"]
 [dependencies]
 # Rasterises the title bar text.
 ab_glyph = "0.2"
+# Reads the system cursor theme.
+xcursor = "0.3"
 sengi-tokens = { path = "../sengi-tokens" }
 smithay = { version = "0.7", default-features = false, features = [
     "desktop",

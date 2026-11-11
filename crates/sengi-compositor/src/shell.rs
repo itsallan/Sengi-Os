@@ -131,6 +131,12 @@ impl XdgShellHandler for State {
         }
     }
 
+    fn minimize_request(&mut self, surface: ToplevelSurface) {
+        if let Some(window) = self.window_for_surface(surface.wl_surface()) {
+            self.set_minimised(&window, true);
+        }
+    }
+
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
         if let Some(window) = self.window_for_surface(surface.wl_surface()) {
             self.set_maximised(&window, false);
@@ -166,6 +172,7 @@ impl State {
         self.space
             .elements()
             .chain(self.pending_windows.iter())
+            .chain(self.minimised.iter())
             .find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == surface))
             .cloned()
     }

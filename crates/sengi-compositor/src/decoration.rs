@@ -18,6 +18,8 @@ pub struct Theme {
     /// Side of the square a button glyph is drawn in.
     pub glyph: i32,
     pub glyph_stroke: i32,
+    /// Height of the arrow drawn when no cursor theme is installed.
+    pub fallback_cursor: i32,
     pub font_family: String,
     pub font_weight: u32,
     pub font_px: u32,
@@ -57,6 +59,7 @@ impl Theme {
             radius: px("radius.base"),
             glyph: button - 2 * px("space.sm"),
             glyph_stroke: px("border.width"),
+            fallback_cursor: px("size.bar-icon"),
             font_family: tokens
                 .get("type.family")
                 .expect("tokens define type.family")
@@ -162,12 +165,16 @@ impl Canvas {
         }
     }
 
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
     pub fn into_pixels(self) -> Vec<u8> {
         self.pixels
     }
 
     #[cfg(test)]
-    fn pixel(&self, x: usize, y: usize) -> [u8; 4] {
+    pub fn pixel(&self, x: usize, y: usize) -> [u8; 4] {
         let i = (y * self.width + x) * 4;
         // Stored as blue, green, red, alpha.
         [
@@ -179,7 +186,7 @@ impl Canvas {
     }
 
     /// Paints `color` over the pixel at `(x, y)`, weighted by `coverage`.
-    fn blend(&mut self, x: usize, y: usize, color: Rgba, coverage: f32) {
+    pub fn blend(&mut self, x: usize, y: usize, color: Rgba, coverage: f32) {
         if x >= self.width || y >= self.height || coverage <= 0.0 {
             return;
         }

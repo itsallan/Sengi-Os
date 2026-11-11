@@ -1218,6 +1218,7 @@ dependencies = [
  "ab_glyph",
  "sengi-tokens",
  "smithay",
+ "xcursor",
 ]
 
 [[package]]
