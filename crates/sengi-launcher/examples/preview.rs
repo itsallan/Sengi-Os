@@ -58,7 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => rest.push(arg),
         }
     }
-    let invocation = cli::parse(rest)?;
+    let mut invocation = cli::parse(rest)?;
     let env = Env::from_process();
 
     let (source, mut session) = if real {
@@ -66,15 +66,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (Some(source), session)
     } else {
         let session = match invocation.mode {
-            Mode::Apps => Session::new(
-                sample_apps(),
-                TieBreak::Alphabetical,
-                invocation.lines_for(0),
-            ),
+            Mode::Apps => Session::new(sample_apps(), TieBreak::Alphabetical, 1),
             Mode::Menu => {
                 let items = ["Lock", "Log out", "Restart", "Shut down"].map(String::from);
                 let candidates = sengi_launcher::menu::candidates(&items);
-                Session::new(candidates, TieBreak::InputOrder, invocation.lines_for(4))
+                Session::new(candidates, TieBreak::InputOrder, 1)
             }
         };
         (None, session)
@@ -84,12 +80,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let window = LauncherWindow::new()?;
     let outcome = Rc::new(Cell::new(Outcome::Dismissed));
-    let prompt = match (invocation.prompt(), invocation.mode) {
-        ("", Mode::Menu) if !real => "Session",
-        (prompt, _) => prompt,
-    };
-    window.set_compact(invocation.compact());
-    ui::attach(&window, session, prompt, {
+    if !real && invocation.mode == Mode::Menu && invocation.prompt.is_none() {
+        invocation.prompt = Some("Session".into());
+    }
+    ui::attach(&window, session, &invocation, {
         let outcome = outcome.clone();
         move |o| {
             outcome.set(o);

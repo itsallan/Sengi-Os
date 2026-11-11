@@ -117,17 +117,15 @@ fn open(
         .keyboard(KeyboardMode::Exclusive);
 
     let outcome = Rc::new(Cell::new(Outcome::Dismissed));
-    let prompt = invocation.prompt().to_owned();
-    let compact = invocation.compact();
+    let invocation = invocation.clone();
     let mut session = Some(session);
     app.run(config, {
         let outcome = outcome.clone();
         move |context| {
             let session = session.take().ok_or("the launcher has a single surface")?;
             let window = LauncherWindow::new()?;
-            window.set_compact(compact);
             let handle = context.handle();
-            ui::attach(&window, session, &prompt, {
+            ui::attach(&window, session, &invocation, {
                 let (handle, outcome) = (handle.clone(), outcome.clone());
                 move |result| {
                     outcome.set(result);

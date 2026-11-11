@@ -38,6 +38,19 @@ impl Session {
         self.lines
     }
 
+    /// Change how many rows fit on screen, keeping the selection in view.
+    pub fn set_lines(&mut self, lines: usize) {
+        self.lines = lines.max(1);
+        self.top = self.top.min(self.selected);
+        if self.selected >= self.top + self.lines {
+            self.top = self.selected + 1 - self.lines;
+        }
+    }
+
+    pub fn candidate_count(&self) -> usize {
+        self.candidates.len()
+    }
+
     pub fn set_query(&mut self, query: &str) {
         self.query = query.to_owned();
         self.hits = rank(&self.candidates, &Query::new(query), self.tie_break);
@@ -209,5 +222,24 @@ mod tests {
         assert_eq!(s.chosen(), Some(3));
         assert_eq!(s.selected_row(), Some(1));
         assert_eq!(s.choose_row(4), None);
+    }
+
+    #[test]
+    fn changing_the_row_count_keeps_the_selection_in_view() {
+        let mut s = session(10, 1);
+        assert_eq!(s.candidate_count(), 10);
+        s.set_lines(4);
+        assert_eq!(view(&s), vec!["App 00", "App 01", "App 02", "App 03"]);
+        s.move_selection(7);
+        assert_eq!(view(&s)[0], "App 04");
+        s.set_lines(2);
+        assert_eq!(view(&s), vec!["App 06", "App 07"]);
+        assert_eq!(s.selected_row(), Some(1));
+        s.set_lines(0);
+        assert_eq!(s.lines(), 1);
+        assert_eq!(view(&s), vec!["App 07"]);
+        s.set_lines(20);
+        assert_eq!(view(&s).len(), 3);
+        assert_eq!(s.chosen(), Some(7));
     }
 }

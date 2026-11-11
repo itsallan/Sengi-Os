@@ -8,6 +8,7 @@ use std::rc::Rc;
 
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
+use crate::cli::Invocation;
 use crate::session::Session;
 
 slint::include_modules!();
@@ -83,16 +84,21 @@ fn show(window: &LauncherWindow, session: &Session) {
     window.set_selected(session.selected_row().map_or(-1, |row| row as i32));
 }
 
-/// Connect `window` to `session`. `finish` is called, once, when the user
-/// picks a result or dismisses the panel; closing the window is up to the
-/// caller.
+/// Connect `window` to `session`, laid out as `invocation` asks. `finish` is
+/// called, once, when the user picks a result or dismisses the panel;
+/// closing the window is up to the caller.
 pub fn attach(
     window: &LauncherWindow,
-    session: Session,
-    prompt: &str,
+    mut session: Session,
+    invocation: &Invocation,
     finish: impl Fn(Outcome) + 'static,
 ) {
-    window.set_prompt(prompt.into());
+    // The length of a full list is a design token, so it is settled here.
+    let full = usize::try_from(window.global::<Tokens>().get_launcher_lines()).unwrap_or(1);
+    session.set_lines(invocation.lines_for(session.candidate_count(), full));
+
+    window.set_prompt(invocation.prompt().into());
+    window.set_compact(invocation.compact());
     window.set_max_lines(session.lines() as i32);
     window.set_query(session.query().into());
     show(window, &session);

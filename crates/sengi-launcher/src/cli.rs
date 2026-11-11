@@ -1,8 +1,6 @@
 //! Command-line arguments.
 
-/// Rows shown when `--lines` is not given. Matches `size.launcher-lines` in
-/// the tokens, which the old launcher's config was rendered from.
-pub const DEFAULT_LINES: usize = 8;
+/// The most rows `--lines` can ask for.
 const MAX_LINES: usize = 20;
 
 pub const USAGE: &str = "\
@@ -14,8 +12,8 @@ Search and start applications, or choose from a menu.
   --menu              read lines from standard input, print the chosen one;
                       exits 0 on a choice and 1 if dismissed
   --prompt TEXT       label in front of the search field
-  --lines N           rows to show (default 8; a menu shows all its lines
-                      up to that)
+  --lines N           rows to show; by default a full list for applications
+                      and, for a menu, its lines up to a full list
   --wide              give a menu the full width of the application search
   --list [QUERY]      print the ranked results and exit, without a window
   --help, --version
@@ -57,12 +55,13 @@ impl Invocation {
         }
     }
 
-    /// Rows to show for `count` candidates. A menu is as tall as its lines.
-    pub fn lines_for(&self, count: usize) -> usize {
+    /// Rows to show for `count` candidates, where `full` is the length of a
+    /// full list (the `launcher-lines` token). A menu is as tall as its lines.
+    pub fn lines_for(&self, count: usize, full: usize) -> usize {
         match (self.lines, self.mode) {
             (Some(lines), _) => lines,
-            (None, Mode::Apps) => DEFAULT_LINES,
-            (None, Mode::Menu) => count.clamp(1, DEFAULT_LINES),
+            (None, Mode::Apps) => full.max(1),
+            (None, Mode::Menu) => count.clamp(1, full.max(1)),
         }
     }
 
@@ -140,7 +139,7 @@ mod tests {
         assert_eq!(inv.mode, Mode::Apps);
         assert_eq!(inv.action, Action::Show);
         assert_eq!(inv.lines, None);
-        assert_eq!(inv.lines_for(3), DEFAULT_LINES);
+        assert_eq!(inv.lines_for(3, 8), 8);
         assert_eq!(inv.prompt(), "Search");
         assert!(!inv.compact());
     }
@@ -151,7 +150,7 @@ mod tests {
         assert_eq!(inv.mode, Mode::Menu);
         assert_eq!(inv.action, Action::Show);
         assert_eq!(inv.prompt(), "Session");
-        assert_eq!(inv.lines_for(9), 4);
+        assert_eq!(inv.lines_for(9, 8), 4);
         assert!(inv.compact());
 
         let inv = ok(&["--dmenu", "--lines=3", "--prompt=Pick"]);
@@ -195,9 +194,9 @@ mod tests {
     #[test]
     fn a_menu_is_as_tall_as_its_lines_and_narrow_unless_asked() {
         let menu = ok(&["--menu"]);
-        assert_eq!(menu.lines_for(4), 4);
-        assert_eq!(menu.lines_for(0), 1);
-        assert_eq!(menu.lines_for(100), DEFAULT_LINES);
+        assert_eq!(menu.lines_for(4, 8), 4);
+        assert_eq!(menu.lines_for(0, 8), 1);
+        assert_eq!(menu.lines_for(100, 6), 6);
         assert!(menu.compact());
         assert!(!ok(&["--menu", "--wide"]).compact());
         assert!(!ok(&["--wide"]).compact());
