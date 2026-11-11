@@ -4,7 +4,15 @@
 //!
 //!     tray-fixture NAME [--title T] [--icon pixmap|none|NAME] [--theme-path DIR]
 //!                  [--status S] [--by-path] [--menu-only] [--no-activate]
-//!                  [--hostile] [--huge]
+//!                  [--with-pixmap] [--slow MS] [--hang-activate] [--chatty]
+//!                  [--register-as SERVICE] [--names N] [--hostile] [--huge]
+//!
+//! `--with-pixmap` answers IconPixmap as well as a named icon. `--slow`
+//! takes that long over every property, `--hang-activate` never answers
+//! Activate, and `--chatty` sends NewToolTip once a second.
+//! `--register-as` registers that string instead of the fixture's own
+//! name, and `--names` takes that many extra bus names and registers
+//! each, both to see the watcher refuse.
 //!
 //! While running it answers on the bus name `org.sengi.TrayFixture.NAME`:
 //!
@@ -12,8 +20,11 @@
 //!
 //! with `status`, `title`, `icon` (as --icon), `colour` (red, green, blue),
 //! `overlay` (an icon name), `tooltip`, `check` (toggles the menu's check
-//! row), `spam` (that many NewIcon signals at once) and `quit`. Calls it
-//! receives from the bar are printed, one per line.
+//! row), `spam` (that many NewIcon signals at once), `flap` (that many
+//! NewStatus signals, Passive and Active by turns), `forge-unregister` (a
+//! StatusNotifierItemUnregistered signal for that service, as if from a
+//! watcher) and `quit`. Calls it receives from the bar are printed, one
+//! per line.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -42,11 +53,18 @@ struct State {
     tooltip: String,
     menu_only: bool,
     activate: bool,
+    /// Answer IconPixmap even when the icon is a name.
+    with_pixmap: bool,
+    /// How long every property takes to answer.
+    slow: Duration,
+    hang_activate: bool,
     hostile: bool,
     /// Answer IconPixmap with 16 MB.
     huge: bool,
     checked: bool,
     revision: u32,
+    /// NewStatus signals of a `flap` still to go out.
+    flapping: usize,
 }
 
 type Shared = Arc<Mutex<State>>;
@@ -68,10 +86,25 @@ fn disc(side: i32, [r, g, b]: [u8; 3]) -> Pixmap {
 
 struct Item(Shared);
 
+impl Item {
+    /// The state, after taking as long over it as the fixture was told.
+    fn state(&self) -> std::sync::MutexGuard<'_, State> {
+        let slow = self.0.lock().unwrap().slow;
+        std::thread::sleep(slow);
+        self.0.lock().unwrap()
+    }
+}
+
 #[zbus::interface(name = "org.kde.StatusNotifierItem")]
 impl Item {
     fn activate(&self, x: i32, y: i32) -> zbus::fdo::Result<()> {
         let state = self.0.lock().unwrap();
+        if state.hang_activate {
+            println!("{}: Activate received, not answering", state.name);
+            drop(state);
+            std::thread::sleep(Duration::from_secs(3600));
+            return Ok(());
+        }
         if !state.activate {
             return Err(zbus::fdo::Error::UnknownMethod("no Activate here".into()));
         }
@@ -101,22 +134,25 @@ impl Item {
 
     #[zbus(property)]
     fn id(&self) -> String {
-        self.0.lock().unwrap().name.clone()
+        self.state().name.clone()
     }
 
     #[zbus(property)]
     fn title(&self) -> String {
-        self.0.lock().unwrap().title.clone()
+        let state = self.state();
+        println!("{}: Get Title", state.name);
+        state.title.clone()
     }
 
     #[zbus(property)]
     fn status(&self) -> String {
-        self.0.lock().unwrap().status.clone()
+        self.state().status.clone()
     }
 
     #[zbus(property)]
     fn icon_name(&self) -> String {
-        let state = self.0.lock().unwrap();
+        let state = self.state();
+        println!("{}: Get IconName", state.name);
         match state.icon.as_str() {
             "pixmap" | "none" => String::new(),
             name => name.to_string(),
@@ -130,22 +166,25 @@ impl Item {
 
     #[zbus(property)]
     fn icon_pixmap(&self) -> Vec<Pixmap> {
-        let state = self.0.lock().unwrap();
+        let state = self.state();
+        println!("{}: Get IconPixmap", state.name);
         if state.hostile || state.huge {
             // A lie about the size, then one that is honest and too big:
             // in dimensions, or in bytes as well.
-            let side = if state.huge { 2000 } else { 1100 };
+            let side = if state.huge { 2000 } else { 300 };
             return vec![
                 (100_000, 100_000, vec![255; 4]),
                 (side, side, vec![255; (side * side * 4) as usize]),
             ];
         }
         match state.icon.as_str() {
+            "none" => Vec::new(),
             "pixmap" => vec![
                 disc(16, state.colour),
                 disc(22, state.colour),
                 disc(48, state.colour),
             ],
+            _ if state.with_pixmap => vec![disc(32, state.colour)],
             _ => Vec::new(),
         }
     }
@@ -172,7 +211,10 @@ impl Item {
 
     #[zbus(property)]
     fn tool_tip(&self) -> (String, Vec<Pixmap>, String, String) {
-        let tooltip = self.0.lock().unwrap().tooltip.clone();
+        let state = self.state();
+        println!("{}: Get ToolTip", state.name);
+        let tooltip = state.tooltip.clone();
+        drop(state);
         (String::new(), Vec::new(), tooltip, String::new())
     }
 
@@ -255,6 +297,9 @@ fn menu(state: &State) -> Node {
             .with("toggle-type", "checkmark")
             .with("toggle-state", i32::from(state.checked)),
         Node::row(4, "Not available").with("enabled", false),
+        Node::row(13, "Some of them")
+            .with("toggle-type", "checkmark")
+            .with("toggle-state", -1i32),
         Node::row(5, "Hidden").with("visible", false),
         Node::row(6, "_More").submenu(vec![
             Node::row(7, "Fast")
@@ -347,16 +392,40 @@ impl Control {
                     let count = value.parse().unwrap_or(1000);
                     signals.extend(std::iter::repeat_n((ITEM, "NewIcon", None), count));
                 }
+                "flap" => {
+                    // The property flips with the signals, so every read
+                    // really does find the other status.
+                    let count: usize = value.parse().unwrap_or(1000);
+                    for n in 0..count {
+                        let status = if n % 2 == 0 { "Passive" } else { "Active" };
+                        signals.push((ITEM, "NewStatus", Some(status.to_string())));
+                    }
+                    state.flapping = count;
+                }
+                "forge-unregister" => {
+                    signals.push((
+                        WATCHER,
+                        "StatusNotifierItemUnregistered",
+                        Some(value.into()),
+                    ));
+                }
                 "quit" => std::process::exit(0),
                 other => return Err(zbus::fdo::Error::InvalidArgs(other.to_string())),
             }
         }
         for (interface, member, text) in signals {
-            let path = if interface == MENU {
-                MENU_PATH
-            } else {
-                ITEM_PATH
+            let path = match interface {
+                MENU => MENU_PATH,
+                WATCHER => "/StatusNotifierWatcher",
+                _ => ITEM_PATH,
             };
+            if member == "NewStatus" {
+                let mut state = self.0.lock().unwrap();
+                if state.flapping > 0 {
+                    state.flapping -= 1;
+                    state.status = text.clone().unwrap_or_default();
+                }
+            }
             let sent = match (member, text) {
                 ("LayoutUpdated", _) => {
                     connection
@@ -403,12 +472,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tooltip: String::new(),
         menu_only: false,
         activate: true,
+        with_pixmap: false,
+        slow: Duration::ZERO,
+        hang_activate: false,
         hostile: false,
         huge: false,
         checked: true,
         revision: 1,
+        flapping: 0,
     };
     let mut by_path = false;
+    let mut chatty = false;
+    let mut register_as = None;
+    let mut names = 0usize;
     while let Some(arg) = args.next() {
         let mut value = || args.next().ok_or(format!("{arg} needs a value"));
         match arg.as_str() {
@@ -421,6 +497,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--by-path" => by_path = true,
             "--menu-only" => state.menu_only = true,
             "--no-activate" => state.activate = false,
+            "--with-pixmap" => state.with_pixmap = true,
+            "--slow" => state.slow = Duration::from_millis(value()?.parse()?),
+            "--hang-activate" => state.hang_activate = true,
+            "--chatty" => chatty = true,
+            "--register-as" => register_as = Some(value()?),
+            "--names" => names = value()?.parse()?,
             "--huge" => state.huge = true,
             "--hostile" => {
                 state.hostile = true;
@@ -436,18 +518,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let bus_name = format!("org.sengi.TrayFixture.{}", state.name);
     let shared = Arc::new(Mutex::new(state));
+    let own_name = bus_name.clone();
     let connection = connection::Builder::session()?
         .serve_at(ITEM_PATH, Item(shared.clone()))?
         .serve_at(MENU_PATH, Menu(shared.clone()))?
-        .serve_at("/Fixture", Control(shared))?
-        .name(bus_name)?
+        .serve_at("/Fixture", Control(shared.clone()))?
+        .name(own_name)?
         .build()?;
 
     // Apps register in one of two ways; see the watcher.
-    let service = if by_path {
-        ITEM_PATH.to_string()
-    } else {
-        connection.unique_name().unwrap().to_string()
+    let service = match register_as {
+        Some(service) => service,
+        None if by_path => ITEM_PATH.to_string(),
+        None => connection.unique_name().unwrap().to_string(),
     };
     // The bar may still be starting.
     for attempt in 0.. {
@@ -460,12 +543,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         match registered {
             Ok(_) => break,
+            // The watcher is there and said no.
+            Err(zbus::Error::MethodError(name, text, _))
+                if !name.as_str().ends_with("ServiceUnknown") =>
+            {
+                println!("refused {service}: {name} {}", text.unwrap_or_default());
+                break;
+            }
             Err(error) if attempt >= 50 => return Err(error.into()),
             Err(_) => std::thread::sleep(Duration::from_millis(200)),
         }
     }
     println!("registered {service}");
+
+    // A connection helping itself to names and registering every one.
+    let mut accepted = 0;
+    for n in 0..names {
+        let name = format!("{bus_name}.n{n}");
+        connection.request_name(name.as_str())?;
+        let registered = connection.call_method(
+            Some(WATCHER),
+            "/StatusNotifierWatcher",
+            Some(WATCHER),
+            "RegisterStatusNotifierItem",
+            &name,
+        );
+        match registered {
+            Ok(_) => accepted += 1,
+            Err(error) => println!("refused {name}: {error}"),
+        }
+    }
+    if names > 0 {
+        println!("extra names accepted: {accepted} of {names}");
+    }
+
+    let mut tick = 0;
     loop {
-        std::thread::park();
+        if !chatty {
+            std::thread::park();
+            continue;
+        }
+        std::thread::sleep(Duration::from_secs(1));
+        tick += 1;
+        shared.lock().unwrap().tooltip = format!("tick {tick}");
+        connection.emit_signal(None::<&str>, ITEM_PATH, ITEM, "NewToolTip", &())?;
     }
 }
