@@ -66,6 +66,8 @@ pub struct NetworkRow {
     pub level: i32,
     /// Being joined right now.
     pub busy: bool,
+    /// An open network that was clicked: the row asks before joining.
+    pub confirm: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -277,7 +279,12 @@ impl Panel {
     /// Return on the keyboard's row.
     pub fn activate_selection(&mut self) -> Option<Command> {
         let selected = self.selected.clone()?;
-        self.choose_network(&selected)
+        // A second, separate press on the row that is asking is the yes.
+        if matches!(&self.join, Join::Confirming { id, .. } if *id == selected) {
+            self.confirm_network(&selected)
+        } else {
+            self.choose_network(&selected)
+        }
     }
 
     pub fn toggle_wifi(&mut self, on: bool) -> Option<Command> {
@@ -297,6 +304,15 @@ impl Panel {
             .find(|row| row.network.id == id && !row.gone)?;
         let network = row.network.clone();
         self.join.choose(&network).map(Command::Join)
+    }
+
+    /// "Join" in the row of an open network that was clicked.
+    pub fn confirm_network(&mut self, id: &str) -> Option<Command> {
+        // Only for a network still in range.
+        self.shown
+            .iter()
+            .find(|row| row.network.id == id && !row.gone)?;
+        self.join.confirm(id).map(Command::Join)
     }
 
     pub fn submit_passphrase(&mut self, passphrase: Secret) -> Option<Command> {
@@ -412,6 +428,7 @@ impl Panel {
                         known: network.known,
                         level: wifi::level(network.signal),
                         busy: matches!(&self.join, Join::Joining { id, .. } if *id == network.id),
+                        confirm: matches!(&self.join, Join::Confirming { id, .. } if *id == network.id),
                     })
                     .collect();
                 let note = match (rows.is_empty(), scanning) {
@@ -796,6 +813,50 @@ mod tests {
         // Trying something else clears the complaint.
         panel.cancel_prompt();
         assert_eq!(panel.view().wifi.alert, "");
+    }
+
+    #[test]
+    fn an_open_network_asks_in_its_row_before_joining() {
+        let mut panel = Panel::new(laptop(), false);
+        panel.apply(Event::Wifi(on(Link::Connected, home_and_cafe())));
+        // Cafe is open and new; it is the second row.
+        assert!(pick(&mut panel, 1).is_none());
+        let view = panel.view().wifi;
+        assert!(view.rows[1].confirm && !view.rows[0].confirm);
+        assert!(view.prompt.is_none());
+        // Clicking the row again changes nothing.
+        assert!(pick(&mut panel, 1).is_none());
+        assert!(panel.confirm_network("/Office").is_none());
+
+        let Some(Command::Join(request)) = panel.confirm_network("/Cafe") else {
+            panic!("expected a join");
+        };
+        assert_eq!(request.id, "/Cafe");
+        let view = panel.view().wifi;
+        assert!(view.rows[1].busy && !view.rows[1].confirm);
+    }
+
+    #[test]
+    fn return_twice_joins_an_open_network_from_the_keyboard() {
+        let mut panel = Panel::new(laptop(), false);
+        panel.apply(Event::Wifi(on(Link::Connected, home_and_cafe())));
+        panel.hold_list(true, true);
+        panel.move_selection(1);
+        assert!(panel.activate_selection().is_none());
+        assert!(panel.view().wifi.rows[1].confirm);
+        assert!(matches!(panel.activate_selection(), Some(Command::Join(_))));
+    }
+
+    #[test]
+    fn an_open_network_that_left_cannot_be_confirmed() {
+        let mut panel = Panel::new(laptop(), false);
+        panel.apply(Event::Wifi(on(Link::Connected, home_and_cafe())));
+        panel.hold_list(true, false);
+        pick(&mut panel, 1);
+        let mut home = network("Home", Security::Passphrase, true, -5200);
+        home.connected = true;
+        panel.apply(Event::Wifi(on(Link::Connected, vec![home])));
+        assert!(panel.confirm_network("/Cafe").is_none());
     }
 
     #[test]

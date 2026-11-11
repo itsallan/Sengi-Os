@@ -19,6 +19,7 @@ use crate::wifi::{self, JoinError, Link, Network, Request, Security, Wifi};
 pub const SCENARIOS: &[&str] = &[
     "connected",
     "networks",
+    "open-network",
     "passphrase",
     "wrong-passphrase",
     "joining",
@@ -109,7 +110,7 @@ impl WifiService for FakeWifi {
             .position(|network| network.id == request.id)
             .ok_or(JoinError::Unavailable)?;
         let typed = request.passphrase.as_ref().map(|secret| secret.expose());
-        if networks[target].name == "Far shed" {
+        if networks[target].name == "Attic repeater" {
             return Err(JoinError::Timeout);
         }
         let accepted = match networks[target].security {
@@ -289,6 +290,11 @@ pub fn scenario(name: &str) -> Option<Demo> {
         "networks" => {
             link = Link::Disconnected;
         }
+        "open-network" => {
+            networks[0].connected = true;
+            // Bakery Guest, open and never joined.
+            script.push(Action::Choose(2));
+        }
         "passphrase" => {
             networks[0].connected = true;
             // Flat 3B, the strongest network that is not known.
@@ -313,7 +319,7 @@ pub fn scenario(name: &str) -> Option<Demo> {
         }
         "failed" => {
             link = Link::Disconnected;
-            networks.insert(0, network("Far shed", Security::Open, true, -4000));
+            networks.insert(0, network("Attic repeater", Security::Open, true, -4000));
             script.push(Action::Choose(0));
         }
         "bluetooth" => {

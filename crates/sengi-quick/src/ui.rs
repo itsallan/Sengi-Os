@@ -33,6 +33,7 @@ fn item(row: &NetworkRow) -> NetworkItem {
         known: row.known,
         level: row.level,
         busy: row.busy,
+        confirm: row.confirm,
     }
 }
 
@@ -145,6 +146,10 @@ pub fn attach(
     window.on_network_chosen({
         let act = act.clone();
         move |id| act(&mut |panel| panel.choose_network(id.as_str()))
+    });
+    window.on_network_confirmed({
+        let act = act.clone();
+        move |id| act(&mut |panel| panel.confirm_network(id.as_str()))
     });
     window.on_list_held({
         let act = act.clone();

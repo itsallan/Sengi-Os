@@ -156,6 +156,13 @@ pub struct Request {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Join {
     Idle,
+    /// An open network nobody has joined before was picked. Anyone can
+    /// put up an open network under any name, and everything sent over it
+    /// can be read, so one click is not enough: the row asks first.
+    Confirming {
+        id: String,
+        name: String,
+    },
     /// The passphrase field is open for this network.
     Asking {
         id: String,
@@ -186,7 +193,7 @@ impl Join {
             return None;
         }
         let (id, name) = (network.id.clone(), network.name.clone());
-        let direct = network.known || network.security == Security::Open;
+        let direct = network.known;
         let request = direct.then(|| Request {
             id: id.clone(),
             passphrase: None,
@@ -198,6 +205,7 @@ impl Join {
                 typed: false,
                 secured: network.security == Security::Passphrase,
             },
+            Security::Open => Join::Confirming { id, name },
             Security::Passphrase => Join::Asking {
                 id,
                 name,
@@ -213,6 +221,27 @@ impl Join {
             },
         };
         request
+    }
+
+    /// "Join" was pressed in the row of the open network being asked about.
+    pub fn confirm(&mut self, confirmed: &str) -> Option<Request> {
+        let Join::Confirming { id, name } = self else {
+            return None;
+        };
+        if id != confirmed {
+            return None;
+        }
+        let request = Request {
+            id: id.clone(),
+            passphrase: None,
+        };
+        *self = Join::Joining {
+            id: std::mem::take(id),
+            name: std::mem::take(name),
+            typed: false,
+            secured: false,
+        };
+        Some(request)
     }
 
     /// Return was pressed in the passphrase field.
@@ -286,7 +315,9 @@ impl Join {
     /// The network being asked about or joined.
     pub fn target(&self) -> Option<&str> {
         match self {
-            Join::Asking { id, .. } | Join::Joining { id, .. } => Some(id),
+            Join::Confirming { id, .. } | Join::Asking { id, .. } | Join::Joining { id, .. } => {
+                Some(id)
+            }
             _ => None,
         }
     }
@@ -437,8 +468,50 @@ mod tests {
     }
 
     #[test]
-    fn an_open_network_is_joined_at_once() {
+    fn a_new_open_network_is_not_joined_on_one_click() {
         let cafe = network("Cafe", Security::Open, false, -5000);
+        let mut join = Join::Idle;
+        assert!(join.choose(&cafe).is_none());
+        assert_eq!(
+            join,
+            Join::Confirming {
+                id: cafe.id.clone(),
+                name: "Cafe".to_string()
+            }
+        );
+        // Nor on two: a double click on the row is still not a yes.
+        assert!(join.choose(&cafe).is_none());
+        assert!(matches!(join, Join::Confirming { .. }));
+        // Confirming some other network is not a yes to this one.
+        assert!(join.confirm("/elsewhere").is_none());
+
+        let request = join.confirm(&cafe.id).unwrap();
+        assert_eq!(request.id, cafe.id);
+        assert!(request.passphrase.is_none());
+        assert!(matches!(join, Join::Joining { typed: false, .. }));
+        // A confirmation is used up.
+        assert!(join.confirm(&cafe.id).is_none());
+    }
+
+    #[test]
+    fn the_question_about_an_open_network_can_be_dropped() {
+        let cafe = network("Cafe", Security::Open, false, -5000);
+        let office = network("Office", Security::Passphrase, false, -5000);
+        let mut join = Join::Idle;
+        join.choose(&cafe);
+        join.cancel();
+        assert_eq!(join, Join::Idle);
+        assert!(join.confirm(&cafe.id).is_none());
+        // Picking another network drops it too.
+        join.choose(&cafe);
+        join.choose(&office);
+        assert!(join.confirm(&cafe.id).is_none());
+        assert!(matches!(join, Join::Asking { .. }));
+    }
+
+    #[test]
+    fn an_open_network_joined_before_needs_no_asking() {
+        let cafe = network("Cafe", Security::Open, true, -5000);
         let mut join = Join::Idle;
         assert!(join.choose(&cafe).unwrap().passphrase.is_none());
     }

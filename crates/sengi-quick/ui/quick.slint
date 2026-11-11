@@ -22,6 +22,8 @@ export struct NetworkItem {
     level: int,
     // Being joined right now.
     busy: bool,
+    // An open network that was clicked: the row asks before joining.
+    confirm: bool,
 }
 
 // The networks in range. The list is one stop for the Tab key; the arrow
@@ -35,6 +37,8 @@ component NetworkList inherits Rectangle {
     // The keyboard's row, or -1.
     in property <int> current: -1;
     callback chosen(string);
+    // "Join" was pressed in a row that was asking.
+    callback confirmed(string);
     // The pointer is over the list or the keyboard is in it (first), and
     // whether it is the keyboard (second). While either holds, the program
     // keeps every row where it is.
@@ -50,6 +54,8 @@ component NetworkList inherits Rectangle {
     private property <int> shown: Math.min(root.networks.length, 5);
     private property <length> label-gap: Tokens.space-sm;
     private property <length> icons: Tokens.bar-icon * 2 + Tokens.space-sm * 3;
+    // The button a row grows when it asks, in place of its icons.
+    private property <length> button: Tokens.space-xl * 2;
     private property <bool> hold: scope.has-focus || hover.has-hover;
 
     // Scroll so the keyboard's row can be seen.
@@ -90,7 +96,11 @@ component NetworkList inherits Rectangle {
             } else if event.text == Key.UpArrow {
                 root.arrow(-1);
             } else if event.text == " " || event.text == Key.Return {
-                root.activated();
+                // A held key is one press: the second Return that joins an
+                // open network has to be meant.
+                if !event.repeat {
+                    root.activated();
+                }
             } else {
                 return EventResult.reject;
             }
@@ -108,17 +118,33 @@ component NetworkList inherits Rectangle {
                 text: item.name;
                 enabled: !item.gone;
                 current: scope.has-focus && index == root.current;
-                trailing: root.icons + (note.text != "" ? note.preferred-width + root.label-gap : 0);
+                trailing: (item.confirm ? root.button + Tokens.space-xs * 2 : root.icons)
+                    + (note.text != "" ? note.preferred-width + root.label-gap : 0);
                 clicked => { root.chosen(item.id); }
 
                 note := SengiLabel {
-                    x: parent.width - root.icons - self.width;
+                    x: parent.width - self.width
+                        - (item.confirm ? root.button + Tokens.space-xs * 2 : root.icons);
                     width: self.preferred-width;
                     height: parent.height;
-                    text: item.gone ? "Out of range" : item.busy ? "Connecting\u{2026}" : item.known ? "Saved" : "";
-                    color: item.gone ? Tokens.color-text-disabled : Tokens.color-text-muted;
+                    text: item.gone ? "Out of range" : item.confirm ? "Not encrypted"
+                        : item.busy ? "Connecting\u{2026}" : item.known ? "Saved" : "";
+                    color: item.gone ? Tokens.color-text-disabled
+                        : item.confirm ? Tokens.color-warning : Tokens.color-text-muted;
                     font-weight: Tokens.font-weight-regular;
                     vertical-alignment: center;
+                }
+
+                // An open network joined for the first time: one click
+                // on the row only brings this up.
+                if item.confirm && !item.gone: PushButton {
+                    x: parent.width - self.width - Tokens.space-xs;
+                    y: (parent.height - self.height) / 2;
+                    width: root.button;
+                    height: parent.height - Tokens.space-xs;
+                    text: "Join";
+                    primary: true;
+                    clicked => { root.confirmed(item.id); }
                 }
 
                 if item.secured && !item.gone: LockIcon {
@@ -127,7 +153,7 @@ component NetworkList inherits Rectangle {
                     ink: Tokens.color-text-muted;
                 }
 
-                SignalIcon {
+                if !item.confirm: SignalIcon {
                     x: parent.width - Tokens.space-sm - Tokens.bar-icon;
                     y: (parent.height - self.height) / 2;
                     level: item.gone ? 0 : item.level;
@@ -312,6 +338,8 @@ export component QuickWindow inherits Window {
     callback wifi-toggled(bool);
     // A row of the network list was clicked, by its id.
     callback network-chosen(string);
+    // "Join" in the row of an open network that was clicked.
+    callback network-confirmed(string);
     // The pointer or the keyboard is at the network list (first), and
     // whether it is the keyboard (second).
     callback list-held(bool, bool);
@@ -460,6 +488,7 @@ export component QuickWindow inherits Window {
                             networks: root.networks;
                             current: root.network-current;
                             chosen(id) => { root.network-chosen(id); }
+                            confirmed(id) => { root.network-confirmed(id); }
                             held(held, focused) => { root.list-held(held, focused); }
                             step(direction) => { return root.list-step(direction); }
                             activated => { root.list-activated(); }
