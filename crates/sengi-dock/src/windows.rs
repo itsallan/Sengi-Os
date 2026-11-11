@@ -111,10 +111,24 @@ fn parse_state(bytes: &[u8]) -> Flags {
     flags
 }
 
+/// What the compositor has said about a window since its last `done`.
+#[derive(Default)]
+struct Pending {
+    app_id: Option<String>,
+    title: Option<String>,
+    flags: Option<Flags>,
+}
+
 /// The bookkeeping behind the tracker, apart from the Wayland plumbing.
+///
+/// The protocol sends a window's properties one by one and then `done`.
+/// Changes are held back until then, and a window is only listed after its
+/// first `done`, so nobody sees a window that has no app_id yet.
 #[derive(Default)]
 struct Book {
+    /// The windows as published, oldest first.
     windows: Vec<Window>,
+    pending: HashMap<u32, Pending>,
     next_id: u32,
     focus_counter: u64,
 }
@@ -122,32 +136,54 @@ struct Book {
 impl Book {
     fn open(&mut self) -> u32 {
         self.next_id += 1;
-        self.windows.push(Window {
-            id: self.next_id,
-            ..Window::default()
-        });
+        self.pending.insert(self.next_id, Pending::default());
         self.next_id
     }
 
-    fn get(&mut self, id: u32) -> Option<&mut Window> {
-        self.windows.iter_mut().find(|w| w.id == id)
+    /// The changes waiting for `done`, if the window is still open.
+    fn pending(&mut self, id: u32) -> Option<&mut Pending> {
+        self.pending.get_mut(&id)
     }
 
-    fn set_state(&mut self, id: u32, flags: Flags) {
-        let next = self.focus_counter + 1;
-        let Some(window) = self.windows.iter_mut().find(|w| w.id == id) else {
+    /// Applies what has arrived since the last `done`.
+    fn commit(&mut self, id: u32) {
+        let Some(pending) = self.pending.get_mut(&id).map(std::mem::take) else {
             return;
         };
-        if flags.activated && !window.activated {
-            window.focus_seq = next;
-            self.focus_counter = next;
+        let at = match self.windows.iter().position(|w| w.id == id) {
+            Some(at) => at,
+            None => {
+                let at = self.windows.partition_point(|w| w.id < id);
+                self.windows.insert(
+                    at,
+                    Window {
+                        id,
+                        ..Window::default()
+                    },
+                );
+                at
+            }
+        };
+        let window = &mut self.windows[at];
+        if let Some(app_id) = pending.app_id {
+            window.app_id = app_id;
         }
-        window.activated = flags.activated;
-        window.minimized = flags.minimized;
-        window.maximized = flags.maximized;
+        if let Some(title) = pending.title {
+            window.title = title;
+        }
+        if let Some(flags) = pending.flags {
+            if flags.activated && !window.activated {
+                self.focus_counter += 1;
+                window.focus_seq = self.focus_counter;
+            }
+            window.activated = flags.activated;
+            window.minimized = flags.minimized;
+            window.maximized = flags.maximized;
+        }
     }
 
     fn close(&mut self, id: u32) {
+        self.pending.remove(&id);
         self.windows.retain(|w| w.id != id);
     }
 }
@@ -307,20 +343,25 @@ impl<F: FnMut(&[Window]) + 'static> Dispatch<ZwlrForeignToplevelHandleV1, ()> fo
         };
         match event {
             handle::Event::AppId { app_id } => {
-                if let Some(window) = state.book.get(id) {
-                    window.app_id = app_id;
+                if let Some(pending) = state.book.pending(id) {
+                    pending.app_id = Some(app_id);
                 }
             }
             handle::Event::Title { title } => {
-                if let Some(window) = state.book.get(id) {
-                    window.title = title;
+                if let Some(pending) = state.book.pending(id) {
+                    pending.title = Some(title);
                 }
             }
             handle::Event::State { state: bytes } => {
-                state.book.set_state(id, parse_state(&bytes));
+                if let Some(pending) = state.book.pending(id) {
+                    pending.flags = Some(parse_state(&bytes));
+                }
             }
             // The compositor sends this after each batch of changes to one window.
-            handle::Event::Done => state.dirty = true,
+            handle::Event::Done => {
+                state.book.commit(id);
+                state.dirty = true;
+            }
             handle::Event::Closed => {
                 state.book.close(id);
                 state.ids.remove(&toplevel.id());
@@ -477,14 +518,29 @@ mod tests {
         }
     }
 
+    fn set_state(book: &mut Book, id: u32, flags: Flags) {
+        if let Some(pending) = book.pending(id) {
+            pending.flags = Some(flags);
+        }
+        book.commit(id);
+    }
+
+    fn get(book: &Book, id: u32) -> &Window {
+        book.windows.iter().find(|w| w.id == id).unwrap()
+    }
+
     #[test]
-    fn windows_get_increasing_ids() {
+    fn windows_get_increasing_ids_and_stay_in_that_order() {
         let mut book = Book::default();
         let a = book.open();
         let b = book.open();
-        book.close(a);
         let c = book.open();
         assert!(a < b && b < c);
+        // The compositor may finish describing them in any order.
+        book.commit(c);
+        book.commit(a);
+        book.commit(b);
+        book.close(a);
         assert_eq!(
             book.windows.iter().map(|w| w.id).collect::<Vec<_>>(),
             [b, c]
@@ -492,20 +548,58 @@ mod tests {
     }
 
     #[test]
+    fn a_window_is_not_listed_until_its_first_done() {
+        let mut book = Book::default();
+        let a = book.open();
+        book.pending(a).unwrap().title = Some("~".into());
+        assert!(book.windows.is_empty());
+        book.pending(a).unwrap().app_id = Some("foot".into());
+        book.pending(a).unwrap().flags = Some(active());
+        assert!(book.windows.is_empty());
+
+        book.commit(a);
+        assert_eq!(book.windows.len(), 1);
+        assert_eq!(get(&book, a).app_id, "foot");
+        assert_eq!(get(&book, a).title, "~");
+        assert!(get(&book, a).activated);
+    }
+
+    #[test]
+    fn changes_wait_for_done_and_leave_other_fields_alone() {
+        let mut book = Book::default();
+        let a = book.open();
+        book.pending(a).unwrap().app_id = Some("foot".into());
+        book.pending(a).unwrap().title = Some("~".into());
+        book.commit(a);
+
+        book.pending(a).unwrap().title = Some("vim".into());
+        assert_eq!(get(&book, a).title, "~");
+        book.commit(a);
+        assert_eq!(get(&book, a).title, "vim");
+        assert_eq!(get(&book, a).app_id, "foot");
+
+        // A done with nothing before it changes nothing.
+        let before = book.windows.clone();
+        book.commit(a);
+        assert_eq!(book.windows, before);
+    }
+
+    #[test]
     fn focus_order_is_remembered() {
         let mut book = Book::default();
         let a = book.open();
         let b = book.open();
-        book.set_state(a, active());
-        book.set_state(a, Flags::default());
-        book.set_state(b, active());
-        let seq = |book: &mut Book, id| book.get(id).unwrap().focus_seq;
-        assert!(seq(&mut book, b) > seq(&mut book, a));
-        assert!(seq(&mut book, a) > 0);
+        set_state(&mut book, a, active());
+        set_state(&mut book, a, Flags::default());
+        set_state(&mut book, b, active());
+        let seq = |book: &Book, id| get(book, id).focus_seq;
+        assert!(seq(&book, b) > seq(&book, a));
+        assert!(seq(&book, a) > 0);
 
         // Staying focused through another state change is not a new focus.
-        let before = seq(&mut book, b);
-        book.set_state(
+        let before = seq(&book, b);
+        set_state(
+            &mut book,
             b,
             Flags {
                 activated: true,
@@ -513,20 +607,21 @@ mod tests {
                 minimized: false,
             },
         );
-        assert_eq!(seq(&mut book, b), before);
-        assert!(book.get(b).unwrap().maximized);
+        assert_eq!(seq(&book, b), before);
+        assert!(get(&book, b).maximized);
 
-        book.set_state(b, Flags::default());
-        book.set_state(a, active());
-        assert!(seq(&mut book, a) > seq(&mut book, b));
+        set_state(&mut book, b, Flags::default());
+        set_state(&mut book, a, active());
+        assert!(seq(&book, a) > seq(&book, b));
     }
 
     #[test]
-    fn state_for_a_closed_window_is_ignored() {
+    fn events_for_a_closed_window_are_ignored() {
         let mut book = Book::default();
         let a = book.open();
+        book.commit(a);
         book.close(a);
-        book.set_state(a, active());
+        set_state(&mut book, a, active());
         assert!(book.windows.is_empty());
         assert_eq!(book.focus_counter, 0);
     }
