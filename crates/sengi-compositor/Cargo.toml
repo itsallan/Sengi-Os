@@ -1,0 +1,25 @@
+[package]
+name = "sengi-compositor"
+description = "Wayland compositor for Sengi OS"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+# Kept out of the main workspace on purpose: Smithay is a heavy dependency and
+# this crate is not part of the ISO until it can replace labwc.
+[workspace]
+
+[dependencies]
+sengi-tokens = { path = "../sengi-tokens" }
+smithay = { version = "0.7", default-features = false, features = [
+    "desktop",
+    "wayland_frontend",
+    "renderer_pixman",
+] }
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
