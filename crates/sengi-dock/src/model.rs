@@ -1,0 +1,584 @@
+//! What the dock shows and what a click does. No I/O happens here apart from
+//! re-reading the desktop entries when a window from an unknown app appears.
+
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+
+use crate::desktop::{Apps, Entry};
+use crate::icons;
+use crate::matching;
+use crate::windows::Window;
+
+/// Key of the search button. No desktop-file ID can be empty.
+pub const LAUNCHER_KEY: &str = "";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// The search button. Always first.
+    Launcher,
+    /// Listed in the config. Always present, in config order.
+    Pinned,
+    /// Has windows but is not pinned. Shown after the pinned apps while it runs.
+    Running,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Icon {
+    /// Drawn by the UI from the design tokens.
+    Search,
+    /// Drawn by the UI from the design tokens.
+    Terminal,
+    /// An `Icon=` value: a theme icon name or an absolute path. May be empty.
+    Named(String),
+}
+
+/// Apps whose icon we draw ourselves rather than load from their package.
+const OWN_ICONS: &[(&str, Icon)] = &[("foot", Icon::Terminal), ("footclient", Icon::Terminal)];
+
+/// Key prefix for windows that have no app_id. Each gets an item of its own,
+/// since nothing says they belong together. An app_id cannot collide with
+/// it: keys made from app_ids are trimmed, so they never start with a space.
+const NAMELESS: &str = " window:";
+
+/// The part of a window the dock cares about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowRef {
+    pub id: u32,
+    pub activated: bool,
+    pub minimized: bool,
+    pub focus_seq: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Item {
+    pub kind: Kind,
+    /// Stable identity: the lowercased desktop-file ID, or the app_id for a
+    /// window that matches no installed app.
+    pub key: String,
+    pub name: String,
+    pub icon: Icon,
+    /// Shown on the fallback tile when the icon cannot be loaded.
+    pub letter: String,
+    /// Whether clicking can start the app: it has a desktop entry.
+    pub launchable: bool,
+    /// The app's windows, oldest first.
+    pub windows: Vec<WindowRef>,
+}
+
+impl Item {
+    pub fn running(&self) -> bool {
+        !self.windows.is_empty()
+    }
+
+    pub fn focused(&self) -> bool {
+        self.windows.iter().any(|w| w.activated)
+    }
+
+    pub fn window_count(&self) -> usize {
+        self.windows.len()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Button {
+    Primary,
+    /// A middle click, or a click with Ctrl or Shift held.
+    Secondary,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Action {
+    OpenLauncher,
+    /// Start the app with this key.
+    Launch(String),
+    /// Focus this window, restoring it first if it is minimised.
+    Activate(u32),
+    Minimize(u32),
+    Nothing,
+}
+
+/// Decides what a click on a dock item does.
+///
+/// A primary click starts an app that is not running and brings forward one
+/// that is: its most recently used window. On the app that already has
+/// focus it minimises the window, or, when the app has several windows,
+/// moves to the one used longest ago, so repeated clicks walk through them
+/// all. A secondary click always starts a new instance.
+pub fn on_click(item: &Item, button: Button) -> Action {
+    if item.kind == Kind::Launcher {
+        return Action::OpenLauncher;
+    }
+    let launch = || {
+        if item.launchable {
+            Action::Launch(item.key.clone())
+        } else {
+            Action::Nothing
+        }
+    };
+    if button == Button::Secondary {
+        return launch();
+    }
+
+    let Some(focused) = item.windows.iter().find(|w| w.activated) else {
+        return match item.windows.iter().max_by_key(|w| (w.focus_seq, w.id)) {
+            Some(recent) => Action::Activate(recent.id),
+            None => launch(),
+        };
+    };
+    match item
+        .windows
+        .iter()
+        .filter(|w| w.id != focused.id)
+        .min_by_key(|w| (w.focus_seq, w.id))
+    {
+        Some(next) => Action::Activate(next.id),
+        None => Action::Minimize(focused.id),
+    }
+}
+
+/// The dock's state: installed apps, pins, and how app_ids map onto them.
+pub struct Dock {
+    data_dirs: Vec<PathBuf>,
+    apps: Apps,
+    pinned: Vec<String>,
+    /// app_id to item key, remembered so matching runs once per app.
+    keys: HashMap<String, String>,
+    /// app_ids that matched nothing even after re-reading the entries.
+    unknown: HashSet<String>,
+}
+
+impl Dock {
+    /// `pinned` holds desktop-file IDs from the config. `data_dirs` is where
+    /// desktop entries are re-read from when an unknown app shows up, which
+    /// is how an app installed while the dock runs gets its name and icon.
+    pub fn new(apps: Apps, pinned: Vec<String>, data_dirs: Vec<PathBuf>) -> Self {
+        Self {
+            data_dirs,
+            apps,
+            pinned,
+            keys: HashMap::new(),
+            unknown: HashSet::new(),
+        }
+    }
+
+    pub fn load(pinned: Vec<String>, data_dirs: Vec<PathBuf>) -> Self {
+        Self::new(Apps::load(&data_dirs), pinned, data_dirs)
+    }
+
+    /// The desktop entry behind an item key.
+    pub fn entry(&self, key: &str) -> Option<&Entry> {
+        self.apps.get(key)
+    }
+
+    fn key_for(&mut self, app_id: &str) -> String {
+        if let Some(key) = self.keys.get(app_id) {
+            return key.clone();
+        }
+        let mut found = matching::find(app_id, &self.apps).map(|e| e.id.to_lowercase());
+        if found.is_none() && !self.data_dirs.is_empty() && self.unknown.insert(app_id.to_string())
+        {
+            // First sight of this app_id: it may have been installed since
+            // we started.
+            self.apps = Apps::load(&self.data_dirs);
+            self.keys.clear();
+            found = matching::find(app_id, &self.apps).map(|e| e.id.to_lowercase());
+        }
+        let key = found.unwrap_or_else(|| app_id.trim().to_lowercase());
+        self.keys.insert(app_id.to_string(), key.clone());
+        key
+    }
+
+    fn app_item(&self, kind: Kind, key: String, windows: Vec<WindowRef>) -> Item {
+        let (name, icon, launchable) = match self.apps.get(&key) {
+            Some(entry) => {
+                let own = OWN_ICONS
+                    .iter()
+                    .find(|(id, _)| key == *id)
+                    .map(|(_, icon)| icon.clone());
+                (
+                    entry.name.clone(),
+                    own.unwrap_or_else(|| Icon::Named(entry.icon.clone())),
+                    entry.exec.is_some(),
+                )
+            }
+            // No entry: the app_id is the best name there is, and sometimes
+            // an icon is installed under it.
+            None => (key.clone(), Icon::Named(key.clone()), false),
+        };
+        Item {
+            kind,
+            letter: icons::initial(&name),
+            key,
+            name,
+            icon,
+            launchable,
+            windows,
+        }
+    }
+
+    /// The dock's items for the given windows: the search button, the pinned
+    /// apps in config order, then other running apps in the order they
+    /// first opened a window. Every window lands on exactly one item.
+    pub fn items(&mut self, windows: &[Window]) -> Vec<Item> {
+        // Group windows by app, remembering the order apps first appear in.
+        let mut order: Vec<String> = Vec::new();
+        let mut groups: HashMap<String, Vec<&Window>> = HashMap::new();
+        let mut sorted: Vec<&Window> = windows.iter().collect();
+        sorted.sort_by_key(|w| w.id);
+        for window in sorted {
+            let key = if window.app_id.trim().is_empty() {
+                format!("{NAMELESS}{}", window.id)
+            } else {
+                self.key_for(&window.app_id)
+            };
+            if !groups.contains_key(&key) {
+                order.push(key.clone());
+            }
+            groups.entry(key).or_default().push(window);
+        }
+        let refs = |list: &[&Window]| -> Vec<WindowRef> {
+            list.iter()
+                .map(|w| WindowRef {
+                    id: w.id,
+                    activated: w.activated,
+                    minimized: w.minimized,
+                    focus_seq: w.focus_seq,
+                })
+                .collect()
+        };
+
+        let mut items = vec![Item {
+            kind: Kind::Launcher,
+            key: LAUNCHER_KEY.to_string(),
+            name: "Search".to_string(),
+            icon: Icon::Search,
+            letter: String::new(),
+            launchable: true,
+            windows: Vec::new(),
+        }];
+
+        let mut used: HashSet<String> = HashSet::new();
+        for id in &self.pinned {
+            // A pin for an app that is not installed is left out.
+            let Some(entry) = self.apps.get(id) else {
+                continue;
+            };
+            let key = entry.id.to_lowercase();
+            if !used.insert(key.clone()) {
+                continue;
+            }
+            let windows = groups.get(&key).map(|g| refs(g)).unwrap_or_default();
+            items.push(self.app_item(Kind::Pinned, key, windows));
+        }
+
+        for key in order {
+            if used.contains(&key) {
+                continue;
+            }
+            let group = &groups[&key];
+            if key.starts_with(NAMELESS) {
+                // A window with no app_id goes by its title.
+                let name = match group[0].title.trim() {
+                    "" => "Window".to_string(),
+                    title => title.to_string(),
+                };
+                items.push(Item {
+                    kind: Kind::Running,
+                    key,
+                    letter: icons::initial(&name),
+                    name,
+                    icon: Icon::Named(String::new()),
+                    launchable: false,
+                    windows: refs(group),
+                });
+            } else {
+                items.push(self.app_item(Kind::Running, key, refs(group)));
+            }
+        }
+        items
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::desktop::testing::{entry, temp_dir, write};
+
+    fn apps() -> Apps {
+        Apps::from_entries(vec![
+            entry("firefox-esr", "Firefox ESR", "firefox-esr %u"),
+            entry("foot", "Foot", "foot"),
+            entry("org.gnome.Nautilus", "Files", "nautilus %U"),
+            entry("vim", "Vim", "vim %F"),
+        ])
+    }
+
+    fn dock(pinned: &[&str]) -> Dock {
+        Dock::new(
+            apps(),
+            pinned.iter().map(|s| s.to_string()).collect(),
+            Vec::new(),
+        )
+    }
+
+    fn window(id: u32, app_id: &str) -> Window {
+        Window {
+            id,
+            app_id: app_id.into(),
+            title: format!("{app_id} window"),
+            ..Window::default()
+        }
+    }
+
+    fn focused(id: u32, app_id: &str, seq: u64) -> Window {
+        Window {
+            activated: true,
+            focus_seq: seq,
+            ..window(id, app_id)
+        }
+    }
+
+    fn keys(items: &[Item]) -> Vec<&str> {
+        items.iter().map(|i| i.key.as_str()).collect()
+    }
+
+    #[test]
+    fn with_no_windows_the_dock_holds_search_and_the_pins() {
+        let items = dock(&["foot", "firefox-esr"]).items(&[]);
+        assert_eq!(keys(&items), ["", "foot", "firefox-esr"]);
+        assert_eq!(items[0].kind, Kind::Launcher);
+        assert_eq!(items[0].icon, Icon::Search);
+        assert_eq!(items[1].kind, Kind::Pinned);
+        assert_eq!(items[1].name, "Foot");
+        assert!(items.iter().all(|i| !i.running() && !i.focused()));
+    }
+
+    #[test]
+    fn a_terminal_window_marks_the_pinned_terminal_instead_of_adding_an_icon() {
+        // The bug in the Waybar dock: this used to give two terminal icons.
+        let items = dock(&["foot"]).items(&[focused(1, "foot", 1)]);
+        assert_eq!(keys(&items), ["", "foot"]);
+        assert_eq!(items[1].kind, Kind::Pinned);
+        assert!(items[1].running());
+        assert!(items[1].focused());
+        assert_eq!(items[1].window_count(), 1);
+    }
+
+    #[test]
+    fn our_own_icons_are_used_for_the_terminal() {
+        let items = dock(&["foot", "vim"]).items(&[]);
+        assert_eq!(items[1].icon, Icon::Terminal);
+        assert_eq!(items[2].icon, Icon::Named("vim".into()));
+        assert_eq!(items[2].letter, "V");
+    }
+
+    #[test]
+    fn windows_of_one_app_are_grouped() {
+        let items = dock(&["foot"]).items(&[
+            window(1, "foot"),
+            window(2, "firefox-esr"),
+            focused(3, "Foot", 4),
+            window(4, "firefox-esr"),
+        ]);
+        assert_eq!(keys(&items), ["", "foot", "firefox-esr"]);
+        assert_eq!(items[1].window_count(), 2);
+        assert!(items[1].focused());
+        assert_eq!(items[2].kind, Kind::Running);
+        assert_eq!(items[2].window_count(), 2);
+        assert!(!items[2].focused());
+        assert_eq!(
+            items[2].windows.iter().map(|w| w.id).collect::<Vec<_>>(),
+            [2, 4]
+        );
+    }
+
+    #[test]
+    fn running_apps_follow_the_pins_in_the_order_they_opened() {
+        let mut dock = dock(&["firefox-esr", "foot"]);
+        // Given out of order on purpose.
+        let items = dock.items(&[
+            window(7, "vim"),
+            window(3, "org.gnome.Nautilus"),
+            window(5, "foot"),
+        ]);
+        assert_eq!(
+            keys(&items),
+            ["", "firefox-esr", "foot", "org.gnome.nautilus", "vim"]
+        );
+        assert_eq!(items[3].name, "Files");
+
+        // Closing one leaves the others where they were.
+        let items = dock.items(&[window(7, "vim"), window(5, "foot")]);
+        assert_eq!(keys(&items), ["", "firefox-esr", "foot", "vim"]);
+    }
+
+    #[test]
+    fn loosely_named_windows_still_find_their_app() {
+        let items = dock(&["org.gnome.Nautilus.desktop"]).items(&[window(1, "nautilus")]);
+        assert_eq!(keys(&items), ["", "org.gnome.nautilus"]);
+        assert!(items[1].running());
+    }
+
+    #[test]
+    fn pins_for_missing_apps_and_repeated_pins_are_skipped() {
+        let items = dock(&["gone", "foot", "Foot.desktop"]).items(&[]);
+        assert_eq!(keys(&items), ["", "foot"]);
+    }
+
+    #[test]
+    fn a_window_from_no_known_app_gets_an_item_named_after_its_app_id() {
+        let items = dock(&["foot"]).items(&[window(1, "XTerm"), window(2, "xterm")]);
+        assert_eq!(keys(&items), ["", "foot", "xterm"]);
+        let xterm = &items[2];
+        assert_eq!(xterm.name, "xterm");
+        assert_eq!(xterm.letter, "X");
+        assert_eq!(xterm.icon, Icon::Named("xterm".into()));
+        assert!(!xterm.launchable);
+        assert_eq!(xterm.window_count(), 2);
+    }
+
+    #[test]
+    fn windows_without_an_app_id_each_get_an_item_named_by_title() {
+        let mut a = window(1, "");
+        a.title = "Untitled drawing".into();
+        let mut b = window(2, " ");
+        b.title = String::new();
+        let items = dock(&[]).items(&[a, b]);
+        assert_eq!(keys(&items), ["", " window:1", " window:2"]);
+        assert_eq!(items[1].name, "Untitled drawing");
+        assert_eq!(items[1].letter, "U");
+        assert_eq!(items[2].name, "Window");
+        assert!(!items[1].launchable);
+    }
+
+    #[test]
+    fn an_app_installed_later_is_picked_up_when_its_window_appears() {
+        let dir = temp_dir("late");
+        let mut dock = Dock::load(vec!["foot".into()], vec![dir.clone()]);
+        assert_eq!(keys(&dock.items(&[])), [""]);
+
+        write(
+            &dir.join("applications/org.example.Paint.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Paint\nExec=paint\nIcon=paint\n",
+        );
+        let items = dock.items(&[window(1, "paint")]);
+        assert_eq!(keys(&items), ["", "org.example.paint"]);
+        assert_eq!(items[1].name, "Paint");
+        assert!(items[1].launchable);
+        assert_eq!(dock.entry("org.example.paint").unwrap().name, "Paint");
+    }
+
+    #[test]
+    fn the_same_windows_give_the_same_items() {
+        let mut dock = dock(&["foot"]);
+        let windows = [focused(1, "foot", 1), window(2, "vim")];
+        assert_eq!(dock.items(&windows), dock.items(&windows));
+    }
+
+    fn item(windows: Vec<WindowRef>) -> Item {
+        Item {
+            kind: Kind::Pinned,
+            key: "foot".into(),
+            name: "Foot".into(),
+            icon: Icon::Terminal,
+            letter: "F".into(),
+            launchable: true,
+            windows,
+        }
+    }
+
+    fn win(id: u32, activated: bool, focus_seq: u64) -> WindowRef {
+        WindowRef {
+            id,
+            activated,
+            minimized: false,
+            focus_seq,
+        }
+    }
+
+    #[test]
+    fn the_search_button_opens_the_launcher() {
+        let items = dock(&[]).items(&[]);
+        assert_eq!(on_click(&items[0], Button::Primary), Action::OpenLauncher);
+        assert_eq!(on_click(&items[0], Button::Secondary), Action::OpenLauncher);
+    }
+
+    #[test]
+    fn clicking_an_app_that_is_not_running_starts_it() {
+        assert_eq!(
+            on_click(&item(vec![]), Button::Primary),
+            Action::Launch("foot".into())
+        );
+    }
+
+    #[test]
+    fn clicking_a_running_app_focuses_its_most_recent_window() {
+        let windows = vec![win(1, false, 5), win(2, false, 9), win(3, false, 2)];
+        assert_eq!(
+            on_click(&item(windows), Button::Primary),
+            Action::Activate(2)
+        );
+        // Never focused yet: the newest window.
+        let fresh = vec![win(4, false, 0), win(6, false, 0)];
+        assert_eq!(on_click(&item(fresh), Button::Primary), Action::Activate(6));
+    }
+
+    #[test]
+    fn a_minimised_window_is_brought_back_by_a_click() {
+        let mut hidden = win(1, false, 3);
+        hidden.minimized = true;
+        assert_eq!(
+            on_click(&item(vec![hidden]), Button::Primary),
+            Action::Activate(1)
+        );
+    }
+
+    #[test]
+    fn clicking_the_focused_app_minimises_its_only_window() {
+        assert_eq!(
+            on_click(&item(vec![win(1, true, 4)]), Button::Primary),
+            Action::Minimize(1)
+        );
+    }
+
+    #[test]
+    fn clicking_the_focused_app_walks_through_its_windows() {
+        // Focus history: 1, then 2, then 3 (focused now).
+        let mut windows = vec![win(1, false, 1), win(2, false, 2), win(3, true, 3)];
+        let mut visited = Vec::new();
+        for seq in 4..10 {
+            let Action::Activate(next) = on_click(&item(windows.clone()), Button::Primary) else {
+                panic!("expected a window to be focused");
+            };
+            visited.push(next);
+            for w in &mut windows {
+                w.activated = w.id == next;
+                if w.activated {
+                    w.focus_seq = seq;
+                }
+            }
+        }
+        assert_eq!(visited, [1, 2, 3, 1, 2, 3]);
+    }
+
+    #[test]
+    fn a_secondary_click_starts_another_instance() {
+        assert_eq!(
+            on_click(&item(vec![win(1, true, 1)]), Button::Secondary),
+            Action::Launch("foot".into())
+        );
+        assert_eq!(
+            on_click(&item(vec![]), Button::Secondary),
+            Action::Launch("foot".into())
+        );
+    }
+
+    #[test]
+    fn an_app_without_a_desktop_entry_cannot_be_started() {
+        let mut unknown = item(vec![win(1, false, 1)]);
+        unknown.kind = Kind::Running;
+        unknown.launchable = false;
+        assert_eq!(on_click(&unknown, Button::Secondary), Action::Nothing);
+        assert_eq!(on_click(&unknown, Button::Primary), Action::Activate(1));
+    }
+}

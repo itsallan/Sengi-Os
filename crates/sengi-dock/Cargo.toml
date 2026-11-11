@@ -1,0 +1,32 @@
+[package]
+name = "sengi-dock"
+description = "The Sengi OS dock"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[features]
+default = ["svg"]
+# Many apps install only a scalable icon. Without this they get the letter
+# tile instead.
+svg = ["dep:resvg"]
+
+[dependencies]
+# Not the workspace entry: that one pulls in the winit backend, and the dock
+# is drawn into a layer surface instead.
+slint = { version = "1.18", default-features = false, features = ["compat-1-2", "std", "renderer-software", "software-renderer-systemfonts", "software-renderer-path"] }
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+libc = "0.2"
+# Icons are decoded here, straight to the size they are drawn at, rather than
+# through Slint's image loader, which keeps the full-size bitmap.
+png = "0.18"
+resvg = { version = "0.48", default-features = false, optional = true }
+
+[dev-dependencies]
+# The preview example opens an ordinary window.
+slint = { workspace = true }
+
+[build-dependencies]
+slint-build.workspace = true

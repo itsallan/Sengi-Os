@@ -1,0 +1,269 @@
+// The Sengi OS dock: a centred panel of app icons at the bottom of the screen.
+
+import { Tokens, SengiText } from "components.slint";
+
+export enum DockIcon {
+    // The search button, drawn here.
+    search,
+    // The terminal, drawn here.
+    terminal,
+    // A bitmap in `image`, already at the size it is drawn.
+    image,
+    // No icon was found: a tile with the app's initial.
+    letter,
+}
+
+export struct DockItem {
+    name: string,
+    icon: DockIcon,
+    image: image,
+    letter: string,
+    running: bool,
+    focused: bool,
+    windows: int,
+    // False while the item slides in or out. The program adds a row with
+    // this off and turns it on, and turns it off before removing the row.
+    present: bool,
+}
+
+// Our own icons are drawn as stroked paths on the 40 unit grid of the tile.
+component Glyph inherits Path {
+    width: 100%;
+    height: 100%;
+    viewbox-width: 40;
+    viewbox-height: 40;
+    stroke-width: Tokens.icon-stroke * 2;
+    stroke-line-cap: round;
+    stroke-line-join: round;
+    fill: transparent;
+}
+
+component Tile inherits Rectangle {
+    width: Tokens.dock-icon;
+    height: Tokens.dock-icon;
+    border-radius: Tokens.radius;
+}
+
+component SearchIcon inherits Tile {
+    background: Tokens.color-accent;
+    Glyph {
+        stroke: Tokens.color-accent-text;
+        commands: "M25 18a7 7 0 1 1-14 0a7 7 0 1 1 14 0z M23.5 23.5L30 30";
+    }
+}
+
+component TerminalIcon inherits Tile {
+    background: Tokens.color-bg;
+    border-width: Tokens.border-width;
+    border-color: Tokens.color-border;
+    Glyph {
+        stroke: Tokens.color-accent;
+        commands: "M10 13l7 7l-7 7";
+    }
+    Glyph {
+        stroke: Tokens.color-text;
+        commands: "M21 28h9";
+    }
+}
+
+component LetterIcon inherits Tile {
+    in property <string> letter;
+    background: Tokens.color-surface-raised;
+    border-width: Tokens.border-width;
+    border-color: Tokens.color-border;
+    SengiText {
+        text: root.letter;
+        font-size: Tokens.font-size-xl;
+        font-weight: Tokens.font-weight-bold;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// The mark under a running app: a dot, which widens into a bar for the app
+// that has focus.
+component Indicator inherits Rectangle {
+    in property <bool> running;
+    in property <bool> focused;
+
+    height: Tokens.space-xs;
+    width: root.focused ? Tokens.space-lg : root.running ? Tokens.space-xs : 0;
+    border-radius: self.height / 2;
+    background: Tokens.color-accent;
+    opacity: root.running ? 1 : 0;
+    animate width, opacity {
+        duration: Tokens.motion-base;
+        easing: ease-out;
+    }
+}
+
+component Slot inherits Rectangle {
+    in property <DockItem> item;
+    out property <bool> hovered: touch.has-hover;
+    callback clicked();
+    callback middle-clicked();
+
+    // A click with Ctrl or Shift held counts as a middle click.
+    property <bool> modified: false;
+    property <length> cell: Tokens.dock-icon + Tokens.space-xxs * 2;
+
+    width: root.item.present ? root.cell + Tokens.space-xs : 0;
+    opacity: root.item.present ? 1 : 0;
+    clip: true;
+    animate width, opacity {
+        duration: Tokens.motion-base;
+        easing: ease-out;
+    }
+
+    highlight := Rectangle {
+        y: Tokens.dock-padding;
+        width: root.cell;
+        height: root.cell;
+        border-radius: Tokens.radius;
+        background: touch.pressed ? Tokens.color-surface-raised
+            : touch.has-hover ? Tokens.color-surface-hover : transparent;
+        animate background { duration: Tokens.motion-fast; }
+
+        if root.item.icon == DockIcon.search: SearchIcon { }
+        if root.item.icon == DockIcon.terminal: TerminalIcon { }
+        if root.item.icon == DockIcon.letter: LetterIcon {
+            letter: root.item.letter;
+        }
+        if root.item.icon == DockIcon.image: Image {
+            width: Tokens.dock-icon;
+            height: Tokens.dock-icon;
+            source: root.item.image;
+        }
+    }
+
+    Indicator {
+        y: highlight.y + highlight.height + (Tokens.dock-padding - self.height) / 2;
+        running: root.item.running;
+        focused: root.item.focused;
+    }
+
+    touch := TouchArea {
+        enabled: root.item.present;
+        clicked => {
+            if root.modified {
+                root.middle-clicked();
+            } else {
+                root.clicked();
+            }
+        }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                root.modified = event.modifiers.control || event.modifiers.shift;
+            }
+            if event.kind == PointerEventKind.up && event.button == PointerEventButton.middle
+                && self.has-hover {
+                root.middle-clicked();
+            }
+        }
+    }
+}
+
+// The app's name, shown above the icon the pointer is on.
+component NameLabel inherits Rectangle {
+    in property <string> text;
+    in property <length> limit;
+
+    width: min(label.preferred-width + Tokens.space-sm * 2, root.limit);
+    height: Tokens.font-size-sm + Tokens.space-sm * 2;
+    border-radius: Tokens.radius;
+    border-width: Tokens.border-width;
+    border-color: Tokens.color-border;
+    background: Tokens.color-surface;
+
+    label := SengiText {
+        width: parent.width - Tokens.space-sm * 2;
+        text: root.text;
+        font-size: Tokens.font-size-sm;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+export component Dock inherits Window {
+    // The rows, in dock order. Row indexes are what the callbacks report.
+    in property <[DockItem]> items;
+    // Whether to show the app's name above the hovered icon. The space for
+    // it is part of dock-height, so turn it off to get a surface that
+    // is exactly as tall as the panel.
+    in property <bool> show-labels: true;
+
+    // The size the layer surface should have. The width counts every row,
+    // including rows still sliding out, so resize when it changes.
+    out property <length> dock-width:
+        root.items.length * root.slot-width + root.side-padding * 2;
+    out property <length> dock-height: root.panel-height + root.label-space;
+    // The panel alone: what to reserve as the exclusive zone, plus the margin.
+    out property <length> panel-height: Tokens.dock-icon + Tokens.space-xxs * 2 + Tokens.dock-padding * 2;
+    // The panel's width at this moment, which moves while rows slide.
+    out property <length> panel-width: panel.width;
+    // Gap between the panel and the bottom edge of the screen.
+    out property <length> bottom-margin: Tokens.space-sm;
+    // Logical size of the bitmaps to put in DockItem.image.
+    out property <length> icon-size: Tokens.dock-icon;
+    // How long a row takes to slide in or out; remove a row this long after
+    // turning `present` off.
+    out property <duration> slide-duration: Tokens.motion-base;
+
+    callback clicked(int);
+    // Also sent for a click with Ctrl or Shift held.
+    callback middle-clicked(int);
+
+    property <length> slot-width: Tokens.dock-icon + Tokens.space-xxs * 2 + Tokens.space-xs;
+    property <length> side-padding: Tokens.dock-padding - Tokens.space-xxs;
+    property <length> label-space:
+        root.show-labels ? Tokens.font-size-sm + Tokens.space-sm * 2 + Tokens.space-xs : 0;
+    property <int> hovered: -1;
+    property <string> hovered-name;
+    property <length> hovered-centre;
+
+    background: transparent;
+    default-font-family: Tokens.font-family;
+    preferred-width: self.dock-width;
+    preferred-height: self.dock-height;
+
+    panel := Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: root.label-space;
+        width: row.preferred-width;
+        height: root.panel-height;
+        background: Tokens.color-dock;
+        border-width: Tokens.border-width;
+        border-color: Tokens.color-border;
+        border-radius: Tokens.radius;
+
+        row := HorizontalLayout {
+            padding-left: root.side-padding;
+            padding-right: root.side-padding;
+
+            for item[index] in root.items: slot := Slot {
+                item: item;
+                clicked => { root.clicked(index); }
+                middle-clicked => { root.middle-clicked(index); }
+                changed hovered => {
+                    if self.hovered {
+                        root.hovered = index;
+                        root.hovered-name = item.name;
+                        root.hovered-centre = panel.x + self.x + self.width / 2;
+                    } else if root.hovered == index {
+                        root.hovered = -1;
+                    }
+                }
+            }
+        }
+    }
+
+    if root.show-labels: NameLabel {
+        text: root.hovered-name;
+        limit: root.width;
+        x: clamp(root.hovered-centre - self.width / 2, 0, root.width - self.width);
+        y: 0;
+        opacity: root.hovered >= 0 ? 1 : 0;
+        animate opacity { duration: Tokens.motion-fast; }
+    }
+}
