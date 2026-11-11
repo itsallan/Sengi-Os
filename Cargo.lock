@@ -3597,11 +3597,19 @@ dependencies = [
 name = "sengi-quick"
 version = "0.5.0"
 dependencies = [
- "libc",
  "sengi-layer",
+ "sengi-system",
  "sengi-text",
  "slint",
  "slint-build",
+]
+
+[[package]]
+name = "sengi-system"
+version = "0.5.0"
+dependencies = [
+ "libc",
+ "sengi-text",
  "zbus",
 ]
 

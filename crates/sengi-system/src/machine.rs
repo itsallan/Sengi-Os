@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::bus::Bus;
+use crate::bus::Bus;
 use crate::services::{Block, Hardware, Machine};
 use crate::{backlight, battery};
 
@@ -135,7 +135,7 @@ impl Machine for Sysfs {
             &("backlight", name, raw),
         );
         if let Err(error) = result {
-            eprintln!("sengi-quick: setting the brightness: {error}");
+            eprintln!("{}: setting the brightness: {error}", crate::program_name());
         }
     }
 }

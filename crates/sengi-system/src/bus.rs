@@ -9,13 +9,9 @@
 //! here, so the code that interprets it can be tested without a bus.
 
 use std::collections::HashMap;
-use std::os::linux::net::SocketAddrExt;
-use std::os::unix::net::{SocketAddr, UnixStream};
 use std::sync::{Arc, OnceLock};
 use std::thread;
 
-use zbus::address::transport::{Transport, UnixSocket};
-use zbus::blocking::connection::Builder;
 use zbus::blocking::fdo::DBusProxy;
 use zbus::blocking::{Connection, MessageIterator, Proxy};
 use zbus::export::serde::Serialize;
@@ -26,6 +22,7 @@ use zbus::proxy::MethodFlags;
 use zbus::zvariant::{DynamicDeserialize, DynamicType, Value};
 use zbus::MatchRule;
 
+use crate::connect;
 use crate::services::Notify;
 
 /// A service can describe any number of objects. This is far more than
@@ -145,31 +142,6 @@ pub fn denied(error: &zbus::Error) -> bool {
         || error_name(error) == Some("org.freedesktop.DBus.Error.AccessDenied")
 }
 
-/// Opens the socket to the system bus ourselves.
-///
-/// Left to zbus, the connect runs on a thread of the `blocking` crate's
-/// pool, which then wakes twice a second for as long as the process lives.
-/// A socket that is already connected keeps the pool from ever starting.
-/// sengi-notify does the same for the session bus.
-fn system_socket() -> zbus::Result<UnixStream> {
-    let address = zbus::Address::system()?;
-    let Transport::Unix(unix) = address.transport() else {
-        return Err(zbus::Error::Unsupported);
-    };
-    let stream = match unix.path() {
-        UnixSocket::File(path) => UnixStream::connect(path)?,
-        UnixSocket::Abstract(name) => {
-            UnixStream::connect_addr(&SocketAddr::from_abstract_name(name.as_encoded_bytes())?)?
-        }
-        _ => return Err(zbus::Error::Unsupported),
-    };
-    Ok(stream)
-}
-
-fn connect() -> zbus::Result<Connection> {
-    Builder::async_io_unix_stream(system_socket()?).build()
-}
-
 #[derive(Default)]
 pub struct Bus {
     connection: OnceLock<Option<Connection>>,
@@ -177,16 +149,18 @@ pub struct Bus {
 
 impl Bus {
     /// The connection, made on first use. `None` when there is no system
-    /// bus to connect to; that is not retried while the panel is open.
+    /// bus to connect to; that is not retried for as long as this lives.
     pub fn connection(&self) -> Option<&Connection> {
         self.connection
-            .get_or_init(|| match connect() {
-                Ok(connection) => Some(connection),
-                Err(error) => {
-                    eprintln!("sengi-quick: no system bus: {error}");
-                    None
-                }
-            })
+            .get_or_init(
+                || match connect::system().and_then(|builder| builder.build()) {
+                    Ok(connection) => Some(connection),
+                    Err(error) => {
+                        eprintln!("{}: no system bus: {error}", crate::program_name());
+                        None
+                    }
+                },
+            )
             .as_ref()
     }
 
@@ -299,7 +273,9 @@ impl Bus {
                         }
                     });
                 }
-                Err(error) => eprintln!("sengi-quick: cannot watch {service}: {error}"),
+                Err(error) => {
+                    eprintln!("{}: cannot watch {service}: {error}", crate::program_name())
+                }
             }
         }
     }

@@ -1,6 +1,6 @@
 //! Bluetooth as the panel sees it. `system::bluez` fills this in.
 
-use crate::text::isolate;
+use sengi_text::isolate;
 
 /// More connected devices than this are counted, not named.
 pub const MAX_DEVICES: usize = 8;

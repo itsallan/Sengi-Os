@@ -27,7 +27,7 @@ pub fn forbid_core_dumps() {
     // memory of ours.
     let result = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) };
     if result != 0 {
-        eprintln!("sengi-quick: could not turn off core dumps");
+        eprintln!("{}: could not turn off core dumps", crate::program_name());
     }
 }
 

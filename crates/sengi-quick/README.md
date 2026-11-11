@@ -42,7 +42,7 @@ is tested without a bus or a window.
 - A new open network asks first: the row says it is not encrypted and
   offers a Join button.
 - The passphrase is never logged, put on a command line or written to disk
-  by the panel; iwd stores it. `src/secret.rs` says exactly which copies in
+  by the panel; iwd stores it. sengi-system's `secret.rs` says exactly which copies in
   memory are overwritten and which are only freed. The process cannot be
   core-dumped.
 - Names of networks and Bluetooth devices are chosen by strangers. They
@@ -61,7 +61,7 @@ Not done in this release:
   are listed, and say they have to be set up first.
 - A second Wi-Fi adapter: the first station device is the one shown.
 - Bluetooth pairing. Devices paired by other means are shown when
-  connected. The place for it is marked in `src/system/bluez.rs` and
+  connected. The place for it is marked in sengi-system's `bluez.rs` and
   `ui/quick.slint`.
 - More than one battery: the first system battery is the one shown.
 - Lifting an rfkill block: the tile says a radio is blocked but does not

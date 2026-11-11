@@ -7,10 +7,10 @@
 
 use std::sync::Arc;
 
-use super::bus::{self, Bus, Listing, Object};
 use crate::bluetooth::{Bluetooth, MAX_DEVICES};
+use crate::bus::{self, Bus, Listing, Object};
+use crate::names;
 use crate::services::{BluetoothService, Notify};
-use crate::text;
 
 const SERVICE: &str = "org.bluez";
 const ADAPTER: &str = "org.bluez.Adapter1";
@@ -44,7 +44,7 @@ pub fn reading(objects: &[Object]) -> Bluetooth {
             }
             // The alias is the name the user gave it, or else its own.
             let name = bus::text(props, "Alias").or_else(|| bus::text(props, "Name"));
-            Some(text::name(name.unwrap_or_default(), "Unnamed device"))
+            Some(names::name(name.unwrap_or_default(), "Unnamed device"))
         })
         .take(MAX_DEVICES)
         .collect();
@@ -81,7 +81,7 @@ impl BluetoothService for Bluez {
         // Fails when the radio is blocked by a hardware switch or rfkill;
         // the tile then shows it still off.
         if let Err(error) = self.bus.set_flag(SERVICE, path, ADAPTER, "Powered", on) {
-            eprintln!("sengi-quick: switching Bluetooth: {error}");
+            eprintln!("{}: switching Bluetooth: {error}", crate::program_name());
         }
     }
 
@@ -92,9 +92,9 @@ impl BluetoothService for Bluez {
 
 #[cfg(test)]
 mod tests {
-    use super::bus::testing::{object, path, text};
-    use super::bus::Prop;
     use super::*;
+    use crate::bus::testing::{object, path, text};
+    use crate::bus::Prop;
 
     fn hci(index: u32, powered: bool) -> Object {
         object(

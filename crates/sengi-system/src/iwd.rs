@@ -12,10 +12,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use zbus::export::serde::{Serialize, Serializer};
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, Signature, Type};
 
-use super::bus::{self, Bus, Listing, Object};
+use crate::bus::{self, Bus, Listing, Object};
+use crate::names;
 use crate::secret::Secret;
 use crate::services::{Notify, WifiService};
-use crate::text;
 use crate::wifi::{self, JoinError, Link, Network, Request, Security, Wifi};
 
 const SERVICE: &str = "net.connman.iwd";
@@ -102,7 +102,7 @@ pub fn reading(objects: &[Object], device: &Device, ordered: &[(String, i16)]) -
                 .interface(NETWORK)?;
             Some(Network {
                 id: path.clone(),
-                name: text::name(bus::text(props, "Name")?, "Unnamed network"),
+                name: names::name(bus::text(props, "Name")?, "Unnamed network"),
                 security: Security::from_iwd(bus::text(props, "Type").unwrap_or_default()),
                 known: bus::path(props, "KnownNetwork").is_some(),
                 connected: bus::flag(props, "Connected").unwrap_or(false),
@@ -379,7 +379,7 @@ impl WifiService for Iwd {
                 .set_flag(SERVICE, &device.path, DEVICE, "Powered", true);
         }
         if let Err(error) = result {
-            eprintln!("sengi-quick: switching Wi-Fi: {error}");
+            eprintln!("{}: switching Wi-Fi: {error}", crate::program_name());
         }
     }
 
@@ -404,7 +404,7 @@ impl WifiService for Iwd {
         // only way out would be to forget the network by hand.
         let registered = self.register_agent();
         if let Err(error) = &registered {
-            eprintln!("sengi-quick: registering with iwd: {error}");
+            eprintln!("{}: registering with iwd: {error}", crate::program_name());
         }
         slot(&self.slot).asked_in_vain(&request.id);
         let mut ticket = None;
@@ -436,9 +436,9 @@ impl WifiService for Iwd {
 
 #[cfg(test)]
 mod tests {
-    use super::bus::testing::{object, path, text};
-    use super::bus::Prop;
     use super::*;
+    use crate::bus::testing::{object, path, text};
+    use crate::bus::Prop;
 
     const WLAN: &str = "/net/connman/iwd/0/4";
 
@@ -693,7 +693,7 @@ mod tests {
         };
         assert_eq!(networks[0].name, "FreeiFiW");
         assert_eq!(networks[1].name, "Unnamed network");
-        assert_eq!(networks[2].name.chars().count(), text::MAX_NAME_CHARS);
+        assert_eq!(networks[2].name.chars().count(), names::MAX_NAME_CHARS);
     }
 
     #[test]

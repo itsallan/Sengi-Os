@@ -7,14 +7,14 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
 
-use crate::backlight::Backlight;
-use crate::battery::{Battery, Charge};
-use crate::bluetooth::Bluetooth;
-use crate::services::{
+use sengi_system::backlight::Backlight;
+use sengi_system::battery::{Battery, Charge};
+use sengi_system::bluetooth::Bluetooth;
+use sengi_system::services::{
     AudioService, BluetoothService, DndService, Hardware, Machine, Notify, Services, WifiService,
 };
-use crate::volume::Volume;
-use crate::wifi::{self, JoinError, Link, Network, Request, Security, Wifi};
+use sengi_system::volume::Volume;
+use sengi_system::wifi::{self, JoinError, Link, Network, Request, Security, Wifi};
 
 pub const SCENARIOS: &[&str] = &[
     "connected",
@@ -223,7 +223,7 @@ impl DndService for FakeDnd {
 fn network(name: &str, security: Security, known: bool, signal: i16) -> Network {
     Network {
         id: format!("/demo/{name}"),
-        name: crate::text::name(name, "Unnamed network"),
+        name: sengi_system::names::name(name, "Unnamed network"),
         security,
         known,
         connected: false,
@@ -357,8 +357,8 @@ pub fn scenario(name: &str) -> Option<Demo> {
             // was turned off with the keyboard.
             wifi_on = false;
             bluetooth = Bluetooth::Off;
-            hardware.wifi_block = crate::services::Block::Hard;
-            hardware.bluetooth_block = crate::services::Block::Soft;
+            hardware.wifi_block = sengi_system::services::Block::Hard;
+            hardware.bluetooth_block = sengi_system::services::Block::Soft;
         }
         "desktop" => {
             wifi_present = false;
@@ -390,7 +390,7 @@ pub fn scenario(name: &str) -> Option<Demo> {
             ];
             bluetooth = Bluetooth::On {
                 devices: vec![
-                    crate::text::name(&"An extremely long device name ".repeat(4), ""),
+                    sengi_system::names::name(&"An extremely long device name ".repeat(4), ""),
                     "Second".to_string(),
                     "Third".to_string(),
                 ],
@@ -429,7 +429,7 @@ pub fn scenario(name: &str) -> Option<Demo> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::secret::Secret;
+    use sengi_system::secret::Secret;
 
     #[test]
     fn every_listed_scenario_exists() {

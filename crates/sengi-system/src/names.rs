@@ -6,11 +6,9 @@
 /// An SSID is at most 32 bytes; device names are cut to the same length.
 pub const MAX_NAME_CHARS: usize = 32;
 
-pub use sengi_text::{isolate, line as clean};
-
 /// A name for display, or `fallback` when nothing printable is left of it.
 pub fn name(raw: &str, fallback: &str) -> String {
-    let cleaned = clean(raw, MAX_NAME_CHARS);
+    let cleaned = sengi_text::line(raw, MAX_NAME_CHARS);
     if cleaned.is_empty() {
         fallback.to_string()
     } else {

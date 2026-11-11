@@ -13,11 +13,11 @@ use std::time::{Duration, Instant};
 
 use sengi_layer::{Anchor, App, Config, KeyboardMode, Layer};
 use sengi_quick::cli::{self, Action};
+use sengi_quick::commands;
 use sengi_quick::instance::{self, Claim, Instance};
 use sengi_quick::panel::Panel;
-use sengi_quick::services::{Event, Services, Workers};
 use sengi_quick::ui::{self, Exit, QuickWindow};
-use sengi_quick::{commands, system};
+use sengi_system::services::{Event, Services, Workers};
 
 /// Set to have the panel say on standard error how long each step of
 /// starting up took.
@@ -35,7 +35,8 @@ type Staging = Box<dyn FnOnce(&QuickWindow)>;
 fn main() -> ExitCode {
     let started = Instant::now();
     // First, before a passphrase can be anywhere in memory.
-    sengi_quick::secret::forbid_core_dumps();
+    sengi_system::set_program_name("sengi-quick");
+    sengi_system::secret::forbid_core_dumps();
     let action = match cli::parse(std::env::args().skip(1)) {
         Ok(action) => action,
         Err(message) => {
@@ -52,7 +53,7 @@ fn main() -> ExitCode {
             println!("sengi-quick {}", env!("CARGO_PKG_VERSION"));
             return ExitCode::SUCCESS;
         }
-        Action::Toggle => (system::services(), Box::new(|_| {})),
+        Action::Toggle => (sengi_system::real_services(), Box::new(|_| {})),
         #[cfg(debug_assertions)]
         Action::Demo(name) => match sengi_quick::demo::scenario(&name) {
             Some(demo) => {
