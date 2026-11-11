@@ -73,8 +73,13 @@ fn show(invocation: &Invocation) -> u8 {
     let Some((source, session)) = load(invocation, &env) else {
         return run::FAILED;
     };
+    // Loading can be slow when a menu's lines come from a slow command. If
+    // the key was pressed again meanwhile, the panel is already unwanted.
+    if instance.close_requested() {
+        return run::DISMISSED;
+    }
 
-    match open(invocation, &env, instance, session) {
+    match open(invocation, &instance, session) {
         Ok(outcome) => run::complete(outcome, source, &env, std::io::stdout()),
         Err(error) => {
             eprintln!("sengi-launcher: {error}");
@@ -90,21 +95,16 @@ fn pixels(length: f32) -> u32 {
 /// Show the panel and run until a result is picked or it is dismissed.
 fn open(
     invocation: &Invocation,
-    env: &Env,
-    instance: Instance,
+    instance: &Instance,
     session: Session,
 ) -> Result<Outcome, sengi_layer::Error> {
     let app = App::new()?;
     let handle = app.handle();
 
     // A later invocation asks us to close through the instance socket.
-    let replaced = Rc::new(Cell::new(false));
     let close = handle.channel({
-        let (handle, replaced) = (handle.clone(), replaced.clone());
-        move |()| {
-            replaced.set(true);
-            handle.quit();
-        }
+        let handle = handle.clone();
+        move |()| handle.quit()
     })?;
     instance.on_close_request(move || {
         let _ = close.send(());
@@ -120,7 +120,7 @@ fn open(
     let prompt = invocation.prompt().to_owned();
     let compact = invocation.compact();
     let mut session = Some(session);
-    let result = app.run(config, {
+    app.run(config, {
         let outcome = outcome.clone();
         move |context| {
             let session = session.take().ok_or("the launcher has a single surface")?;
@@ -142,12 +142,6 @@ fn open(
             )?;
             Ok(window)
         }
-    });
-
-    // If we were asked to close, the socket may already be someone else's.
-    if !replaced.get() {
-        instance::release(env.runtime_dir.as_deref());
-    }
-    result?;
+    })?;
     Ok(outcome.get())
 }
