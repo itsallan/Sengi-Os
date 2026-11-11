@@ -19,6 +19,10 @@
 //!                             callback and no damage as fast as callbacks
 //!                             come; prints callbacks per second, which
 //!                             must not exceed the refresh rate
+//!     misbehave flood         map a window, then commit with nothing
+//!                             attached and no frame callback, a hundred at
+//!                             a time, for three seconds; prints how many
+//!                             the compositor got through
 
 use std::{
     error::Error,
@@ -216,6 +220,21 @@ fn lock_modes(mode: &str) -> Result<bool, Box<dyn Error>> {
             let rate = f64::from(client.seen.frames - before) / start.elapsed().as_secs_f64();
             println!("spin: {commits} empty commits, {rate:.0} frame callbacks a second");
         }
+        "flood" => {
+            let (surface, _toplevel) = client.window(0xff3a_77d9)?;
+            client.wait(Duration::from_millis(500), |_| false);
+            let start = Instant::now();
+            let mut commits = 0u32;
+            while start.elapsed() < Duration::from_secs(3) {
+                for _ in 0..100 {
+                    surface.commit();
+                }
+                commits += 100;
+                // Wait for the compositor, or the socket would fill up.
+                client.roundtrip()?;
+            }
+            println!("flood: {commits} empty commits in three seconds");
+        }
         _ => return Ok(false),
     }
     Ok(true)
@@ -228,7 +247,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     if mode != "forged-move" && mode != "unmap" {
         return Err(
-            "usage: misbehave forged-move|unmap|locker|steal-unlock|fake-lock-surface|spin".into(),
+            "usage: misbehave forged-move|unmap|locker|steal-unlock|fake-lock-surface|spin|flood"
+                .into(),
         );
     }
 
