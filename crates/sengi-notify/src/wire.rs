@@ -169,7 +169,7 @@ impl<'de: 'a, 'a> Deserialize<'de> for Scalar<'a> {
 mod tests {
     use std::collections::HashMap;
 
-    use zbus::zvariant::serialized::Context;
+    use zbus::zvariant::serialized::{Context, Data};
     use zbus::zvariant::{to_bytes, Value, LE};
 
     use super::*;
@@ -262,6 +262,116 @@ mod tests {
         map.insert("category", Value::U32(7));
         map.insert("desktop-entry", Value::Value(Box::new(Value::from("x"))));
         assert_eq!(hints(&map), Hints::default());
+    }
+
+    /// A deterministic stand-in for random bytes.
+    fn noise(seed: u32) -> impl FnMut() -> u8 {
+        let mut state = seed.wrapping_mul(2_654_435_761).max(1);
+        move || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (state >> 8) as u8
+        }
+    }
+
+    fn sample_hints() -> Vec<u8> {
+        let mut nested = HashMap::new();
+        nested.insert("deep", Value::from(vec!["a", "b"]));
+        let mut map = HashMap::new();
+        map.insert("urgency", Value::U8(2));
+        map.insert("category", Value::from("im.received"));
+        map.insert(
+            "image-data",
+            Value::from((2i32, 2i32, 8i32, true, vec![1u8; 16])),
+        );
+        map.insert("x-dict", Value::from(nested));
+        to_bytes(Context::new_dbus(LE, 0), &map)
+            .expect("the hints encode")
+            .bytes()
+            .to_vec()
+    }
+
+    fn sample_actions() -> Vec<u8> {
+        let list: &[&str] = &["default", "Open", "reply", "Reply"];
+        to_bytes(Context::new_dbus(LE, 0), &list)
+            .expect("the actions encode")
+            .bytes()
+            .to_vec()
+    }
+
+    /// What was read, in a form that can be compared; `None` if refused.
+    type Read = fn(&[u8]) -> Option<String>;
+
+    fn read_hints(bytes: &[u8]) -> Option<String> {
+        let data = Data::new(bytes, Context::new_dbus(LE, 0));
+        let (read, _) = data.deserialize::<WireHints>().ok()?;
+        Some(format!("{read:?}"))
+    }
+
+    fn read_actions(bytes: &[u8]) -> Option<String> {
+        let data = Data::new(bytes, Context::new_dbus(LE, 0));
+        let (read, _) = data.deserialize::<Actions<'_>>().ok()?;
+        Some(format!("{read:?}"))
+    }
+
+    /// Input cut short is refused. The one exception is the very last
+    /// byte when that is the terminator of a string, which the decoder
+    /// does not insist on; what is read then is still the whole message.
+    fn cut_short(whole: &[u8], read: Read) {
+        let full = read(whole);
+        assert!(full.is_some(), "the whole input was refused");
+        for cut in 0..whole.len() {
+            if let Some(partial) = read(&whole[..cut]) {
+                assert_eq!(cut, whole.len() - 1, "cut at {cut} was accepted");
+                assert_eq!(Some(partial), full);
+            }
+        }
+    }
+
+    #[test]
+    fn hints_cut_short_are_refused() {
+        cut_short(&sample_hints(), read_hints);
+    }
+
+    #[test]
+    fn actions_cut_short_are_refused() {
+        cut_short(&sample_actions(), read_actions);
+    }
+
+    #[test]
+    fn damaged_input_is_refused_or_read_but_never_panics() {
+        for (whole, read) in [
+            (sample_hints(), read_hints as Read),
+            (sample_actions(), read_actions as Read),
+        ] {
+            // Every byte in turn replaced by every kind of wrong value.
+            for at in 0..whole.len() {
+                for wrong in [0x00, 0x01, 0x7f, 0x80, 0xff, b'v', b'(', b'a'] {
+                    let mut damaged = whole.clone();
+                    damaged[at] = wrong;
+                    read(&damaged);
+                }
+            }
+            // And plain noise, of every length up to the real thing.
+            for seed in 0..500 {
+                let mut next = noise(seed);
+                let length = seed as usize % (whole.len() + 1);
+                let garbage: Vec<u8> = (0..length).map(|_| next()).collect();
+                read(&garbage);
+            }
+        }
+    }
+
+    #[test]
+    fn lengths_that_promise_more_than_is_there_are_refused() {
+        // An array said to be four gigabytes long, with nothing in it.
+        assert!(read_actions(&[0xff, 0xff, 0xff, 0xff]).is_none());
+        assert!(read_hints(&[0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0]).is_none());
+        // A string inside the array that runs past the end.
+        assert!(read_actions(&[8, 0, 0, 0, 0xff, 0, 0, 0, b'a', 0, 0, 0]).is_none());
+        // Text that is not UTF-8.
+        assert!(read_actions(&[8, 0, 0, 0, 2, 0, 0, 0, 0xc3, 0x28, 0, 0]).is_none());
     }
 
     #[test]
