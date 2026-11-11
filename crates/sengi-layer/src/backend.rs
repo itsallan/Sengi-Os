@@ -41,6 +41,7 @@ use crate::convert::{
 };
 use crate::outputs::{plan, retry_delay};
 use crate::platform::QuitGuard;
+use crate::surface::{SurfaceHandle, SurfaceShared};
 use crate::{Context, Error, Handle};
 
 /// How often to look again while something animates without drawing, so
@@ -56,6 +57,11 @@ pub(crate) struct Shared {
     /// Counts changes to the size, margins, exclusive zone and keyboard
     /// mode, so each surface can tell whether it has sent the latest.
     pub revision: u64,
+    /// Counts app-wide size changes, so that a surface's own size is
+    /// dropped when a newer app-wide one arrives.
+    pub size_stamp: u64,
+    /// Some surface has asked for a size of its own.
+    pub size_overridden: bool,
     pub quit: bool,
 }
 
@@ -78,6 +84,18 @@ pub(crate) fn retire(component: Box<dyn Instance>, quits: &QuitGuard) {
     quits.hold(|| component.retire());
 }
 
+impl Shared {
+    /// Sets the app-wide size, which takes over from any surface's own.
+    pub(crate) fn set_size(&mut self, size: (u32, u32)) {
+        if self.config.size != size || self.size_overridden {
+            self.revision += 1;
+        }
+        self.config.size = size;
+        self.size_stamp += 1;
+        self.size_overridden = false;
+    }
+}
+
 pub(crate) type Built = (Box<dyn Instance>, Rc<MinimalSoftwareWindow>);
 pub(crate) type Builder = Box<dyn FnMut(&Context) -> Result<Built, Box<dyn std::error::Error>>>;
 
@@ -94,8 +112,11 @@ struct Surface {
     height: u32,
     scale: u32,
     configured: bool,
-    /// The `Shared::revision` the compositor was last told about.
-    sent: u64,
+    /// What the instance has asked for through its `SurfaceHandle`.
+    own: Rc<RefCell<SurfaceShared>>,
+    /// The `Shared::revision` and `SurfaceShared::revision` the compositor
+    /// was last told about.
+    sent: (u64, u64),
     /// A frame was committed and the compositor has not yet said it is
     /// time for the next. Nothing is drawn meanwhile, which paces drawing
     /// to the display and stops it while the surface cannot be seen.
@@ -184,10 +205,10 @@ impl From<KeyboardMode> for KeyboardInteractivity {
 }
 
 /// Sends everything about the surface that can change while it is mapped.
-fn send_geometry(layer: &LayerSurface, config: &Config) {
+fn send_geometry(layer: &LayerSurface, config: &Config, size: (u32, u32)) {
     layer.set_layer(config.layer.into());
     layer.set_anchor(config.anchor.into());
-    layer.set_size(config.size.0, config.size.1);
+    layer.set_size(size.0, size.1);
     layer.set_margin(
         config.margins.top,
         config.margins.right,
@@ -258,8 +279,13 @@ impl State {
             .as_ref()
             .and_then(|output| self.outputs.info(output))
             .and_then(|info| info.name);
+        let own = Rc::new(RefCell::new(SurfaceShared::new()));
         let context = Context {
             handle: self.handle.clone(),
+            surface: SurfaceHandle {
+                app: self.shared.clone(),
+                own: own.clone(),
+            },
             output_name,
         };
         let builder = self
@@ -276,7 +302,8 @@ impl State {
             height: 0,
             scale: 1,
             configured: false,
-            sent: 0,
+            own,
+            sent: (0, 0),
             frame_pending: false,
             closes: 0,
             retry: None,
@@ -297,13 +324,16 @@ impl State {
             Some(config.namespace.clone()),
             surface.output.as_ref(),
         );
-        send_geometry(&layer, config);
+        let own = surface.own.borrow();
+        send_geometry(&layer, config, own.wanted_size(&shared));
         layer.commit();
         surface.layer = Some(layer);
-        surface.sent = shared.revision;
+        surface.sent = (shared.revision, own.revision);
         // A new surface starts at scale 1 until the compositor says more.
         surface.scale = 1;
         surface.frame_pending = false;
+        drop(own);
+        surface.own.borrow_mut().scale = 1;
     }
 
     /// Takes the instance off the screen but keeps its component.
@@ -325,6 +355,7 @@ impl State {
     fn wants_mapping(&self, index: usize) -> bool {
         let surface = &self.surfaces[index];
         self.shown
+            && surface.own.borrow().visible
             && surface.layer.is_none()
             && surface.retry.is_none()
             && (surface.output.is_some() || self.outputs.outputs().next().is_some())
@@ -450,24 +481,23 @@ impl State {
         // Before the commit that asks for keyboard focus: a surface focused
         // while there is no wl_keyboard gets no enter event.
         self.bind_keyboard();
-        let visible = self.shared.borrow().visible;
-        if visible != self.shown {
-            self.shown = visible;
-            for index in 0..self.surfaces.len() {
-                if !visible {
-                    self.unmap(index);
-                } else if self.wants_mapping(index) {
-                    self.map(index);
-                }
+        self.shown = self.shared.borrow().visible;
+        for index in 0..self.surfaces.len() {
+            if !(self.shown && self.surfaces[index].own.borrow().visible) {
+                self.unmap(index);
+            } else if self.wants_mapping(index) {
+                self.map(index);
             }
         }
         let shared = self.shared.borrow();
         for surface in &mut self.surfaces {
             if let Some(layer) = &surface.layer {
-                if surface.sent != shared.revision {
-                    send_geometry(layer, &shared.config);
+                let own = surface.own.borrow();
+                let latest = (shared.revision, own.revision);
+                if surface.sent != latest {
+                    send_geometry(layer, &shared.config, own.wanted_size(&shared));
                     layer.commit();
-                    surface.sent = shared.revision;
+                    surface.sent = latest;
                 }
             }
         }
@@ -632,6 +662,7 @@ impl CompositorHandler for State {
         let factor = factor.max(1) as u32;
         if factor != self.surfaces[index].scale {
             self.surfaces[index].scale = factor;
+            self.surfaces[index].own.borrow_mut().scale = factor;
             self.resize(index);
         }
     }
@@ -713,11 +744,12 @@ impl LayerShellHandler for State {
             return;
         };
         // Zero from the compositor means the choice is ours.
-        let requested = self.shared.borrow().config.size;
-        let (width, height) = configure.new_size;
         let surface = &mut self.surfaces[index];
+        let requested = surface.own.borrow().wanted_size(&self.shared.borrow());
+        let (width, height) = configure.new_size;
         surface.width = if width != 0 { width } else { requested.0 };
         surface.height = if height != 0 { height } else { requested.1 };
+        surface.own.borrow_mut().configured = (surface.width, surface.height);
         surface.configured = true;
         surface.closes = 0;
         // A new size is drawn at once rather than after the next callback.

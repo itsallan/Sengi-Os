@@ -73,6 +73,7 @@ mod config;
 mod convert;
 mod outputs;
 mod platform;
+mod surface;
 
 use std::cell::RefCell;
 use std::fmt;
@@ -99,6 +100,7 @@ use backend::{Builder, Instance, Shared, State};
 use platform::{LayerPlatform, ProxyEvent, QuitGuard, Unclaimed};
 
 pub use config::{Anchor, Config, ConfigError, KeyboardMode, Layer, Margins, Outputs};
+pub use surface::SurfaceHandle;
 /// The version of wayland-client the connection from [`Handle::connection`]
 /// belongs to. Use this instead of a dependency of your own so the types
 /// match.
@@ -261,6 +263,8 @@ impl App {
             config: Config::new(""),
             visible: true,
             revision: 1,
+            size_stamp: 0,
+            size_overridden: false,
             quit: false,
         }));
         let handle = Handle {
@@ -341,13 +345,22 @@ fn claim(unclaimed: &Unclaimed, wanted: &slint::Window) -> Option<Rc<MinimalSoft
 /// What the build closure is told about the instance it is building.
 pub struct Context {
     pub(crate) handle: Handle,
+    pub(crate) surface: SurfaceHandle,
     pub(crate) output_name: Option<String>,
 }
 
 impl Context {
-    /// The app's handle; clone it into callbacks.
+    /// The app's handle; clone it into callbacks. What it changes applies
+    /// to every surface of the app.
     pub fn handle(&self) -> Handle {
         self.handle.clone()
+    }
+
+    /// The handle for the surface of the instance being built. Use it to
+    /// size the surface from the component, and for anything that should
+    /// affect this instance only.
+    pub fn surface(&self) -> SurfaceHandle {
+        self.surface.clone()
     }
 
     /// The name of the output this instance is for, such as `eDP-1`, when
@@ -378,18 +391,19 @@ impl Handle {
     /// Asks for a new size in logical pixels; 0 stretches along that axis
     /// and needs both edges of the axis anchored. The component is resized
     /// when the compositor confirms, usually within a frame.
+    ///
+    /// This replaces any size a surface was given on its own through
+    /// [`SurfaceHandle::set_size`].
     pub fn set_size(&self, width: u32, height: u32) -> Result<(), ConfigError> {
         let mut shared = self.shared.borrow_mut();
         config::validate_size(shared.config.anchor, (width, height))?;
-        if shared.config.size != (width, height) {
-            shared.config.size = (width, height);
-            shared.revision += 1;
-        }
+        shared.set_size((width, height));
         Ok(())
     }
 
-    /// The size last asked for, as passed to [`Config::size`] or
-    /// [`Handle::set_size`].
+    /// The app-wide size last asked for, as passed to [`Config::size`] or
+    /// [`Handle::set_size`]. For the size a surface really has, see
+    /// [`SurfaceHandle::size`].
     pub fn size(&self) -> (u32, u32) {
         self.shared.borrow().config.size
     }
@@ -413,11 +427,11 @@ impl Handle {
     ) -> Result<(), ConfigError> {
         config::validate_size(anchor, (width, height))?;
         let mut shared = self.shared.borrow_mut();
-        if shared.config.anchor != anchor || shared.config.size != (width, height) {
+        if shared.config.anchor != anchor {
             shared.config.anchor = anchor;
-            shared.config.size = (width, height);
             shared.revision += 1;
         }
+        shared.set_size((width, height));
         Ok(())
     }
 
