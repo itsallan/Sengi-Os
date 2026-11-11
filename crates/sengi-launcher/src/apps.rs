@@ -64,6 +64,32 @@ impl Apps {
     }
 }
 
+/// Programs that only start the real one. As search words they would match
+/// every app launched through them.
+const WRAPPERS: &[&str] = &[
+    "env",
+    "sh",
+    "bash",
+    "dash",
+    "flatpak",
+    "snap",
+    "gtk-launch",
+    "xdg-open",
+    "gio",
+    "pkexec",
+    "sudo",
+    "nice",
+    "systemd-run",
+    "dbus-launch",
+    "dbus-run-session",
+    "python",
+    "python3",
+    "perl",
+    "java",
+    "wine",
+    "sengi-run",
+];
+
 fn candidate(entry: &DesktopEntry, usage: &Usage, now: u64) -> Candidate {
     let mut keywords = entry.keywords.clone();
     // Let people type the command they know, e.g. "foot" for Terminal.
@@ -88,7 +114,7 @@ fn program_name(exec: &str) -> Option<String> {
         .file_name()?
         .to_string_lossy()
         .into_owned();
-    (!name.is_empty()).then_some(name)
+    (!name.is_empty() && !WRAPPERS.contains(&name.as_str())).then_some(name)
 }
 
 #[cfg(test)]
@@ -221,5 +247,31 @@ mod tests {
             assert!(apps.launch(index, &env, 100).is_err());
         }
         assert!(!env.usage_file().exists());
+    }
+
+    #[test]
+    fn wrapper_commands_are_not_search_words() {
+        let tmp = TempDir::new();
+        write_entry(
+            &tmp,
+            "org.example.Paint.desktop",
+            "Name=Paint\nExec=/usr/bin/flatpak run --branch=stable org.example.Paint\n",
+        );
+        write_entry(
+            &tmp,
+            "notes.desktop",
+            "Name=Notes\nExec=env GDK_BACKEND=wayland notes\n",
+        );
+        write_entry(
+            &tmp,
+            "script.desktop",
+            "Name=Script\nExec=sh -c \"script\"\n",
+        );
+        write_entry(&tmp, "gimp.desktop", "Name=Image Editor\nExec=gimp %U\n");
+        let apps = Apps::load(&env_in(&tmp));
+        for wrapper in ["flatpak", "env", "sh"] {
+            assert!(order(&apps, wrapper, 0).is_empty(), "{wrapper}");
+        }
+        assert_eq!(order(&apps, "gimp", 0), vec!["Image Editor"]);
     }
 }
