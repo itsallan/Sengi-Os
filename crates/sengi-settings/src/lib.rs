@@ -6,6 +6,7 @@
 //! tested with made-up services. `store` and `settings` are the settings
 //! file, `derive` the files other programs read from it.
 
+pub mod about;
 pub mod app;
 pub mod bluetooth;
 pub mod bus;

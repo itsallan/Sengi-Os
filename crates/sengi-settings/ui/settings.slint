@@ -12,10 +12,11 @@ import { DisplayData, DisplayOutput, DisplayPage } from "pages/display.slint";
 import { PowerData, PowerPage } from "pages/power.slint";
 import { DateTimeData, DateTimePage } from "pages/datetime.slint";
 import { KeyboardData, KeyboardPage } from "pages/keyboard.slint";
+import { AboutData, AboutPage } from "pages/about.slint";
 import { NotificationsData, NotificationsPage } from "pages/notifications.slint";
 import { PointerData, PointerSide, PointerPage } from "pages/pointer.slint";
 
-export { Item, InfoRow, DialogSpec, NotificationsData, PointerData, PointerSide, KeyboardData, PowerData, DateTimeData, NetworkData, BluetoothData, SoundData, SoundSide, DisplayData, DisplayOutput }
+export { Item, InfoRow, DialogSpec, AboutData, NotificationsData, PointerData, PointerSide, KeyboardData, PowerData, DateTimeData, NetworkData, BluetoothData, SoundData, SoundSide, DisplayData, DisplayOutput }
 
 export struct PageEntry {
     name: string,
@@ -196,6 +197,7 @@ export component SettingsWindow inherits Window {
         if root.page == "keyboard": KeyboardPage { }
         if root.page == "mouse": PointerPage { }
         if root.page == "notifications": NotificationsPage { }
+        if root.page == "about": AboutPage { }
     }
 
     if ChooserState.open: ChooserLayer {

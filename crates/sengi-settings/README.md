@@ -247,6 +247,15 @@ screen. Both belong to the notification service and are reached through
 its command, `sengi-notify --dnd on|off|status` and `sengi-notify
 --dismiss-all`; the page says when the service is missing or silent.
 
+### About
+
+The system's name and version from `/etc/os-release`, the kernel, the
+processor, installed memory, the graphics adapters (maker and driver; the
+image has no PCI database to name the model), the disk, and the memory
+in use at this moment: `MemTotal` less `MemAvailable`, the figure the
+idle budget is measured in. It is measured when the page opens and when
+asked, not on a timer.
+
 ## Building and testing
 
     cargo build -p sengi-settings

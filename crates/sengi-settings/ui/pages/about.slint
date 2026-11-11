@@ -1,0 +1,80 @@
+// The About page: what this is and what it runs on.
+
+import { Tokens, SengiText, SengiLabel, SengiButton } from "components.slint";
+import { InfoRow, InfoCard, Page, PageColumn, Card, SettingRow, RowValue, SectionLabel, Gap } from "../kit.slint";
+
+export global AboutData {
+    in property <string> name: "Sengi OS";
+    in property <string> version;
+    in property <[InfoRow]> system;
+    in property <[InfoRow]> hardware;
+    in property <string> memory-used;
+
+    callback refresh();
+}
+
+export component AboutPage inherits Page {
+    title: "About";
+    content-height: column.preferred-height;
+
+    column := PageColumn {
+        Card {
+            VerticalLayout {
+                padding: Tokens.space-lg;
+                spacing: Tokens.space-xs;
+
+                SengiText {
+                    text: AboutData.name;
+                    font-size: Tokens.font-size-xl;
+                    font-weight: Tokens.font-weight-bold;
+                    overflow: elide;
+                }
+
+                SengiText {
+                    text: AboutData.version == "" ? "Version unknown" : "Version " + AboutData.version;
+                    color: Tokens.color-text-muted;
+                    overflow: elide;
+                }
+            }
+        }
+
+        InfoCard {
+            rows: AboutData.system;
+        }
+
+        Gap { }
+
+        SectionLabel {
+            text: "This computer";
+        }
+
+        InfoCard {
+            rows: AboutData.hardware;
+        }
+
+        Gap { }
+
+        SectionLabel {
+            text: "Right now";
+        }
+
+        Card {
+            SettingRow {
+                title: "Memory in use";
+                detail: "What programs and the system hold, not counting files the kernel keeps to hand";
+
+                RowValue {
+                    text: AboutData.memory-used;
+                }
+
+                VerticalLayout {
+                    alignment: center;
+                    SengiButton {
+                        text: "Measure again";
+                        clicked => { AboutData.refresh(); }
+                    }
+                }
+            }
+        }
+    }
+}
