@@ -97,6 +97,7 @@
 mod backend;
 mod config;
 mod convert;
+mod frames;
 mod outputs;
 mod platform;
 mod surface;
@@ -117,7 +118,6 @@ use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::RegistryState;
 use smithay_client_toolkit::seat::SeatState;
 use smithay_client_toolkit::shell::wlr_layer::LayerShell;
-use smithay_client_toolkit::shm::slot::SlotPool;
 use smithay_client_toolkit::shm::Shm;
 use wayland_client::globals::registry_queue_init;
 use wayland_client::Connection;
@@ -131,9 +131,6 @@ pub use surface::{Output, Rect, SurfaceHandle};
 /// belongs to. Use this instead of a dependency of your own so the types
 /// match.
 pub use wayland_client;
-
-/// Room for a few frames of a bar; the pool grows when a frame needs more.
-const INITIAL_POOL: usize = 256 * 1024;
 
 /// Why a layer-shell program could not start or had to stop.
 #[derive(Debug)]
@@ -255,8 +252,6 @@ impl App {
             .map_err(|error| wayland("the compositor does not support wlr-layer-shell", error))?;
         let shm = Shm::bind(&globals, &queue_handle)
             .map_err(|error| wayland("the compositor has no wl_shm", error))?;
-        let pool = SlotPool::new(INITIAL_POOL, &shm)
-            .map_err(|error| wayland("could not create a buffer pool", error))?;
 
         let event_loop: EventLoop<'static, State> = EventLoop::try_new()
             .map_err(|error| wayland("could not create the event loop", error))?;
@@ -308,7 +303,6 @@ impl App {
             compositor,
             layer_shell,
             shm,
-            pool,
             queue_handle,
             shared,
             handle.clone(),
@@ -569,23 +563,26 @@ impl Handle {
     /// such as wlr-foreign-toplevel-management.
     ///
     /// Use it from a thread of your own, with an event queue of your own:
-    /// `connection.new_event_queue()`, a registry on that queue, and a loop
-    /// around `blocking_dispatch`. Pass what you learn to the UI through
-    /// [`Handle::channel`]. `examples/soak.rs` does exactly this.
+    /// `connection.new_event_queue()`, your objects created on that queue,
+    /// and [`dispatch_queue`] to run it. Pass what you learn to the UI
+    /// through [`Handle::channel`]. `examples/soak.rs` does exactly this.
     ///
     /// The rules that keep the two threads out of each other's way:
     ///
-    /// * Do not dispatch the queue on the UI thread, and do not create
-    ///   objects on the UI loop's queue; it would never see their events.
-    /// * On the worker, wait only inside `blocking_dispatch`. Never hold a
-    ///   read guard from `prepare_read` while waiting for anything else, a
-    ///   lock or a channel included: every other reader of the connection,
-    ///   the UI loop among them, waits for that guard.
+    /// * Never read the socket from the worker. That rules out
+    ///   `blocking_dispatch`, `roundtrip` and `prepare_read`: the UI loop
+    ///   reads for the whole connection, and a second reader can go to
+    ///   sleep with its own events already waiting on its queue.
+    ///   [`dispatch_queue`] explains the stall and avoids it.
+    /// * Do not dispatch your queue on the UI thread, and do not create
+    ///   objects on the UI loop's queue; it would not know their events.
+    /// * Requests may be sent from any thread. Follow them with
+    ///   `connection.flush()` unless they are made inside the worker, where
+    ///   [`dispatch_queue`] flushes.
     /// * A protocol error on one of the worker's objects ends the whole
     ///   connection and with it the UI. Bind only versions you handle.
-    /// * The worker is not told when the UI loop ends. It finds out when a
-    ///   [`Sender::send`] fails or `blocking_dispatch` returns an error;
-    ///   blocked with nothing arriving, it ends with the process.
+    /// * The worker is not told when the UI loop ends, and receives nothing
+    ///   before it starts. It finds out when a [`Sender::send`] fails.
     pub fn connection(&self) -> Connection {
         self.connection.clone()
     }

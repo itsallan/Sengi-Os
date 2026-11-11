@@ -32,7 +32,7 @@ pub(crate) struct LayerPlatform {
 
 impl Platform for LayerPlatform {
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+        let window = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
         self.unclaimed.borrow_mut().push(window.clone());
         Ok(window)
     }

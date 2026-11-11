@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use slint::platform::software_renderer::{MinimalSoftwareWindow, PremultipliedRgbaColor};
+use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
 use slint::platform::WindowEvent;
 use slint::{LogicalPosition, PhysicalSize, SharedString};
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState, Region};
@@ -25,20 +25,20 @@ use smithay_client_toolkit::shell::wlr_layer::{
     LayerSurface, LayerSurfaceConfigure,
 };
 use smithay_client_toolkit::shell::WaylandSurface;
-use smithay_client_toolkit::shm::slot::SlotPool;
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{
     delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
     delegate_registry, delegate_seat, delegate_shm, registry_handlers,
 };
-use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface};
+use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface};
 use wayland_client::{Connection, QueueHandle};
 
 use crate::config::{Anchor, Config, KeyboardMode, Layer, Outputs};
 use crate::convert::{
     is_modifier, key_repeats, key_text, modifier_fixes, pointer_button, repeats_due, scroll_delta,
-    write_argb8888, ModifierState, RepeatTiming,
+    ModifierState, RepeatTiming,
 };
+use crate::frames::{Area, Frames, Painted};
 use crate::outputs::{plan, retry_delay};
 use crate::platform::QuitGuard;
 use crate::surface::{call_hook, Output, Rect, SurfaceHandle, SurfaceShared};
@@ -131,6 +131,8 @@ struct Surface {
     /// The `Shared::revision` and `SurfaceShared::revision` the compositor
     /// was last told about.
     sent: (u64, u64),
+    /// The buffers the surface is drawn into.
+    frames: Frames,
     /// A frame was committed and the compositor has not yet said it is
     /// time for the next. Nothing is drawn meanwhile, which paces drawing
     /// to the display and stops it while the surface cannot be seen.
@@ -165,7 +167,6 @@ pub(crate) struct State {
     compositor: CompositorState,
     layer_shell: LayerShell,
     shm: Shm,
-    pool: SlotPool,
     queue: QueueHandle<State>,
     pointer: Option<ThemedPointer>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
@@ -178,7 +179,8 @@ pub(crate) struct State {
     /// Whether the surfaces are currently meant to be mapped. Follows
     /// `Shared::visible` once the loop has acted on it.
     shown: bool,
-    pixels: Vec<PremultipliedRgbaColor>,
+    /// Bytes on their way from one buffer to another.
+    scratch: Vec<u8>,
 
     /// The surface with keyboard focus, the window it feeds and the
     /// instance to tell about it.
@@ -269,7 +271,6 @@ impl State {
         compositor: CompositorState,
         layer_shell: LayerShell,
         shm: Shm,
-        pool: SlotPool,
         queue: QueueHandle<State>,
         shared: Rc<RefCell<Shared>>,
         handle: Handle,
@@ -283,7 +284,6 @@ impl State {
             compositor,
             layer_shell,
             shm,
-            pool,
             queue,
             pointer: None,
             keyboard: None,
@@ -293,7 +293,7 @@ impl State {
             builder: None,
             surfaces: Vec::new(),
             shown: false,
-            pixels: Vec::new(),
+            scratch: Vec::new(),
             focus: None,
             held_modifiers: Vec::new(),
             pressed: HashMap::new(),
@@ -348,6 +348,7 @@ impl State {
             was_on_screen: false,
             own,
             sent: (0, 0),
+            frames: Frames::default(),
             frame_pending: None,
             closes: 0,
             retry: None,
@@ -467,6 +468,8 @@ impl State {
             return;
         };
         surface.configured = false;
+        // The buffers belonged to the surface that is gone.
+        surface.frames.clear();
         surface.entered = None;
         surface.was_on_screen = false;
         // No leave events arrive for a surface that is gone.
@@ -551,7 +554,8 @@ impl State {
         surface.window.request_redraw();
     }
 
-    /// Renders a frame if Slint has anything new to show.
+    /// Renders a frame if Slint has anything new to show, and commits it
+    /// if that changed anything on screen.
     fn draw(&mut self, index: usize) {
         let surface = &mut self.surfaces[index];
         let Some(layer) = &surface.layer else {
@@ -563,30 +567,49 @@ impl State {
         if surface.frame_pending.is_some() {
             return;
         }
-        let width = (surface.width * surface.scale) as usize;
-        let height = (surface.height * surface.scale) as usize;
+        let width = (surface.width * surface.scale) as i32;
+        let height = (surface.height * surface.scale) as i32;
 
-        let pixels = &mut self.pixels;
-        let drawn = surface.window.draw_if_needed(|renderer| {
-            pixels.clear();
-            pixels.resize(width * height, PremultipliedRgbaColor::default());
-            renderer.render(pixels, width);
+        let frames = &mut surface.frames;
+        let shm = &self.shm;
+        let scratch = &mut self.scratch;
+        let mut painted = Painted::Unchanged;
+        surface.window.draw_if_needed(|renderer| {
+            painted = frames.paint(shm, scratch, width, height, |pixels, in_full| {
+                // Slint repaints only what changed since the last frame.
+                // A buffer with nothing of that frame in it is painted
+                // whole instead.
+                renderer.set_repaint_buffer_type(if in_full {
+                    RepaintBufferType::NewBuffer
+                } else {
+                    RepaintBufferType::ReusedBuffer
+                });
+                let region = renderer.render(pixels, width as usize);
+                region
+                    .iter()
+                    .map(|(position, size)| Area {
+                        x: position.x,
+                        y: position.y,
+                        width: size.width as i32,
+                        height: size.height as i32,
+                    })
+                    .collect()
+            });
         });
-        if !drawn {
-            return;
-        }
-
-        let stride = width as i32 * 4;
-        let Ok((buffer, canvas)) = self.pool.create_buffer(
-            width as i32,
-            height as i32,
-            stride,
-            wl_shm::Format::Argb8888,
-        ) else {
-            eprintln!("sengi-layer: could not allocate a frame buffer");
-            return;
+        let (buffer, changed) = match painted {
+            Painted::Frame(buffer, changed) => (buffer, changed),
+            Painted::Unchanged => return,
+            Painted::Busy => {
+                // A buffer coming back wakes the loop, and this asks for
+                // the frame again then.
+                surface.window.request_redraw();
+                return;
+            }
+            Painted::Failed => {
+                eprintln!("sengi-layer: could not allocate a frame buffer");
+                return;
+            }
         };
-        write_argb8888(&self.pixels, canvas);
 
         // The scale goes out in the same commit as the buffer it describes.
         // Sent on its own it could be committed against the previous
@@ -594,7 +617,9 @@ impl State {
         // that is a protocol error.
         let wl_surface = layer.wl_surface();
         wl_surface.set_buffer_scale(surface.scale as i32);
-        wl_surface.damage_buffer(0, 0, width as i32, height as i32);
+        for area in changed {
+            wl_surface.damage_buffer(area.x, area.y, area.width, area.height);
+        }
         if buffer.attach_to(wl_surface).is_ok() {
             wl_surface.frame(&self.queue, wl_surface.clone());
             surface.frame_pending = Some(self.started.elapsed() + FRAME_PATIENCE);
