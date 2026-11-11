@@ -13,7 +13,6 @@ use std::time::{Duration, Instant};
 
 use sengi_layer::{Anchor, App, Config, KeyboardMode, Layer};
 use sengi_quick::cli::{self, Action};
-use sengi_quick::demo::{self, Demo};
 use sengi_quick::instance::{self, Claim, Instance};
 use sengi_quick::panel::Panel;
 use sengi_quick::services::{Event, Services, Workers};
@@ -24,8 +23,19 @@ use sengi_quick::{commands, system};
 /// starting up took.
 const TRACE_VARIABLE: &str = "SENGI_QUICK_TRACE";
 
+/// How long closing may wait for the last volume or brightness change to
+/// be applied. One `wpctl` run or one call to logind takes a few
+/// milliseconds; this is for when something is stuck.
+const LAST_WORDS: Duration = Duration::from_millis(500);
+
+/// Something to do to the window once it is built. Nothing, except in a
+/// demo, which presses a few things to set its scene.
+type Staging = Box<dyn FnOnce(&QuickWindow)>;
+
 fn main() -> ExitCode {
     let started = Instant::now();
+    // First, before a passphrase can be anywhere in memory.
+    sengi_quick::secret::forbid_core_dumps();
     let action = match cli::parse(std::env::args().skip(1)) {
         Ok(action) => action,
         Err(message) => {
@@ -33,7 +43,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let demo = match action {
+    let (services, staging): (Services, Staging) = match action {
         Action::Help => {
             print!("{}", cli::USAGE);
             return ExitCode::SUCCESS;
@@ -42,13 +52,17 @@ fn main() -> ExitCode {
             println!("sengi-quick {}", env!("CARGO_PKG_VERSION"));
             return ExitCode::SUCCESS;
         }
-        Action::Toggle => None,
-        Action::Demo(name) => match demo::scenario(&name) {
-            Some(demo) => Some(demo),
+        Action::Toggle => (system::services(), Box::new(|_| {})),
+        #[cfg(debug_assertions)]
+        Action::Demo(name) => match sengi_quick::demo::scenario(&name) {
+            Some(demo) => {
+                let script = demo.script;
+                (demo.services, Box::new(move |window| play(window, script)))
+            }
             None => {
                 eprintln!(
                     "sengi-quick: no demo called {name}. There are: {}",
-                    demo::SCENARIOS.join(", ")
+                    sengi_quick::demo::SCENARIOS.join(", ")
                 );
                 return ExitCode::from(2);
             }
@@ -64,11 +78,7 @@ fn main() -> ExitCode {
         Claim::Toggled => return ExitCode::SUCCESS,
     };
 
-    let (services, script) = match demo {
-        Some(Demo { services, script }) => (services, script),
-        None => (system::services(), Vec::new()),
-    };
-    let exit = match open(&instance, services, script, started) {
+    let exit = match open(&instance, services, staging, started) {
         Ok(exit) => exit,
         Err(error) => {
             eprintln!("sengi-quick: {error}");
@@ -114,7 +124,7 @@ fn kind(event: &Event) -> &'static str {
 fn open(
     instance: &Instance,
     services: Services,
-    script: Vec<demo::Action>,
+    staging: Staging,
     started: Instant,
 ) -> Result<Exit, sengi_layer::Error> {
     let tracing = std::env::var_os(TRACE_VARIABLE).is_some();
@@ -172,11 +182,12 @@ fn open(
         .keyboard(KeyboardMode::Exclusive);
 
     let exit = Rc::new(Cell::new(Exit::Dismissed));
-    let mut parts = Some((panel, workers, script));
+    let workers = Rc::new(workers);
+    let mut parts = Some((panel, workers.clone(), staging));
     app.run(config, {
         let exit = exit.clone();
         move |context| {
-            let (panel, workers, script) = parts.take().ok_or("the panel has a single surface")?;
+            let (panel, workers, staging) = parts.take().ok_or("the panel has a single surface")?;
             let window = QuickWindow::new()?;
             let handle = context.handle();
             // The first reason to close is the one that counts: closing
@@ -204,17 +215,22 @@ fn open(
                 }
             });
 
-            play(&window, script);
+            staging(&window);
             trace("panel built");
             Ok(window)
         }
     })?;
+    // The panel is off the screen. Before the process goes, let the audio
+    // and brightness workers finish what the sliders last asked for.
+    workers.finish(LAST_WORDS);
     Ok(exit.get())
 }
 
 /// Carry out a demo's script, a step at a time, once the panel is up and
 /// the made-up services have answered.
-fn play(window: &QuickWindow, script: Vec<demo::Action>) {
+#[cfg(debug_assertions)]
+fn play(window: &QuickWindow, script: Vec<sengi_quick::demo::Action>) {
+    use sengi_quick::demo;
     use slint::ComponentHandle;
     const PAUSE: Duration = Duration::from_millis(300);
 
@@ -224,7 +240,12 @@ fn play(window: &QuickWindow, script: Vec<demo::Action>) {
         slint::Timer::single_shot(PAUSE * (index as u32 + 1), move || {
             let Some(window) = weak.upgrade() else { return };
             match action {
-                demo::Action::Choose(row) => window.invoke_network_chosen(row as i32),
+                demo::Action::Choose(row) => {
+                    use slint::Model;
+                    if let Some(item) = window.get_networks().row_data(row) {
+                        window.invoke_network_chosen(item.id);
+                    }
+                }
                 demo::Action::Submit(passphrase) => {
                     window.invoke_passphrase_submitted(passphrase.into())
                 }

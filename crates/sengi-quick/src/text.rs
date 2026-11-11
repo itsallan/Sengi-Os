@@ -8,22 +8,38 @@
 pub const MAX_NAME_CHARS: usize = 32;
 
 /// Characters that are dropped: controls, the bidirectional embedding,
-/// override and isolate marks, zero-width characters, and the invisible
-/// tag block.
+/// override and isolate marks, zero-width characters, the fillers that
+/// draw as nothing but take up room (Hangul fillers, the blank Braille
+/// pattern), variation selectors, and the invisible tag block.
 fn hidden(c: char) -> bool {
     c.is_control()
         || matches!(
             c,
             '\u{00ad}'
                 | '\u{061c}'
+                | '\u{115f}'
+                | '\u{1160}'
                 | '\u{180e}'
                 | '\u{200b}'..='\u{200f}'
                 | '\u{2028}'..='\u{202e}'
                 | '\u{2060}'..='\u{206f}'
+                | '\u{2800}'
+                | '\u{3164}'
+                | '\u{fe00}'..='\u{fe0f}'
                 | '\u{feff}'
+                | '\u{ffa0}'
                 | '\u{fff9}'..='\u{fffb}'
                 | '\u{e0000}'..='\u{e007f}'
+                | '\u{e0100}'..='\u{e01ef}'
         )
+}
+
+/// `name` for use inside a sentence of the panel's own. A name in a
+/// right-to-left script would otherwise reorder the words around it; the
+/// isolate marks keep its direction to itself. `name` has been through
+/// [`clean`], so it holds no marks of its own to close these early.
+pub fn isolate(name: &str) -> String {
+    format!("\u{2068}{name}\u{2069}")
 }
 
 /// Make `raw` fit to show on one line: hidden characters removed, runs of
@@ -110,6 +126,25 @@ mod tests {
         assert_eq!(clean("\u{2066}a\u{2069}\u{200f}b\u{061c}", 32), "ab");
         assert_eq!(clean("zero\u{200b}width\u{feff}", 32), "zerowidth");
         assert_eq!(clean("tag\u{e0041}ged", 32), "tagged");
+    }
+
+    #[test]
+    fn fillers_that_draw_as_nothing_are_dropped() {
+        // Hangul fillers, halfwidth filler, blank Braille: a name made of
+        // these looks empty, and padding with them pushes text out of view.
+        assert_eq!(clean("\u{115f}\u{1160}\u{3164}\u{ffa0}\u{2800}", 32), "");
+        assert_eq!(clean("Home\u{3164}\u{3164}\u{3164}Guest", 32), "HomeGuest");
+        assert_eq!(name("\u{2800}\u{2800}", "Unnamed"), "Unnamed");
+        // Variation selectors, plain and supplementary.
+        assert_eq!(clean("a\u{fe0f}b\u{fe00}c\u{e0100}", 32), "abc");
+    }
+
+    #[test]
+    fn a_name_in_a_sentence_keeps_its_direction_to_itself() {
+        assert_eq!(isolate("Home"), "\u{2068}Home\u{2069}");
+        // A hostile name cannot bring its own marks to break out.
+        let hostile = clean("\u{2069}\u{202e}evil\u{2068}", 32);
+        assert_eq!(isolate(&hostile), "\u{2068}evil\u{2069}");
     }
 
     #[test]

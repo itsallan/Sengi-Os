@@ -21,6 +21,11 @@ if [ "${1:-}" != --inside ]; then
     done
     work=$(mktemp -d)
     export XDG_RUNTIME_DIR="$work" XDG_CONFIG_HOME="$work/config"
+    # So that the bus can start the service itself, further down.
+    export XDG_DATA_HOME="$work/data"
+    mkdir -p "$work/data/dbus-1/services"
+    printf '[D-BUS Service]\nName=org.freedesktop.Notifications\nExec=%s\n' "$bin" \
+        >"$work/data/dbus-1/services/org.sengios.Notify.service"
     export WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1
     unset WAYLAND_DISPLAY DISPLAY DBUS_SESSION_BUS_ADDRESS
     dbus-run-session -- "$0" --inside "$bin" "$work"
@@ -204,6 +209,49 @@ else
 fi
 
 check "the service is still running" kill -0 $service
+
+# Started by the bus for the call that needs it. The calls that arrive
+# while the service is still starting must be answered and must take
+# effect once it is up. A debug build is told to take its time over
+# starting, which is what a busy machine does to it; a release build
+# ignores that and is simply quick.
+kill $service
+wait $service 2>/dev/null
+unowned() { ! owned; }
+wait_for unowned || fail "the name was not released"
+dbus-update-activation-environment WAYLAND_DISPLAY SENGI_NOTIFY_START_DELAY_MS=1500
+dbus-monitor --session "type='signal',sender='org.freedesktop.Notifications'" >"$work/activation.log" 2>/dev/null &
+monitor=$!
+started="$started $monitor"
+sleep 0.5
+welcome=$(id_of "$(notify Welcome 0 '' 'Started by this call' '' '[]' '{}' 0 2>"$work/activation.err")")
+if [ -n "$welcome" ]; then
+    ok "the Notify call that starts the service is accepted"
+else
+    fail "the Notify call that starts the service was refused: $(cat "$work/activation.err")"
+fi
+if "$bin" --toggle-centre 2>"$work/activation.err"; then
+    ok "a control call during start-up is accepted"
+else
+    fail "a control call during start-up was refused: $(cat "$work/activation.err")"
+fi
+activated=$(gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
+    --method org.freedesktop.DBus.GetConnectionUnixProcessID org.freedesktop.Notifications 2>/dev/null |
+    sed 's/[^0-9 ]//g' | awk '{ print $2 }')
+started="$started $activated"
+# The notification makes one unread line; the centre opening reads it.
+unread() { grep -A1 'string "Unread"' "$work/activation.log" | awk '/uint32/ { printf "%s ", $NF }'; }
+both() { [ "$(unread)" = "1 0 " ]; }
+if wait_for both; then
+    ok "the notification was taken in and the centre opened, in that order"
+else
+    fail "after start-up the unread count went '$(unread)', expected '1 0 '"
+fi
+gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
+    --method org.freedesktop.Notifications.CloseNotification "$welcome" >/dev/null 2>&1
+closed() { grep -A2 "member=NotificationClosed" "$work/activation.log" | grep -q "uint32 $welcome\$"; }
+check "the notification from the starting call was really open" wait_for closed
+kill $monitor $activated 2>/dev/null
 
 # When the bus goes away the service goes too, with a status of its own.
 dbus-daemon --session --nofork --print-address=3 3>"$work/address" >/dev/null 2>&1 &

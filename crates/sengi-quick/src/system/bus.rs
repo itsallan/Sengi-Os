@@ -88,27 +88,61 @@ fn prop(value: &Value<'_>) -> Prop {
     }
 }
 
-/// Sorted by path, so "the first adapter" means the same thing each time.
-fn objects(managed: ManagedObjects) -> Vec<Object> {
-    let mut objects: Vec<Object> = managed
+/// What a service said when asked for its objects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Listing {
+    /// Nobody owns the name: the service is not running.
+    Absent,
+    /// It is running and the bus will not let this user talk to it.
+    Denied,
+    Objects(Vec<Object>),
+}
+
+/// The objects that have any of `interfaces`, with only those interfaces,
+/// sorted by path so that "the first adapter" means the same thing each
+/// time, and no more than `MAX_OBJECTS` of them.
+///
+/// The cut comes after the choosing. BlueZ lists an object for every
+/// service and characteristic of every device it has seen, and a cut made
+/// first could drop the adapter itself.
+fn keep(objects: impl IntoIterator<Item = Object>, interfaces: &[&str]) -> Vec<Object> {
+    let mut kept: Vec<Object> = objects
         .into_iter()
-        .take(MAX_OBJECTS)
-        .map(|(path, interfaces)| Object {
-            path: path.as_str().to_string(),
-            interfaces: interfaces
-                .into_iter()
-                .map(|(name, props)| {
-                    let props = props
-                        .iter()
-                        .map(|(key, value)| (key.clone(), prop(value)))
-                        .collect();
-                    (name.as_str().to_string(), props)
-                })
-                .collect(),
+        .filter_map(|mut object| {
+            object
+                .interfaces
+                .retain(|name, _| interfaces.contains(&name.as_str()));
+            (!object.interfaces.is_empty()).then_some(object)
         })
         .collect();
-    objects.sort_by(|a, b| a.path.cmp(&b.path));
-    objects
+    kept.sort_by(|a, b| a.path.cmp(&b.path));
+    kept.truncate(MAX_OBJECTS);
+    kept
+}
+
+fn objects(managed: ManagedObjects, interfaces: &[&str]) -> Vec<Object> {
+    let converted = managed.into_iter().map(|(path, all)| Object {
+        path: path.as_str().to_string(),
+        interfaces: all
+            .into_iter()
+            // Nothing is copied out of interfaces nobody will read.
+            .filter(|(name, _)| interfaces.contains(&name.as_str()))
+            .map(|(name, props)| {
+                let props = props
+                    .iter()
+                    .map(|(key, value)| (key.clone(), prop(value)))
+                    .collect();
+                (name.as_str().to_string(), props)
+            })
+            .collect(),
+    });
+    keep(converted, interfaces)
+}
+
+/// Whether a call failed because the bus policy forbids it.
+pub fn denied(error: &zbus::Error) -> bool {
+    matches!(error, zbus::Error::FDO(inner) if matches!(**inner, zbus::fdo::Error::AccessDenied(_)))
+        || error_name(error) == Some("org.freedesktop.DBus.Error.AccessDenied")
 }
 
 /// Opens the socket to the system bus ourselves.
@@ -193,19 +227,25 @@ impl Bus {
             .ok_or_else(|| zbus::Error::Failure("no reply".to_string()))
     }
 
-    /// Everything `service` exports, or `None` if it is not running.
-    pub fn objects(&self, service: &str) -> Option<Vec<Object>> {
-        self.owner(service)?;
-        let managed: ManagedObjects = self
-            .call(
-                service,
-                "/",
-                "org.freedesktop.DBus.ObjectManager",
-                "GetManagedObjects",
-                &(),
-            )
-            .ok()?;
-        Some(objects(managed))
+    /// The objects of `service` that have any of `interfaces`.
+    pub fn objects(&self, service: &str, interfaces: &[&str]) -> Listing {
+        if self.owner(service).is_none() {
+            return Listing::Absent;
+        }
+        let managed: zbus::Result<ManagedObjects> = self.call(
+            service,
+            "/",
+            "org.freedesktop.DBus.ObjectManager",
+            "GetManagedObjects",
+            &(),
+        );
+        match managed {
+            Ok(managed) => Listing::Objects(objects(managed, interfaces)),
+            Err(error) if denied(&error) => Listing::Denied,
+            // It left the bus between the two calls, or is not what it
+            // claims to be. Either way there is nothing to show.
+            Err(_) => Listing::Absent,
+        }
     }
 
     pub fn set_flag(
@@ -271,6 +311,75 @@ pub fn error_name(error: &zbus::Error) -> Option<&str> {
     match error {
         zbus::Error::MethodError(name, _, _) => Some(name.as_str()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::object;
+    use super::*;
+
+    #[test]
+    fn only_objects_with_a_wanted_interface_are_kept() {
+        let mut both = object("/b", "wanted.One", &[("Powered", Prop::Bool(true))]);
+        both.interfaces
+            .insert("other.Thing".to_string(), Props::new());
+        let kept = keep(
+            [
+                object("/c", "other.Thing", &[]),
+                both,
+                object("/a", "wanted.Two", &[]),
+            ],
+            &["wanted.One", "wanted.Two"],
+        );
+        let paths: Vec<&str> = kept.iter().map(|object| object.path.as_str()).collect();
+        assert_eq!(paths, ["/a", "/b"]);
+        // And of those, only the wanted interfaces.
+        assert_eq!(kept[1].interfaces.len(), 1);
+        assert_eq!(
+            flag(&kept[1].interfaces["wanted.One"], "Powered"),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn a_crowd_of_other_objects_does_not_push_the_adapter_out() {
+        // A Bluetooth adapter among thousands of GATT objects, last in
+        // whatever order the service happened to send them.
+        let mut crowd: Vec<Object> = (0..5000)
+            .map(|i| {
+                object(
+                    &format!("/dev/{i}/char"),
+                    "org.bluez.GattCharacteristic1",
+                    &[],
+                )
+            })
+            .collect();
+        crowd.push(object("/hci0", "org.bluez.Adapter1", &[]));
+        let kept = keep(crowd, &["org.bluez.Adapter1"]);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].path, "/hci0");
+    }
+
+    #[test]
+    fn the_list_is_still_bounded() {
+        let many = (0..3000).map(|i| object(&format!("/n/{i:05}"), "wanted", &[]));
+        let kept = keep(many, &["wanted"]);
+        assert_eq!(kept.len(), MAX_OBJECTS);
+        assert_eq!(kept[0].path, "/n/00000");
+    }
+
+    #[test]
+    fn a_policy_refusal_is_told_from_other_failures() {
+        let refused = zbus::Error::FDO(Box::new(zbus::fdo::Error::AccessDenied(
+            "not allowed".to_string(),
+        )));
+        assert!(denied(&refused));
+        let gone = zbus::Error::FDO(Box::new(zbus::fdo::Error::ServiceUnknown(
+            "no such name".to_string(),
+        )));
+        assert!(!denied(&gone));
+        assert!(!denied(&zbus::Error::Failure("no system bus".to_string())));
     }
 }
 

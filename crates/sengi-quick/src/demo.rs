@@ -19,14 +19,17 @@ use crate::wifi::{self, JoinError, Link, Network, Request, Security, Wifi};
 pub const SCENARIOS: &[&str] = &[
     "connected",
     "networks",
+    "open-network",
     "passphrase",
     "wrong-passphrase",
     "joining",
+    "changed-passphrase",
     "failed",
     "bluetooth",
     "low-battery",
     "charging",
     "off",
+    "blocked",
     "desktop",
     "hostile",
 ];
@@ -108,11 +111,14 @@ impl WifiService for FakeWifi {
             .position(|network| network.id == request.id)
             .ok_or(JoinError::Unavailable)?;
         let typed = request.passphrase.as_ref().map(|secret| secret.expose());
+        if networks[target].name == "Attic repeater" {
+            return Err(JoinError::Timeout);
+        }
         let accepted = match networks[target].security {
             Security::Open => true,
+            _ if typed.is_some() => typed == Some(PASSPHRASE),
             // "Old router" is known, and has since changed its passphrase.
-            _ if networks[target].known => networks[target].name != "Old router",
-            _ => typed == Some(PASSPHRASE),
+            _ => networks[target].known && networks[target].name != "Old router",
         };
         if !accepted {
             return Err(JoinError::Failed);
@@ -197,6 +203,8 @@ impl Machine for FakeMachine {
 
 struct FakeDnd {
     installed: bool,
+    /// Whether it can be asked, as sengi-notify can since `--dnd status`.
+    answers: bool,
     on: Mutex<Option<bool>>,
 }
 
@@ -205,7 +213,7 @@ impl DndService for FakeDnd {
         self.installed
     }
     fn read(&self) -> Option<bool> {
-        *lock(&self.on)
+        lock(&self.on).filter(|_| self.answers)
     }
     fn set(&self, on: bool) {
         *lock(&self.on) = Some(on);
@@ -257,6 +265,7 @@ pub fn scenario(name: &str) -> Option<Demo> {
         wired: false,
         wifi_device: true,
         bluetooth_device: true,
+        ..Hardware::default()
     };
     let mut networks = neighbourhood();
     let mut wifi_on = true;
@@ -271,7 +280,8 @@ pub fn scenario(name: &str) -> Option<Demo> {
         percent: 40,
         muted: false,
     });
-    let mut dnd = None;
+    let mut dnd = Some(false);
+    let mut dnd_answers = true;
     let mut script = Vec::new();
 
     let disconnect = |networks: &mut Vec<Network>, link: &mut Link| {
@@ -284,6 +294,11 @@ pub fn scenario(name: &str) -> Option<Demo> {
         "connected" => networks[0].connected = true,
         "networks" => {
             link = Link::Disconnected;
+        }
+        "open-network" => {
+            networks[0].connected = true;
+            // Bakery Guest, open and never joined.
+            script.push(Action::Choose(2));
         }
         "passphrase" => {
             networks[0].connected = true;
@@ -301,10 +316,15 @@ pub fn scenario(name: &str) -> Option<Demo> {
             script.push(Action::Choose(0));
             script.push(Action::Submit(PASSPHRASE));
         }
-        "failed" => {
+        "changed-passphrase" => {
             link = Link::Disconnected;
             networks[0].signal = -9000;
-            // Old router, known, refuses.
+            // Old router, known, refuses what iwd has stored for it.
+            script.push(Action::Choose(0));
+        }
+        "failed" => {
+            link = Link::Disconnected;
+            networks.insert(0, network("Attic repeater", Security::Open, true, -4000));
             script.push(Action::Choose(0));
         }
         "bluetooth" => {
@@ -332,9 +352,19 @@ pub fn scenario(name: &str) -> Option<Demo> {
             });
             hardware.battery = battery(100, Charge::Full, None);
         }
+        "blocked" => {
+            // The switch on the side of the laptop is off, and Bluetooth
+            // was turned off with the keyboard.
+            wifi_on = false;
+            bluetooth = Bluetooth::Off;
+            hardware.wifi_block = crate::services::Block::Hard;
+            hardware.bluetooth_block = crate::services::Block::Soft;
+        }
         "desktop" => {
             wifi_present = false;
             bluetooth = Bluetooth::Absent;
+            // And a notification service too old to say what it is set to.
+            dnd_answers = false;
             hardware = Hardware {
                 wired: true,
                 ..Hardware::default()
@@ -388,6 +418,7 @@ pub fn scenario(name: &str) -> Option<Demo> {
             machine: Box::new(FakeMachine(Mutex::new(hardware))),
             dnd: Box::new(FakeDnd {
                 installed: true,
+                answers: dnd_answers,
                 on: Mutex::new(dnd),
             }),
         },

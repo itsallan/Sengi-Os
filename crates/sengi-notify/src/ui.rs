@@ -108,10 +108,6 @@ impl Ui {
         let history = Rc::new(VecModel::default());
         window.set_cards(ModelRc::from(cards.clone()));
         window.set_history(ModelRc::from(history.clone()));
-        // Not in the shared Slint tokens yet, so it is read here.
-        if let Some(button) = sengi_tokens::Tokens::builtin().px("size.button") {
-            window.global::<Metrics>().set_button(button as f32);
-        }
 
         let ui = Rc::new_cyclic(|this| {
             RefCell::new(Ui {

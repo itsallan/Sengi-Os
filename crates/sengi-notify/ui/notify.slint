@@ -34,18 +34,11 @@ export struct HistoryItem {
     critical: bool,
 }
 
-// Sizes that are tokens but not yet in the shared Tokens global. The
-// program fills them in from tokens/sengi.toml when it starts.
-export global Metrics {
-    // size.button. Until it is set, two lines of text, which is the same.
-    in-out property <length> button: Tokens.font-size-md * 2;
-}
-
 // Stroked on a 16 unit grid, like the icons in the bar.
 component CloseButton inherits Rectangle {
     callback clicked();
 
-    width: Metrics.button;
+    width: Tokens.button;
     height: self.width;
     border-radius: Tokens.radius;
     background: touch.has-hover ? Tokens.color-surface-hover : transparent;
@@ -75,7 +68,7 @@ component Heading inherits HorizontalLayout {
     in property <bool> critical;
 
     spacing: Tokens.space-sm;
-    padding-right: Metrics.button - Tokens.space-xs;
+    padding-right: Tokens.button - Tokens.space-xs;
 
     if root.critical: Rectangle {
         width: Tokens.space-sm;
@@ -153,15 +146,16 @@ component Message inherits VerticalLayout {
     }
 }
 
-// SengiButton, except that a label too long for its share of the card is
-// cut short instead of pushing the other buttons out.
+// SengiButton, except that buttons side by side share the card equally
+// however long their labels are. The shared one sizes by its label, so
+// two long labels leave a third with room for nothing but an ellipsis.
 component ActionButton inherits Rectangle {
     in property <string> text;
     in property <bool> enabled: true;
     callback clicked();
 
     min-width: 0;
-    height: Metrics.button;
+    height: Tokens.button;
     border-radius: Tokens.radius;
     background: !root.enabled ? Tokens.color-surface
         : touch.has-hover ? Tokens.color-surface-hover : Tokens.color-surface-raised;
@@ -382,7 +376,7 @@ component CentrePanel inherits SengiSurface {
             Rectangle {
                 horizontal-stretch: 0;
                 width: clear.preferred-width;
-                height: Metrics.button;
+                height: Tokens.button;
                 clear := SengiButton {
                     height: parent.height;
                     text: "Clear all";

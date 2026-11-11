@@ -55,6 +55,15 @@ pub fn find_program(program: &str, path: &str) -> Option<PathBuf> {
         })
 }
 
+/// What `sengi-notify --dnd status` printed, if it was an answer.
+pub fn parse_dnd(output: &str) -> Option<bool> {
+    match output.trim() {
+        commands::DND_ON => Some(true),
+        commands::DND_OFF => Some(false),
+        _ => None,
+    }
+}
+
 pub struct Notify {
     installed: bool,
 }
@@ -80,8 +89,8 @@ impl DndService for Notify {
     }
 
     fn read(&self) -> Option<bool> {
-        // sengi-notify cannot be asked.
-        None
+        let args = [commands::DND_FLAG, commands::DND_STATUS];
+        parse_dnd(&output(commands::NOTIFY, &args)?)
     }
 
     fn set(&self, on: bool) {
@@ -122,5 +131,17 @@ mod tests {
         assert_eq!(find_program("readme", &path), None);
         assert_eq!(find_program("bin", &tmp.path().display().to_string()), None);
         assert_eq!(find_program("sengi-notify", ""), None);
+    }
+
+    #[test]
+    fn dnd_answers() {
+        assert_eq!(parse_dnd("on\n"), Some(true));
+        assert_eq!(parse_dnd("off"), Some(false));
+        // An older service that does not know the question.
+        assert_eq!(parse_dnd(""), None);
+        assert_eq!(
+            parse_dnd("--dnd takes on, off or toggle, not 'status'"),
+            None
+        );
     }
 }
