@@ -26,9 +26,10 @@ pub(crate) fn plan<T: Clone + PartialEq>(
 ) -> Plan<T> {
     let wanted: Vec<T> = ready
         .iter()
-        .filter(|_| match outputs {
-            Outputs::Primary => false,
+        .filter(|(_, name)| match outputs {
+            Outputs::Auto => false,
             Outputs::All => true,
+            Outputs::Named(wanted) => name.as_ref() == Some(wanted),
         })
         .map(|(output, _)| output.clone())
         .collect();
@@ -116,8 +117,32 @@ mod tests {
     #[test]
     fn the_compositors_choice_is_never_tied_to_an_output() {
         let ready = named(&[(1, "eDP-1"), (2, "HDMI-A-1")]);
-        let plan = plan(&Outputs::Primary, &ready, &[]);
+        let plan = plan(&Outputs::Auto, &ready, &[]);
         assert_eq!(plan.add, []);
         assert_eq!(plan.remove, []);
+    }
+
+    #[test]
+    fn a_named_output_gets_the_only_instance() {
+        let wanted = Outputs::Named("HDMI-A-1".into());
+        let ready = named(&[(1, "eDP-1"), (2, "HDMI-A-1")]);
+        assert_eq!(plan(&wanted, &ready, &[]).add, [2]);
+        assert_eq!(plan(&wanted, &ready, &[2]).add, []);
+        assert_eq!(plan(&wanted, &ready, &[2]).remove, []);
+    }
+
+    #[test]
+    fn a_named_output_that_is_absent_gets_nothing() {
+        let wanted = Outputs::Named("HDMI-A-1".into());
+        let ready = named(&[(1, "eDP-1")]);
+        assert_eq!(plan(&wanted, &ready, &[]).add, []);
+        assert_eq!(plan(&wanted, &ready, &[2]).remove, [2]);
+        assert_eq!(plan(&wanted, &[(3, None)], &[]).add, []);
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn the_old_name_still_means_the_compositors_choice() {
+        assert_eq!(Outputs::Primary, Outputs::Auto);
     }
 }

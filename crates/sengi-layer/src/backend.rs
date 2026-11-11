@@ -242,7 +242,7 @@ impl State {
     }
 
     fn mode(&self) -> Outputs {
-        self.shared.borrow().config.outputs
+        self.shared.borrow().config.outputs.clone()
     }
 
     fn index_of(&self, surface: &wl_surface::WlSurface) -> Option<usize> {
@@ -590,7 +590,7 @@ pub(crate) fn run(
 ) -> Result<(), Error> {
     state.builder = Some(builder);
     state.shown = state.shared.borrow().visible;
-    if state.mode() == Outputs::Primary {
+    if state.mode() == Outputs::Auto {
         // Built before any output is known, so a build error is reported
         // at once. The surface follows when the first output is announced.
         state.build(None)?;
@@ -975,7 +975,7 @@ impl OutputHandler for State {
     }
 
     fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
-        if self.mode() == Outputs::All {
+        if self.mode() != Outputs::Auto {
             self.sync_outputs(None);
         }
     }
@@ -986,7 +986,7 @@ impl OutputHandler for State {
         _: &QueueHandle<Self>,
         output: wl_output::WlOutput,
     ) {
-        if self.mode() == Outputs::All {
+        if self.mode() != Outputs::Auto {
             self.sync_outputs(Some(&output));
         }
     }

@@ -351,8 +351,9 @@ impl Context {
     }
 
     /// The name of the output this instance is for, such as `eDP-1`, when
-    /// running with [`Outputs::All`] and the compositor names its outputs.
-    /// Always `None` with [`Outputs::Primary`].
+    /// running with [`Outputs::All`] or [`Outputs::Named`] and the compositor
+    /// names its outputs.
+    /// Always `None` with [`Outputs::Auto`].
     pub fn output_name(&self) -> Option<&str> {
         self.output_name.as_deref()
     }

@@ -118,18 +118,30 @@ pub enum KeyboardMode {
 }
 
 /// Which outputs get a surface.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Outputs {
-    /// One surface on the output the compositor picks, normally the focused
-    /// one. If that output goes away the same component moves to another,
-    /// or waits for one to appear.
+    /// One surface on whichever output the compositor picks, normally the
+    /// one with the pointer or the focused window. This is not a "primary
+    /// monitor": Wayland has no such thing. If that output goes away the
+    /// same component moves to another, or waits for one to appear.
     #[default]
-    Primary,
+    Auto,
     /// One surface on every output, each with its own instance of the
     /// component. The build closure runs once per output, again whenever an
     /// output is plugged in, and the instance is dropped when its output
     /// goes away.
     All,
+    /// One surface on the output with this name, such as `eDP-1`. The
+    /// instance is built when that output is there and dropped when it
+    /// goes; while it is absent there is no instance at all.
+    Named(String),
+}
+
+impl Outputs {
+    /// The old name of [`Outputs::Auto`].
+    #[deprecated(note = "renamed to Outputs::Auto; the compositor picks the output")]
+    #[allow(non_upper_case_globals)]
+    pub const Primary: Outputs = Outputs::Auto;
 }
 
 /// Everything the compositor needs to know to place a surface.
