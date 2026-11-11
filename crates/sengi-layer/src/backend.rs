@@ -48,6 +48,11 @@ use crate::{Context, Error, Handle};
 /// that no frame callback is on its way to wake the loop.
 const FRAME: Duration = Duration::from_millis(16);
 
+/// How long to wait for a frame callback before drawing regardless. A
+/// compositor drops the callback when the surface's output goes away, and
+/// labwc then shows the surface elsewhere only after its next commit.
+const FRAME_PATIENCE: Duration = Duration::from_secs(1);
+
 /// What the app has asked for through its [`Handle`]. Slint callbacks run
 /// while the Wayland state is borrowed, so requests are left here and the
 /// loop picks them up before it next goes to sleep.
@@ -119,6 +124,8 @@ struct Surface {
     /// The output the surface was last seen entering, for a surface whose
     /// output the compositor picks.
     entered: Option<wl_output::WlOutput>,
+    /// The current layer surface has been on some output.
+    was_on_screen: bool,
     /// What the instance has asked for through its `SurfaceHandle`.
     own: Rc<RefCell<SurfaceShared>>,
     /// The `Shared::revision` and `SurfaceShared::revision` the compositor
@@ -127,7 +134,9 @@ struct Surface {
     /// A frame was committed and the compositor has not yet said it is
     /// time for the next. Nothing is drawn meanwhile, which paces drawing
     /// to the display and stops it while the surface cannot be seen.
-    frame_pending: bool,
+    /// Holds the time, measured from `State::started`, at which to stop
+    /// waiting for the callback.
+    frame_pending: Option<Duration>,
     /// How many times in a row the compositor has closed the surface
     /// without its output going away.
     closes: u32,
@@ -336,9 +345,10 @@ impl State {
             scale: 1,
             configured: false,
             entered: None,
+            was_on_screen: false,
             own,
             sent: (0, 0),
-            frame_pending: false,
+            frame_pending: None,
             closes: 0,
             retry: None,
         });
@@ -347,13 +357,59 @@ impl State {
 
     fn describe(&self, output: &wl_output::WlOutput) -> Option<Output> {
         let info = self.outputs.info(output)?;
+        let scale = info.scale_factor.max(1);
+        // The logical size comes from xdg-output and can arrive a moment
+        // after the rest. Until then work it out from the current mode.
+        let from_mode = || {
+            let mode = info.modes.iter().find(|mode| mode.current)?;
+            let (width, height) = mode.dimensions;
+            let turned = matches!(
+                info.transform,
+                wl_output::Transform::_90
+                    | wl_output::Transform::_270
+                    | wl_output::Transform::Flipped90
+                    | wl_output::Transform::Flipped270
+            );
+            let (width, height) = if turned {
+                (height, width)
+            } else {
+                (width, height)
+            };
+            Some((width / scale, height / scale))
+        };
+        let size = info.logical_size.or_else(from_mode);
         Some(Output {
             name: info.name,
-            size: info
-                .logical_size
-                .map(|(width, height)| (width.max(0) as u32, height.max(0) as u32)),
-            scale: info.scale_factor.max(1) as u32,
+            size: size.map(|(width, height)| (width.max(0) as u32, height.max(0) as u32)),
+            scale: scale as u32,
         })
+    }
+
+    /// Not every compositor closes a surface whose output goes away. labwc
+    /// keeps it, off screen, until that same output returns. A surface that
+    /// left the choice of output to the compositor asks again instead, so
+    /// it turns up on an output that is there. `gone` is an output that is
+    /// being removed but may still be listed.
+    fn rescue_stranded(&mut self, gone: Option<&wl_output::WlOutput>) {
+        if !self.outputs.outputs().any(|output| Some(&output) != gone) {
+            return;
+        }
+        for index in 0..self.surfaces.len() {
+            let surface = &self.surfaces[index];
+            let stranded = surface.output.is_none()
+                && surface.layer.is_some()
+                && surface.was_on_screen
+                && surface
+                    .entered
+                    .as_ref()
+                    .is_none_or(|entered| Some(entered) == gone);
+            if stranded {
+                self.unmap(index);
+                if self.wants_mapping(index) {
+                    self.map(index);
+                }
+            }
+        }
     }
 
     /// Looks up the surface's output again and tells the app if what is
@@ -399,7 +455,7 @@ impl State {
         surface.sent = (shared.revision, own.revision);
         // A new surface starts at scale 1 until the compositor says more.
         surface.scale = 1;
-        surface.frame_pending = false;
+        surface.frame_pending = None;
         drop(own);
         surface.own.borrow_mut().scale = 1;
     }
@@ -412,6 +468,7 @@ impl State {
         };
         surface.configured = false;
         surface.entered = None;
+        surface.was_on_screen = false;
         // No leave events arrive for a surface that is gone.
         let window = surface.window.clone();
         window.dispatch_event(WindowEvent::PointerExited);
@@ -503,7 +560,7 @@ impl State {
         if !surface.configured || surface.width == 0 || surface.height == 0 {
             return;
         }
-        if surface.frame_pending {
+        if surface.frame_pending.is_some() {
             return;
         }
         let width = (surface.width * surface.scale) as usize;
@@ -540,7 +597,7 @@ impl State {
         wl_surface.damage_buffer(0, 0, width as i32, height as i32);
         if buffer.attach_to(wl_surface).is_ok() {
             wl_surface.frame(&self.queue, wl_surface.clone());
-            surface.frame_pending = true;
+            surface.frame_pending = Some(self.started.elapsed() + FRAME_PATIENCE);
             layer.commit();
         }
     }
@@ -636,10 +693,17 @@ impl State {
         call_hook(&own, |own| &mut own.on_focus, false);
     }
 
-    /// Maps the surfaces whose wait after a close is over.
+    /// Maps the surfaces whose wait after a close is over, and gives up on
+    /// frame callbacks that are overdue.
     fn fire_retries(&mut self) {
         let now = self.started.elapsed();
         for index in 0..self.surfaces.len() {
+            if self.surfaces[index]
+                .frame_pending
+                .is_some_and(|due| due <= now)
+            {
+                self.surfaces[index].frame_pending = None;
+            }
             if self.surfaces[index].retry.is_some_and(|due| due <= now) {
                 self.surfaces[index].retry = None;
                 if self.wants_mapping(index) {
@@ -673,7 +737,7 @@ impl State {
         // visible yet, has to be looked at again.
         let polling = self.surfaces.iter().any(|surface| {
             surface.layer.is_some()
-                && !surface.frame_pending
+                && surface.frame_pending.is_none()
                 && surface.window.has_active_animations()
         });
         let timers = if polling {
@@ -684,9 +748,14 @@ impl State {
         let now = self.started.elapsed();
         let repeat = self.repeat.as_ref().map(|repeat| repeat.next);
         let retries = self.surfaces.iter().filter_map(|surface| surface.retry);
+        let frames = self
+            .surfaces
+            .iter()
+            .filter_map(|surface| surface.frame_pending);
         let deadline = repeat
             .into_iter()
             .chain(retries)
+            .chain(frames)
             .min()
             .map(|due| due.saturating_sub(now));
         match (timers, deadline) {
@@ -767,7 +836,7 @@ impl CompositorHandler for State {
         _: u32,
     ) {
         if let Some(index) = self.index_of(surface) {
-            self.surfaces[index].frame_pending = false;
+            self.surfaces[index].frame_pending = None;
         }
     }
 
@@ -780,6 +849,10 @@ impl CompositorHandler for State {
     ) {
         if let Some(index) = self.index_of(surface) {
             self.surfaces[index].entered = Some(output.clone());
+            self.surfaces[index].was_on_screen = true;
+            // A callback asked for on the previous output may never come.
+            self.surfaces[index].frame_pending = None;
+            self.surfaces[index].window.request_redraw();
             self.refresh_output(index);
         }
     }
@@ -845,7 +918,7 @@ impl LayerShellHandler for State {
         surface.configured = true;
         surface.closes = 0;
         // A new size is drawn at once rather than after the next callback.
-        surface.frame_pending = false;
+        surface.frame_pending = None;
         self.resize(index);
         self.surfaces[index].window.request_redraw();
     }
@@ -1097,6 +1170,7 @@ impl OutputHandler for State {
 
     fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
         self.sync_outputs(None);
+        self.rescue_stranded(None);
     }
 
     fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
@@ -1116,7 +1190,9 @@ impl OutputHandler for State {
     ) {
         if self.mode() != Outputs::Auto {
             self.sync_outputs(Some(&output));
+            return;
         }
+        self.rescue_stranded(Some(&output));
     }
 }
 
