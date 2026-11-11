@@ -146,6 +146,9 @@ struct Screen {
     in_flight: Option<(RenderElementStates, Option<u64>)>,
     /// Something changed since this screen was last drawn.
     stale: bool,
+    /// The lock under which the frame now on the glass was drawn, known
+    /// from the flip that put it there.
+    on_glass: Option<u64>,
     /// A timer will draw this screen; until then it is left alone.
     waiting: bool,
     /// How many frames in a row could not be drawn.
@@ -530,7 +533,11 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
                         crate::say!("page flip: {err}");
                     }
                     let output = screen.output.clone();
-                    screen.in_flight.take().map(|frame| (output, frame))
+                    let frame = screen.in_flight.take();
+                    if let Some((_, epoch)) = &frame {
+                        screen.on_glass = *epoch;
+                    }
+                    frame.map(|frame| (output, frame))
                 })
             };
             if let Some((output, (states, epoch))) = shown {
@@ -574,6 +581,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
                 backend.active = false;
                 for screen in &mut backend.screens {
                     screen.in_flight = None;
+                    screen.on_glass = None;
                 }
             }
             SessionEvent::ActivateSession => {
@@ -661,6 +669,17 @@ fn draw_if_ready(backend: &Shared, state: &mut State) {
                 Ok(Some(states)) => {
                     screen.failures = 0;
                     screen.waiting = true;
+                    // "Nothing changed" is measured against the last frame
+                    // drawn, not the last one shown. Unless a flip proved
+                    // that a frame of this lock is on the glass, this one
+                    // does not count as covering the screen, and the next
+                    // is painted in full so that it gets flipped.
+                    let proven = epoch.is_none() || screen.on_glass == epoch;
+                    if !proven {
+                        screen.repaint();
+                        screen.stale = true;
+                    }
+                    let epoch = epoch.filter(|_| proven);
                     shown.push((screen.crtc, screen.output.clone(), states, epoch));
                 }
                 Ok(None) => screen.failures = 0,
@@ -669,6 +688,9 @@ fn draw_if_ready(backend: &Shared, state: &mut State) {
                     // shortly, at growing intervals.
                     screen.failures += 1;
                     screen.stale = true;
+                    // Whatever was half queued is dropped, and the retry
+                    // paints everything.
+                    screen.repaint();
                     if screen.failures.is_power_of_two() {
                         crate::say!(
                             "{}: frame failed ({} in a row): {err}",
@@ -763,6 +785,15 @@ fn draw_if_ready(backend: &Shared, state: &mut State) {
 }
 
 impl Screen {
+    /// Forgets what the buffers hold and what was queued, so that the next
+    /// frame is drawn in full and committed afresh.
+    fn repaint(&mut self) {
+        on_compositor!(&mut self.compositor, |compositor| {
+            compositor.reset_buffers();
+            let _ = compositor.reset_state();
+        });
+    }
+
     /// Composes what changed and queues it for the next vertical blank.
     ///
     /// Returns the element states when nothing had to be shown, for frame
@@ -979,6 +1010,7 @@ impl Drm {
             compositor,
             in_flight: None,
             stale: true,
+            on_glass: None,
             waiting: false,
             failures: 0,
         });
