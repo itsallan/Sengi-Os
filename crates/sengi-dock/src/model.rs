@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
-use sengi_apps::{icons, matching, AppIndex, DesktopEntry, Env};
+use sengi_apps::{matching, AppIndex, DesktopEntry, Env};
 
 use crate::windows::Window;
 
@@ -356,7 +356,7 @@ impl Dock {
         };
         Item {
             kind,
-            letter: icons::initial(&name),
+            letter: sengi_text::initial(&name),
             key,
             name,
             icon,
@@ -445,7 +445,7 @@ impl Dock {
                 items.push(Item {
                     kind: Kind::Running,
                     key,
-                    letter: icons::initial(&name),
+                    letter: sengi_text::initial(&name),
                     name,
                     icon: Icon::Named(String::new()),
                     launchable: false,

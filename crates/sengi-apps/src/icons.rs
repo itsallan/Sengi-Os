@@ -582,14 +582,6 @@ impl Decoder {
     }
 }
 
-/// The letter shown on the fallback tile for something with no usable icon.
-pub fn initial(name: &str) -> String {
-    name.chars()
-        .find(|c| c.is_alphanumeric())
-        .map(|c| c.to_uppercase().collect())
-        .unwrap_or_else(|| "?".to_string())
-}
-
 #[cfg(test)]
 pub mod testing {
     use std::fs;
@@ -1331,15 +1323,5 @@ mod app_tests {
         assert_eq!(pixels.size, 40);
         let middle = (20 * 40 + 20) * 4;
         assert_eq!(&pixels.data[middle..middle + 4], [255, 0, 0, 255]);
-    }
-
-    #[test]
-    fn the_fallback_letter_is_the_first_letter_or_digit() {
-        assert_eq!(initial("foot"), "F");
-        assert_eq!(initial("  (beta) editor"), "B");
-        assert_eq!(initial("7zip"), "7");
-        assert_eq!(initial("élan"), "É");
-        assert_eq!(initial("---"), "?");
-        assert_eq!(initial(""), "?");
     }
 }

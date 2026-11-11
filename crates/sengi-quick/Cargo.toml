@@ -8,6 +8,7 @@ build = "build.rs"
 
 [dependencies]
 sengi-layer = { path = "../sengi-layer" }
+sengi-text = { path = "../sengi-text" }
 # Not the workspace entry: that one pulls in the winit backend. sengi-layer
 # is the backend here and turns on the software renderer.
 slint = { version = "1.18", default-features = false, features = ["compat-1-2", "std"] }

@@ -17,6 +17,7 @@ svg = ["sengi-apps/svg"]
 # is drawn into a layer surface instead. sengi-layer turns on the renderer.
 sengi-apps = { path = "../sengi-apps", features = ["icons"] }
 sengi-layer = { path = "../sengi-layer" }
+sengi-text = { path = "../sengi-text" }
 slint = { version = "1.18", default-features = false, features = ["compat-1-2", "std"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 

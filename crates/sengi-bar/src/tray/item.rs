@@ -459,7 +459,7 @@ mod tests {
             tooltip: Some(("".into(), "<b>3 unread</b><br/>from Sam".into())),
             ..Raw::default()
         });
-        assert_eq!(properties.id, "chat client");
+        assert_eq!(properties.id, "chatclient");
         assert_eq!(properties.title, "Chat evil");
         assert_eq!(properties.tooltip, "3 unread from Sam");
 

@@ -13,6 +13,7 @@ icons = ["dep:png"]
 svg = ["icons", "dep:resvg"]
 
 [dependencies]
+sengi-text = { path = "../sengi-text" }
 # For fork and setsid when a program is started and let go of.
 libc = "0.2"
 # Icons are decoded here, straight to the size they are drawn at, rather than

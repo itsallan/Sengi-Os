@@ -337,15 +337,14 @@ fn unescape(value: &str) -> String {
 
 /// Make a value safe to show: control characters could drive a terminal
 /// through `--list`, and bidirectional overrides could reorder what the
-/// panel shows. Line breaks and tabs become spaces, the rest is dropped.
+/// panel shows. Line breaks and tabs become spaces; the rest of what
+/// sengi-text hides is dropped.
 fn display_text(value: &str) -> String {
     let cleaned: String = value
         .chars()
         .filter_map(|c| match c {
             '\n' | '\r' | '\t' => Some(' '),
-            c if c.is_control() => None,
-            '\u{200e}' | '\u{200f}' | '\u{061c}' => None,
-            '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' => None,
+            c if sengi_text::hidden(c) => None,
             c => Some(c),
         })
         .take(MAX_TEXT_CHARS)
