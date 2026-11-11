@@ -342,6 +342,7 @@ impl App {
             choose: Box::new(chosen),
         });
         self.fill_chooser("", true);
+        state.set_generation(state.get_generation().wrapping_add(1));
         state.set_open(true);
     }
 

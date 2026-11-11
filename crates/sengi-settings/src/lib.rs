@@ -15,6 +15,7 @@ pub mod derive;
 pub mod display;
 pub mod held;
 pub mod instance;
+pub mod keyboard;
 pub mod network;
 pub mod power;
 pub mod screen;

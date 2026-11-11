@@ -219,6 +219,19 @@ given only until it exits; a kept mode is not written to a file yet).
   so systemd refuses everyone but root, and Settings does not offer what
   would only fail. `src/datetime.rs` has the details.
 
+### Keyboard
+
+- Up to four layouts, each with a variant, picked from the XKB database
+  (`/usr/share/X11/xkb/rules/evdev.lst`) by typing part of the name.
+  Delete removes one; the last stays.
+- The shortcut that switches between them, from a short list of XKB
+  `grp:` options. A second layout added while none is chosen gets
+  Alt + Shift, so it can be reached.
+- Repeat delay and rate.
+
+All of it is written for labwc as described under "Files written for
+other programs", and labwc is told to read its files again.
+
 ## Building and testing
 
     cargo build -p sengi-settings

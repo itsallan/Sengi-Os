@@ -632,6 +632,9 @@ component RowButton inherits Rectangle {
 export component ItemList inherits Rectangle {
     in property <[Item]> items;
     in-out property <int> current: 0;
+    // Mark the current row although the keyboard is elsewhere, as when
+    // a search field above the list is what is being typed into.
+    in property <bool> show-current: false;
     out property <bool> engaged: scope.has-focus || root.hovered >= 0;
     out property <bool> has-focus: scope.has-focus;
     out property <length> row-height: Metrics.row;
@@ -695,7 +698,7 @@ export component ItemList inherits Rectangle {
 
     for item[index] in root.items: Rectangle {
         private property <bool> lit: root.hovered == index
-            || (scope.has-focus && root.current == index);
+            || ((scope.has-focus || root.show-current) && root.current == index);
 
         y: index * Metrics.row;
         height: Metrics.row;
@@ -990,9 +993,23 @@ export component ChooserLayer inherits Rectangle {
     in-out property <int> current: 0;
     // What to say when nothing matches.
     in property <string> empty;
+    // Changes each time a different list is offered in the same layer.
+    in property <int> generation: 0;
     callback chosen(string);
     callback cancelled();
     callback filtered(string);
+
+    function settle() {
+        search.clear();
+        if root.searchable {
+            search.take-focus();
+        } else {
+            list.take-focus();
+        }
+        root.reveal-current();
+    }
+
+    changed generation => { root.settle(); }
 
     function step(by: int) {
         if root.items.length > 0 {
@@ -1013,14 +1030,7 @@ export component ChooserLayer inherits Rectangle {
 
     background: Tokens.color-scrim;
 
-    init => {
-        if root.searchable {
-            search.take-focus();
-        } else {
-            list.take-focus();
-        }
-        root.reveal-current();
-    }
+    init => { root.settle(); }
 
     TouchArea {
         clicked => { root.cancelled(); }
@@ -1037,9 +1047,10 @@ export component ChooserLayer inherits Rectangle {
 
         SengiSurface {
             width: Math.min(Metrics.chooser, root.width - Tokens.space-xl * 2);
+            // A list that is searched keeps its size while it is narrowed.
             height: Math.min(root.height - Tokens.space-xl * 2,
-                head.preferred-height + Math.max(root.items.length, 3) * list.row-height
-                    + Tokens.space-lg);
+                head.preferred-height + Tokens.space-lg * 3
+                    + (root.searchable ? 8 : Math.max(root.items.length, 2)) * list.row-height);
 
             // Clicks on the surface are not clicks outside it.
             TouchArea { }
@@ -1059,7 +1070,8 @@ export component ChooserLayer inherits Rectangle {
                 spacing: Tokens.space-md;
 
                 head := VerticalLayout {
-                    spacing: Tokens.space-md;
+                    vertical-stretch: 0;
+                    spacing: root.searchable ? Tokens.space-md : 0;
 
                     SengiText {
                         text: root.title;
@@ -1085,14 +1097,19 @@ export component ChooserLayer inherits Rectangle {
                     content-height: list.height;
 
                     list := ItemList {
+                        x: 0;
+                        y: 0;
                         width: scroll.visible-width - Tokens.space-sm;
                         items: root.items;
                         current <=> root.current;
+                        show-current: root.searchable;
                         activated(id) => { root.chosen(id); }
                         moved(index) => { scroll.reveal(index * self.row-height, self.row-height); }
                     }
 
                     if root.items.length == 0: SengiText {
+                        x: 0;
+                        y: 0;
                         width: scroll.visible-width;
                         height: list.row-height;
                         text: root.empty;

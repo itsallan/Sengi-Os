@@ -11,8 +11,9 @@ import { SoundData, SoundSide, SoundPage } from "pages/sound.slint";
 import { DisplayData, DisplayOutput, DisplayPage } from "pages/display.slint";
 import { PowerData, PowerPage } from "pages/power.slint";
 import { DateTimeData, DateTimePage } from "pages/datetime.slint";
+import { KeyboardData, KeyboardPage } from "pages/keyboard.slint";
 
-export { Item, InfoRow, DialogSpec, PowerData, DateTimeData, NetworkData, BluetoothData, SoundData, SoundSide, DisplayData, DisplayOutput }
+export { Item, InfoRow, DialogSpec, KeyboardData, PowerData, DateTimeData, NetworkData, BluetoothData, SoundData, SoundSide, DisplayData, DisplayOutput }
 
 export struct PageEntry {
     name: string,
@@ -40,6 +41,7 @@ export global ChooserState {
     in property <string> empty;
     in property <[Item]> items;
     in-out property <int> current: 0;
+    in property <int> generation: 0;
     callback chosen(string);
     callback cancelled();
     callback filtered(string);
@@ -189,6 +191,7 @@ export component SettingsWindow inherits Window {
         if root.page == "display": DisplayPage { }
         if root.page == "power": PowerPage { }
         if root.page == "date-time": DateTimePage { }
+        if root.page == "keyboard": KeyboardPage { }
     }
 
     if ChooserState.open: ChooserLayer {
@@ -198,6 +201,7 @@ export component SettingsWindow inherits Window {
         empty: ChooserState.empty;
         items: ChooserState.items;
         current <=> ChooserState.current;
+        generation: ChooserState.generation;
         chosen(id) => { ChooserState.chosen(id); }
         cancelled => { ChooserState.cancelled(); }
         filtered(text) => { ChooserState.filtered(text); }

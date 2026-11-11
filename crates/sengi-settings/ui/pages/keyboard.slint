@@ -1,0 +1,119 @@
+// The Keyboard page: layouts, the shortcut that switches between them,
+// and how keys repeat.
+
+import { Tokens, SengiButton } from "components.slint";
+import { Item, ItemList, Page, PageColumn, Card, Divider, SettingRow, RowValue, SectionLabel, Note, Gap, Metrics, ChoiceButton, Slider } from "../kit.slint";
+
+export global KeyboardData {
+    in property <[Item]> layouts;
+    in property <bool> can-add: true;
+    // More than one layout: the shortcut matters.
+    in property <bool> several: false;
+    in property <string> switch;
+    in-out property <int> delay: 600;
+    in-out property <int> rate: 25;
+
+    callback add();
+    callback remove(string);
+    callback choose-switch();
+    // "repeat-delay" or "repeat-rate", and the value settled on.
+    callback repeat(string, int);
+}
+
+export component KeyboardPage inherits Page {
+    title: "Keyboard";
+    content-height: column.preferred-height;
+
+    column := PageColumn {
+        HorizontalLayout {
+            spacing: Tokens.space-md;
+
+            SectionLabel {
+                horizontal-stretch: 1;
+                text: "Layouts";
+                vertical-alignment: center;
+            }
+
+            SengiButton {
+                text: "Add layout";
+                enabled: KeyboardData.can-add;
+                clicked => { KeyboardData.add(); }
+            }
+        }
+
+        Card {
+            ItemList {
+                items: KeyboardData.layouts;
+                removed(id) => { KeyboardData.remove(id); }
+            }
+
+            Divider { }
+
+            SettingRow {
+                title: "Switch layouts with";
+                detail: KeyboardData.several ? "" : "Used once there is a second layout";
+
+                VerticalLayout {
+                    alignment: center;
+                    ChoiceButton {
+                        width: Metrics.control;
+                        text: KeyboardData.switch;
+                        clicked => { KeyboardData.choose-switch(); }
+                    }
+                }
+            }
+        }
+
+        Gap { }
+
+        SectionLabel {
+            text: "Holding a key down";
+        }
+
+        Card {
+            SettingRow {
+                title: "Delay before it repeats";
+
+                VerticalLayout {
+                    alignment: center;
+                    Slider {
+                        width: Metrics.control;
+                        minimum: 150;
+                        maximum: 1000;
+                        step: 50;
+                        value <=> KeyboardData.delay;
+                        released(to) => { KeyboardData.repeat("repeat-delay", to); }
+                    }
+                }
+
+                RowValue {
+                    width: Tokens.dock-icon * 2;
+                    text: KeyboardData.delay + " ms";
+                }
+            }
+
+            Divider { }
+
+            SettingRow {
+                title: "Repeats";
+
+                VerticalLayout {
+                    alignment: center;
+                    Slider {
+                        width: Metrics.control;
+                        minimum: 5;
+                        maximum: 60;
+                        step: 5;
+                        value <=> KeyboardData.rate;
+                        released(to) => { KeyboardData.repeat("repeat-rate", to); }
+                    }
+                }
+
+                RowValue {
+                    width: Tokens.dock-icon * 2;
+                    text: KeyboardData.rate + " per s";
+                }
+            }
+        }
+    }
+}
