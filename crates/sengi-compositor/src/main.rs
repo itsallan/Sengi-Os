@@ -5,11 +5,11 @@
 mod cli;
 mod cursor;
 mod decoration;
+#[cfg(feature = "winit")]
+mod device_input;
 mod foreign_toplevel;
 mod frame;
 mod headless;
-// Only the winit backend delivers input so far.
-#[cfg_attr(not(feature = "winit"), allow(dead_code))]
 mod input;
 mod keys;
 mod layer;

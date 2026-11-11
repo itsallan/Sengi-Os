@@ -270,6 +270,8 @@ pub const HIDDEN_FRAME_INTERVAL: Duration = Duration::from_secs(1);
 /// What `output` produced: the regions that were repainted, `None` if
 /// nothing changed, and which elements ended up visible.
 pub struct Rendered {
+    // Only a backend that hands frames to someone else needs the regions.
+    #[cfg_attr(not(feature = "winit"), allow(dead_code))]
     pub damage: Option<Vec<Rectangle<i32, Physical>>>,
     pub states: RenderElementStates,
 }

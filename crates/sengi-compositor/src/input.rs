@@ -2,14 +2,11 @@
 //! clients, and into window management when they land on a frame.
 
 use smithay::{
-    backend::input::{
-        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
-        KeyState, KeyboardKeyEvent, Keycode, PointerAxisEvent, PointerButtonEvent,
-    },
+    backend::input::{ButtonState, KeyState, Keycode},
     desktop::{layer_map_for_output, Window, WindowSurfaceType},
     input::{
         keyboard::FilterResult,
-        pointer::{AxisFrame, ButtonEvent, CursorImageStatus, MotionEvent},
+        pointer::{ButtonEvent, CursorImageStatus, MotionEvent},
     },
     reexports::wayland_server::{protocol::wl_surface::WlSurface, Resource},
     utils::{Logical, Point, SERIAL_COUNTER},
@@ -64,49 +61,6 @@ fn cell(location: Point<f64, Logical>) -> (i32, i32) {
 }
 
 impl State {
-    pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
-        match event {
-            InputEvent::Keyboard { event } => {
-                self.key(event.key_code(), event.state(), event.time_msec());
-            }
-            InputEvent::PointerMotionAbsolute { event } => {
-                let Some(output) = self.output() else { return };
-                let Some(geometry) = self.space.output_geometry(&output) else {
-                    return;
-                };
-                let location = event.position_transformed(geometry.size) + geometry.loc.to_f64();
-                self.pointer_motion(location, event.time_msec());
-            }
-            InputEvent::PointerButton { event } => {
-                self.pointer_button(event.button_code(), event.state(), event.time_msec());
-            }
-            InputEvent::PointerAxis { event } => {
-                let mut frame = AxisFrame::new(event.time_msec()).source(event.source());
-                for axis in [Axis::Horizontal, Axis::Vertical] {
-                    let v120 = event.amount_v120(axis);
-                    // Wheels report steps only; 15 px per notch is the usual
-                    // conversion.
-                    let amount = event
-                        .amount(axis)
-                        .or_else(|| v120.map(|steps| steps * 15.0 / 120.0))
-                        .unwrap_or(0.0);
-                    if amount != 0.0 {
-                        frame = frame.value(axis, amount);
-                        if let Some(steps) = v120 {
-                            frame = frame.v120(axis, steps as i32);
-                        }
-                    } else if event.source() == AxisSource::Finger {
-                        frame = frame.stop(axis);
-                    }
-                }
-                let pointer = self.seat.get_pointer().expect("seat has a pointer");
-                pointer.axis(self, frame);
-                pointer.frame(self);
-            }
-            _ => {}
-        }
-    }
-
     pub fn key(&mut self, keycode: Keycode, state: KeyState, time: u32) {
         self.note_activity();
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
@@ -538,11 +492,14 @@ impl State {
         let local = location - output_origin.to_f64();
 
         layers.iter().find_map(|&kind| {
-            let layer = map.layer_under(kind, local)?;
-            let origin = map.layer_geometry(layer)?.loc;
-            layer
-                .surface_under(local - origin.to_f64(), WindowSurfaceType::ALL)
-                .map(|(surface, offset)| (surface, (offset + origin + output_origin).to_f64()))
+            // A surface whose input region misses lets the one below it
+            // on the same layer have the pointer.
+            map.layers_on(kind).rev().find_map(|layer| {
+                let origin = map.layer_geometry(layer)?.loc;
+                layer
+                    .surface_under(local - origin.to_f64(), WindowSurfaceType::ALL)
+                    .map(|(surface, offset)| (surface, (offset + origin + output_origin).to_f64()))
+            })
         })
     }
 }
