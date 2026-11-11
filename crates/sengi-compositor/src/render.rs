@@ -52,9 +52,36 @@ where
         .map(|geometry| geometry.loc)
         .unwrap_or_default();
 
-    // Front to back: overlay and top layers, windows, bottom and background.
     let mut elements: Vec<OutputElement<R>> = Vec::new();
     cursor(state, origin, renderer, scale, &mut elements);
+
+    if state.is_locked() {
+        // Nothing of the session may show: the lock surface if there is
+        // one, on a plain background that also covers a locker that has
+        // not drawn yet or has died.
+        if let Some(surface) = state.lock_surface() {
+            elements.extend(render_elements_from_surface_tree(
+                renderer,
+                &surface,
+                (0, 0),
+                scale,
+                1.0,
+                Kind::Unspecified,
+            ));
+        }
+        damage
+            .render_output(
+                renderer,
+                target,
+                age,
+                &elements,
+                state.color(state.theme.inactive),
+            )
+            .map_err(|err| format!("{err:?}"))?;
+        return Ok(());
+    }
+
+    // Front to back: overlay and top layers, windows, bottom and background.
     layers(
         output,
         [Layer::Overlay, Layer::Top],
@@ -240,6 +267,15 @@ fn frame<R>(
 pub fn send_frames(state: &State, output: &Output) {
     let time = state.start_time.elapsed();
     let throttle = Some(Duration::ZERO);
+
+    if state.is_locked() {
+        if let Some(surface) = state.lock_surface() {
+            send_frames_surface_tree(&surface, output, time, throttle, |_, _| {
+                Some(output.clone())
+            });
+        }
+        return;
+    }
 
     for window in state.space.elements() {
         window.send_frame(output, time, throttle, |_, _| Some(output.clone()));

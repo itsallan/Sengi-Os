@@ -108,6 +108,7 @@ impl State {
     }
 
     pub fn key(&mut self, keycode: Keycode, state: KeyState, time: u32) {
+        self.note_activity();
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
         let code = keycode.raw();
         let action = keyboard.input(
@@ -124,6 +125,10 @@ impl State {
                     } else {
                         FilterResult::Forward
                     };
+                }
+                // No shortcuts on the lock screen: every key is the locker's.
+                if data.is_locked() {
+                    return FilterResult::Forward;
                 }
                 let mods = Mods {
                     logo: modifiers.logo,
@@ -192,7 +197,27 @@ impl State {
         }
     }
 
+    /// Gives the pointer to whatever is under it now, if that changed
+    /// without the pointer moving: a window closed, opened, moved or was
+    /// maximised, or the session locked.
+    pub fn sync_pointer_focus(&mut self) {
+        let pointer = self.seat.get_pointer().expect("seat has a pointer");
+        if !self.pointer_seen || self.drag.is_some() || pointer.is_grabbed() {
+            return;
+        }
+        let location = pointer.current_location();
+        let wanted = match self.target_at(location) {
+            Some(Target::Surface { surface, .. }) => Some(surface),
+            _ => None,
+        };
+        if pointer.current_focus() != wanted {
+            let time = self.start_time.elapsed().as_millis() as u32;
+            self.pointer_motion(location, time);
+        }
+    }
+
     pub fn pointer_motion(&mut self, location: Point<f64, Logical>, time: u32) {
+        self.note_activity();
         let (x, y) = cell(location);
         let mut focus = None;
         let mut hovered = None;
@@ -259,6 +284,7 @@ impl State {
     }
 
     pub fn pointer_button(&mut self, button: u32, state: ButtonState, time: u32) {
+        self.note_activity();
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
         let location = pointer.current_location();
 
@@ -288,6 +314,10 @@ impl State {
     /// A button went down with no drag in progress: focus what was clicked
     /// and start a drag if it was part of a frame.
     fn press(&mut self, button: u32, location: Point<f64, Logical>) {
+        // A click on the lock screen changes nothing behind it.
+        if self.is_locked() {
+            return;
+        }
         let (x, y) = cell(location);
         match self.target_at(location) {
             Some(Target::Surface {
@@ -424,6 +454,19 @@ impl State {
     /// What is at `location`, front to back: overlay and top layers,
     /// windows with their frames, then bottom and background layers.
     fn target_at(&self, location: Point<f64, Logical>) -> Option<Target> {
+        if self.is_locked() {
+            // The lock surface covers the output; nothing else exists.
+            let origin = self
+                .output()
+                .and_then(|output| self.space.output_geometry(&output))
+                .map(|geometry| geometry.loc.to_f64())
+                .unwrap_or_default();
+            return self.lock_surface().map(|surface| Target::Surface {
+                window: None,
+                surface,
+                origin,
+            });
+        }
         let layer = |layers: &[Layer]| {
             let (surface, origin) = self.layer_surface_under(location, layers)?;
             Some(Target::Surface {

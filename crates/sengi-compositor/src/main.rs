@@ -14,6 +14,7 @@ mod input;
 mod keys;
 mod layer;
 mod layout;
+mod lock;
 mod png;
 mod render;
 mod script;

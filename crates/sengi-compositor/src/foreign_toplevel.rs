@@ -265,6 +265,11 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, u64> for State {
         let Some(window) = state.foreign_toplevels.window(*id) else {
             return;
         };
+        // The dock is not reachable on the lock screen; anything else
+        // asking is not to be trusted with the windows behind it.
+        if state.is_locked() {
+            return;
+        }
         match request {
             Request::Activate { .. } => {
                 state.set_minimised(&window, false);

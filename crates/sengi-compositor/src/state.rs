@@ -11,7 +11,8 @@ use std::{
 use sengi_tokens::{Rgba, Tokens};
 use smithay::{
     backend::renderer::Color32F,
-    delegate_cursor_shape, delegate_data_device, delegate_output, delegate_seat, delegate_shm,
+    delegate_cursor_shape, delegate_data_device, delegate_idle_notify, delegate_output,
+    delegate_seat, delegate_shm,
     desktop::{layer_map_for_output, PopupManager, Space, Window},
     input::{
         pointer::{CursorIcon, CursorImageStatus},
@@ -31,6 +32,7 @@ use smithay::{
         buffer::BufferHandler,
         compositor::{CompositorClientState, CompositorState},
         cursor_shape::CursorShapeManagerState,
+        idle_notify::{IdleNotifierHandler, IdleNotifierState},
         output::{OutputHandler, OutputManagerState},
         selection::{
             data_device::{
@@ -39,6 +41,7 @@ use smithay::{
             },
             SelectionHandler,
         },
+        session_lock::SessionLockManagerState,
         shell::{
             wlr_layer::{KeyboardInteractivity, Layer, WlrLayerShellState},
             xdg::{decoration::XdgDecorationState, XdgShellState},
@@ -57,6 +60,7 @@ use crate::{
     input::Drag,
     keys::Swallowed,
     layout::FocusStack,
+    lock::Lock,
     text::Font,
 };
 
@@ -114,6 +118,10 @@ pub struct State {
     _cursor_shape_state: CursorShapeManagerState,
     pub layer_shell_state: WlrLayerShellState,
     pub foreign_toplevels: ForeignToplevelState,
+    pub session_lock_state: SessionLockManagerState,
+    /// Set while the session is locked. See `lock.rs`.
+    pub lock: Option<Lock>,
+    pub idle_notifier_state: IdleNotifierState<Self>,
     pub shm_state: ShmState,
     pub seat_state: SeatState<Self>,
     pub data_device_state: DataDeviceState,
@@ -135,6 +143,8 @@ impl State {
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
         let foreign_toplevels = ForeignToplevelState::new(&dh);
         let cursor_shape_state = CursorShapeManagerState::new::<Self>(&dh);
+        let session_lock_state = SessionLockManagerState::new::<Self, _>(&dh, |_| true);
+        let idle_notifier_state = IdleNotifierState::<Self>::new(&dh, event_loop.handle());
         let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
@@ -209,6 +219,9 @@ impl State {
             _cursor_shape_state: cursor_shape_state,
             layer_shell_state,
             foreign_toplevels,
+            session_lock_state,
+            lock: None,
+            idle_notifier_state,
             shm_state,
             seat_state,
             data_device_state,
@@ -222,6 +235,7 @@ impl State {
         event_loop.run(None, &mut self, |state| {
             state.space.refresh();
             state.popups.cleanup();
+            state.sync_pointer_focus();
             state.refresh_foreign_toplevels();
             state.reap_children();
             let _ = state.display_handle.flush_clients();
@@ -396,6 +410,15 @@ impl State {
     /// that demands it (the launcher), else a layer surface the user clicked,
     /// else the focused window.
     pub fn update_keyboard_focus(&mut self) {
+        let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
+        if self.is_locked() {
+            // Only the lock screen, or nobody until it has a surface.
+            let target = self.lock_surface();
+            if keyboard.current_focus() != target {
+                keyboard.set_focus(self, target, SERIAL_COUNTER.next_serial());
+            }
+            return;
+        }
         if self.layer_focus.as_ref().is_some_and(|s| !s.is_alive()) {
             self.layer_focus = None;
         }
@@ -407,10 +430,15 @@ impl State {
                 Some(toplevel.wl_surface().clone())
             });
 
-        let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
         if keyboard.current_focus() != target {
             keyboard.set_focus(self, target, SERIAL_COUNTER.next_serial());
         }
+    }
+
+    /// Tells idle watchers such as swayidle that the user did something.
+    pub fn note_activity(&mut self) {
+        let seat = self.seat.clone();
+        self.idle_notifier_state.notify_activity(&seat);
     }
 
     /// The front-most layer surface asking for exclusive keyboard focus.
@@ -482,6 +510,12 @@ impl SeatHandler for State {
 // The cursor-shape protocol also covers tablet tools, which we do not have.
 impl TabletSeatHandler for State {}
 
+impl IdleNotifierHandler for State {
+    fn idle_notifier_state(&mut self) -> &mut IdleNotifierState<Self> {
+        &mut self.idle_notifier_state
+    }
+}
+
 impl SelectionHandler for State {
     type SelectionUserData = ();
 }
@@ -499,6 +533,7 @@ impl OutputHandler for State {}
 
 delegate_shm!(State);
 delegate_seat!(State);
+delegate_idle_notify!(State);
 delegate_cursor_shape!(State);
 delegate_data_device!(State);
 delegate_output!(State);
