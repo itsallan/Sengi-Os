@@ -110,6 +110,18 @@ impl Address {
     }
 }
 
+/// What banning a name did.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Banned {
+    /// The items that went with it.
+    pub gone: Vec<Address>,
+    /// Whether the name was not banned already.
+    pub new: bool,
+    /// A name that was forgiven early to make room. Nobody is waiting
+    /// for it to leave the bus any more.
+    pub evicted: Option<String>,
+}
+
 /// Why a registration was turned down.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refused {
@@ -189,19 +201,22 @@ impl Registry {
         (gone, self.banned.len() != before)
     }
 
-    /// Stops listening to a connection: its items go, and it cannot
-    /// register again until it has left the bus. Returns the items, and
-    /// whether the ban is new.
-    pub fn ban(&mut self, unique: &str) -> (Vec<Address>, bool) {
-        let new = !self.is_banned(unique);
+    /// Stops listening to a name: its items go, and nothing can be
+    /// registered by it or under it until it has left the bus.
+    pub fn ban(&mut self, name: &str) -> Banned {
+        let new = !self.is_banned(name);
+        let mut evicted = None;
         if new {
             if self.banned.len() >= MAX_BANNED {
-                self.banned.remove(0);
+                evicted = Some(self.banned.remove(0));
             }
-            self.banned.push(unique.to_string());
+            self.banned.push(name.to_string());
         }
-        let gone = self.take(|item| item.address.bus == unique || item.sender == unique);
-        (gone, new)
+        Banned {
+            gone: self.take(|item| item.address.bus == name || item.sender == name),
+            new,
+            evicted,
+        }
     }
 
     pub fn is_banned(&self, name: &str) -> bool {
@@ -589,9 +604,9 @@ mod tests {
         register(&mut registry, "org.example.Theirs", ":1.5").unwrap();
         register(&mut registry, "/a", ":1.6").unwrap();
 
-        let (gone, new) = registry.ban(":1.5");
-        assert_eq!(gone.len(), 2);
-        assert!(new);
+        let banned = registry.ban(":1.5");
+        assert_eq!(banned.gone.len(), 2);
+        assert!(banned.new && banned.evicted.is_none());
         assert_eq!(registry.services(), [":1.6/a"]);
         assert_eq!(register(&mut registry, "/b", ":1.5"), Err(Refused::Banned));
         assert_eq!(
@@ -599,7 +614,7 @@ mod tests {
             Err(Refused::Banned)
         );
         // Banning twice is not news.
-        assert_eq!(registry.ban(":1.5"), (Vec::new(), false));
+        assert!(!registry.ban(":1.5").new);
 
         // The name is free to be handed to someone else afterwards.
         assert_eq!(registry.owner_lost(":1.5"), (Vec::new(), true));
@@ -607,11 +622,32 @@ mod tests {
     }
 
     #[test]
+    fn a_ban_on_a_well_known_name_covers_an_item_adopted_under_it() {
+        // In guest mode the item is known only by the name it is listed
+        // under; the ban has to be able to name that.
+        let mut registry = Registry::default();
+        registry
+            .adopt("org.example.App/StatusNotifierItem")
+            .unwrap();
+        assert_eq!(registry.ban(":1.5").gone.len(), 0);
+        assert_eq!(registry.ban("org.example.App").gone.len(), 1);
+        assert_eq!(
+            registry.adopt("org.example.App/StatusNotifierItem"),
+            Err(Refused::Banned)
+        );
+    }
+
+    #[test]
     fn the_list_of_banned_connections_is_bounded() {
         let mut registry = Registry::default();
+        let mut evicted = Vec::new();
         for n in 0..MAX_BANNED + 10 {
-            registry.ban(&format!(":1.{n}"));
+            evicted.extend(registry.ban(&format!(":1.{n}")).evicted);
         }
+        // Each name pushed off the end is reported, so that whoever was
+        // watching for it to leave the bus can stop.
+        let expected: Vec<String> = (0..10).map(|n| format!(":1.{n}")).collect();
+        assert_eq!(evicted, expected);
         assert_eq!(registry.banned.len(), MAX_BANNED);
         assert!(!registry.is_banned(":1.0"));
         assert!(registry.is_banned(&format!(":1.{}", MAX_BANNED + 9)));

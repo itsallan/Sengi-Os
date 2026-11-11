@@ -1,7 +1,7 @@
 //! The host, driven by hand: events in, and a record of what it asked for.
 
 use super::*;
-use crate::tray::pace::{BASE_INTERVAL, MAX_INTERVAL};
+use crate::tray::pace::{BASE_INTERVAL, BURST, MAX_INTERVAL, READS_PER_MINUTE};
 use crate::tray::watcher::{Claim, MAX_PER_SENDER};
 
 const KDE: &str = "org.kde.StatusNotifierItem";
@@ -131,6 +131,7 @@ fn snapshot(title: &str) -> Snapshot {
             ..Properties::default()
         },
         icons: Vec::new(),
+        over: Refused::NONE,
     }
 }
 
@@ -676,13 +677,42 @@ fn a_deferred_read_starts_when_it_is_due() {
     assert_eq!(rig.host.deadline(), None);
 }
 
+/// A read that found these answers over their limit.
+fn over(title: &str, what: Refused) -> Snapshot {
+    Snapshot {
+        over: what,
+        ..snapshot(title)
+    }
+}
+
 #[test]
-fn an_oversized_answer_gets_the_connection_ignored_until_it_leaves() {
+fn an_oversized_icon_costs_the_icon_not_the_item() {
     let mut rig = rig();
-    let (address, _) = rig.item(":1.50", snapshot("Greedy"));
-    rig.item(":1.51", snapshot("Good"));
+    // An honest app whose only icon is one enormous pixmap.
+    let (address, _) = rig.register(ITEM, ":1.50");
+    let log = rig.answer(&address, over("Big", Refused::ICON_PIXMAP));
+    assert_eq!(log, ["watch owner :1.50", "publish [Big]"]);
+    // It is in the tray, with a letter for a picture.
+    let view = &rig.host.backend().views[0];
+    assert_eq!((view.letter.as_str(), view.icons.len()), ("B", 0));
+
+    // From now on its reads are told not to fetch the pixmap.
+    rig.now += Duration::from_secs(5);
     rig.signal(":1.50", "NewIcon");
-    let log = rig.fail(&address, Failure::Oversized(":1.50".into()));
+    let read = rig.host.backend().reads.last().unwrap();
+    assert!(read.refused.contains(Refused::ICON_PIXMAP));
+    assert!(rig.answer(&address, snapshot("Big")).is_empty());
+    assert_eq!(rig.host.items.len(), 1);
+}
+
+#[test]
+fn a_second_oversized_answer_gets_the_connection_ignored_until_it_leaves() {
+    let mut rig = rig();
+    let (address, _) = rig.item(":1.50", over("Greedy", Refused::ICON_PIXMAP));
+    rig.item(":1.51", snapshot("Good"));
+    rig.host.backend().take();
+    rig.signal(":1.50", "NewToolTip");
+    let log = rig.answer(&address, over("Greedy", Refused::TOOLTIP));
     assert_eq!(
         log,
         [
@@ -692,7 +722,7 @@ fn an_oversized_answer_gets_the_connection_ignored_until_it_leaves() {
             "publish [Good]"
         ]
     );
-    // It cannot come straight back, by either door.
+    // It cannot come straight back.
     let again = Address::claim(ITEM, ":1.50").unwrap();
     let (Claim::Own(again) | Claim::Named(again)) = again;
     assert!(rig
@@ -701,16 +731,65 @@ fn an_oversized_answer_gets_the_connection_ignored_until_it_leaves() {
         .unwrap()
         .register(again, ":1.50")
         .is_err());
-    // Once the name is gone from the bus it is forgiven.
+    // Once the name is gone from the bus it is forgiven, and both the
+    // watch for the ban and the one for the refusal are taken down.
     assert_eq!(
         rig.send(Event::OwnerLost(":1.50".into())),
-        ["unwatch owner :1.50"]
+        ["unwatch owner :1.50", "unwatch owner :1.50"]
     );
     assert!(!rig.registry.lock().unwrap().is_banned(":1.50"));
+    assert!(rig.host.refusals.is_empty());
 }
 
 #[test]
-fn an_oversized_menu_does_the_same() {
+fn text_over_its_limit_is_let_off_once() {
+    let mut rig = rig();
+    let (address, _) = rig.item(":1.50", over("", Refused::TEXT));
+    assert_eq!(rig.host.items.len(), 1);
+    // A title is asked for again when it changes; a second one that long
+    // is a second offence.
+    rig.signal(":1.50", "NewTitle");
+    rig.answer(&address, over("", Refused::TEXT));
+    assert!(rig.host.items.is_empty());
+    assert!(rig.registry.lock().unwrap().is_banned(":1.50"));
+}
+
+#[test]
+fn an_oversized_menu_costs_the_menu_not_the_item() {
+    let mut rig = rig();
+    let (_, id) = rig.item(":1.50", with_menu("Big menu", false));
+    rig.press(id, Button::Right);
+    let log = rig.send(Event::Oversized {
+        owner: ":1.50".into(),
+        what: Refused::MENU,
+    });
+    assert_eq!(
+        log,
+        [
+            "watch owner :1.50",
+            "menu Closed",
+            "unwatch menu :1.50/MenuBar",
+            "close menu"
+        ]
+    );
+    // The item stays and still takes clicks; its menu is not asked for
+    // again, so a right click is passed to the app to deal with.
+    assert_eq!(rig.labels(), ["Big menu"]);
+    assert_eq!(
+        rig.press(id, Button::Right),
+        [format!("call {:?}", Method::ContextMenu)]
+    );
+    assert_eq!(rig.press(id, Button::Left).len(), 1);
+    // Sending another one is the second offence.
+    rig.send(Event::Oversized {
+        owner: ":1.50".into(),
+        what: Refused::MENU,
+    });
+    assert!(rig.host.items.is_empty());
+}
+
+#[test]
+fn megabytes_nobody_asked_for_get_the_connection_ignored_at_once() {
     let mut rig = rig();
     rig.item(":1.50", with_menu("Greedy", false));
     let log = rig.send(Event::Misbehaved {
@@ -718,6 +797,129 @@ fn an_oversized_menu_does_the_same() {
     });
     assert!(log.contains(&"watch owner :1.50".to_string()), "{log:?}");
     assert!(rig.host.items.is_empty());
+}
+
+#[test]
+fn a_ban_reaches_an_item_adopted_under_a_well_known_name() {
+    let mut rig = rig();
+    // A guest of another watcher: the item is known by the name it is
+    // listed under, and its reads are answered by :1.50.
+    rig.send(Event::WatcherOwner { ours: false });
+    rig.send(Event::Announced(
+        "org.example.App/StatusNotifierItem".into(),
+    ));
+    let address = rig.host.items[0].address.clone();
+    rig.answer(&address, snapshot("App"));
+    let log = rig.send(Event::Misbehaved {
+        owner: ":1.50".into(),
+    });
+    assert!(rig.host.items.is_empty(), "{log:?}");
+    // Both names are held against it, so it is not asked again on its
+    // next signal or adopted again when the watcher lists it.
+    assert!(log.contains(&"watch owner :1.50".to_string()));
+    assert!(log.contains(&"watch owner org.example.App".to_string()));
+    assert!(rig
+        .send(Event::Announced(
+            "org.example.App/StatusNotifierItem".into()
+        ))
+        .is_empty());
+    assert!(rig.signal(":1.50", "NewIcon").is_empty());
+}
+
+#[test]
+fn a_ban_pushed_off_the_end_of_the_list_is_no_longer_watched() {
+    let mut rig = rig();
+    let mut log = Vec::new();
+    for n in 0..70 {
+        log.extend(rig.send(Event::Misbehaved {
+            owner: format!(":1.{n}"),
+        }));
+    }
+    let count = |what: &str| log.iter().filter(|line| line.starts_with(what)).count();
+    // Seventy were watched for; the six that fell off are let go.
+    assert_eq!(count("watch owner"), 70);
+    assert_eq!(count("unwatch owner"), 6);
+    assert!(log.contains(&"unwatch owner :1.0".to_string()));
+}
+
+#[test]
+fn an_item_appears_and_disappears_no_faster_than_the_flip_interval() {
+    let mut rig = rig();
+    rig.item(":1.49", snapshot("Left of it"));
+    let (address, _) = rig.item(":1.50", snapshot("Flapper"));
+    rig.host.backend().take();
+    let before = rig.host.backend().publishes;
+    let status = |status: Status| {
+        let mut snapshot = snapshot("Flapper");
+        snapshot.properties.status = status;
+        snapshot
+    };
+    // Passive and Active by turns every 300 ms for a minute. Each read
+    // finds the other status.
+    let mut reads = 0;
+    for step in 0..200 {
+        rig.now += ms(300);
+        rig.host.tick(rig.now);
+        rig.signal(":1.50", "NewStatus");
+        if rig.host.backend().reads.len() > reads {
+            reads = rig.host.backend().reads.len();
+            let next = if step % 2 == 0 {
+                Status::Passive
+            } else {
+                Status::Active
+            };
+            rig.answer(&address, status(next));
+        }
+    }
+    // The tray changed at most once per flip interval, not once per read.
+    let flips = rig.host.backend().publishes - before;
+    assert!(
+        flips <= 60 / FLIP_INTERVAL.as_secs() as usize + 1,
+        "{flips}"
+    );
+    assert!(flips >= 2, "{flips}");
+}
+
+#[test]
+fn a_held_status_is_shown_once_the_interval_is_up() {
+    let mut rig = rig();
+    let (address, _) = rig.register(ITEM, ":1.50");
+    rig.answer(&address, snapshot("Chat"));
+    assert_eq!(rig.labels(), ["Chat"]);
+    // It hides straight after appearing: held for now.
+    rig.now += Duration::from_secs(1);
+    rig.signal(":1.50", "NewStatus");
+    let mut passive = snapshot("Chat");
+    passive.properties.status = Status::Passive;
+    assert!(rig.answer(&address, passive).is_empty());
+    assert_eq!(rig.labels(), ["Chat"]);
+    // And goes when the time is up, with nothing more said by the app.
+    assert_eq!(rig.host.deadline(), Some(rig.now + Duration::from_secs(4)));
+    assert_eq!(rig.wait(Duration::from_secs(4)), ["publish []"]);
+    assert_eq!(rig.host.deadline(), None);
+}
+
+#[test]
+fn an_item_changing_just_slower_than_the_spacing_has_a_minutes_allowance() {
+    let mut rig = rig();
+    let (address, _) = rig.item(":1.50", snapshot("Animated"));
+    rig.host.backend().reads.clear();
+    // A fresh icon every 300 ms for three minutes, each read answered at
+    // once.
+    for _ in 0..600 {
+        rig.now += ms(300);
+        rig.host.tick(rig.now);
+        rig.signal(":1.50", "NewIcon");
+        if rig.host.items[0].pacer.in_flight() {
+            rig.answer(&address, snapshot("Animated"));
+        }
+    }
+    let reads = rig.host.backend().reads.len();
+    assert!(
+        reads <= (3 * READS_PER_MINUTE + BURST) as usize,
+        "{reads} reads"
+    );
+    assert!(reads >= READS_PER_MINUTE as usize, "{reads} reads");
 }
 
 #[test]

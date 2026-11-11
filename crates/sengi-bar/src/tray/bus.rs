@@ -39,7 +39,7 @@ use super::host::{
     View,
 };
 use super::icons::{Cache, Decoder, DECODE_TIMEOUT, THIS_PROGRAM};
-use super::item::{self, IconSource, Parts, Raw, Status, Which};
+use super::item::{self, IconSource, Parts, Raw, Refused, Status, Which};
 use super::menu::{self, Entry};
 use super::menu_view;
 use super::pixmap::{self, Pixels, Pixmap, MAX_PIXMAPS};
@@ -69,9 +69,9 @@ const MENU_BUDGET: Duration = Duration::from_secs(3);
 /// Largest replies we will take. These are what the job needs with room
 /// to spare: a few lines of text, pixmaps of up to 256 pixels a side, a
 /// menu of a couple of hundred rows. A reply over its limit is not
-/// unpacked, and the connection that sent it is not listened to again
-/// until it has left the bus: asking once has already cost us the whole
-/// reply, and it would cost that on every change.
+/// unpacked, and that property is not asked of that connection again:
+/// asking once has already cost us the whole reply, and it would cost
+/// that on every change. The item stays, without the part.
 const TEXT_LIMIT: usize = 16 * 1024;
 const PIXMAP_LIMIT: usize = 2 * 1024 * 1024;
 const MENU_LIMIT: usize = 512 * 1024;
@@ -358,10 +358,14 @@ fn forward_signals(
         let body = message.body();
         large = body.len() > LARGE_REPLY;
         let header = message.header();
-        // Nothing we ask for is this big. A reply over the limit is also
-        // caught by whoever asked, but not if it came after they had
-        // stopped waiting, and an app can be slow on purpose.
-        if body.len() > PIXMAP_LIMIT {
+        // Megabytes nobody asked for: a signal, or a call to us. (An
+        // answer that is too big is the business of whoever asked, and
+        // costs the app that property, not its place in the tray.)
+        let reply = matches!(
+            header.message_type(),
+            zbus::message::Type::MethodReturn | zbus::message::Type::Error
+        );
+        if body.len() > PIXMAP_LIMIT && !reply {
             if let Some(owner) = header.sender().filter(|name| name.as_str() != DBUS) {
                 let owner = owner.to_string();
                 if events.send(Event::Misbehaved { owner }).is_err() {
@@ -521,6 +525,10 @@ struct Reader<'a> {
     owner: Option<String>,
     /// Whether any answer was big enough to be worth tidying up after.
     large: bool,
+    /// What this connection is not asked for any more.
+    refused: Refused,
+    /// Answers in this read that were over their limit.
+    over: Refused,
     /// Pixmaps fetched during this read, so two sizes cost one fetch.
     fetched: [Option<Vec<Pixmap>>; 2],
 }
@@ -554,10 +562,10 @@ impl Reader<'_> {
         let size = message.body().len();
         self.large |= size > LARGE_REPLY;
         if size > limit {
-            let owner = self.owner.clone();
-            return Err(Failure::Oversized(
-                owner.unwrap_or_else(|| self.address.bus.clone()),
-            ));
+            // Dropped unread, and noted for the host to hold against the
+            // connection.
+            self.over |= Refused::for_property(property);
+            return Ok(None);
         }
         Ok(Some(message))
     }
@@ -598,6 +606,9 @@ impl IconSource for Reader<'_> {
             Which::Icon => (0, "IconPixmap"),
             Which::Attention => (1, "AttentionIconPixmap"),
         };
+        if self.refused.contains(Refused::for_property(property)) {
+            return Ok(Vec::new());
+        }
         if self.fetched[slot].is_none() {
             let list = match self.reply(property, PIXMAP_LIMIT)? {
                 Some(message) => message
@@ -626,6 +637,8 @@ fn read_item(
         budget: Budget::starting(Instant::now(), READ_BUDGET),
         owner: None,
         large: false,
+        refused: request.refused,
+        over: Refused::NONE,
         fetched: [None, None],
     };
     let snapshot = read_parts(&mut reader, request);
@@ -664,7 +677,7 @@ fn read_parts(reader: &mut Reader<'_>, request: &Refresh) -> Result<Snapshot, Fa
     if parts.contains(Parts::TITLE) {
         raw.title = reader.text("Title")?;
     }
-    if parts.contains(Parts::TOOLTIP) {
+    if parts.contains(Parts::TOOLTIP) && !reader.refused.contains(Refused::TOOLTIP) {
         // A tooltip may carry an icon of its own, which is not used.
         raw.tooltip = reader
             .get::<ToolTip>("ToolTip", PIXMAP_LIMIT)?
@@ -716,6 +729,7 @@ fn read_parts(reader: &mut Reader<'_>, request: &Refresh) -> Result<Snapshot, Fa
         interface: reader.interface,
         properties,
         icons,
+        over: reader.over,
     })
 }
 
@@ -759,8 +773,9 @@ fn read_menu(connection: &Connection, request: &MenuRequest, events: &Sender<Eve
         if body.len() > MENU_LIMIT {
             // Unpacking it would cost many times its size.
             if let Some(owner) = message.header().sender() {
-                let _ = events.send(Event::Misbehaved {
+                let _ = events.send(Event::Oversized {
                     owner: owner.to_string(),
+                    what: Refused::MENU,
                 });
             }
             return None;

@@ -91,6 +91,54 @@ impl std::ops::BitOrAssign for Parts {
     }
 }
 
+/// What a connection has sent that was over a limit, and so is not asked
+/// for again. An over-sized icon costs the app its icon, not its place in
+/// the tray: an app that closes to the tray has no other way back.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Refused(u8);
+
+impl Refused {
+    pub const NONE: Refused = Refused(0);
+    pub const ICON_PIXMAP: Refused = Refused(1);
+    pub const ATTENTION_PIXMAP: Refused = Refused(1 << 1);
+    pub const TOOLTIP: Refused = Refused(1 << 2);
+    pub const MENU: Refused = Refused(1 << 3);
+    /// A line of text, which is asked for again: there is no doing
+    /// without a title. A second one this long is a second offence.
+    pub const TEXT: Refused = Refused(1 << 4);
+
+    /// What an over-sized answer to this property costs.
+    pub fn for_property(property: &str) -> Refused {
+        match property {
+            "IconPixmap" => Refused::ICON_PIXMAP,
+            "AttentionIconPixmap" => Refused::ATTENTION_PIXMAP,
+            "ToolTip" => Refused::TOOLTIP,
+            _ => Refused::TEXT,
+        }
+    }
+
+    pub fn contains(self, other: Refused) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl std::ops::BitOr for Refused {
+    type Output = Refused;
+    fn bitor(self, other: Refused) -> Refused {
+        Refused(self.0 | other.0)
+    }
+}
+
+impl std::ops::BitOrAssign for Refused {
+    fn bitor_assign(&mut self, other: Refused) {
+        self.0 |= other.0;
+    }
+}
+
 /// Properties exactly as they were read off the bus. None is one the item
 /// does not have or that could not be read.
 #[derive(Clone, Debug, Default)]
@@ -357,6 +405,20 @@ mod tests {
         assert_eq!(Parts::for_signal("SomethingElse"), Parts::NONE);
         assert!(Parts::ALL.contains(Parts::ICONS | Parts::IDENTITY));
         assert!(!Parts::TOOLTIP.intersects(Parts::ICONS));
+    }
+
+    #[test]
+    fn an_oversized_answer_costs_the_property_it_was_for() {
+        assert_eq!(Refused::for_property("IconPixmap"), Refused::ICON_PIXMAP);
+        assert_eq!(
+            Refused::for_property("AttentionIconPixmap"),
+            Refused::ATTENTION_PIXMAP
+        );
+        assert_eq!(Refused::for_property("ToolTip"), Refused::TOOLTIP);
+        assert_eq!(Refused::for_property("Title"), Refused::TEXT);
+        let both = Refused::ICON_PIXMAP | Refused::MENU;
+        assert!(both.contains(Refused::MENU) && !both.contains(Refused::TOOLTIP));
+        assert!(Refused::NONE.is_empty() && !both.is_empty());
     }
 
     #[test]

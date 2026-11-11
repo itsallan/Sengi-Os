@@ -16,7 +16,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::item::{Parts, Properties, Status};
+use super::item::{Parts, Properties, Refused, Status};
 use super::menu::{self, Entry};
 use super::pace::Pacer;
 use super::pixmap::Pixels;
@@ -37,6 +37,15 @@ const SCROLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Most scrolling that is kept for an item that is not being sent any.
 const MAX_SCROLL: f32 = 10_000.0;
+
+/// Shortest time between an item appearing and disappearing, or the
+/// other way about. When an item to the right hides, every icon to its
+/// left moves, and clicks on those are ignored for a moment; an item
+/// that could flip as fast as it is read could keep them unclickable.
+const FLIP_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Connections whose refusals are remembered at once.
+const MAX_REFUSALS: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Button {
@@ -64,18 +73,17 @@ pub struct Snapshot {
     pub interface: &'static str,
     pub properties: Properties,
     pub icons: Icons,
+    /// Answers in this read that were over their limit and were dropped.
+    pub over: Refused,
 }
 
 /// Why an item could not be read.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Failure {
     /// It has left the bus.
     Gone,
     /// It did not answer in time, or answered nothing useful.
     Unreachable,
-    /// It answered with something far over a limit. Carries the unique
-    /// name that did, which is not listened to again.
-    Oversized(String),
 }
 
 /// A request to read an item, or some of it.
@@ -87,6 +95,8 @@ pub struct Refresh {
     pub parts: Parts,
     /// The sizes icons are wanted at.
     pub pixels: Vec<u32>,
+    /// What the item's connection is not asked for any more.
+    pub refused: Refused,
 }
 
 #[derive(Debug)]
@@ -159,9 +169,15 @@ pub enum Event {
     MenuClosed {
         serial: u64,
     },
-    /// A connection sent something far over a limit outside a read.
+    /// A connection sent something far over a limit that nobody was
+    /// waiting for.
     Misbehaved {
         owner: String,
+    },
+    /// A connection answered a request with something over its limit.
+    Oversized {
+        owner: String,
+        what: Refused,
     },
 }
 
@@ -262,6 +278,13 @@ struct Item {
     scroll_after: Option<Instant>,
     /// Set while scrolling is waiting for that moment.
     scroll_due: Option<Instant>,
+    /// Whether the item is in the tray as the bars have it. This follows
+    /// its status, but no faster than [`FLIP_INTERVAL`].
+    visible: bool,
+    /// The earliest it may next appear or disappear.
+    flip_after: Option<Instant>,
+    /// Set while a change of status is waiting for that moment.
+    flip_due: Option<Instant>,
 }
 
 /// Whose menu is on screen.
@@ -299,6 +322,9 @@ pub struct Host<B: Backend> {
     published: Vec<View>,
     menu: Option<MenuSession>,
     next_serial: u64,
+    /// What each connection has been refused, by unique name, oldest
+    /// first. Forgotten when the connection leaves the bus.
+    refusals: Vec<(String, Refused)>,
 }
 
 impl<B: Backend> Host<B> {
@@ -313,6 +339,7 @@ impl<B: Backend> Host<B> {
             published: Vec::new(),
             menu: None,
             next_serial: 1,
+            refusals: Vec::new(),
         }
     }
 
@@ -327,7 +354,7 @@ impl<B: Backend> Host<B> {
         let menu = self.menu.as_ref().and_then(|menu| menu.pacer.due());
         self.items
             .iter()
-            .flat_map(|item| [item.pacer.due(), item.retry, item.scroll_due])
+            .flat_map(|item| [item.pacer.due(), item.retry, item.scroll_due, item.flip_due])
             .flatten()
             .chain(menu)
             .min()
@@ -345,6 +372,10 @@ impl<B: Backend> Host<B> {
             }
             if self.items[index].scroll_due.is_some_and(|due| due <= now) {
                 self.flush_scroll(index, now);
+            }
+            if self.items[index].flip_due.is_some_and(|due| due <= now) {
+                self.settle(index, now);
+                self.publish();
             }
         }
         if self.menu.as_mut().is_some_and(|menu| menu.pacer.tick(now)) {
@@ -384,6 +415,11 @@ impl<B: Backend> Host<B> {
                     self.forget(address);
                 }
                 if unbanned {
+                    self.backend.unwatch_owner(&bus);
+                }
+                let held = self.refusals.len();
+                self.refusals.retain(|(owner, _)| *owner != bus);
+                if self.refusals.len() != held {
                     self.backend.unwatch_owner(&bus);
                 }
                 if !gone.is_empty() {
@@ -443,6 +479,16 @@ impl<B: Backend> Host<B> {
                 }
             }
             Event::Misbehaved { owner } => self.ban(&owner),
+            Event::Oversized { owner, what } => {
+                self.refuse(&owner, what);
+                // A menu that is not to be asked for is not left open.
+                let theirs = self.menu.as_ref().is_some_and(|menu| {
+                    matches!(&menu.target, Target::Item { owner: held, .. } if *held == owner)
+                });
+                if theirs && what.contains(Refused::MENU) {
+                    self.end_menu();
+                }
+            }
         }
     }
 
@@ -468,6 +514,9 @@ impl<B: Backend> Host<B> {
                     scroll: [0.0; 2],
                     scroll_after: None,
                     scroll_due: None,
+                    visible: false,
+                    flip_after: None,
+                    flip_due: None,
                 });
                 self.next_id = self.next_id.wrapping_add(1).max(1);
                 self.items.len() - 1
@@ -505,22 +554,87 @@ impl<B: Backend> Host<B> {
         }
     }
 
-    /// Stops listening to a connection that sent something far over a
-    /// limit, until it leaves the bus. Being asked for the same megabytes
-    /// again on every change is how it would cost us.
+    /// Stops listening to a connection until it leaves the bus: one that
+    /// sent megabytes nobody asked for, or went over a limit again after
+    /// being let off once.
     fn ban(&mut self, owner: &str) {
-        let (gone, new) = match self.registry.lock() {
-            Ok(mut registry) => registry.ban(owner),
-            Err(_) => return,
-        };
-        for address in &gone {
-            self.forget(address);
+        // Its items may be registered under well-known names, which is
+        // all that is known of who registered them when they were
+        // adopted from another watcher. Those names are banned with it.
+        let mut names = vec![owner.to_string()];
+        for item in &self.items {
+            let theirs = item.snapshot.as_ref().is_some_and(|s| s.owner == owner);
+            if theirs && !names.contains(&item.address.bus) {
+                names.push(item.address.bus.clone());
+            }
         }
-        if new {
-            // To know when the name is free again.
-            self.backend.watch_owner(owner);
+        for name in &names {
+            let banned = match self.registry.lock() {
+                Ok(mut registry) => registry.ban(name),
+                Err(_) => return,
+            };
+            for address in &banned.gone {
+                self.forget(address);
+            }
+            if banned.new {
+                // To know when the name is free again.
+                self.backend.watch_owner(name);
+            }
+            if let Some(evicted) = banned.evicted {
+                self.backend.unwatch_owner(&evicted);
+            }
         }
         self.publish();
+    }
+
+    fn refused(&self, owner: &str) -> Refused {
+        self.refusals
+            .iter()
+            .find(|(held, _)| held == owner)
+            .map_or(Refused::NONE, |(_, refused)| *refused)
+    }
+
+    /// A connection answered with something over a limit. The first time
+    /// costs it that property: it is not asked for again, and the item
+    /// stays, with a letter for an icon or without its tooltip or menu.
+    /// So the most one connection can make us carry is one such answer.
+    /// A second time and it is not listened to at all.
+    fn refuse(&mut self, owner: &str, what: Refused) {
+        if what.is_empty() {
+            return;
+        }
+        if !self.refused(owner).is_empty() {
+            return self.ban(owner);
+        }
+        if self.refusals.len() >= MAX_REFUSALS {
+            let (evicted, _) = self.refusals.remove(0);
+            self.backend.unwatch_owner(&evicted);
+        }
+        self.refusals.push((owner.to_string(), what));
+        // To forget this when the name is free again.
+        self.backend.watch_owner(owner);
+    }
+
+    /// Brings whether an item is in the tray into line with its status,
+    /// unless it changed too recently, in which case it is left as it is
+    /// and looked at again when the time is up.
+    fn settle(&mut self, index: usize, now: Instant) {
+        let item = &mut self.items[index];
+        item.flip_due = None;
+        let wanted = item
+            .snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.properties.status != Status::Passive);
+        if wanted == item.visible {
+            return;
+        }
+        match item.flip_after {
+            Some(after) if now < after => item.flip_due = Some(after),
+            _ => {
+                item.visible = wanted;
+                item.flip_after = Some(now + FLIP_INTERVAL);
+            }
+        }
     }
 
     fn owner_changed(&mut self, name: &str, owner: &str, now: Instant) {
@@ -563,12 +677,18 @@ impl<B: Backend> Host<B> {
             parts = Parts::ALL;
         }
         item.reading = parts;
-        self.backend.refresh(Refresh {
+        let request = Refresh {
             address: item.address.clone(),
             previous: item.snapshot.clone(),
             parts,
             pixels: self.pixels.clone(),
-        });
+            refused: Refused::NONE,
+        };
+        let refused = request
+            .previous
+            .as_ref()
+            .map_or(Refused::NONE, |snapshot| self.refused(&snapshot.owner));
+        self.backend.refresh(Refresh { refused, ..request });
     }
 
     fn refreshed(
@@ -597,10 +717,15 @@ impl<B: Backend> Host<B> {
                         }
                     }
                 }
+                let (owner, over) = (snapshot.owner.clone(), snapshot.over);
+                snapshot.over = Refused::NONE;
                 item.snapshot = Some(*snapshot);
+                self.settle(index, now);
+                // After the item is in place: a second offence bans the
+                // connection and takes the item with it.
+                self.refuse(&owner, over);
             }
             Err(Failure::Gone) => return self.remove(address),
-            Err(Failure::Oversized(owner)) => return self.ban(&owner),
             Err(Failure::Unreachable) => {
                 item.failures += 1;
                 if item.failures >= MAX_FAILURES {
@@ -645,7 +770,7 @@ impl<B: Backend> Host<B> {
             .filter_map(|item| {
                 let snapshot = item.snapshot.as_ref()?;
                 let properties = &snapshot.properties;
-                (properties.status != Status::Passive).then(|| View {
+                item.visible.then(|| View {
                     id: item.id,
                     label: text::clean(properties.label(), text::MAX_LABEL),
                     letter: properties.letter(),
@@ -687,7 +812,8 @@ impl<B: Backend> Host<B> {
         let Some((_, snapshot)) = self.snapshot(id) else {
             return;
         };
-        let has_menu = snapshot.properties.menu.is_some();
+        let refused = self.refused(&snapshot.owner).contains(Refused::MENU);
+        let has_menu = snapshot.properties.menu.is_some() && !refused;
         let is_menu = snapshot.properties.is_menu;
         match button {
             Button::Left if is_menu && has_menu => self.open_menu(id, place, now),
@@ -755,6 +881,9 @@ impl<B: Backend> Host<B> {
             return;
         };
         let (bus, owner) = (item.address.bus.clone(), snapshot.owner.clone());
+        if self.refused(&owner).contains(Refused::MENU) {
+            return;
+        }
         self.end_menu();
 
         let mut pacer = Pacer::default();
