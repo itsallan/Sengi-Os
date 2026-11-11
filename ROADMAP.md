@@ -36,9 +36,9 @@ each `- [ ]` line is an issue.
 
 ## 0.3
 
-- [ ] A sengi-bar on every monitor
-- [ ] sengi-dock replaces the 0.1 dock
-- [ ] sengi-launcher replaces fuzzel
+- [x] A sengi-bar on every monitor
+- [x] sengi-dock replaces the 0.1 dock
+- [x] sengi-launcher replaces fuzzel
 
 ## 0.4
 
