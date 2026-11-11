@@ -8,11 +8,11 @@ use std::process::ExitCode;
 use std::rc::Rc;
 use std::sync::{mpsc, Arc, Mutex};
 
-use sengi_apps::Env;
+use sengi_apps::{icons, Env};
 use sengi_dock::app::{App, Deliver, Message};
 use sengi_dock::model::Dock;
 use sengi_dock::windows::{self, Source, Window};
-use sengi_dock::{config, icons, ui};
+use sengi_dock::{config, ui};
 use sengi_layer::{Anchor, Config, KeyboardMode, Layer, Margins, Output, Outputs, Rect};
 use slint::ComponentHandle;
 

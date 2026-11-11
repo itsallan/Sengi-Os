@@ -5,6 +5,17 @@ version.workspace = true
 edition.workspace = true
 repository.workspace = true
 
+[features]
+# Icon lookup and the decoder child. Off unless asked for, so a program that
+# only lists and starts applications links no image decoder.
+icons = ["dep:png"]
+# Many apps install only a scalable icon. Without this they have none.
+svg = ["icons", "dep:resvg"]
+
 [dependencies]
 # For fork and setsid when a program is started and let go of.
 libc = "0.2"
+# Icons are decoded here, straight to the size they are drawn at, rather than
+# through Slint's image loader, which keeps the full-size bitmap.
+png = { version = "0.18", optional = true }
+resvg = { version = "0.48", default-features = false, optional = true }

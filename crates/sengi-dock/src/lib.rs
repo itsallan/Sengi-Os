@@ -7,7 +7,6 @@
 
 pub mod app;
 pub mod config;
-pub mod icons;
 pub mod launch;
 pub mod model;
 pub mod windows;

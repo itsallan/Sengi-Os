@@ -3517,6 +3517,8 @@ name = "sengi-apps"
 version = "0.5.0"
 dependencies = [
  "libc",
+ "png",
+ "resvg",
 ]
 
 [[package]]
@@ -3528,8 +3530,7 @@ dependencies = [
  "enumflags2",
  "futures-lite",
  "libc",
- "png",
- "resvg",
+ "sengi-apps",
  "sengi-layer",
  "slint",
  "slint-build",
@@ -3540,9 +3541,7 @@ dependencies = [
 name = "sengi-dock"
 version = "0.5.0"
 dependencies = [
- "libc",
  "png",
- "resvg",
  "sengi-apps",
  "sengi-layer",
  "slint",

@@ -21,9 +21,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use sengi_apps::icons::{self, IconDirs};
 use sengi_apps::{AppIndex, DesktopEntry, Env};
 use sengi_dock::app::{App, Deliver, Message};
-use sengi_dock::icons::{self, IconDirs};
 use sengi_dock::model::Dock;
 use sengi_dock::ui;
 use sengi_dock::windows::{Source, Window};

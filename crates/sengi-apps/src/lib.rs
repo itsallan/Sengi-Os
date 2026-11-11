@@ -5,11 +5,17 @@
 //! their command lines, [`index`] looks installed applications up by ID and
 //! [`matching`] finds the one a window belongs to. [`env`] is the environment
 //! they read, and [`files`] reads files without trusting their size.
+//!
+//! With the `icons` feature, `icons` finds an application's or a tray
+//! item's icon and decodes it in a resource-limited child process; `svg`
+//! adds scalable icons.
 
 pub mod desktop;
 pub mod env;
 pub mod exec;
 pub mod files;
+#[cfg(feature = "icons")]
+pub mod icons;
 pub mod index;
 pub mod matching;
 

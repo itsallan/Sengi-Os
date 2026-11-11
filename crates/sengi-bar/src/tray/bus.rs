@@ -38,7 +38,7 @@ use super::host::{
     Backend, Call, Event, Failure, Host, MenuAction, MenuRequest, Method, Place, Refresh, Snapshot,
     View,
 };
-use super::icons::{Cache, Decoder, DECODE_TIMEOUT, THIS_PROGRAM};
+use super::icons::Cache;
 use super::item::{self, IconSource, Parts, Raw, Refused, Status, Which};
 use super::menu::{self, Entry};
 use super::menu_view;
@@ -46,6 +46,7 @@ use super::pixmap::{self, Pixels, Pixmap, MAX_PIXMAPS};
 use super::watcher::{
     Address, FreedesktopWatcher, KdeWatcher, Registry, Shared, FDO_WATCHER, KDE_WATCHER, MAX_ITEMS,
 };
+use sengi_apps::icons::{Decoder, DECODE_TIMEOUT, THIS_PROGRAM};
 
 const KDE_ITEM: &str = "org.kde.StatusNotifierItem";
 const FDO_ITEM: &str = "org.freedesktop.StatusNotifierItem";

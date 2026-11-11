@@ -5,10 +5,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use sengi_dock::icons::{Decoder, DECODE_TIMEOUT};
+use sengi_apps::icons::{Decoder, DECODE_TIMEOUT};
 
 fn decoder() -> Decoder {
-    Decoder::new(env!("CARGO_BIN_EXE_sengi-dock").into(), DECODE_TIMEOUT)
+    Decoder::new(env!("CARGO_BIN_EXE_sengi-dock").into())
 }
 
 fn temp_dir(tag: &str) -> PathBuf {
@@ -37,7 +37,7 @@ fn a_png_comes_back_at_the_size_asked_for() {
     let dir = temp_dir("png");
     let path = dir.join("icon.png");
     write_png(&path, 256, [200, 100, 50, 255]);
-    let icon = decoder().decode(&path, 40).unwrap();
+    let icon = decoder().decode_file(&path, 40, DECODE_TIMEOUT).unwrap();
     assert_eq!(icon.size, 40);
     assert_eq!(icon.data.len(), 40 * 40 * 4);
     assert_eq!(&icon.data[..4], [200, 100, 50, 255]);
@@ -54,7 +54,7 @@ fn an_svg_comes_back_too() {
          <rect width=\"10\" height=\"10\" fill=\"#00f\"/></svg>",
     )
     .unwrap();
-    let icon = decoder().decode(&path, 80).unwrap();
+    let icon = decoder().decode_file(&path, 80, DECODE_TIMEOUT).unwrap();
     assert_eq!(&icon.data[..4], [0, 0, 255, 255]);
 }
 
@@ -66,15 +66,19 @@ fn hostile_files_cost_no_more_than_the_timeout() {
 
     // Garbage, a device that never ends, and a pipe nobody writes to.
     fs::write(dir.join("garbage.png"), b"\x89PNG\r\n\x1a\nnot really").unwrap();
-    assert!(decoder.decode(&dir.join("garbage.png"), 40).is_none());
+    assert!(decoder
+        .decode_file(&dir.join("garbage.png"), 40, DECODE_TIMEOUT)
+        .is_none());
 
     std::os::unix::fs::symlink("/dev/zero", dir.join("zero.png")).unwrap();
-    assert!(decoder.decode(&dir.join("zero.png"), 40).is_none());
+    assert!(decoder
+        .decode_file(&dir.join("zero.png"), 40, DECODE_TIMEOUT)
+        .is_none());
 
     let fifo = dir.join("fifo.svg");
     let status = std::process::Command::new("mkfifo").arg(&fifo).status();
     if status.is_ok_and(|s| s.success()) {
-        assert!(decoder.decode(&fifo, 40).is_none());
+        assert!(decoder.decode_file(&fifo, 40, DECODE_TIMEOUT).is_none());
     }
 
     // An SVG that points at a file it should not read.
@@ -85,7 +89,7 @@ fn hostile_files_cost_no_more_than_the_timeout() {
          <image width=\"8\" height=\"8\" xlink:href=\"/dev/zero\"/></svg>",
     )
     .unwrap();
-    let _ = decoder.decode(&dir.join("reader.svg"), 40);
+    let _ = decoder.decode_file(&dir.join("reader.svg"), 40, DECODE_TIMEOUT);
 
     // Deeply nested groups: either it draws or it is given up on.
     let depth = 20_000;
@@ -96,7 +100,7 @@ fn hostile_files_cost_no_more_than_the_timeout() {
         "</g>".repeat(depth)
     );
     fs::write(dir.join("nested.svg"), nested).unwrap();
-    let _ = decoder.decode(&dir.join("nested.svg"), 40);
+    let _ = decoder.decode_file(&dir.join("nested.svg"), 40, DECODE_TIMEOUT);
 
     assert!(started.elapsed() < DECODE_TIMEOUT * 4 + Duration::from_secs(2));
 }
@@ -104,6 +108,6 @@ fn hostile_files_cost_no_more_than_the_timeout() {
 #[test]
 fn a_missing_file_gives_nothing() {
     assert!(decoder()
-        .decode(Path::new("/nonexistent/icon.png"), 40)
+        .decode_file(Path::new("/nonexistent/icon.png"), 40, DECODE_TIMEOUT)
         .is_none());
 }

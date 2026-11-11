@@ -5,9 +5,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
-use sengi_apps::{matching, AppIndex, DesktopEntry, Env};
+use sengi_apps::{icons, matching, AppIndex, DesktopEntry, Env};
 
-use crate::icons;
 use crate::windows::Window;
 
 /// Key of the search button. No desktop-file ID can be empty.

@@ -10,9 +10,9 @@ use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
 
+use sengi_apps::icons::{self, Contexts, Decoder, IconDirs, DECODE_TIMEOUT};
 use sengi_apps::Env;
 
-use crate::icons::{self, Decoder, IconDirs};
 use crate::model::{self, Action, Button, Dock, Icon, Item, Launches, LAUNCHER_KEY, LAUNCH_WAIT};
 use crate::windows::{self, Controller, Source, Window};
 use crate::{config, launch, ui};
@@ -73,7 +73,7 @@ struct State {
     icons: HashMap<String, IconState>,
     /// Icons to start decoding: item key, icon name, pixels per side.
     wanted: Vec<(String, String, u32)>,
-    decoder: Option<Decoder>,
+    decoder: Decoder,
     launches: Launches,
     /// The dock's generation the icons were looked up in.
     generation: u64,
@@ -116,7 +116,7 @@ impl State {
             Icon::Named(name) => {
                 if !self.icons.contains_key(&item.key) {
                     // Decoding happens elsewhere; see `start_decoding`.
-                    let state = if name.is_empty() || self.decoder.is_none() {
+                    let state = if name.is_empty() {
                         IconState::Ready(None)
                     } else {
                         let pixels = self.icon_pixels(icon_size);
@@ -177,7 +177,7 @@ impl App {
                     rows: Vec::new(),
                     icons: HashMap::new(),
                     wanted: Vec::new(),
-                    decoder: Decoder::for_this_program(),
+                    decoder: Decoder::default(),
                     launches: Launches::default(),
                     generation: 0,
                     controller: None,
@@ -292,12 +292,9 @@ impl App {
             if state.wanted.is_empty() {
                 return;
             }
-            let Some(decoder) = state.decoder.clone() else {
-                return;
-            };
             (
                 std::mem::take(&mut state.wanted),
-                decoder,
+                state.decoder.clone(),
                 state.icon_dirs.clone(),
             )
         };
@@ -306,7 +303,8 @@ impl App {
             .name("icons".into())
             .spawn(move || {
                 for (key, name, pixels) in wanted {
-                    let icon = decoder.decode_named(&dirs, &name, pixels);
+                    let icon = icons::find(&dirs, None, &name, pixels, Contexts::Apps)
+                        .and_then(|path| decoder.decode_file(&path, pixels, DECODE_TIMEOUT));
                     deliver(Message::Icon { key, pixels, icon });
                 }
             });
