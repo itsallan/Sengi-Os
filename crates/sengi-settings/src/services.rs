@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use crate::bluetooth::{self, BluetoothService};
 use crate::bus::Bus;
+use crate::display::{self, DisplayService};
 use crate::network::{self, NetworkService};
 use crate::sound::{self, AudioService};
 
@@ -13,6 +14,7 @@ pub struct Services {
     pub network: Arc<dyn NetworkService>,
     pub bluetooth: Arc<dyn BluetoothService>,
     pub sound: Arc<dyn AudioService>,
+    pub display: Arc<dyn DisplayService>,
 }
 
 /// Names a directory to read in place of `/sys/class`, in debug builds
@@ -39,7 +41,8 @@ pub fn real() -> Services {
     let bus = Arc::new(Bus::default());
     Services {
         network: Arc::new(network::iwd::Iwd::new(bus.clone(), class.clone())),
-        bluetooth: Arc::new(bluetooth::bluez::Bluez::new(bus, class)),
+        bluetooth: Arc::new(bluetooth::bluez::Bluez::new(bus.clone(), class.clone())),
+        display: Arc::new(display::wlr::Wlr::new(bus, class)),
         sound: Arc::new(sound::wpctl::Wpctl::default()),
     }
 }
@@ -52,6 +55,7 @@ pub const DEMOS: &[&str] = &[
     "bluetooth",
     "bluetooth-off",
     "sound",
+    "display",
 ];
 
 /// The services of a made-up machine, and the page that shows them off.
@@ -146,6 +150,26 @@ pub fn demo(name: &str) -> Option<(crate::cli::Page, Services)> {
                 inputs: vec![node(50, "Built-in microphone", 80, true)],
             });
             Page::Sound
+        }
+        "display" => {
+            use display::testing::{laptop, mode, Fake};
+            let external = display::Output {
+                name: "HDMI-A-1".to_string(),
+                title: "Dell U2720Q".to_string(),
+                modes: vec![
+                    mode(3840, 2160, 60),
+                    mode(2560, 1440, 60),
+                    mode(1920, 1080, 60),
+                ],
+                current: Some(mode(3840, 2160, 60)),
+                scale: 1500,
+                ..laptop()
+            };
+            let fake = Fake::with(vec![laptop(), external]);
+            *fake.backlight.lock().unwrap_or_else(|p| p.into_inner()) =
+                display::backlight::parse("intel_backlight", "4800", "7500");
+            services.display = fake;
+            Page::Display
         }
         _ => return None,
     };

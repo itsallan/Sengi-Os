@@ -16,8 +16,13 @@ slint = { workspace = true, features = ["software-renderer-systemfonts", "softwa
 # The blocking API on zbus's own small executor. No tokio.
 zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
 
+# The window's own Wayland connection belongs to the toolkit. The Display
+# page has a second one for the output management protocol.
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+
 # For prctl: the process is kept out of core dumps. See secret.rs. And
-# getifaddrs, for the addresses on the Network page.
+# getifaddrs, for the addresses on the Network page, and poll.
 libc = "0.2"
 
 [build-dependencies]

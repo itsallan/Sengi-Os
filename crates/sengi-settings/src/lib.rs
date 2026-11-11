@@ -11,6 +11,7 @@ pub mod bluetooth;
 pub mod bus;
 pub mod cli;
 pub mod derive;
+pub mod display;
 pub mod held;
 pub mod instance;
 pub mod network;

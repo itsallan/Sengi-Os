@@ -1,0 +1,137 @@
+// The Display page: brightness where there is a backlight, and for each
+// connected display its resolution, refresh rate and scale.
+
+import { Tokens } from "components.slint";
+import { NamedIcon } from "../icons.slint";
+import { Page, PageColumn, Card, Divider, SettingRow, RowValue, SectionLabel, Note, Gap, Metrics, Slider, ChoiceButton } from "../kit.slint";
+
+export struct DisplayOutput {
+    // Handed back when one of its buttons is pressed.
+    name: string,
+    title: string,
+    connector: string,
+    enabled: bool,
+    resolution: string,
+    refresh: string,
+    scale: string,
+    can-resolution: bool,
+    can-refresh: bool,
+}
+
+export global DisplayData {
+    // Why displays cannot be set, when they cannot. Empty otherwise.
+    in property <string> note;
+    in property <[DisplayOutput]> outputs;
+    in property <bool> has-backlight: false;
+    in-out property <int> brightness-value: 100;
+    in-out property <bool> brightness-held: false;
+
+    // The output's name, then "resolution", "refresh" or "scale".
+    callback choose(string, string);
+    callback brightness(int);
+}
+
+component ChoiceRow inherits SettingRow {
+    in property <string> value;
+    in property <bool> can: true;
+    callback pressed();
+
+    VerticalLayout {
+        alignment: center;
+        ChoiceButton {
+            width: Metrics.control;
+            text: root.value;
+            enabled: root.can;
+            clicked => { root.pressed(); }
+        }
+    }
+}
+
+export component DisplayPage inherits Page {
+    title: "Display";
+    content-height: column.preferred-height;
+
+    column := PageColumn {
+        if DisplayData.note != "": Note {
+            text: DisplayData.note;
+        }
+
+        if DisplayData.has-backlight: VerticalLayout {
+            spacing: Tokens.space-sm;
+
+            Card {
+                SettingRow {
+                    title: "Brightness";
+
+                    VerticalLayout {
+                        alignment: center;
+                        NamedIcon {
+                            name: "sun";
+                            ink: Tokens.color-text-muted;
+                        }
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+                        Slider {
+                            width: Metrics.control;
+                            value <=> DisplayData.brightness-value;
+                            changed(to) => { DisplayData.brightness(to); }
+                            changed pressed => { DisplayData.brightness-held = self.pressed; }
+                        }
+                    }
+
+                    RowValue {
+                        width: Tokens.dock-icon;
+                        text: DisplayData.brightness-value + "%";
+                    }
+                }
+            }
+
+            Gap { }
+        }
+
+        for output in DisplayData.outputs: VerticalLayout {
+            spacing: Tokens.space-sm;
+
+            SectionLabel {
+                text: output.title == output.connector ? output.title
+                    : output.title + " (" + output.connector + ")";
+            }
+
+            Card {
+                ChoiceRow {
+                    title: "Resolution";
+                    detail: output.enabled ? "" : "This display is switched off";
+                    enabled: output.enabled;
+                    value: output.resolution;
+                    can: output.can-resolution;
+                    pressed => { DisplayData.choose(output.name, "resolution"); }
+                }
+
+                Divider { }
+
+                ChoiceRow {
+                    title: "Refresh rate";
+                    enabled: output.enabled;
+                    value: output.refresh;
+                    can: output.can-refresh;
+                    pressed => { DisplayData.choose(output.name, "refresh"); }
+                }
+
+                Divider { }
+
+                ChoiceRow {
+                    title: "Scale";
+                    detail: "Larger makes everything on this display bigger";
+                    enabled: output.enabled;
+                    value: output.scale;
+                    can: output.enabled;
+                    pressed => { DisplayData.choose(output.name, "scale"); }
+                }
+            }
+
+            Gap { }
+        }
+    }
+}

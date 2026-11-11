@@ -163,6 +163,27 @@ inputs, `set-default`, `set-volume -l 1` and `set-mute` to change them.
 Not done: a level meter (it would need a capture stream of its own, which
 is not cheap), per-application volumes, device profiles.
 
+### Display
+
+Outputs through the compositor's `wlr-output-management-unstable-v1`, on a
+Wayland connection of its own; brightness read from
+`/sys/class/backlight` and set through logind's `Session.SetBrightness`.
+
+- Each connected output has its resolution, refresh rate and scale.
+- No change is final until it is confirmed. A dialog asks whether to keep
+  it and counts down from 15 seconds; "Go back", Escape, no answer, or
+  closing the window all restore what was there before. The clock is the
+  worker thread's, not the window's, so a window that cannot be seen or
+  has hung still gets its picture back. Only killing Settings outright in
+  those 15 seconds leaves the new mode in place.
+- An output that lists no modes with a refresh rate, as in a virtual
+  machine, takes any size and is offered a few common ones.
+- The brightness slider never goes below 5%.
+
+Not done: arranging several displays, mirroring, rotation, switching an
+output off, saving the layout across sessions (labwc keeps what it is
+given only until it exits; a kept mode is not written to a file yet).
+
 ## Building and testing
 
     cargo build -p sengi-settings

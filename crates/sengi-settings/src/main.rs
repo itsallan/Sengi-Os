@@ -14,6 +14,7 @@ use slint::ComponentHandle;
 use sengi_settings::app::{self, App};
 use sengi_settings::bluetooth::page::BluetoothPage;
 use sengi_settings::cli::{self, Action, Page};
+use sengi_settings::display::page::DisplayPage;
 use sengi_settings::instance::{self, Claim};
 use sengi_settings::network::page::NetworkPage;
 use sengi_settings::services::{self, Services};
@@ -193,4 +194,5 @@ fn register_pages(app: &std::rc::Rc<App>, services: Services) {
         BluetoothPage::attach(app, services.bluetooth),
     );
     app.register(Page::Sound, SoundPage::attach(app, services.sound));
+    app.register(Page::Display, DisplayPage::attach(app, services.display));
 }

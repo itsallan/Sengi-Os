@@ -3599,6 +3599,8 @@ dependencies = [
  "libc",
  "slint",
  "slint-build",
+ "wayland-client",
+ "wayland-protocols-wlr",
  "zbus",
 ]
 
