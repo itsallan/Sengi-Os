@@ -6,6 +6,7 @@
 //!                  [--status S] [--by-path] [--menu-only] [--no-activate]
 //!                  [--with-pixmap] [--slow MS] [--hang-activate] [--chatty]
 //!                  [--register-as SERVICE] [--names N] [--hostile] [--huge]
+//!                  [--big-pixmap]
 //!
 //! `--with-pixmap` answers IconPixmap as well as a named icon. `--slow`
 //! takes that long over every property, `--hang-activate` never answers
@@ -23,8 +24,11 @@
 //! row), `spam` (that many NewIcon signals at once), `flap` (that many
 //! NewStatus signals, Passive and Active by turns), `forge-unregister` (a
 //! StatusNotifierItemUnregistered signal for that service, as if from a
-//! watcher) and `quit`. Calls it receives from the bar are printed, one
-//! per line.
+//! watcher) and `quit`. Three more keep going on their own, a step every
+//! 300 ms for that many steps: `alternate` (Passive and Active by turns),
+//! `animate` (a pixmap of another colour each time) and `rename` (an icon
+//! name never used before each time). Calls it receives from the bar are
+//! printed, one per line.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -61,6 +65,8 @@ struct State {
     hostile: bool,
     /// Answer IconPixmap with 16 MB.
     huge: bool,
+    /// Answer IconPixmap with one honest pixmap of 2.5 MB and no other.
+    big_pixmap: bool,
     checked: bool,
     revision: u32,
     /// NewStatus signals of a `flap` still to go out.
@@ -168,6 +174,10 @@ impl Item {
     fn icon_pixmap(&self) -> Vec<Pixmap> {
         let state = self.state();
         println!("{}: Get IconPixmap", state.name);
+        if state.big_pixmap {
+            let side = 800;
+            return vec![(side, side, vec![255; (side * side * 4) as usize])];
+        }
         if state.hostile || state.huge {
             // A lie about the size, then one that is honest and too big:
             // in dimensions, or in bytes as well.
@@ -402,6 +412,60 @@ impl Control {
                     }
                     state.flapping = count;
                 }
+                "alternate" | "animate" | "rename" => {
+                    let steps: usize = value.parse().unwrap_or(100);
+                    let shared = self.0.clone();
+                    let connection = zbus::blocking::Connection::from(connection.clone());
+                    let what = what.to_string();
+                    std::thread::spawn(move || {
+                        for step in 0..steps {
+                            let signal = {
+                                let mut state = shared.lock().unwrap();
+                                match what.as_str() {
+                                    "alternate" => {
+                                        let status =
+                                            if step % 2 == 0 { "Passive" } else { "Active" };
+                                        state.status = status.to_string();
+                                        "NewStatus"
+                                    }
+                                    "animate" => {
+                                        state.icon = "pixmap".to_string();
+                                        state.colour = colour(["red", "green", "blue"][step % 3]);
+                                        "NewIcon"
+                                    }
+                                    _ => {
+                                        state.icon = format!("no-such-icon-{step}");
+                                        "NewIcon"
+                                    }
+                                }
+                            };
+                            let status = shared.lock().unwrap().status.clone();
+                            let sent = if signal == "NewStatus" {
+                                connection.emit_signal(
+                                    None::<&str>,
+                                    ITEM_PATH,
+                                    ITEM,
+                                    signal,
+                                    &status,
+                                )
+                            } else {
+                                connection.emit_signal(None::<&str>, ITEM_PATH, ITEM, signal, &())
+                            };
+                            if sent.is_err() {
+                                return;
+                            }
+                            std::thread::sleep(Duration::from_millis(300));
+                        }
+                        shared.lock().unwrap().status = "Active".to_string();
+                        let _ = connection.emit_signal(
+                            None::<&str>,
+                            ITEM_PATH,
+                            ITEM,
+                            "NewStatus",
+                            &"Active",
+                        );
+                    });
+                }
                 "forge-unregister" => {
                     signals.push((
                         WATCHER,
@@ -477,6 +541,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         hang_activate: false,
         hostile: false,
         huge: false,
+        big_pixmap: false,
         checked: true,
         revision: 1,
         flapping: 0,
@@ -504,6 +569,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--register-as" => register_as = Some(value()?),
             "--names" => names = value()?.parse()?,
             "--huge" => state.huge = true,
+            "--big-pixmap" => state.big_pixmap = true,
             "--hostile" => {
                 state.hostile = true;
                 state.title = format!(
