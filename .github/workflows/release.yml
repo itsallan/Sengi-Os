@@ -32,10 +32,10 @@ jobs:
         run: |
           sudo -E apt-get $APT_OPTS update -q
           sudo -E apt-get $APT_OPTS install -y -q --no-install-recommends qemu-system-x86 qemu-utils
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
-            sudo tee /etc/udev/rules.d/99-kvm.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
+          # Let the runner's user open KVM. Setting the mode directly cannot
+          # hang the way waiting on udev can.
+          sudo chmod 666 /dev/kvm || true
+          ls -l /dev/kvm || true
       - name: Boot test
         run: scripts/boot-test.sh out/sengi-os-$(cat VERSION)-amd64.iso test-output
       - name: Publish
