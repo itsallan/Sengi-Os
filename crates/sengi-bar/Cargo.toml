@@ -6,12 +6,23 @@ edition.workspace = true
 repository.workspace = true
 build = "build.rs"
 
+[features]
+default = ["svg"]
+# Many apps install only a scalable icon. Without this their tray icon is
+# the letter tile.
+svg = ["dep:resvg"]
+
 [dependencies]
 sengi-layer = { path = "../sengi-layer" }
 # Not the workspace entry: that one pulls in the winit backend. sengi-layer
 # is the backend here and turns on the software renderer.
 slint = { version = "1.18", default-features = false, features = ["compat-1-2", "std"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+libc = "0.2"
+# Tray icons named by file are decoded here, in a child process, straight to
+# the size they are drawn at.
+png = "0.18"
+resvg = { version = "0.48", default-features = false, optional = true }
 
 [build-dependencies]
 slint-build.workspace = true

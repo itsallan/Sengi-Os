@@ -5,6 +5,7 @@
 //! the bar in and keeps it up to date.
 
 mod status;
+mod tray;
 
 use std::cell::RefCell;
 use std::path::Path;
@@ -214,6 +215,12 @@ fn run() -> Result<(), sengi_layer::Error> {
 }
 
 fn main() -> ExitCode {
+    // The bar runs itself again to decode an icon file, which it will not
+    // do in its own process.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = tray::icons::run_decoder(&args) {
+        return code;
+    }
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

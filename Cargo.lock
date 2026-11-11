@@ -3517,6 +3517,9 @@ name = "sengi-bar"
 version = "0.3.0"
 dependencies = [
  "chrono",
+ "libc",
+ "png",
+ "resvg",
  "sengi-layer",
  "slint",
  "slint-build",
