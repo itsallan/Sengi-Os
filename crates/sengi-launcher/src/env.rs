@@ -101,14 +101,16 @@ impl Env {
         self.state_home.join("sengi-launcher/usage")
     }
 
-    /// Find a program the way a shell would, without running one.
+    /// Find a program given as an absolute path or as a bare name to look up
+    /// in PATH. The Desktop Entry spec allows nothing else, and a relative
+    /// path would depend on where the launcher happened to be started.
     pub fn find_program(&self, name: &str) -> Option<PathBuf> {
         if name.is_empty() {
             return None;
         }
         if name.contains('/') {
             let path = PathBuf::from(name);
-            return is_executable(&path).then_some(path);
+            return (path.is_absolute() && is_executable(&path)).then_some(path);
         }
         self.path
             .iter()
@@ -223,5 +225,17 @@ mod tests {
             Some(absolute.clone())
         );
         assert_eq!(e.find_program(bin.to_str().unwrap()), None);
+    }
+
+    #[test]
+    fn find_program_refuses_relative_paths() {
+        let tmp = TempDir::new();
+        tmp.write("bin/tool", "");
+        tmp.make_executable("bin/tool");
+        let e = env(&[("PATH", tmp.path().to_str().unwrap())]);
+        // Even where it would resolve against PATH or the working directory.
+        assert_eq!(e.find_program("bin/tool"), None);
+        assert_eq!(e.find_program("./tool"), None);
+        assert_eq!(e.find_program("../bin/tool"), None);
     }
 }

@@ -18,6 +18,8 @@ pub const RUNNER: &str = "sengi-run";
 pub enum ExecError {
     Empty,
     UnclosedQuote,
+    /// The program is a path that does not start at the root.
+    RelativePath,
 }
 
 impl fmt::Display for ExecError {
@@ -25,6 +27,7 @@ impl fmt::Display for ExecError {
         match self {
             ExecError::Empty => write!(f, "the Exec line has no command"),
             ExecError::UnclosedQuote => write!(f, "the Exec line has an unclosed quote"),
+            ExecError::RelativePath => write!(f, "the Exec line names a relative path"),
         }
     }
 }
@@ -150,6 +153,11 @@ pub fn command_line(entry: &DesktopEntry, env: &Env) -> Result<Vec<String>, Exec
     let command = expand(&split(&entry.exec)?, entry);
     if command.first().is_none_or(|program| program.is_empty()) {
         return Err(ExecError::Empty);
+    }
+    // Absolute paths and bare names only, as the spec says: anything else
+    // would run whatever sits at that path under the working directory.
+    if command[0].contains('/') && !Path::new(&command[0]).is_absolute() {
+        return Err(ExecError::RelativePath);
     }
 
     let mut argv = Vec::with_capacity(command.len() + 3);
@@ -422,5 +430,19 @@ mod tests {
     fn spawn_reports_missing_programs() {
         assert!(spawn(&["/no/such/program".to_string()], None).is_err());
         assert!(spawn(&[], None).is_err());
+    }
+
+    #[test]
+    fn relative_program_paths_are_refused() {
+        for exec in ["./app", "bin/app --flag", "../app", "\"sub dir/app\""] {
+            assert_eq!(
+                command_line(&entry(exec), &no_runner()),
+                Err(ExecError::RelativePath),
+                "{exec}"
+            );
+        }
+        // Slashes in later arguments are none of our business.
+        assert!(command_line(&entry("app ./file a/b"), &no_runner()).is_ok());
+        assert!(command_line(&entry("/usr/bin/app"), &no_runner()).is_ok());
     }
 }
