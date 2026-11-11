@@ -21,6 +21,8 @@ pub const TERMINAL_COMMAND: &[&str] = &["foot", "-e"];
 #[derive(Debug)]
 pub enum LaunchError {
     Exec(ExecError),
+    /// The program the entry names is not installed.
+    Missing(String),
     Spawn(String, io::Error),
 }
 
@@ -28,6 +30,7 @@ impl fmt::Display for LaunchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Exec(e) => write!(f, "{e}"),
+            Self::Missing(program) => write!(f, "cannot start {program}: it is not installed"),
             Self::Spawn(program, e) => write!(f, "cannot start {program}: {e}"),
         }
     }
@@ -48,15 +51,10 @@ pub fn command_for(entry: &Entry) -> Result<Vec<String>, ExecError> {
 
 /// Looks a program up the way the shell would.
 pub fn find_in_path(program: &str, path: &str) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
     path.split(':')
         .filter(|dir| !dir.is_empty())
         .map(|dir| Path::new(dir).join(program))
-        .find(|candidate| {
-            candidate
-                .metadata()
-                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        })
+        .find(|candidate| is_executable(candidate))
 }
 
 /// Puts the runner in front of a command when the runner is installed.
@@ -99,16 +97,50 @@ pub fn spawn_detached(args: &[String]) -> Result<(), LaunchError> {
     Ok(())
 }
 
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.metadata()
+        .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+/// Checks that a program can be found, as a path or by name on `path`.
+///
+/// Starting it would not tell us: the dock starts the runner, and the
+/// runner succeeds whether or not the app it is given exists.
+pub fn check_program(program: &str, path: &str) -> Result<(), LaunchError> {
+    let found = if program.contains('/') {
+        is_executable(Path::new(program))
+    } else {
+        find_in_path(program, path).is_some()
+    };
+    if found {
+        Ok(())
+    } else {
+        Err(LaunchError::Missing(program.to_string()))
+    }
+}
+
+/// The full command for an entry, checked and with the runner in front.
+pub fn prepare(entry: &Entry, path: &str) -> Result<Vec<String>, LaunchError> {
+    // The app itself, and the terminal it runs in if it needs one.
+    let app = exec::command(entry).map_err(LaunchError::Exec)?;
+    check_program(&app[0], path)?;
+    let args = command_for(entry).map_err(LaunchError::Exec)?;
+    check_program(&args[0], path)?;
+    Ok(with_runner(args, path))
+}
+
 /// Starts an app from its desktop entry, through the runner if there is one.
 pub fn launch(entry: &Entry) -> Result<(), LaunchError> {
-    let args = command_for(entry).map_err(LaunchError::Exec)?;
     let path = std::env::var("PATH").unwrap_or_default();
-    spawn_detached(&with_runner(args, &path))
+    spawn_detached(&prepare(entry, &path)?)
 }
 
 /// Opens the search launcher.
 pub fn open_launcher() -> Result<(), LaunchError> {
     let args: Vec<String> = LAUNCHER_COMMAND.iter().map(|s| s.to_string()).collect();
+    let path = std::env::var("PATH").unwrap_or_default();
+    check_program(&args[0], &path)?;
     spawn_detached(&args)
 }
 
@@ -196,6 +228,37 @@ mod tests {
         assert!(matches!(
             spawn_detached(&[]),
             Err(LaunchError::Exec(ExecError::Empty))
+        ));
+    }
+
+    #[test]
+    fn a_missing_app_is_caught_before_the_runner_hides_it() {
+        let dir = temp_dir("missing");
+        let path = dir.to_string_lossy().into_owned();
+        executable(&dir.join(RUNNER), "#!/bin/sh\nexec \"$@\"\n");
+        executable(&dir.join("present"), "#!/bin/sh\n");
+
+        let found = prepare(&entry("present", "Present", "present --flag %U"), &path).unwrap();
+        assert_eq!(found, ["sengi-run", "present", "--flag"]);
+
+        let gone = prepare(&entry("gone", "Gone", "gone-app %U"), &path);
+        assert!(matches!(gone, Err(LaunchError::Missing(program)) if program == "gone-app"));
+        assert_eq!(
+            LaunchError::Missing("gone-app".into()).to_string(),
+            "cannot start gone-app: it is not installed"
+        );
+
+        // A full path is checked where it points, not on PATH.
+        let absolute = dir.join("present").to_string_lossy().into_owned();
+        assert!(prepare(&entry("p", "P", &absolute), "").is_ok());
+        assert!(prepare(&entry("p", "P", "/nonexistent/app"), &path).is_err());
+
+        // A terminal app needs its terminal too.
+        let mut tui = entry("present", "Present", "present");
+        tui.terminal = true;
+        assert!(matches!(
+            prepare(&tui, &path),
+            Err(LaunchError::Missing(program)) if program == "foot"
         ));
     }
 
