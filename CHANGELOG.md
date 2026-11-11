@@ -5,6 +5,46 @@ and the measured idle RAM and boot time.
 
 ## Unreleased
 
+## 0.4.0
+
+Notifications, quick settings and a system tray, all our own.
+
+### Added
+
+- sengi-notify, the notification service. Cards appear at the top right with
+  their actions; the bell in the bar opens a notification centre with history
+  and do-not-disturb. It starts the first time something needs it, so it
+  costs nothing until then. A notification belongs to the program that sent
+  it, new cards ignore clicks for a moment, and no one program can fill the
+  screen.
+- sengi-quick, the quick settings panel, opened from the network, volume and
+  battery items in the bar: Wi-Fi with a network list, Bluetooth, volume,
+  brightness, do-not-disturb, battery, lock and session.
+- A system tray in sengi-bar, with the apps' own menus drawn in our style.
+- The shared button and toggle take keyboard focus.
+
+### Changed
+
+- mako is no longer in the image.
+- Programs drawn through sengi-layer repaint only what changed and give
+  their buffers back when hidden.
+- The live user is in the bluetooth group.
+- After logging out, the console login works.
+
+### Known limits
+
+- Quick settings' Wi-Fi, Bluetooth, brightness and battery tiles have only
+  been tested against stand-in services, not real hardware.
+- Wi-Fi: no hidden or enterprise networks, and no forgetting a network from
+  the panel. Bluetooth: no pairing from the panel.
+- Tray menus do not draw icons in their rows, and only the hicolor icon theme
+  is searched.
+- Clicking a notification does not raise the app's window.
+- The dock is on one monitor.
+- Wi-Fi cards that need non-free firmware (most Intel cards) do not work yet.
+- Secure Boot has to be turned off to boot the ISO.
+- The clock shows UTC.
+
 ## 0.3.0
 
 The whole shell is now our own: bar, dock and launcher.

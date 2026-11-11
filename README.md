@@ -23,13 +23,13 @@ not ship.
 - Flatpak and apt for apps.
 - Our own programs are written in Rust with Slint for the UI.
 
-The top bar, dock and search launcher are our own programs: sengi-bar,
-sengi-dock and sengi-launcher, drawn through a shared library, sengi-layer.
-sengi-focus gives the focused app priority. The compositor (labwc),
-notifications (mako) and lock screen (swaylock) are still existing components
-configured to the Sengi OS look; later releases replace them one at a time
-with sengi-notify, sengi-settings, sengi-greeter and finally
-sengi-compositor. See [ROADMAP.md](ROADMAP.md).
+The shell is our own: sengi-bar (top bar with a system tray), sengi-dock,
+sengi-launcher, sengi-notify (notifications) and sengi-quick (quick
+settings), all drawn through a shared library, sengi-layer. sengi-focus gives
+the focused app priority. The compositor (labwc) and lock screen (swaylock)
+are still existing components configured to the Sengi OS look; later releases
+replace them with sengi-settings, sengi-greeter and finally sengi-compositor,
+which is being developed on its own branch. See [ROADMAP.md](ROADMAP.md).
 
 ## Building the ISO
 
@@ -52,7 +52,7 @@ Boot the ISO in QEMU:
 
     qemu-system-x86_64 -enable-kvm -cpu host -smp 2 -m 4G \
       -device virtio-vga -display gtk \
-      -drive file=out/sengi-os-0.3.0-amd64.iso,format=raw,if=virtio,readonly=on
+      -drive file=out/sengi-os-0.4.0-amd64.iso,format=raw,if=virtio,readonly=on
 
 Or flash it to a USB stick and boot from that. The live session logs in on its
 own; the user is `live` and the password is `live`.
@@ -66,7 +66,7 @@ own; the user is `live` and the password is `live`.
 
 ## Testing
 
-    scripts/boot-test.sh out/sengi-os-0.3.0-amd64.iso test-output
+    scripts/boot-test.sh out/sengi-os-0.4.0-amd64.iso test-output
 
 This boots the ISO headless, saves a screenshot, and records idle RAM and boot
 time against the budgets.
