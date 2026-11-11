@@ -57,4 +57,6 @@ export global Tokens {
     out property <duration> motion-base: @{motion.base}ms;
     out property <duration> motion-slow: @{motion.slow}ms;
     out property <easing> motion-easing: @{motion.easing};
+    out property <duration> click-guard: @{timing.click-guard}ms;
+    out property <duration> notification-timeout: @{timing.notification-timeout}ms;
 }

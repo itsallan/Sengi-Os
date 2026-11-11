@@ -78,4 +78,7 @@ easing = "cubic-bezier(0.2, 0, 0, 1)"
 
 [timing]
 notification-timeout = 5000
+# How long a card that just appeared, changed or moved ignores clicks, so
+# it cannot be slipped under a click that was meant for something else.
+click-guard = 400
 idle-lock = 300
