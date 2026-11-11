@@ -13,7 +13,7 @@ use smithay::{
             surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
             AsRenderElements, Kind, RenderElementStates,
         },
-        ImportAll, ImportMem, Renderer, Texture,
+        Color32F, ImportAll, ImportMem, Renderer, Texture,
     },
     desktop::{
         layer_map_for_output,
@@ -57,6 +57,20 @@ where
     R: Renderer + ImportAll + ImportMem,
     R::TextureId: Clone + Send + Texture + 'static,
 {
+    let (elements, background) = elements(state, output, renderer);
+    finish(damage.render_output(renderer, target, age, &elements, background))
+}
+
+/// Everything visible on `output`, front to back, and the colour behind it.
+pub fn elements<R>(
+    state: &State,
+    output: &Output,
+    renderer: &mut R,
+) -> (Vec<OutputElement<R>>, Color32F)
+where
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Clone + Send + Texture + 'static,
+{
     let scale = Scale::from(output.current_scale().fractional_scale());
     let origin = state
         .space
@@ -81,11 +95,10 @@ where
                 Kind::Unspecified,
             ));
         }
-        let background = state.color(state.theme.inactive);
-        return finish(damage.render_output(renderer, target, age, &elements, background));
+        return (elements, state.color(state.theme.inactive));
     }
 
-    // Front to back: overlay and top layers, windows, bottom and background.
+    // Overlay and top layers, windows, bottom and background layers.
     layers(
         output,
         [Layer::Overlay, Layer::Top],
@@ -116,8 +129,7 @@ where
         scale,
         &mut elements,
     );
-
-    finish(damage.render_output(renderer, target, age, &elements, state.desktop_color()))
+    (elements, state.desktop_color())
 }
 
 fn layers<R>(

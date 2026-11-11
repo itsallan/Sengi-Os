@@ -13,6 +13,7 @@ Usage: sengi-compositor [options]
       --exit-after SEC  stop after SEC seconds
       --script FILE     play scripted input and screenshots (headless only)
       --locker CMD      what Super+L runs to lock (default: swaylock -f)
+      --exit            ask the running compositor to quit (log out)
   -h, --help            show this help
   -V, --version         show the version";
 
@@ -74,6 +75,8 @@ pub enum Command {
     Run(Options),
     Help,
     Version,
+    /// Ask the running compositor to end the session.
+    Exit,
 }
 
 pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> {
@@ -85,6 +88,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
         match arg.as_str() {
             "-h" | "--help" => return Ok(Command::Help),
             "-V" | "--version" => return Ok(Command::Version),
+            "--exit" => return Ok(Command::Exit),
             "-s" | "--startup" => options.startup.push(value()?),
             "--backend" => {
                 options.backend = match value()?.as_str() {
@@ -185,6 +189,7 @@ mod tests {
     fn help_and_version_win() {
         assert_eq!(run(&["--size", "1x1", "--help"]), Ok(Command::Help));
         assert_eq!(run(&["-V"]), Ok(Command::Version));
+        assert_eq!(run(&["--exit"]), Ok(Command::Exit));
     }
 
     #[test]

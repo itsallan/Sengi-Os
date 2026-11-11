@@ -224,10 +224,6 @@ impl State {
                         FilterResult::Forward
                     };
                 }
-                // No shortcuts on the lock screen: every key is the locker's.
-                if data.is_locked() {
-                    return FilterResult::Forward;
-                }
                 let mods = Mods {
                     logo: modifiers.logo,
                     alt: modifiers.alt,
@@ -235,6 +231,11 @@ impl State {
                     shift: modifiers.shift,
                 };
                 match keys::binding(mods, key.modified_sym().raw()) {
+                    // No shortcuts on the lock screen, every key is the
+                    // locker's; except leaving for another terminal.
+                    Some(action) if data.is_locked() && !matches!(action, Action::SwitchVt(_)) => {
+                        FilterResult::Forward
+                    }
                     Some(action) => {
                         data.swallowed_keys.press(code);
                         FilterResult::Intercept(Some(action))
@@ -292,6 +293,11 @@ impl State {
                 self.cycle = Some((order, index));
             }
             Action::Lock => self.spawn_locker(),
+            Action::SwitchVt(vt) => {
+                if let Some(switch) = self.switch_vt.as_mut() {
+                    switch(vt);
+                }
+            }
             Action::Launcher | Action::Terminal => {}
         }
     }

@@ -23,6 +23,7 @@ use smithay::{
         calloop::{
             generic::Generic,
             ping::Ping,
+            signals::{Signal, Signals},
             timer::{TimeoutAction, Timer},
             EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction,
         },
@@ -70,6 +71,9 @@ use crate::{
     text::Font,
 };
 
+/// Environment variable through which started programs learn our pid.
+pub const PID_VARIABLE: &str = "SENGI_COMPOSITOR_PID";
+
 /// Refresh rate reported for outputs that have no real one, in mHz.
 pub const REFRESH_MHZ: i32 = 60_000;
 
@@ -88,6 +92,8 @@ pub struct State {
     hidden_frames_armed: bool,
     /// A lock that is confirmed once the first locked frame is out.
     pub pending_lock: Option<SessionLocker>,
+    /// Switches to another virtual terminal, where the backend can.
+    pub switch_vt: Option<Box<dyn FnMut(i32)>>,
     /// What Super+L runs, and what is started for a session whose locker
     /// died.
     pub locker_command: String,
@@ -178,6 +184,13 @@ impl State {
         seat.add_keyboard(Default::default(), 300, 30)?;
         seat.add_pointer();
 
+        // The way to log out: `sengi-compositor --exit`, or any of these
+        // signals, ends the loop and with it the session.
+        let signals = Signals::new(&[Signal::SIGTERM, Signal::SIGINT, Signal::SIGHUP])?;
+        event_loop
+            .handle()
+            .insert_source(signals, |_, _, state| state.loop_signal.stop())?;
+
         let socket = ListeningSocketSource::new_auto()?;
         let socket_name = socket.socket_name().to_os_string();
         let handle = event_loop.handle();
@@ -220,6 +233,7 @@ impl State {
             redraw_ping: None,
             hidden_frames_armed: false,
             pending_lock: None,
+            switch_vt: None,
             locker_command: keys::DEFAULT_LOCKER.to_string(),
             locker_pids: Vec::new(),
             relock_armed: false,
@@ -427,6 +441,8 @@ impl State {
             .arg("-c")
             .arg(command)
             .env("WAYLAND_DISPLAY", &self.socket_name)
+            // For the session's restart loops, and for `--exit`.
+            .env(PID_VARIABLE, std::process::id().to_string())
             .spawn();
         match child {
             Ok(child) => {

@@ -19,6 +19,8 @@ winit = ["smithay/backend_winit"]
 ab_glyph = "0.2"
 # Reads the system cursor theme.
 xcursor = "0.3"
+# The same calloop Smithay uses, with signal handling switched on.
+calloop = { version = "0.14", features = ["signals"] }
 sengi-tokens = { path = "../sengi-tokens" }
 smithay = { version = "0.7", default-features = false, features = [
     "desktop",

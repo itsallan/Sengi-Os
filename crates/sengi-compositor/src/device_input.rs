@@ -4,9 +4,10 @@
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, Event, InputBackend, InputEvent, KeyboardKeyEvent,
-        PointerAxisEvent, PointerButtonEvent,
+        PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
     },
     input::pointer::AxisFrame,
+    utils::Point,
 };
 
 use crate::state::State;
@@ -23,6 +24,21 @@ impl State {
                     return;
                 };
                 let location = event.position_transformed(geometry.size) + geometry.loc.to_f64();
+                self.pointer_motion(location, event.time_msec());
+            }
+            InputEvent::PointerMotion { event } => {
+                let Some(output) = self.output() else { return };
+                let Some(geometry) = self.space.output_geometry(&output) else {
+                    return;
+                };
+                let pointer = self.seat.get_pointer().expect("seat has a pointer");
+                let moved = pointer.current_location() + event.delta();
+                // The pointer stays on the output.
+                let area = geometry.to_f64();
+                let location = Point::from((
+                    moved.x.clamp(area.loc.x, area.loc.x + area.size.w - 1.0),
+                    moved.y.clamp(area.loc.y, area.loc.y + area.size.h - 1.0),
+                ));
                 self.pointer_motion(location, event.time_msec());
             }
             InputEvent::PointerButton { event } => {

@@ -7,6 +7,16 @@ const RETURN: u32 = 0xff0d;
 const TAB: u32 = 0xff09;
 /// What Shift+Tab produces.
 const ISO_LEFT_TAB: u32 = 0xfe20;
+/// XF86Switch_VT_1; the other eleven follow it.
+const SWITCH_VT_1: u32 = 0x1008_fe01;
+
+/// The virtual terminal a keysym asks for, if it is one of the VT keys.
+/// These work everywhere, the lock screen included.
+pub fn vt_for(keysym: u32) -> Option<i32> {
+    (SWITCH_VT_1..SWITCH_VT_1 + 12)
+        .contains(&keysym)
+        .then(|| (keysym - SWITCH_VT_1) as i32 + 1)
+}
 
 /// What locks the session unless `--locker` says otherwise. The shell
 /// replaces itself, so the locker has the pid we started.
@@ -20,6 +30,8 @@ pub enum Action {
     CloseWindow,
     NextWindow,
     PreviousWindow,
+    /// Ctrl+Alt+F1 to F12, which xkb turns into one keysym each.
+    SwitchVt(i32),
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +45,9 @@ pub struct Mods {
 /// The action bound to a key press, if any. `keysym` is the symbol with the
 /// held modifiers applied.
 pub fn binding(mods: Mods, keysym: u32) -> Option<Action> {
+    if let Some(vt) = vt_for(keysym) {
+        return Some(Action::SwitchVt(vt));
+    }
     let letter = char::from_u32(keysym)
         .filter(char::is_ascii_alphabetic)
         .map(|c| c.to_ascii_lowercase());
@@ -71,7 +86,11 @@ pub fn command(action: Action) -> Option<&'static str> {
             "if command -v sengi-run >/dev/null 2>&1; then exec sengi-run foot; else exec foot; fi",
         ),
         // The locker is configurable and tracked, see `State::spawn_locker`.
-        Action::Lock | Action::CloseWindow | Action::NextWindow | Action::PreviousWindow => None,
+        Action::Lock
+        | Action::CloseWindow
+        | Action::NextWindow
+        | Action::PreviousWindow
+        | Action::SwitchVt(_) => None,
     }
 }
 
@@ -134,6 +153,20 @@ mod tests {
         assert_eq!(binding(LOGO, 'q' as u32), Some(Action::CloseWindow));
         // Caps lock must not disable them.
         assert_eq!(binding(LOGO, 'Q' as u32), Some(Action::CloseWindow));
+    }
+
+    #[test]
+    fn vt_keys_switch_terminals_whatever_else_is_held() {
+        assert_eq!(vt_for(SWITCH_VT_1), Some(1));
+        assert_eq!(vt_for(SWITCH_VT_1 + 11), Some(12));
+        assert_eq!(vt_for(SWITCH_VT_1 + 12), None);
+        assert_eq!(vt_for('q' as u32), None);
+        let held = Mods {
+            ctrl: true,
+            alt: true,
+            ..Mods::default()
+        };
+        assert_eq!(binding(held, SWITCH_VT_1 + 1), Some(Action::SwitchVt(2)));
     }
 
     #[test]

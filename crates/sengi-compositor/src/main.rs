@@ -41,6 +41,7 @@ fn main() -> ExitCode {
             println!("sengi-compositor {}", env!("CARGO_PKG_VERSION"));
             return ExitCode::SUCCESS;
         }
+        Ok(Command::Exit) => return ask_to_exit(),
         Err(err) => {
             eprintln!("sengi-compositor: {err}\n{}", cli::USAGE);
             return ExitCode::from(2);
@@ -76,5 +77,30 @@ fn start_clients(state: &mut State, options: &Options) {
     }
     for command in &options.startup {
         state.spawn(command);
+    }
+}
+
+/// `--exit`: tells the compositor this was started under to quit, the way
+/// `labwc --exit` does. It finds it through the pid it gave its children.
+fn ask_to_exit() -> ExitCode {
+    let pid = std::env::var(state::PID_VARIABLE)
+        .ok()
+        .filter(|pid| pid.parse::<u32>().is_ok());
+    let Some(pid) = pid else {
+        eprintln!(
+            "sengi-compositor: {} is not set; not started from a session?",
+            state::PID_VARIABLE
+        );
+        return ExitCode::FAILURE;
+    };
+    match std::process::Command::new("kill")
+        .args(["-TERM", &pid])
+        .status()
+    {
+        Ok(status) if status.success() => ExitCode::SUCCESS,
+        _ => {
+            eprintln!("sengi-compositor: could not signal process {pid}");
+            ExitCode::FAILURE
+        }
     }
 }
