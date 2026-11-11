@@ -325,11 +325,6 @@ impl Panel {
         self.join.cancel();
     }
 
-    /// Whether Escape has something smaller than the panel to close.
-    pub fn prompt_open(&self) -> bool {
-        matches!(self.join, Join::Asking { .. })
-    }
-
     pub fn toggle_bluetooth(&mut self, on: bool) -> Option<Command> {
         self.bluetooth_wanted = Some(on);
         Some(Command::BluetoothPower(on))
@@ -764,7 +759,7 @@ mod tests {
         let prompt = panel.view().wifi.prompt.unwrap();
         assert_eq!(prompt.name, "Office");
         assert!(!prompt.busy && prompt.problem.is_empty());
-        assert!(panel.prompt_open());
+        assert!(panel.view().wifi.prompt.is_some());
 
         assert!(panel
             .submit_passphrase(Secret::new("short".to_string()))
@@ -801,7 +796,7 @@ mod tests {
             result: Ok(()),
         });
         assert!(panel.view().wifi.prompt.is_none());
-        assert!(!panel.prompt_open());
+        assert!(panel.view().wifi.prompt.is_none());
     }
 
     #[test]
@@ -1024,12 +1019,12 @@ mod tests {
         let mut panel = Panel::new(laptop(), false);
         panel.apply(Event::Wifi(on(Link::Connected, home_and_cafe())));
         pick(&mut panel, 0);
-        assert!(panel.prompt_open());
+        assert!(panel.view().wifi.prompt.is_some());
         assert!(matches!(
             panel.toggle_wifi(false),
             Some(Command::WifiPower(false))
         ));
-        assert!(!panel.prompt_open());
+        assert!(panel.view().wifi.prompt.is_none());
         // The switch stays where it was put until the service answers.
         assert!(!panel.view().wifi.on);
         panel.apply(Event::Wifi(Wifi::Off));
