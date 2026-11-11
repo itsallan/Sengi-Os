@@ -885,6 +885,10 @@ impl SeatHandler for State {
     ) {
         if capability == Capability::Pointer {
             self.pointer = None;
+            // The pointer went without leaving; do not let hover stick.
+            for surface in &self.surfaces {
+                surface.window.dispatch_event(WindowEvent::PointerExited);
+            }
         }
         if capability == Capability::Keyboard {
             if let Some(keyboard) = self.keyboard.take() {
