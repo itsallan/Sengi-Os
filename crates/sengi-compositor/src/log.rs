@@ -61,12 +61,7 @@ impl Subscriber for Stderr {
         let mut line = Line(String::new());
         event.record(&mut line);
         let metadata = event.metadata();
-        eprintln!(
-            "sengi-compositor: {} {}:{}",
-            metadata.level(),
-            metadata.target(),
-            line.0
-        );
+        crate::say!("{} {}:{}", metadata.level(), metadata.target(), line.0);
     }
 
     // Spans are not printed, so one id serves them all.

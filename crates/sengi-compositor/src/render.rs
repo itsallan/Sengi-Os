@@ -188,7 +188,7 @@ fn cursor<R>(
             );
             match element {
                 Ok(element) => elements.push(OutputElement::Memory(element)),
-                Err(err) => eprintln!("sengi-compositor: cannot draw the cursor: {err:?}"),
+                Err(err) => crate::say!("cannot draw the cursor: {err:?}"),
             }
         }
         CursorImageStatus::Surface(surface) => {
@@ -251,7 +251,7 @@ fn frame<R>(
     );
     match titlebar {
         Ok(element) => elements.push(OutputElement::Memory(element)),
-        Err(err) => eprintln!("sengi-compositor: cannot draw a title bar: {err:?}"),
+        Err(err) => crate::say!("cannot draw a title bar: {err:?}"),
     }
 
     let painted = buffers.look.0.width;
@@ -317,17 +317,17 @@ pub fn presented(
             default_primary_scanout_output_compare,
         );
     };
-    if state.is_locked() {
-        for surface in state.lock_surfaces() {
-            with_surfaces_surface_tree(&surface, seen);
-        }
-    } else {
-        for window in state.space.elements() {
-            window.with_surfaces(seen);
-        }
-        for layer in layer_map_for_output(output).layers() {
-            layer.with_surfaces(seen);
-        }
+    // Everything is asked, also what cannot be in this frame: a window
+    // that was visible and is now minimised or behind the lock must stop
+    // counting as visible, or it would keep getting callbacks at full rate.
+    for surface in state.lock_surfaces() {
+        with_surfaces_surface_tree(&surface, seen);
+    }
+    for window in state.space.elements().chain(state.minimised.iter()) {
+        window.with_surfaces(seen);
+    }
+    for layer in layer_map_for_output(output).layers() {
+        layer.with_surfaces(seen);
     }
     if let CursorImageStatus::Surface(surface) = state.cursor() {
         with_surfaces_surface_tree(&surface, seen);
