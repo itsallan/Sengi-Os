@@ -5,6 +5,43 @@ and the measured idle RAM and boot time.
 
 ## Unreleased
 
+## 0.3.0
+
+The whole shell is now our own: bar, dock and launcher.
+
+### Added
+
+- sengi-dock, the dock. Running windows attach to their pinned icon instead
+  of adding a second one, the focused app is marked, and a click launches,
+  focuses, minimises or cycles through an app's windows. Hovering shows the
+  app's name. Pins live in /etc/xdg/sengi-os/dock.toml, with a per-user
+  override in ~/.config/sengi-os/dock.toml.
+- sengi-launcher, the search launcher. It ranks apps by how well they match
+  and how often they are used, shows a message when an app cannot be
+  started, and closes on Escape or a click outside. Its menu mode draws the
+  session menu.
+- sengi-layer, the library the bar, dock and launcher are drawn with: Slint
+  on wlr-layer-shell, with keyboard input, one surface per monitor and
+  per-surface control.
+- A bar on every monitor.
+
+### Changed
+
+- Waybar and fuzzel are no longer in the image.
+- The bar and dock are restarted if they exit, more slowly if they keep
+  exiting, and what they print goes to the journal.
+
+### Known limits
+
+- There is no system tray yet. Planned for 0.4.
+- The dock is on one monitor. Ctrl- and Shift-click do not start a new
+  instance; middle-click does.
+- The launcher lists apps without icons, and long right-to-left names can be
+  highlighted in the wrong order.
+- Wi-Fi cards that need non-free firmware (most Intel cards) do not work yet.
+- Secure Boot has to be turned off to boot the ISO.
+- The clock shows UTC.
+
 ## 0.2.0
 
 The top bar is now our own program.
