@@ -13,8 +13,6 @@
 //! together. Calls whose answer nobody needs are sent without waiting.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::linux::net::SocketAddrExt;
-use std::os::unix::net::{SocketAddr, UnixStream};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -23,8 +21,7 @@ use std::time::{Duration, Instant};
 
 use enumflags2::BitFlags;
 use futures_lite::FutureExt;
-use zbus::address::transport::{Transport, UnixSocket};
-use zbus::blocking::{connection, Connection, MessageIterator};
+use zbus::blocking::{Connection, MessageIterator};
 use zbus::export::serde::de::{DeserializeOwned, SeqAccess, Visitor};
 use zbus::export::serde::{Deserialize, Deserializer, Serialize};
 use zbus::fdo::RequestNameReply;
@@ -149,7 +146,7 @@ fn run(
         registry: registry.clone(),
         events: events.clone(),
     };
-    let connection = session()?
+    let connection = sengi_system::connect::session()?
         .method_timeout(CALL_TIMEOUT)
         .serve_at(WATCHER_PATH, KdeWatcher(shared.clone()))?
         .serve_at(WATCHER_PATH, FreedesktopWatcher(shared))?
@@ -242,38 +239,6 @@ fn run(
             None => {}
         }
         host.tick(now);
-    }
-}
-
-/// Opens the socket to the session bus ourselves.
-///
-/// Left to zbus, the connect runs on a thread of the `blocking` crate's
-/// pool, and with blocking 1.7.0 that thread never ends: it wakes twice a
-/// second for as long as the process lives. A socket that is already
-/// connected keeps the pool from ever starting. (sengi-notify has the same
-/// function; it belongs in a shared crate.)
-fn session_socket() -> zbus::Result<UnixStream> {
-    let address = zbus::Address::session()?;
-    let Transport::Unix(unix) = address.transport() else {
-        return Err(zbus::Error::Unsupported);
-    };
-    let stream = match unix.path() {
-        UnixSocket::File(path) => UnixStream::connect(path)?,
-        UnixSocket::Abstract(name) => {
-            UnixStream::connect_addr(&SocketAddr::from_abstract_name(name.as_encoded_bytes())?)?
-        }
-        _ => return Err(zbus::Error::Unsupported),
-    };
-    Ok(stream)
-}
-
-/// A builder for a connection to the session bus.
-fn session() -> zbus::Result<connection::Builder<'static>> {
-    match session_socket() {
-        Ok(socket) => Ok(connection::Builder::async_io_unix_stream(socket)),
-        // A bus that is not on a unix socket, or not there at all: let
-        // zbus try, and report the error in its own words if it fails.
-        Err(_) => connection::Builder::session(),
     }
 }
 

@@ -3533,6 +3533,7 @@ dependencies = [
  "libc",
  "sengi-apps",
  "sengi-layer",
+ "sengi-system",
  "sengi-text",
  "slint",
  "slint-build",
@@ -3585,6 +3586,7 @@ version = "0.5.0"
 dependencies = [
  "chrono",
  "sengi-layer",
+ "sengi-system",
  "sengi-text",
  "sengi-tokens",
  "serde",

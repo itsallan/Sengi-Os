@@ -17,6 +17,7 @@ svg = ["sengi-apps/svg"]
 # process, straight to the size they are drawn at.
 sengi-apps = { path = "../sengi-apps", features = ["icons"] }
 sengi-layer = { path = "../sengi-layer" }
+sengi-system = { path = "../sengi-system", features = ["bus"] }
 sengi-text = { path = "../sengi-text" }
 # Not the workspace entry: that one pulls in the winit backend. sengi-layer
 # is the backend here and turns on the software renderer.

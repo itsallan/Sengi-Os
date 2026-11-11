@@ -26,6 +26,24 @@ fn socket(address: zbus::Address) -> zbus::Result<UnixStream> {
     Ok(stream)
 }
 
+/// Opens the socket to the session bus (`DBUS_SESSION_BUS_ADDRESS`, or
+/// the usual place). An error if the bus is not on a unix socket or not
+/// there.
+pub fn session_socket() -> zbus::Result<UnixStream> {
+    socket(zbus::Address::session()?)
+}
+
+/// A builder for a connection to the session bus, over a socket opened
+/// here when that is possible.
+pub fn session() -> zbus::Result<Builder<'static>> {
+    match session_socket() {
+        Ok(socket) => Ok(Builder::async_io_unix_stream(socket)),
+        // A bus that is not on a unix socket, or not there at all: let
+        // zbus try, and report the error in its own words if it fails.
+        Err(_) => Builder::session(),
+    }
+}
+
 /// Opens the socket to the system bus (`DBUS_SYSTEM_BUS_ADDRESS`, or the
 /// usual place). An error if the bus is not on a unix socket or not there.
 pub fn system_socket() -> zbus::Result<UnixStream> {
