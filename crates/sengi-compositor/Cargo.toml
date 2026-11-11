@@ -10,7 +10,10 @@ publish = false
 [workspace]
 
 [features]
-default = ["winit", "drm"]
+default = ["winit", "drm", "test-hooks"]
+# Switches for testing only: `--script` and the virtual cursor plane. A
+# build for the image leaves this out.
+test-hooks = []
 # Runs the compositor in a window for development. Pulls in winit and GLES.
 winit = ["smithay/backend_winit"]
 # Runs the compositor on a real screen: libseat, udev, DRM/KMS and libinput.

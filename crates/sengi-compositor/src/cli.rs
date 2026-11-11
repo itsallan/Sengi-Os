@@ -125,7 +125,9 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             }
             "--size" => options.size = parse_size(&value()?)?,
             "--screenshot" => options.screenshot = Some(PathBuf::from(value()?)),
-            "--script" => options.script = Some(PathBuf::from(value()?)),
+            "--script" if cfg!(feature = "test-hooks") => {
+                options.script = Some(PathBuf::from(value()?))
+            }
             "--locker" => options.locker = Some(value()?),
             "--renderer" => {
                 let name = value()?;

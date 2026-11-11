@@ -19,12 +19,12 @@ use std::{
     error::Error,
     ffi::{c_char, CStr},
     fs::File,
-    io::BufWriter,
+    io::{BufWriter, Read as _},
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     rc::Rc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use smithay::{
@@ -137,6 +137,7 @@ macro_rules! on_compositor {
 struct Screen {
     connector: connector::Handle,
     crtc: crtc::Handle,
+    mode: Mode,
     output: Output,
     compositor: Compositor,
     /// The frame that is on its way to the screen, if any: what was visible
@@ -305,15 +306,36 @@ pub fn probe(node: &str) -> Result<String, Box<dyn Error>> {
     })
 }
 
+/// How long the probe may take. It prints one short line.
+const PROBE_TIME: Duration = Duration::from_secs(5);
+
 /// Runs the probe in a child and returns what it printed.
 fn probe_in_child(node: &Path) -> Option<String> {
-    let output = Command::new(std::env::current_exe().ok()?)
+    let mut child = Command::new(std::env::current_exe().ok()?)
         .arg("--probe-gl")
         .arg(node)
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .spawn()
         .ok()?;
-    let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (output.status.success() && !name.is_empty()).then_some(name)
+    // A driver that hangs must not hang the session with it.
+    let deadline = Instant::now() + PROBE_TIME;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                crate::say!("the GL probe did not answer in time");
+                return None;
+            }
+        }
+    };
+    let mut name = String::new();
+    child.stdout.take()?.read_to_string(&mut name).ok()?;
+    let name = name.trim().to_string();
+    (status.success() && !name.is_empty()).then_some(name)
 }
 
 fn gles_renderer(fd: &DrmDeviceFd) -> Result<Renderer, Box<dyn Error>> {
@@ -352,7 +374,9 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         .open(&path, flags)
         .map_err(|err| format!("cannot open {}: {err}", path.display()))?;
     let fd = DrmDeviceFd::new(DeviceFd::from(fd));
-    if std::env::var_os(VIRTUAL_CURSOR_VARIABLE).is_some_and(|value| !value.is_empty()) {
+    let virtual_cursor = cfg!(feature = "test-hooks")
+        && std::env::var_os(VIRTUAL_CURSOR_VARIABLE).is_some_and(|value| !value.is_empty());
+    if virtual_cursor {
         // The kernel wants atomic mode setting switched on first, and the
         // device must see the plane from the start, so this goes ahead of it.
         let claimed = [
@@ -363,7 +387,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         .into_iter()
         .try_for_each(|capability| fd.set_client_capability(capability, true));
         if let Err(err) = claimed {
-            eprintln!("sengi-compositor: no virtual cursor plane: {err}");
+            crate::say!("no virtual cursor plane: {err}");
         }
     }
     let (device, device_events) = DrmDevice::new(fd.clone(), true)?;
@@ -409,7 +433,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
     let mut vt_session = session.clone();
     state.switch_vt = Some(Box::new(move |vt| {
         if let Err(err) = vt_session.change_vt(vt) {
-            eprintln!("sengi-compositor: cannot switch to terminal {vt}: {err}");
+            crate::say!("cannot switch to terminal {vt}: {err}");
         }
     }));
 
@@ -437,8 +461,8 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
     if backend.screens.is_empty() {
         return Err("no connected display".into());
     }
-    eprintln!(
-        "sengi-compositor: {} ({}); renderer: {} ({why})",
+    crate::say!(
+        "{} ({}); renderer: {} ({why})",
         path.display(),
         driver.as_deref().unwrap_or("unknown driver"),
         match backend.renderer {
@@ -475,7 +499,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
                     }
                 }));
             }
-            Err(err) => eprintln!("sengi-compositor: no dmabuf for clients: {err}"),
+            Err(err) => crate::say!("no dmabuf for clients: {err}"),
         }
     }
 
@@ -503,7 +527,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
                             .map_err(|err| format!("{err:?}"))
                     });
                     if let Err(err) = submitted {
-                        eprintln!("sengi-compositor: page flip: {err}");
+                        crate::say!("page flip: {err}");
                     }
                     let output = screen.output.clone();
                     screen.in_flight.take().map(|frame| (output, frame))
@@ -514,7 +538,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
             }
             draw_if_ready(&on_flip, state);
         }
-        DrmEvent::Error(err) => eprintln!("sengi-compositor: display: {err}"),
+        DrmEvent::Error(err) => crate::say!("display: {err}"),
     })?;
 
     // A display was plugged in or pulled.
@@ -554,10 +578,10 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
             }
             SessionEvent::ActivateSession => {
                 if backend.libinput.resume().is_err() {
-                    eprintln!("sengi-compositor: cannot get the input devices back");
+                    crate::say!("cannot get the input devices back");
                 }
                 if let Err(err) = backend.device.activate(false) {
-                    eprintln!("sengi-compositor: cannot get the display back: {err}");
+                    crate::say!("cannot get the display back: {err}");
                 }
                 backend.active = true;
                 // Displays may have come and gone meanwhile.
@@ -568,7 +592,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
                         compositor.reset_state().map_err(|err| err.to_string())
                     });
                     if let Err(err) = reset {
-                        eprintln!("sengi-compositor: display state: {err}");
+                        crate::say!("display state: {err}");
                     }
                     screen.stale = true;
                 }
@@ -582,7 +606,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         let on_signal = backend.clone();
         state.take_screenshot = Some(Box::new(move |state| {
             if let Err(err) = on_signal.borrow_mut().screenshot(state, &path) {
-                eprintln!("sengi-compositor: screenshot failed: {err}");
+                crate::say!("screenshot failed: {err}");
             }
         }));
     }
@@ -593,7 +617,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         handle.insert_source(Timer::from_duration(after), move |_, _, state| {
             if let Some(path) = &path {
                 if let Err(err) = at_exit.borrow_mut().screenshot(state, path) {
-                    eprintln!("sengi-compositor: screenshot failed: {err}");
+                    crate::say!("screenshot failed: {err}");
                 }
             }
             state.loop_signal.stop();
@@ -831,7 +855,7 @@ impl Drm {
         let found = match connected(&self.device) {
             Ok(found) => found,
             Err(err) => {
-                eprintln!("sengi-compositor: cannot list the displays: {err}");
+                crate::say!("cannot list the displays: {err}");
                 return;
             }
         };
@@ -839,13 +863,15 @@ impl Drm {
         let (kept, gone): (Vec<Screen>, Vec<Screen>) = std::mem::take(&mut self.screens)
             .into_iter()
             .partition(|screen| {
+                // A different monitor on the same connector wants another
+                // mode: that is the old one gone and a new one found.
                 found
                     .iter()
-                    .any(|(info, _)| info.handle() == screen.connector)
+                    .any(|(info, mode)| info.handle() == screen.connector && *mode == screen.mode)
             });
         self.screens = kept;
         for screen in gone {
-            eprintln!("sengi-compositor: {} is gone", screen.output.name());
+            crate::say!("{} is gone", screen.output.name());
             state.remove_output(&screen.output);
         }
 
@@ -858,8 +884,8 @@ impl Drm {
                 continue;
             }
             if let Err(err) = self.light(state, info, *mode) {
-                eprintln!(
-                    "sengi-compositor: cannot use {}-{}: {err}",
+                crate::say!(
+                    "cannot use {}-{}: {err}",
                     info.interface().as_str(),
                     info.interface_id()
                 );
@@ -939,8 +965,8 @@ impl Drm {
             }
         };
 
-        eprintln!(
-            "sengi-compositor: {name} at {width}x{height}, {} Hz; planes: {} cursor, {} overlay",
+        crate::say!(
+            "{name} at {width}x{height}, {} Hz; planes: {} cursor, {} overlay",
             mode.vrefresh(),
             planes.cursor.len(),
             planes.overlay.len(),
@@ -948,6 +974,7 @@ impl Drm {
         self.screens.push(Screen {
             connector: info.handle(),
             crtc,
+            mode,
             output,
             compositor,
             in_flight: None,
@@ -983,9 +1010,9 @@ impl Drm {
                 picture[at..at + row].copy_from_slice(pixels);
             }
         }
-        let mut file = BufWriter::new(File::create(path)?);
+        let mut file = BufWriter::new(png::create(path)?);
         png::write_rgb(&mut file, width as u32, height as u32, &picture)?;
-        eprintln!("sengi-compositor: wrote {}", path.display());
+        crate::say!("wrote {}", path.display());
         Ok(())
     }
 }

@@ -8,7 +8,7 @@ use std::{
     cell::RefCell,
     collections::VecDeque,
     error::Error,
-    fs::{self, File},
+    fs,
     io::BufWriter,
     path::Path,
     rc::Rc,
@@ -179,7 +179,7 @@ fn schedule(backend: &Shared, state: &mut State) {
 
 fn draw(backend: &Shared, state: &mut State, screenshot: Option<&Path>) {
     if let Err(err) = backend.borrow_mut().frame(state, screenshot) {
-        eprintln!("sengi-compositor: frame failed: {err}");
+        crate::say!("frame failed: {err}");
         state.failed = true;
         state.loop_signal.stop();
     }
@@ -273,9 +273,9 @@ pub fn save(
     path: &Path,
 ) -> Result<(), Box<dyn Error>> {
     let rgb = read_rgb(renderer, target, size)?;
-    let mut file = BufWriter::new(File::create(path)?);
+    let mut file = BufWriter::new(png::create(path)?);
     png::write_rgb(&mut file, size.w as u32, size.h as u32, &rgb)?;
-    eprintln!("sengi-compositor: wrote {}", path.display());
+    crate::say!("wrote {}", path.display());
     Ok(())
 }
 

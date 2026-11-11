@@ -148,6 +148,15 @@ impl State {
         }
     }
 
+    fn foreign_unchanged(&self, window: &Window, info: &Info) -> bool {
+        let data = window::data(window);
+        info.maximized == data.restore.get().is_some()
+            && info.minimized == data.minimised.get().is_some()
+            && info.activated == (self.focus_stack.current() == Some(window))
+            && window::with_title(window, |title| title == info.title)
+            && window::with_app_id(window, |app_id| app_id == info.app_id)
+    }
+
     /// Brings every listening client up to date with the windows as they
     /// are now. Cheap when nothing changed.
     pub fn refresh_foreign_toplevels(&mut self) {
@@ -166,6 +175,16 @@ impl State {
         });
 
         for window in windows {
+            // This runs every turn of the loop; most of the time nothing
+            // changed and no strings need to be made to find that out.
+            let known = self
+                .foreign_toplevels
+                .entries
+                .iter()
+                .find(|entry| entry.window == window);
+            if known.is_some_and(|entry| self.foreign_unchanged(&window, &entry.info)) {
+                continue;
+            }
             let info = self.foreign_info(&window);
             let foreign = &mut self.foreign_toplevels;
             match foreign.entries.iter_mut().find(|e| e.window == window) {

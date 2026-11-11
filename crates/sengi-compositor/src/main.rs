@@ -1,6 +1,6 @@
 //! sengi-compositor: the Wayland compositor for Sengi OS.
 //!
-//! Still a skeleton. See README.md for what works and what is missing.
+//! See README.md for what works and what is missing.
 
 mod cli;
 mod cursor;
@@ -46,11 +46,11 @@ fn main() -> ExitCode {
         if args.next().as_deref() == Some("--probe-gl") {
             return match args.next().map(|node| drm::probe(&node)) {
                 Some(Ok(renderer)) => {
-                    println!("{renderer}");
+                    crate::tell!("{renderer}");
                     ExitCode::SUCCESS
                 }
                 Some(Err(err)) => {
-                    eprintln!("sengi-compositor: no GL on that device: {err}");
+                    crate::say!("no GL on that device: {err}");
                     ExitCode::FAILURE
                 }
                 None => ExitCode::from(2),
@@ -61,25 +61,23 @@ fn main() -> ExitCode {
     let options = match cli::parse(std::env::args().skip(1)) {
         Ok(Command::Run(options)) => options,
         Ok(Command::Help) => {
-            println!("{}", cli::USAGE);
+            crate::tell!("{}", cli::USAGE);
             return ExitCode::SUCCESS;
         }
         Ok(Command::Version) => {
-            println!("sengi-compositor {}", env!("CARGO_PKG_VERSION"));
+            crate::tell!("sengi-compositor {}", env!("CARGO_PKG_VERSION"));
             return ExitCode::SUCCESS;
         }
         Ok(Command::Exit) => return ask_to_exit(),
         Err(err) => {
-            eprintln!("sengi-compositor: {err}\n{}", cli::USAGE);
+            crate::say!("{err}\n{}", cli::USAGE);
             return ExitCode::from(2);
         }
     };
 
     log::init();
 
-    let has_display = ["WAYLAND_DISPLAY", "DISPLAY"]
-        .iter()
-        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()));
+    let has_display = display_reachable();
     // greetd and a login on a console both give the session a terminal.
     let on_terminal = ["XDG_VTNR", "XDG_SEAT"]
         .iter()
@@ -100,15 +98,42 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("sengi-compositor: {err}");
+            crate::say!("{err}");
             ExitCode::FAILURE
         }
     }
 }
 
+/// Whether there is a desktop session to open a window on. The variables
+/// alone do not say: one left over in the environment of a login on a
+/// terminal must not send the session into a window that cannot open.
+fn display_reachable() -> bool {
+    let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+    let wayland = set("WAYLAND_DISPLAY").is_some_and(|name| {
+        let name = std::path::PathBuf::from(name);
+        match set("XDG_RUNTIME_DIR") {
+            _ if name.is_absolute() => name.exists(),
+            Some(dir) => std::path::Path::new(&dir).join(name).exists(),
+            None => false,
+        }
+    });
+    let x11 = set("DISPLAY").is_some_and(|display| {
+        let display = display.to_string_lossy().into_owned();
+        let number = display
+            .rsplit(':')
+            .next()
+            .and_then(|rest| rest.split('.').next())
+            .unwrap_or_default();
+        // A display on another machine cannot be checked from here.
+        !display.starts_with(':')
+            || std::path::Path::new(&format!("/tmp/.X11-unix/X{number}")).exists()
+    });
+    wayland || x11
+}
+
 /// Prints the socket name and launches the `--startup` commands against it.
 fn start_clients(state: &mut State, options: &Options) {
-    println!("{}", state.socket_name.to_string_lossy());
+    crate::tell!("{}", state.socket_name.to_string_lossy());
 
     let locker = options.locker.as_deref().unwrap_or(keys::DEFAULT_LOCKER);
     state.set_locker(locker);
@@ -124,8 +149,8 @@ fn ask_to_exit() -> ExitCode {
         .ok()
         .filter(|pid| pid.parse::<u32>().is_ok());
     let Some(pid) = pid else {
-        eprintln!(
-            "sengi-compositor: {} is not set; not started from a session?",
+        crate::say!(
+            "{} is not set; not started from a session?",
             state::PID_VARIABLE
         );
         return ExitCode::FAILURE;
@@ -136,7 +161,7 @@ fn ask_to_exit() -> ExitCode {
     {
         Ok(status) if status.success() => ExitCode::SUCCESS,
         _ => {
-            eprintln!("sengi-compositor: could not signal process {pid}");
+            crate::say!("could not signal process {pid}");
             ExitCode::FAILURE
         }
     }

@@ -42,6 +42,23 @@ pub struct Mods {
     pub shift: bool,
 }
 
+/// The symbol to look a binding up by. Letter bindings mean the key where
+/// that letter is on a Latin keyboard, so on a layout whose keys give
+/// other letters (Cyrillic, Greek) the key's position decides. `keycode`
+/// is the xkb one, eight above the kernel's.
+pub fn binding_symbol(keysym: u32, keycode: u32) -> u32 {
+    let latin = char::from_u32(keysym).is_some_and(|c| c.is_ascii());
+    // Function and control keys live at 0xfd00 and above.
+    if latin || keysym >= 0xfd00 {
+        return keysym;
+    }
+    match keycode.wrapping_sub(8) {
+        16 => u32::from(b'q'),
+        38 => u32::from(b'l'),
+        _ => keysym,
+    }
+}
+
 /// The action bound to a key press, if any. `keysym` is the symbol with the
 /// held modifiers applied.
 pub fn binding(mods: Mods, keysym: u32) -> Option<Action> {
@@ -230,5 +247,20 @@ mod tests {
         assert_eq!(cycle(3, 0, false), 2);
         assert_eq!(cycle(1, 0, true), 0);
         assert_eq!(cycle(0, 0, true), 0);
+    }
+
+    #[test]
+    fn letter_bindings_follow_the_key_on_other_alphabets() {
+        // Cyrillic de is where L is; the kernel calls that key 38.
+        let de = 0x06c4;
+        assert_eq!(binding_symbol(de, 38 + 8), u32::from(b'l'));
+        let logo = Mods {
+            logo: true,
+            ..Mods::default()
+        };
+        assert_eq!(binding(logo, binding_symbol(de, 46)), Some(Action::Lock));
+        // A Latin layout that moves letters about keeps its own letters.
+        assert_eq!(binding_symbol(u32::from(b'a'), 16 + 8), u32::from(b'a'));
+        assert_eq!(binding_symbol(RETURN, 28 + 8), RETURN);
     }
 }

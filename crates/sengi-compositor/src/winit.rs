@@ -72,7 +72,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         WinitEvent::Redraw => {
             let mut backend = backend.borrow_mut();
             if let Err(err) = redraw(&mut backend, &mut damage, &output, state) {
-                eprintln!("sengi-compositor: frame failed: {err}");
+                crate::say!("frame failed: {err}");
                 state.failed = true;
                 state.loop_signal.stop();
             }

@@ -230,7 +230,8 @@ impl State {
                     ctrl: modifiers.ctrl,
                     shift: modifiers.shift,
                 };
-                match keys::binding(mods, key.modified_sym().raw()) {
+                let symbol = keys::binding_symbol(key.modified_sym().raw(), keycode.raw());
+                match keys::binding(mods, symbol) {
                     // No shortcuts on the lock screen, every key is the
                     // locker's; except leaving for another terminal.
                     Some(action) if data.is_locked() && !matches!(action, Action::SwitchVt(_)) => {
@@ -338,7 +339,7 @@ impl State {
         self.place_pointer(location, time);
     }
 
-    fn place_pointer(&mut self, location: Point<f64, Logical>, time: u32) {
+    pub fn place_pointer(&mut self, location: Point<f64, Logical>, time: u32) {
         self.pointer_stale = false;
 
         // During a drag the grab does the work, see `FrameGrab`.
@@ -526,7 +527,8 @@ impl State {
                     *initial
                 };
                 let delta = (x - start.0, y - start.1);
-                let delta = frame::limit_resize(outline, *edges, delta, self.usable_area());
+                let usable = self.usable_area_near(outline);
+                let delta = frame::limit_resize(outline, *edges, delta, usable);
                 let wanted = frame::resize(*initial, *edges, delta, min, max);
                 window::request_size(window, (wanted.w, wanted.h), true);
             }

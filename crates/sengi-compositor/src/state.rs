@@ -233,11 +233,11 @@ impl State {
                 Signal::SIGUSR1 => {
                     let pointer = state.seat.get_pointer().expect("seat has a pointer");
                     let at = pointer.current_location();
-                    eprintln!(
-                        "sengi-compositor: {} page flips, {} with the cursor on its own plane, {} dmabufs imported, pointer at {:.0},{:.0}",
+                    crate::say!(
+                        "{} page flips, {} with the cursor on its own plane, {} dmabufs imported, pointer at {:.0},{:.0}",
                         state.page_flips, state.cursor_plane_frames, state.dmabufs_imported, at.x, at.y
                     );
-                    eprintln!("sengi-compositor: {}", state.lock_status());
+                    crate::say!("{}", state.lock_status());
                 }
                 // A program we started has ended; a dead locker must be
                 // noticed without waiting for the next input.
@@ -263,7 +263,7 @@ impl State {
                 ..ClientState::default()
             };
             if let Err(err) = state.display_handle.insert_client(stream, Arc::new(data)) {
-                eprintln!("sengi-compositor: rejected a client: {err}");
+                crate::say!("rejected a client: {err}");
             }
         })?;
         handle.insert_source(
@@ -279,8 +279,8 @@ impl State {
         let theme = Theme::from_tokens(&tokens);
         let font = Font::load(&theme.font_family, theme.font_weight, theme.font_px);
         if font.is_none() {
-            eprintln!(
-                "sengi-compositor: {} is not installed, title bars will have no text",
+            crate::say!(
+                "{} is not installed, title bars will have no text",
                 theme.font_family
             );
         }
@@ -507,8 +507,9 @@ impl State {
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
         let at = pointer.current_location();
         let (x, y) = layout::clamp_to_outputs(&remaining, at.x, at.y);
-        if (x, y) != (at.x, at.y) {
-            self.pointer_stale = true;
+        if (x, y) != (at.x, at.y) && !pointer.is_grabbed() {
+            let time = self.start_time.elapsed().as_millis() as u32;
+            self.place_pointer((x, y).into(), time);
         }
         self.update_keyboard_focus();
         self.request_redraw();
@@ -578,7 +579,7 @@ impl State {
                 Some(pid)
             }
             Err(err) => {
-                eprintln!("sengi-compositor: cannot start `{command}`: {err}");
+                crate::say!("cannot start `{command}`: {err}");
                 None
             }
         }

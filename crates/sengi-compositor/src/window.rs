@@ -132,15 +132,22 @@ pub fn title(window: &Window) -> String {
 }
 
 pub fn app_id(window: &Window) -> String {
+    with_app_id(window, str::to_string)
+}
+
+pub fn with_app_id<T>(window: &Window, f: impl FnOnce(&str) -> T) -> T {
     let Some(toplevel) = window.toplevel() else {
-        return String::new();
+        return f("");
     };
     with_states(toplevel.wl_surface(), |states| {
-        states
+        let data = states
             .data_map
             .get::<XdgToplevelSurfaceData>()
-            .and_then(|data| data.lock().unwrap().app_id.clone())
-            .unwrap_or_default()
+            .map(|data| data.lock().unwrap());
+        f(data
+            .as_ref()
+            .and_then(|data| data.app_id.as_deref())
+            .unwrap_or(""))
     })
 }
 
@@ -257,7 +264,7 @@ impl State {
     fn reachable(&self, frame: Rect) -> (i32, i32) {
         let metrics = &self.theme.metrics;
         frame::keep_reachable(
-            self.usable_area(),
+            self.usable_area_near(frame),
             frame,
             metrics.titlebar,
             metrics.min_frame_width(),
@@ -280,15 +287,20 @@ impl State {
     }
 
     /// The client area a maximised `window` gets.
+    /// The usable area of the screen the middle of `frame` is on.
+    pub fn usable_area_near(&self, frame: Rect) -> Rect {
+        let middle = (
+            f64::from(frame.x + frame.w / 2),
+            f64::from(frame.y + frame.h / 2),
+        );
+        self.output_at(middle.into())
+            .map(|output| self.usable_area_of(&output))
+            .unwrap_or_else(|| self.usable_area())
+    }
+
     pub fn maximised_rect(&self, window: &Window) -> Rect {
-        // On the screen the middle of the window is on.
         let usable = match self.frame_rect(window) {
-            Some(frame) => {
-                let middle = (frame.x + frame.w / 2, frame.y + frame.h / 2);
-                self.output_at((f64::from(middle.0), f64::from(middle.1)).into())
-                    .map(|output| self.usable_area_of(&output))
-                    .unwrap_or_else(|| self.usable_area())
-            }
+            Some(frame) => self.usable_area_near(frame),
             None => self.usable_area(),
         };
         let mut rect = if data(window).decorated.get() {
@@ -344,6 +356,10 @@ impl State {
         });
         toplevel.send_configure();
         self.move_window(window, target.x, target.y);
+        // A minimised window has no place to move; it comes back there.
+        if data.minimised.get().is_some() {
+            data.minimised.set(Some((target.x, target.y)));
+        }
         if !maximised {
             // The bar may have moved while the window was maximised.
             if let Some(frame) = self.frame_rect(window) {

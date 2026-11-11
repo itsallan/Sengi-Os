@@ -38,7 +38,7 @@ impl WlrLayerShellHandler for State {
         };
         let mut map = layer_map_for_output(&output);
         if let Err(err) = map.map_layer(&LayerSurface::new(surface, namespace)) {
-            eprintln!("sengi-compositor: cannot map layer surface: {err}");
+            crate::say!("cannot map layer surface: {err}");
         }
     }
 
@@ -68,7 +68,7 @@ impl State {
         let Some(output) = self.output_for_layer(surface) else {
             return;
         };
-        let usable_before = self.usable_area();
+        let usable_before = self.usable_areas();
         {
             let mut map = layer_map_for_output(&output);
             // Anchors, size and exclusive zone are double-buffered, so the
@@ -89,7 +89,7 @@ impl State {
         }
         // Keyboard interactivity is double-buffered too.
         self.update_keyboard_focus();
-        if self.usable_area() != usable_before {
+        if self.usable_areas() != usable_before {
             self.usable_area_changed();
         }
     }

@@ -188,7 +188,7 @@ impl XdgShellHandler for State {
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
         self.unconstrain_popup(&surface);
         if let Err(err) = self.popups.track_popup(PopupKind::Xdg(surface)) {
-            eprintln!("sengi-compositor: popup for a dead surface: {err}");
+            crate::say!("popup for a dead surface: {err}");
         }
     }
 
@@ -427,6 +427,14 @@ impl State {
             Some(output) => self.usable_area_of(&output),
             None => Rect::new(0, 0, 0, 0),
         }
+    }
+
+    /// The usable area of every output.
+    pub fn usable_areas(&self) -> Vec<Rect> {
+        self.space
+            .outputs()
+            .map(|output| self.usable_area_of(output))
+            .collect()
     }
 
     /// The part of `output` windows may cover.

@@ -8,6 +8,21 @@ use std::io::{self, Write};
 /// Deflate "stored" blocks carry at most this many bytes each.
 const STORED_MAX: usize = 0xffff;
 
+/// Opens the file a screenshot goes into: readable by its owner only,
+/// since it shows whatever was on screen, and never through a symbolic
+/// link somebody may have put at that name.
+pub fn create(path: &std::path::Path) -> io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    const O_NOFOLLOW: i32 = 0o400000;
+    std::fs::File::options()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .custom_flags(O_NOFOLLOW)
+        .open(path)
+}
+
 pub fn write_rgb(out: &mut impl Write, width: u32, height: u32, rgb: &[u8]) -> io::Result<()> {
     let row = width as usize * 3;
     if row == 0 || rgb.len() != row * height as usize {
