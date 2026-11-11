@@ -3517,10 +3517,9 @@ name = "sengi-bar"
 version = "0.2.0"
 dependencies = [
  "chrono",
+ "sengi-layer",
  "slint",
  "slint-build",
- "smithay-client-toolkit",
- "wayland-client",
 ]
 
 [[package]]
