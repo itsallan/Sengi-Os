@@ -25,8 +25,8 @@ pub struct DesktopEntry {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Parsed {
-    /// Not a usable desktop file. It does not hide a file of the same ID in
-    /// a later directory.
+    /// Not a desktop file at all: there is no `[Desktop Entry]` group. It
+    /// does not hide a file of the same ID in a later directory.
     Invalid,
     /// A real entry that must not be shown, and that hides later ones.
     Hidden,
@@ -254,16 +254,11 @@ pub fn parse(id: &str, path: &Path, bytes: &[u8], locales: &[String], env: &Env)
     let flag = |key: &str| get(key) == "true";
     let string = |key: &str| unescape(get(key)).trim().to_owned();
 
-    // Checked first: a file whose only job is to hide a system entry often
-    // carries nothing but Hidden=true.
-    if flag("Hidden") {
-        return Parsed::Hidden;
-    }
+    // A file placed to hide a system entry often carries nothing but
+    // Hidden=true or NoDisplay=true, so anything with the group takes the ID,
+    // and what cannot be shown is hidden rather than ignored.
     let name = string("Name");
-    if get("Type").is_empty() || name.is_empty() {
-        return Parsed::Invalid;
-    }
-    if get("Type") != "Application" || flag("NoDisplay") {
+    if flag("Hidden") || flag("NoDisplay") || get("Type") != "Application" || name.is_empty() {
         return Parsed::Hidden;
     }
 
@@ -418,6 +413,10 @@ mod tests {
             Parsed::Hidden
         );
         assert_eq!(
+            parse_str("[Desktop Entry]\nNoDisplay=true\n", &env),
+            Parsed::Hidden
+        );
+        assert_eq!(
             parse_str("[Desktop Entry]\nType=Application\nName=No exec\n", &env),
             Parsed::Hidden
         );
@@ -432,13 +431,14 @@ mod tests {
         let env = plain_env();
         assert_eq!(parse_str("", &env), Parsed::Invalid);
         assert_eq!(parse_str("just some text\n=\n[[[\n", &env), Parsed::Invalid);
+        // With the group it is a desktop file, just not one to show.
         assert_eq!(
             parse_str("[Desktop Entry]\nName=No type\nExec=x\n", &env),
-            Parsed::Invalid
+            Parsed::Hidden
         );
         assert_eq!(
             parse_str("[Desktop Entry]\nType=Application\nExec=x\n", &env),
-            Parsed::Invalid
+            Parsed::Hidden
         );
         assert_eq!(
             parse_str("Name=Before any group\nType=Application\n", &env),
@@ -553,6 +553,11 @@ mod tests {
             "user/applications/broken.desktop",
             "this is not a desktop file",
         );
+        tmp.write(
+            "user/applications/quiet.desktop",
+            "[Desktop Entry]\nNoDisplay=true\n",
+        );
+        tmp.write("system/applications/quiet.desktop", entry("Quiet"));
         tmp.write("user/applications/notes.txt", entry("Not a desktop file"));
         tmp.write("system/applications/editor.desktop", entry("Editor"));
         tmp.write("system/applications/gone.desktop", entry("Gone"));
