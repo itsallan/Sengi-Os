@@ -3531,6 +3531,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sengi-launcher"
+version = "0.3.0"
+dependencies = [
+ "sengi-layer",
+ "slint",
+ "slint-build",
+]
+
+[[package]]
 name = "sengi-layer"
 version = "0.3.0"
 dependencies = [

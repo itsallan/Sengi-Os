@@ -1,0 +1,258 @@
+// The Sengi OS launcher: a search field over a short list of results.
+// Used for both the application search and the menu mode.
+
+import { Tokens, SengiText, SengiSurface } from "components.slint";
+
+// A run of characters in a result name. Matched runs are highlighted.
+export struct Segment {
+    text: string,
+    matched: bool,
+}
+
+export struct Row {
+    name: [Segment],
+    // Shown dimmed at the right edge, e.g. "Web Browser". May be empty.
+    detail: string,
+}
+
+component ResultRow inherits Rectangle {
+    in property <Row> data;
+    in property <bool> selected: false;
+    callback clicked();
+
+    border-radius: Tokens.radius;
+    background: root.selected ? Tokens.color-surface-hover : transparent;
+
+    HorizontalLayout {
+        padding-left: Tokens.space-md;
+        padding-right: Tokens.space-md;
+        spacing: Tokens.space-lg;
+
+        // A name too long for the row is cut off and ends in an ellipsis.
+        // It is drawn in pieces, so the text cannot elide itself.
+        name-box := Rectangle {
+            horizontal-stretch: 1;
+            min-width: 0;
+            clip: true;
+
+            name-run := HorizontalLayout {
+                x: 0;
+                width: self.preferred-width;
+                for segment in root.data.name: SengiText {
+                    text: segment.text;
+                    color: !segment.matched ? Tokens.color-text
+                        : root.selected ? Tokens.color-accent-hover : Tokens.color-accent;
+                    font-size: Tokens.font-size-lg;
+                    vertical-alignment: center;
+                }
+            }
+
+            if name-run.preferred-width > name-box.width: Rectangle {
+                x: parent.width - self.width;
+                width: ellipsis.preferred-width + Tokens.space-xxs;
+                background: root.selected ? Tokens.color-surface-hover : Tokens.color-surface;
+
+                ellipsis := SengiText {
+                    x: Tokens.space-xxs;
+                    height: parent.height;
+                    text: "\u{2026}";
+                    font-size: Tokens.font-size-lg;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        if root.data.detail != "": SengiText {
+            horizontal-stretch: 0;
+            max-width: root.width / 3;
+            text: root.data.detail;
+            color: Tokens.color-text-muted;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+export component LauncherWindow inherits Window {
+    // Label in front of the search field. May be empty.
+    in property <string> prompt: "Search";
+    // What has been typed. Set it to start with text already in the field.
+    in-out property <string> query <=> input.text;
+    // The rows on screen; never more than max-lines of them.
+    in property <[Row]> rows;
+    // Index into rows of the highlighted one.
+    in property <int> selected: 0;
+    // All results, and which of them is the first of rows. Only used to draw
+    // the scroll position when there are more results than rows.
+    in property <int> total-rows: 0;
+    in property <int> first-row: 0;
+    in property <int> max-lines: 8;
+    in property <string> empty-text: "No results";
+    // Half the width, for menus with a few short lines.
+    in property <bool> compact: false;
+
+    // The window is always full-height tall and see-through below the panel,
+    // so the search field stays put while the list under it grows and shrinks.
+    out property <length> panel-width: root.compact ? Tokens.launcher-width / 2 : Tokens.launcher-width;
+    out property <length> full-height: root.height-for(root.max-lines);
+    out property <length> panel-height: root.height-for(Math.clamp(root.rows.length, 1, root.max-lines));
+
+    callback query-edited(string);
+    // Move the highlight by this many rows; negative is up.
+    callback move-selection(int);
+    // Return was pressed on the highlighted row.
+    callback accept();
+    // A row was clicked, by index into rows.
+    callback row-clicked(int);
+    callback dismiss();
+
+    public function focus-search() {
+        input.focus();
+    }
+
+    private property <length> field-height: Tokens.font-size-lg + Tokens.space-lg * 2;
+    private property <length> row-height: Tokens.font-size-lg + Tokens.space-sm * 2;
+    private property <length> list-top: root.field-height + Tokens.border-width + Tokens.space-sm;
+
+    pure function height-for(lines: int) -> length {
+        root.list-top + lines * root.row-height + Tokens.space-sm
+    }
+
+    title: "Sengi OS launcher";
+    no-frame: true;
+    background: transparent;
+    default-font-family: Tokens.font-family;
+    width: root.panel-width;
+    height: root.full-height;
+    forward-focus: input;
+
+    // A click beside the panel closes it.
+    TouchArea {
+        clicked => { root.dismiss(); }
+    }
+
+    SengiSurface {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.panel-height;
+
+        TouchArea {
+            clicked => { input.focus(); }
+        }
+
+        HorizontalLayout {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: root.field-height;
+            padding-left: Tokens.space-sm + Tokens.space-md;
+            padding-right: Tokens.space-sm + Tokens.space-md;
+            spacing: Tokens.space-sm;
+
+            if root.prompt != "": SengiText {
+                horizontal-stretch: 0;
+                text: root.prompt;
+                color: Tokens.color-text-muted;
+                font-size: Tokens.font-size-lg;
+                vertical-alignment: center;
+            }
+
+            input := TextInput {
+                horizontal-stretch: 1;
+                single-line: true;
+                color: Tokens.color-text;
+                font-family: Tokens.font-family;
+                font-size: Tokens.font-size-lg;
+                vertical-alignment: center;
+                selection-background-color: Tokens.color-accent;
+                selection-foreground-color: Tokens.color-accent-text;
+                text-cursor-width: Tokens.space-xxs;
+
+                edited => { root.query-edited(self.text); }
+
+                // Focus only leaves when the window loses the keyboard, and a
+                // launcher nobody can type into has no business staying open.
+                changed has-focus => {
+                    if !self.has-focus {
+                        root.dismiss();
+                    }
+                }
+
+                key-pressed(event) => {
+                    if event.text == Key.Escape {
+                        root.dismiss();
+                    } else if event.text == Key.Return {
+                        root.accept();
+                    } else if event.text == Key.UpArrow || event.text == Key.Backtab
+                        || (event.text == Key.Tab && event.modifiers.shift)
+                        || (event.modifiers.control && event.text == "p") {
+                        root.move-selection(-1);
+                    } else if event.text == Key.DownArrow || event.text == Key.Tab
+                        || (event.modifiers.control && event.text == "n") {
+                        root.move-selection(1);
+                    } else if event.text == Key.PageUp {
+                        root.move-selection(-root.max-lines);
+                    } else if event.text == Key.PageDown {
+                        root.move-selection(root.max-lines);
+                    } else {
+                        return EventResult.reject;
+                    }
+                    return EventResult.accept;
+                }
+            }
+        }
+
+        Rectangle {
+            x: Tokens.border-width;
+            y: root.field-height;
+            width: parent.width - Tokens.border-width * 2;
+            height: Tokens.border-width;
+            background: Tokens.color-border;
+        }
+
+        // Scroll position, in the gutter right of the rows.
+        if root.total-rows > root.rows.length && root.rows.length > 0: Rectangle {
+            property <length> track: root.rows.length * root.row-height;
+            x: parent.width - Tokens.space-sm + Tokens.space-xxs;
+            y: root.list-top + self.track * root.first-row / root.total-rows;
+            width: Tokens.space-xxs;
+            height: self.track * root.rows.length / root.total-rows;
+            border-radius: Tokens.radius;
+            background: Tokens.color-border;
+        }
+
+        Rectangle {
+            x: Tokens.space-sm;
+            y: root.list-top;
+            width: parent.width - Tokens.space-sm * 2;
+            height: parent.height - root.list-top - Tokens.space-sm;
+            clip: true;
+
+            for row[index] in root.rows: ResultRow {
+                x: 0;
+                y: index * root.row-height;
+                width: parent.width;
+                height: root.row-height;
+                data: row;
+                selected: index == root.selected;
+                clicked => { root.row-clicked(index); }
+            }
+
+            if root.rows.length == 0: SengiText {
+                x: Tokens.space-md;
+                y: 0;
+                height: root.row-height;
+                text: root.empty-text;
+                color: Tokens.color-text-muted;
+                font-size: Tokens.font-size-lg;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
