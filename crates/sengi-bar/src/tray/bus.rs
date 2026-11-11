@@ -80,6 +80,12 @@ const MENU_LIMIT: usize = 512 * 1024;
 /// to the system.
 const LARGE_REPLY: usize = 256 * 1024;
 
+/// Allocations from this size up get a mapping of their own, which goes
+/// back to the system the moment it is freed. Above anything the bar
+/// allocates in ordinary running, drawing included; below the replies we
+/// refuse.
+const OWN_MAPPING: usize = 1024 * 1024;
+
 /// Threads that read items, and threads that act on them.
 const READERS: usize = 3;
 const ACTORS: usize = 2;
@@ -136,6 +142,7 @@ fn run(
     outbox: Outbox,
     pixels: Vec<u32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    pin_mmap_threshold();
     let registry = Arc::new(Mutex::new(Registry::default()));
     let shared = Shared {
         registry: registry.clone(),
@@ -351,6 +358,18 @@ fn forward_signals(
         let body = message.body();
         large = body.len() > LARGE_REPLY;
         let header = message.header();
+        // Nothing we ask for is this big. A reply over the limit is also
+        // caught by whoever asked, but not if it came after they had
+        // stopped waiting, and an app can be slow on purpose.
+        if body.len() > PIXMAP_LIMIT {
+            if let Some(owner) = header.sender().filter(|name| name.as_str() != DBUS) {
+                let owner = owner.to_string();
+                if events.send(Event::Misbehaved { owner }).is_err() {
+                    return;
+                }
+            }
+            continue;
+        }
         if header.message_type() != zbus::message::Type::Signal {
             continue;
         }
@@ -763,6 +782,21 @@ fn trim_heap() {
     // SAFETY: malloc_trim takes no pointers and may be called at any time.
     unsafe {
         libc::malloc_trim(0);
+    }
+}
+
+/// Keeps the biggest buffers out of the heap. A reply is held in one
+/// allocation while it is looked at, and zbus has taken it whole before we
+/// can refuse it. glibc gives a big allocation a mapping of its own and
+/// returns it when freed, but it also raises the size from which it does
+/// so each time one is freed, up to 32 MB, and from then on keeps them: a
+/// 16 MB reply stayed on the bar's books for good, trimming or not.
+/// Naming the size switches that adjustment off.
+fn pin_mmap_threshold() {
+    #[cfg(target_env = "gnu")]
+    // SAFETY: mallopt takes two integers and may be called at any time.
+    unsafe {
+        libc::mallopt(libc::M_MMAP_THRESHOLD, OWN_MAPPING as libc::c_int);
     }
 }
 
