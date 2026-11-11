@@ -14,6 +14,9 @@ Usage: sengi-compositor [options]
       --exit-after SEC  stop after SEC seconds
       --script FILE     play scripted input and screenshots (headless only)
       --locker CMD      what Super+L runs to lock (default: swaylock -f)
+      --renderer NAME   drm backend: gles, pixman or auto (default auto: gles
+                        with a GPU, pixman without; SENGI_COMPOSITOR_RENDERER
+                        sets the same)
       --exit            ask the running compositor to quit (log out)
   -h, --help            show this help
   -V, --version         show the version";
@@ -26,6 +29,24 @@ pub enum Backend {
     Drm,
 }
 
+/// Which renderer the drm backend should use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wanted {
+    /// GLES with a GPU, pixman without.
+    Auto,
+    Gles,
+    Pixman,
+}
+
+pub fn parse_renderer(name: &str) -> Option<Wanted> {
+    match name {
+        "auto" => Some(Wanted::Auto),
+        "gles" => Some(Wanted::Gles),
+        "pixman" => Some(Wanted::Pixman),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
     pub backend: Backend,
@@ -35,6 +56,8 @@ pub struct Options {
     pub exit_after: Option<Duration>,
     pub script: Option<PathBuf>,
     pub locker: Option<String>,
+    #[cfg_attr(not(feature = "drm"), allow(dead_code))]
+    pub renderer: Wanted,
 }
 
 impl Options {
@@ -65,6 +88,7 @@ impl Default for Options {
             exit_after: None,
             script: None,
             locker: None,
+            renderer: Wanted::Auto,
         }
     }
 }
@@ -102,6 +126,11 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             "--screenshot" => options.screenshot = Some(PathBuf::from(value()?)),
             "--script" => options.script = Some(PathBuf::from(value()?)),
             "--locker" => options.locker = Some(value()?),
+            "--renderer" => {
+                let name = value()?;
+                options.renderer =
+                    parse_renderer(&name).ok_or_else(|| format!("unknown renderer: {name}"))?;
+            }
             "--exit-after" => {
                 let text = value()?;
                 let seconds: f64 = text
@@ -177,6 +206,8 @@ mod tests {
             "steps.txt",
             "--locker",
             "swaylock",
+            "--renderer",
+            "pixman",
         ]);
         assert_eq!(
             parsed,
@@ -188,6 +219,7 @@ mod tests {
                 exit_after: Some(Duration::from_millis(2500)),
                 script: Some("steps.txt".into()),
                 locker: Some("swaylock".into()),
+                renderer: Wanted::Pixman,
             }))
         );
     }
@@ -210,6 +242,9 @@ mod tests {
         assert!(run(&["--exit-after", "1e30"]).is_err());
         assert!(run(&["--frobnicate"]).is_err());
         assert!(run(&["--backend", "x11"]).is_err());
+        assert!(run(&["--renderer", "vulkan"]).is_err());
+        assert_eq!(parse_renderer("gles"), Some(Wanted::Gles));
+        assert_eq!(parse_renderer("auto"), Some(Wanted::Auto));
     }
 
     #[test]

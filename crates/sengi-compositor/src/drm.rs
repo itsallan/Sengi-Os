@@ -1,23 +1,51 @@
 //! The backend for a real screen: a libseat session on a virtual terminal,
 //! the display through DRM/KMS, input through libinput.
 //!
-//! Frames are composed with pixman into dumb buffers, which every KMS
-//! driver has, and shown with page flips. A frame is drawn when the state
-//! asks for one and the previous flip has completed, so an idle screen
-//! flips nothing and wakes nothing. There is no GPU rendering yet.
+//! There are two ways to compose a frame. With a GPU, GLES renders into GBM
+//! buffers, clients can hand over dmabufs, and the cursor gets its own
+//! plane. Without one, pixman renders on the CPU into dumb buffers, which
+//! every KMS driver has. `gpu::choose` picks, and never lets Mesa's
+//! software GL into this process.
+//!
+//! Either way frames are shown with page flips: one is drawn when the state
+//! asks for it and the previous flip has completed, so an idle screen flips
+//! nothing and wakes nothing.
 
-use std::{cell::RefCell, error::Error, path::Path, rc::Rc};
+use std::{
+    cell::RefCell,
+    error::Error,
+    ffi::{c_char, CStr},
+    fs::File,
+    io::BufWriter,
+    os::unix::fs::MetadataExt,
+    path::{Path, PathBuf},
+    process::Command,
+    rc::Rc,
+};
 
 use smithay::{
     backend::{
-        allocator::{dmabuf::Dmabuf, dumb::DumbAllocator, gbm::GbmDevice, Fourcc},
+        allocator::{
+            dmabuf::Dmabuf,
+            dumb::DumbAllocator,
+            gbm::{GbmAllocator, GbmBufferFlags, GbmDevice},
+            Fourcc,
+        },
         drm::{
             compositor::{DrmCompositor, FrameFlags},
+            exporter::gbm::GbmFramebufferExporter,
             DrmDevice, DrmDeviceFd, DrmEvent,
         },
+        egl::{EGLContext, EGLDevice, EGLDisplay},
         input::InputEvent,
         libinput::{LibinputInputBackend, LibinputSessionInterface},
-        renderer::{damage::OutputDamageTracker, pixman::PixmanRenderer, Bind, Offscreen},
+        renderer::{
+            damage::OutputDamageTracker,
+            element::RenderElementStates,
+            gles::{ffi, GlesRenderbuffer, GlesRenderer},
+            pixman::PixmanRenderer,
+            Bind, ExportMem, Offscreen, TextureMapping,
+        },
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
         udev,
     },
@@ -34,23 +62,67 @@ use smithay::{
         rustix::fs::OFlags,
         wayland_server::Display,
     },
-    utils::{DeviceFd, Size, Transform},
+    utils::{DeviceFd, Rectangle, Size, Transform},
 };
 
-use crate::{headless, render, state::State, Options};
+use crate::{
+    cli::{self, Wanted},
+    gpu, headless, png, render,
+    state::State,
+    Options,
+};
 
-type Compositor = DrmCompositor<DumbAllocator, DrmDeviceFd, (), DrmDeviceFd>;
+type PixmanCompositor = DrmCompositor<DumbAllocator, DrmDeviceFd, (), DrmDeviceFd>;
+type GlesCompositor =
+    DrmCompositor<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
+
+/// The renderer and the KMS compositor that goes with its buffers.
+enum Screen {
+    Pixman {
+        renderer: Box<PixmanRenderer>,
+        compositor: Box<PixmanCompositor>,
+    },
+    Gles {
+        renderer: Box<GlesRenderer>,
+        compositor: Box<GlesCompositor>,
+    },
+}
+
+/// Runs the same code for whichever renderer is in use. The two sides have
+/// different types, so this is a macro and not a function.
+macro_rules! on_screen {
+    ($screen:expr, |$renderer:ident, $compositor:ident| $body:expr) => {
+        match $screen {
+            Screen::Pixman {
+                renderer: $renderer,
+                compositor: $compositor,
+            } => {
+                let $renderer = &mut **$renderer;
+                let $compositor = &mut **$compositor;
+                $body
+            }
+            Screen::Gles {
+                renderer: $renderer,
+                compositor: $compositor,
+            } => {
+                let $renderer = &mut **$renderer;
+                let $compositor = &mut **$compositor;
+                $body
+            }
+        }
+    };
+}
 
 struct Drm {
     /// Held so the seat stays ours for as long as the backend lives.
     _session: LibSeatSession,
     device: DrmDevice,
-    compositor: Compositor,
-    renderer: PixmanRenderer,
+    screen: Screen,
     output: Output,
     libinput: Libinput,
-    /// A frame is on its way to the screen; the next one waits for it.
-    flip_pending: bool,
+    /// The frame that is on its way to the screen, if any: what was visible
+    /// in it, for the frame callbacks sent when it gets there.
+    in_flight: Option<RenderElementStates>,
     /// False while another virtual terminal has the display.
     active: bool,
 }
@@ -132,6 +204,133 @@ fn configure(device: &mut InputDevice) {
     }
 }
 
+/// The render node belonging to a display device, e.g. `/dev/dri/renderD128`
+/// for `/dev/dri/card0`.
+fn render_node(card: &Path) -> Option<PathBuf> {
+    let name = card.file_name()?;
+    let siblings = Path::new("/sys/class/drm").join(name).join("device/drm");
+    std::fs::read_dir(siblings)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.file_name())
+        .find(|name| name.to_string_lossy().starts_with("renderD"))
+        .map(|name| Path::new("/dev/dri").join(name))
+}
+
+/// `--probe-gl NODE`: says what GL on that render node runs on. This loads
+/// Mesa, which is why it is done in a process of its own.
+pub fn probe(node: &str) -> Result<String, Box<dyn Error>> {
+    let file = File::options().read(true).write(true).open(node)?;
+    let gbm = GbmDevice::new(file)?;
+    // Safety: the display is only used with the device it was made from,
+    // which it keeps alive.
+    let display = unsafe { EGLDisplay::new(gbm)? };
+    let software = EGLDevice::device_for_display(&display)
+        .map(|device| device.is_software())
+        .unwrap_or(false);
+    let context = EGLContext::new(&display)?;
+    // Safety: the context is fresh and current nowhere else.
+    let mut renderer = unsafe { GlesRenderer::new(context)? };
+    let name = renderer.with_context(|gl| {
+        // Safety: GetString returns a static NUL-terminated string or null.
+        let name = unsafe { gl.GetString(ffi::RENDERER) } as *const c_char;
+        if name.is_null() {
+            String::new()
+        } else {
+            unsafe { CStr::from_ptr(name) }
+                .to_string_lossy()
+                .into_owned()
+        }
+    })?;
+    Ok(if software {
+        format!("{name} (software)")
+    } else {
+        name
+    })
+}
+
+/// Runs the probe in a child and returns what it printed.
+fn probe_in_child(node: &Path) -> Option<String> {
+    let output = Command::new(std::env::current_exe().ok()?)
+        .arg("--probe-gl")
+        .arg(node)
+        .output()
+        .ok()?;
+    let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (output.status.success() && !name.is_empty()).then_some(name)
+}
+
+fn pixman_screen(
+    device: &mut DrmDevice,
+    fd: &DrmDeviceFd,
+    output: &Output,
+    crtc: crtc::Handle,
+    mode: Mode,
+    connector: connector::Handle,
+) -> Result<Screen, Box<dyn Error>> {
+    let surface = device.create_surface(crtc, mode, &[connector])?;
+    let renderer = PixmanRenderer::new()?;
+    let formats = Bind::<Dmabuf>::supported_formats(&renderer).unwrap_or_default();
+    let compositor: PixmanCompositor = DrmCompositor::new(
+        output,
+        surface,
+        None,
+        DumbAllocator::new(fd.clone()),
+        fd.clone(),
+        [Fourcc::Xrgb8888, Fourcc::Argb8888],
+        formats,
+        device.cursor_size(),
+        None::<GbmDevice<DrmDeviceFd>>,
+    )
+    .map_err(|err| format!("cannot set up the display: {err}"))?;
+    Ok(Screen::Pixman {
+        renderer: Box::new(renderer),
+        compositor: Box::new(compositor),
+    })
+}
+
+fn gles_screen(
+    device: &mut DrmDevice,
+    fd: &DrmDeviceFd,
+    output: &Output,
+    crtc: crtc::Handle,
+    mode: Mode,
+    connector: connector::Handle,
+) -> Result<Screen, Box<dyn Error>> {
+    let gbm = GbmDevice::new(fd.clone())?;
+    // Safety: the display is only used with the device it was made from,
+    // which it keeps alive.
+    let display = unsafe { EGLDisplay::new(gbm.clone())? };
+    let context = EGLContext::new(&display)?;
+    // Safety: the context is fresh and current nowhere else.
+    let renderer = unsafe { GlesRenderer::new(context)? };
+    let formats = renderer.egl_context().dmabuf_render_formats().clone();
+
+    let surface = device.create_surface(crtc, mode, &[connector])?;
+    let allocator = GbmAllocator::new(
+        gbm.clone(),
+        GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
+    );
+    // Passing the GBM device also gives the cursor a plane of its own where
+    // the driver has one.
+    let compositor: GlesCompositor = DrmCompositor::new(
+        output,
+        surface,
+        None,
+        allocator,
+        GbmFramebufferExporter::new(gbm.clone(), None),
+        [Fourcc::Argb8888, Fourcc::Abgr8888],
+        formats,
+        device.cursor_size(),
+        Some(gbm),
+    )
+    .map_err(|err| format!("cannot set up the display: {err}"))?;
+    Ok(Screen::Gles {
+        renderer: Box::new(renderer),
+        compositor: Box::new(compositor),
+    })
+}
+
 pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
     let mut event_loop: EventLoop<State> = EventLoop::try_new()?;
     let display = Display::new()?;
@@ -167,33 +366,55 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         Transform::Normal,
     );
 
-    let surface = device.create_surface(crtc, mode, &[connector.handle()])?;
-    let renderer = PixmanRenderer::new()?;
-    let formats = Bind::<Dmabuf>::supported_formats(&renderer).unwrap_or_default();
-    let compositor: Compositor = DrmCompositor::new(
-        &output,
-        surface,
-        None,
-        DumbAllocator::new(fd.clone()),
-        fd.clone(),
-        [Fourcc::Xrgb8888, Fourcc::Argb8888],
-        formats,
-        device.cursor_size(),
-        None::<GbmDevice<DrmDeviceFd>>,
-    )
-    .map_err(|err| format!("cannot set up the display: {err}"))?;
+    // GPU or CPU: the command line, then the environment, then whatever
+    // the hardware turns out to be.
+    let wanted = match options.renderer {
+        Wanted::Auto => std::env::var("SENGI_COMPOSITOR_RENDERER")
+            .ok()
+            .and_then(|name| cli::parse_renderer(&name))
+            .unwrap_or(Wanted::Auto),
+        chosen => chosen,
+    };
+    let driver = std::fs::metadata(&path)
+        .ok()
+        .and_then(|meta| udev::driver(meta.rdev()).ok().flatten())
+        .map(|driver| driver.to_string_lossy().into_owned());
+    let node = render_node(&path);
+    let (renderer, mut why) = gpu::choose(wanted, driver.as_deref(), node.is_some(), || {
+        probe_in_child(node.as_deref()?)
+    });
+    let screen = match renderer {
+        gpu::Renderer::Pixman => None,
+        gpu::Renderer::Gles => {
+            match gles_screen(&mut device, &fd, &output, crtc, mode, connector.handle()) {
+                Ok(screen) => Some(screen),
+                Err(err) => {
+                    why = format!("GLES failed: {err}");
+                    None
+                }
+            }
+        }
+    };
+    let screen = match screen {
+        Some(screen) => screen,
+        None => pixman_screen(&mut device, &fd, &output, crtc, mode, connector.handle())?,
+    };
+    eprintln!(
+        "sengi-compositor: {name} at {width}x{height}, {} Hz, on {} ({}); renderer: {} ({why})",
+        mode.vrefresh(),
+        path.display(),
+        driver.as_deref().unwrap_or("unknown driver"),
+        match screen {
+            Screen::Pixman { .. } => "pixman on dumb buffers",
+            Screen::Gles { .. } => "GLES on GBM",
+        },
+    );
 
     let mut libinput =
         Libinput::new_with_udev::<LibinputSessionInterface<LibSeatSession>>(session.clone().into());
     libinput
         .udev_assign_seat(&seat)
         .map_err(|()| "libinput cannot use this seat")?;
-
-    eprintln!(
-        "sengi-compositor: {name} at {width}x{height}, {} Hz, on {} (pixman, dumb buffers)",
-        mode.vrefresh(),
-        path.display()
-    );
 
     let mut vt_session = session.clone();
     state.switch_vt = Some(Box::new(move |vt| {
@@ -205,11 +426,10 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
     let backend: Shared = Rc::new(RefCell::new(Drm {
         _session: session,
         device,
-        compositor,
-        renderer,
+        screen,
         output,
         libinput: libinput.clone(),
-        flip_pending: false,
+        in_flight: None,
         active: true,
     }));
 
@@ -219,16 +439,28 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
     handle.insert_source(wakeups, move |_, _, state| draw_if_ready(&on_wake, state))?;
     state.set_redraw_ping(ping);
 
-    // ...and the next one when that one has reached the screen.
+    // ...and the next one when that one has reached the screen, which is
+    // also when clients are told to draw again.
     let on_flip = backend.clone();
     handle.insert_source(device_events, move |event, _, state| match event {
         DrmEvent::VBlank(_) => {
-            {
+            state.page_flips += 1;
+            let shown = {
                 let mut backend = on_flip.borrow_mut();
-                backend.flip_pending = false;
-                if let Err(err) = backend.compositor.frame_submitted() {
+                let submitted = on_screen!(&mut backend.screen, |_renderer, compositor| {
+                    compositor
+                        .frame_submitted()
+                        .map(|_| ())
+                        .map_err(|err| format!("{err:?}"))
+                });
+                if let Err(err) = submitted {
                     eprintln!("sengi-compositor: page flip: {err}");
                 }
+                let output = backend.output.clone();
+                backend.in_flight.take().map(|states| (output, states))
+            };
+            if let Some((output, states)) = shown {
+                render::presented(state, &output, &states);
             }
             draw_if_ready(&on_flip, state);
         }
@@ -255,7 +487,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
                 backend.libinput.suspend();
                 backend.device.pause();
                 backend.active = false;
-                backend.flip_pending = false;
+                backend.in_flight = None;
             }
             SessionEvent::ActivateSession => {
                 if backend.libinput.resume().is_err() {
@@ -264,10 +496,13 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
                 if let Err(err) = backend.device.activate(false) {
                     eprintln!("sengi-compositor: cannot get the display back: {err}");
                 }
-                if let Err(err) = backend.compositor.reset_state() {
+                let reset = on_screen!(&mut backend.screen, |_renderer, compositor| {
+                    compositor.reset_buffers();
+                    compositor.reset_state().map_err(|err| err.to_string())
+                });
+                if let Err(err) = reset {
                     eprintln!("sengi-compositor: display state: {err}");
                 }
-                backend.compositor.reset_buffers();
                 backend.active = true;
                 drop(backend);
                 state.request_redraw();
@@ -297,42 +532,60 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
 }
 
 fn draw_if_ready(backend: &Shared, state: &mut State) {
-    let mut backend = backend.borrow_mut();
-    if !state.needs_redraw || backend.flip_pending || !backend.active {
-        return;
-    }
-    if let Err(err) = backend.frame(state) {
-        eprintln!("sengi-compositor: frame failed: {err}");
+    let shown = {
+        let mut backend = backend.borrow_mut();
+        if !state.needs_redraw || backend.in_flight.is_some() || !backend.active {
+            return;
+        }
+        match backend.frame(state) {
+            Ok(shown) => shown.map(|states| (backend.output.clone(), states)),
+            Err(err) => {
+                eprintln!("sengi-compositor: frame failed: {err}");
+                None
+            }
+        }
+    };
+    // Nothing changed on screen, so there is no flip to wait for.
+    if let Some((output, states)) = shown {
+        render::presented(state, &output, &states);
     }
 }
 
 impl Drm {
     /// Composes what changed and queues it for the next vertical blank.
-    fn frame(&mut self, state: &mut State) -> Result<(), Box<dyn Error>> {
+    ///
+    /// Returns the element states when nothing had to be shown, for frame
+    /// callbacks to go out at once; otherwise they are kept until the flip.
+    fn frame(&mut self, state: &mut State) -> Result<Option<RenderElementStates>, Box<dyn Error>> {
         state.needs_redraw = false;
-        let (elements, background) = render::elements(state, &self.output, &mut self.renderer);
-        // Always composed by us: no client buffer is put on a plane
-        // directly, which pixman-rendered frames gain nothing from.
-        let result = self
-            .compositor
-            .render_frame(
-                &mut self.renderer,
-                &elements,
-                background,
-                FrameFlags::empty(),
-            )
-            .map_err(|err| format!("{err:?}"))?;
-        let changed = !result.is_empty;
-        let states = result.states;
+        // With a GPU, a client buffer or the cursor may go straight onto a
+        // plane; pixman-composed frames gain nothing from that.
+        let flags = match self.screen {
+            Screen::Pixman { .. } => FrameFlags::empty(),
+            Screen::Gles { .. } => FrameFlags::DEFAULT,
+        };
+        let output = &self.output;
+        let (changed, states) = on_screen!(&mut self.screen, |renderer, compositor| {
+            let (elements, background) = render::elements(state, output, renderer);
+            let result = compositor
+                .render_frame(renderer, &elements, background, flags)
+                .map_err(|err| format!("{err:?}"))?;
+            let changed = !result.is_empty;
+            let states = result.states;
+            if changed {
+                compositor
+                    .queue_frame(())
+                    .map_err(|err| format!("{err:?}"))?;
+            }
+            (changed, states)
+        });
 
         if changed {
-            self.compositor
-                .queue_frame(())
-                .map_err(|err| format!("{err:?}"))?;
-            self.flip_pending = true;
+            self.in_flight = Some(states);
+            Ok(None)
+        } else {
+            Ok(Some(states))
         }
-        render::presented(state, &self.output, &states);
-        Ok(())
     }
 
     /// Renders the current picture once more, into memory, and saves it.
@@ -340,19 +593,47 @@ impl Drm {
     fn screenshot(&mut self, state: &State, path: &Path) -> Result<(), Box<dyn Error>> {
         let mode = self.output.current_mode().ok_or("the output has no mode")?;
         let size = Size::from((mode.size.w, mode.size.h));
-        let mut image: Image<'static, 'static> =
-            self.renderer.create_buffer(Fourcc::Xrgb8888, size)?;
         let mut damage = OutputDamageTracker::from_output(&self.output);
-        let mut target = self.renderer.bind(&mut image)?;
-        render::output(
-            state,
-            &self.output,
-            &mut self.renderer,
-            &mut target,
-            0,
-            &mut damage,
-        )?;
-        headless::save(&mut self.renderer, &target, size, path)
+        match &mut self.screen {
+            Screen::Pixman { renderer, .. } => {
+                let renderer = &mut **renderer;
+                let mut image: Image<'static, 'static> =
+                    renderer.create_buffer(Fourcc::Xrgb8888, size)?;
+                let mut target = renderer.bind(&mut image)?;
+                render::output(state, &self.output, renderer, &mut target, 0, &mut damage)?;
+                headless::save(renderer, &target, size, path)
+            }
+            Screen::Gles { renderer, .. } => {
+                let renderer = &mut **renderer;
+                let mut buffer: GlesRenderbuffer =
+                    renderer.create_buffer(Fourcc::Abgr8888, size)?;
+                let mut target = renderer.bind(&mut buffer)?;
+                render::output(state, &self.output, renderer, &mut target, 0, &mut damage)?;
+                let mapping = renderer.copy_framebuffer(
+                    &target,
+                    Rectangle::from_size(size),
+                    Fourcc::Abgr8888,
+                )?;
+                let upside_down = mapping.flipped();
+                let pixels = renderer.map_texture(&mapping)?;
+
+                // ABGR8888 is stored as red, green, blue, alpha bytes.
+                let row = size.w as usize * 4;
+                let mut rows: Vec<&[u8]> = pixels.chunks_exact(row).collect();
+                if upside_down {
+                    rows.reverse();
+                }
+                let rgb: Vec<u8> = rows
+                    .into_iter()
+                    .flat_map(|row| row.as_chunks::<4>().0)
+                    .flat_map(|px| [px[0], px[1], px[2]])
+                    .collect();
+                let mut file = BufWriter::new(File::create(path)?);
+                png::write_rgb(&mut file, size.w as u32, size.h as u32, &rgb)?;
+                eprintln!("sengi-compositor: wrote {}", path.display());
+                Ok(())
+            }
+        }
     }
 }
 

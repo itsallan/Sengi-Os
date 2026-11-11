@@ -94,6 +94,9 @@ pub struct State {
     pub pending_lock: Option<SessionLocker>,
     /// Switches to another virtual terminal, where the backend can.
     pub switch_vt: Option<Box<dyn FnMut(i32)>>,
+    /// Frames shown on a real screen so far. Stays zero on backends that
+    /// do not flip pages.
+    pub page_flips: u64,
     /// What Super+L runs, and what is started for a session whose locker
     /// died.
     pub locker_command: String,
@@ -186,10 +189,22 @@ impl State {
 
         // The way to log out: `sengi-compositor --exit`, or any of these
         // signals, ends the loop and with it the session.
-        let signals = Signals::new(&[Signal::SIGTERM, Signal::SIGINT, Signal::SIGHUP])?;
+        // SIGUSR1 reports how many frames have reached the screen, for
+        // checking that an idle one shows none.
+        let signals = Signals::new(&[
+            Signal::SIGTERM,
+            Signal::SIGINT,
+            Signal::SIGHUP,
+            Signal::SIGUSR1,
+        ])?;
         event_loop
             .handle()
-            .insert_source(signals, |_, _, state| state.loop_signal.stop())?;
+            .insert_source(signals, |event, _, state| match event.signal() {
+                Signal::SIGUSR1 => {
+                    eprintln!("sengi-compositor: {} page flips", state.page_flips);
+                }
+                _ => state.loop_signal.stop(),
+            })?;
 
         let socket = ListeningSocketSource::new_auto()?;
         let socket_name = socket.socket_name().to_os_string();
@@ -234,6 +249,7 @@ impl State {
             hidden_frames_armed: false,
             pending_lock: None,
             switch_vt: None,
+            page_flips: 0,
             locker_command: keys::DEFAULT_LOCKER.to_string(),
             locker_pids: Vec::new(),
             relock_armed: false,

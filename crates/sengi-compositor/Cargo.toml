@@ -20,6 +20,9 @@ drm = [
     "smithay/backend_udev",
     "smithay/backend_libinput",
     "smithay/backend_session_libseat",
+    # GLES on GBM, for displays with a GPU behind them.
+    "smithay/backend_egl",
+    "smithay/renderer_gl",
 ]
 
 [dependencies]

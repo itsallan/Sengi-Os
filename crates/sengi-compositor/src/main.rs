@@ -11,6 +11,8 @@ mod device_input;
 mod drm;
 mod foreign_toplevel;
 mod frame;
+#[cfg(feature = "drm")]
+mod gpu;
 mod headless;
 mod input;
 mod keys;
@@ -33,6 +35,26 @@ use cli::{Backend, Command, Options};
 use state::State;
 
 fn main() -> ExitCode {
+    // Not for users: the drm backend runs this in a child to learn what GL
+    // would render with, without loading Mesa into the compositor itself.
+    #[cfg(feature = "drm")]
+    {
+        let mut args = std::env::args().skip(1);
+        if args.next().as_deref() == Some("--probe-gl") {
+            return match args.next().map(|node| drm::probe(&node)) {
+                Some(Ok(renderer)) => {
+                    println!("{renderer}");
+                    ExitCode::SUCCESS
+                }
+                Some(Err(err)) => {
+                    eprintln!("sengi-compositor: no GL on that device: {err}");
+                    ExitCode::FAILURE
+                }
+                None => ExitCode::from(2),
+            };
+        }
+    }
+
     let options = match cli::parse(std::env::args().skip(1)) {
         Ok(Command::Run(options)) => options,
         Ok(Command::Help) => {
