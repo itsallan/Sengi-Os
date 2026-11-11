@@ -340,16 +340,25 @@ fn unescape(value: &str) -> String {
 /// panel shows. Line breaks and tabs become spaces; the rest of what
 /// sengi-text hides is dropped.
 fn display_text(value: &str) -> String {
-    let cleaned: String = value
+    let spaced: String = value
         .chars()
-        .filter_map(|c| match c {
-            '\n' | '\r' | '\t' => Some(' '),
-            c if sengi_text::hidden(c) => None,
-            c => Some(c),
+        .map(|c| {
+            if matches!(c, '\n' | '\r' | '\t') {
+                ' '
+            } else {
+                c
+            }
         })
+        .collect();
+    let cleaned: String = sengi_text::shown(&spaced)
+        .chars()
         .take(MAX_TEXT_CHARS)
         .collect();
-    cleaned.trim().to_owned()
+    // The cut may have fallen straight after a joiner.
+    cleaned
+        .trim()
+        .trim_end_matches(['\u{200c}', '\u{200d}'])
+        .to_owned()
 }
 
 /// Split a `;` separated list. `\;` is a literal semicolon.
@@ -960,5 +969,18 @@ mod tests {
         // Unknown escapes are left for the Exec parser.
         assert_eq!(unescape(r#"sh -c "echo \"hi\"""#), r#"sh -c "echo \"hi\"""#);
         assert_eq!(unescape("end\\"), "end\\");
+    }
+
+    #[test]
+    fn a_translated_name_keeps_the_joiners_its_script_needs() {
+        let text = "[Desktop Entry]\nType=Application\nExec=files\nName=Files\n\
+                    Name[fa]=پرونده\u{200c}ها\nComment=\u{200d}edge\u{200c}\n";
+        let fa = env_with(&[
+            ("HOME", "/nonexistent".into()),
+            ("LANG", "fa_IR.UTF-8".into()),
+        ]);
+        let entry = visible(text, &fa);
+        assert_eq!(entry.name, "پرونده\u{200c}ها");
+        assert_eq!(entry.comment, "edge");
     }
 }

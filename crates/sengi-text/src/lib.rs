@@ -20,9 +20,9 @@ const MIN_SCAN: usize = 768;
 /// variation selectors, interlinear annotation marks and the invisible tag
 /// block.
 ///
-/// Joiners and variation selectors go too: some emoji fall apart into
-/// their pieces, which is the price of not having to tell a harmless
-/// joiner from a hidden one.
+/// Joiners and variation selectors are on the list because on their own
+/// they draw nothing. Where they do their job, between two letters or in
+/// an emoji sequence, [`keep`] lets them through.
 pub fn invisible(c: char) -> bool {
     matches!(c,
         // Soft hyphen, Arabic letter mark, Mongolian vowel separator.
@@ -43,9 +43,108 @@ pub fn invisible(c: char) -> bool {
         | '\u{feff}' | '\u{fff9}'..='\u{fffb}' | '\u{e0000}'..='\u{e007f}')
 }
 
-/// Characters that must never be shown: controls and the [`invisible`] ones.
+/// Characters that are not shown on their own: controls and the
+/// [`invisible`] ones.
 pub fn hidden(c: char) -> bool {
     c.is_control() || invisible(c)
+}
+
+const ZWNJ: char = '\u{200c}';
+const ZWJ: char = '\u{200d}';
+/// Asks for the emoji form of the character before it.
+const EMOJI_SELECTOR: char = '\u{fe0f}';
+
+/// A combining mark, as near as can be told without the Unicode tables:
+/// the combining blocks, the marks of Hebrew and Arabic, and whatever in
+/// the Indic and South-East Asian blocks is neither a letter nor a digit,
+/// which takes in the viramas that conjuncts are built with.
+fn is_mark(c: char) -> bool {
+    match c {
+        '\u{0300}'..='\u{036f}'
+        | '\u{0483}'..='\u{0489}'
+        | '\u{0591}'..='\u{05c7}'
+        | '\u{0610}'..='\u{061a}'
+        | '\u{064b}'..='\u{065f}'
+        | '\u{0670}'
+        | '\u{06d6}'..='\u{06ed}'
+        | '\u{1ab0}'..='\u{1aff}'
+        | '\u{1dc0}'..='\u{1dff}'
+        | '\u{20d0}'..='\u{20ff}'
+        | '\u{fe20}'..='\u{fe2f}' => true,
+        '\u{0900}'..='\u{109f}' | '\u{1780}'..='\u{17ff}' => !c.is_alphanumeric(),
+        _ => false,
+    }
+}
+
+/// A pictograph that can take part in an emoji sequence.
+fn is_emoji(c: char) -> bool {
+    matches!(c,
+        '\u{a9}' | '\u{ae}' | '\u{3030}' | '\u{303d}' | '\u{3297}' | '\u{3299}'
+        | '\u{2190}'..='\u{21ff}'
+        | '\u{2300}'..='\u{23ff}'
+        | '\u{2600}'..='\u{27bf}'
+        | '\u{2900}'..='\u{297f}'
+        | '\u{2b00}'..='\u{2bff}'
+        | '\u{1f000}'..='\u{1faff}')
+}
+
+/// Whether `c` is to be shown. `previous` is the character straight before
+/// it in the text if that one was shown, and `None` at the start or after
+/// one that was dropped; `next` is the character that follows it.
+///
+/// Everything that is not [`hidden`] is. Of the hidden ones three are let
+/// through where they shape the text instead of hiding in it:
+///
+/// - the zero-width non-joiner and joiner between two letters or
+///   combining marks, as Persian (`پرونده‌ها`) and the Indic conjuncts
+///   need, and the joiner between two emoji, which makes one of them;
+/// - the emoji variation selector straight after a visible character
+///   that is not a space.
+///
+/// At either end of the text, in runs and next to spaces they are
+/// dropped like the rest.
+pub fn keep(previous: Option<char>, c: char, next: Option<char>) -> bool {
+    if !hidden(c) {
+        return true;
+    }
+    let (Some(previous), true) = (previous, matches!(c, ZWNJ | ZWJ | EMOJI_SELECTOR)) else {
+        return false;
+    };
+    if c == EMOJI_SELECTOR {
+        return !hidden(previous) && !previous.is_whitespace();
+    }
+    let Some(next) = next else {
+        return false;
+    };
+    let letter = |c: char| c.is_alphabetic() || is_mark(c);
+    let in_a_word = letter(previous) && letter(next);
+    let in_an_emoji =
+        c == ZWJ && (is_emoji(previous) || previous == EMOJI_SELECTOR) && is_emoji(next);
+    in_a_word || in_an_emoji
+}
+
+/// `text` without the characters [`keep`] turns away. No white space is
+/// folded and nothing is cut.
+pub fn shown(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut previous = None;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        let kept = keep(previous, c, chars.peek().copied());
+        if kept {
+            out.push(c);
+        }
+        previous = kept.then_some(c);
+    }
+    drop_trailing_joiners(&mut out);
+    out
+}
+
+/// A joiner that ended up last joins nothing.
+fn drop_trailing_joiners(out: &mut String) {
+    while out.ends_with([ZWNJ, ZWJ]) {
+        out.pop();
+    }
 }
 
 /// `name` for use inside a sentence of the program's own. A name in a
@@ -71,15 +170,22 @@ pub fn line(raw: &str, max_chars: usize) -> String {
     let mut count = 0;
     let mut gap = false;
     let mut cut = false;
-    let mut chars = raw.chars();
-    for c in chars.by_ref().take(scan) {
+    let mut previous = None;
+    let mut chars = raw.chars().peekable();
+    let mut scanned = 0;
+    while scanned < scan {
+        let Some(c) = chars.next() else { break };
+        scanned += 1;
         // A line break is a control, and a line separator is on the hidden
         // list, but both separate words all the same.
         if c.is_whitespace() || matches!(c, '\u{2028}' | '\u{2029}') {
             gap = count > 0;
+            previous = Some(' ');
             continue;
         }
-        if hidden(c) {
+        let kept = keep(previous, c, chars.peek().copied());
+        previous = kept.then_some(c);
+        if !kept {
             continue;
         }
         let needed = if gap { 2 } else { 1 };
@@ -102,6 +208,7 @@ pub fn line(raw: &str, max_chars: usize) -> String {
         }
         let trimmed = out.trim_end().len();
         out.truncate(trimmed);
+        drop_trailing_joiners(&mut out);
         out.push('\u{2026}');
     }
     out
@@ -115,13 +222,19 @@ pub fn tidy(text: &str, max_chars: usize, multiline: bool) -> String {
     let mut count = 0;
     let mut newlines = 0;
     let mut cut = false;
-    for c in text.trim().chars() {
+    let mut previous = None;
+    let mut chars = text.trim().chars().peekable();
+    while let Some(c) = chars.next() {
         let c = match c {
             '\n' if multiline => '\n',
             '\n' | '\t' | '\r' => ' ',
-            c if hidden(c) => continue,
+            c if !keep(previous, c, chars.peek().copied()) => {
+                previous = None;
+                continue;
+            }
             c => c,
         };
+        previous = Some(c);
         // A space that only led because what came before it was removed.
         if out.is_empty() && c.is_whitespace() {
             continue;
@@ -148,6 +261,7 @@ pub fn tidy(text: &str, max_chars: usize, multiline: bool) -> String {
         out.pop();
         let kept = out.trim_end().len();
         out.truncate(kept);
+        drop_trailing_joiners(&mut out);
         out.push('\u{2026}');
     }
     out
@@ -207,7 +321,7 @@ mod tests {
         assert_eq!(line("\u{115f}\u{1160}\u{3164}\u{ffa0}\u{2800}", 32), "");
         assert_eq!(line("Home\u{3164}\u{3164}\u{3164}Guest", 32), "HomeGuest");
         // Variation selectors, plain and supplementary.
-        assert_eq!(line("a\u{fe0f}b\u{fe00}c\u{e0100}", 32), "abc");
+        assert_eq!(line("a\u{fe00}b\u{fe01}c\u{e0100}", 32), "abc");
     }
 
     #[test]
@@ -262,9 +376,8 @@ mod tests {
         // Line and paragraph separators separate words, as a line break does.
         assert_eq!(line("a\u{2028}b\u{2029}c", MAX_TEXT), "a b c");
         assert_eq!(line("tag\u{e0041}ged", MAX_TEXT), "tagged");
-        // Joiners go too: there is no telling a harmless one from a hidden
-        // one, and some emoji falling apart is the price.
-        assert_eq!(line("a\u{200d}b", MAX_TEXT), "ab");
+        // Joiners that scripts and emoji need are kept.
+        assert_eq!(line("a\u{200d}b", MAX_TEXT), "a\u{200d}b");
     }
 
     #[test]
@@ -333,15 +446,13 @@ mod tests {
             '\u{ad}',
             '\u{180e}',
             '\u{200b}',
-            '\u{200c}',
-            '\u{200d}',
             '\u{2060}',
             '\u{2064}',
             '\u{115f}',
             '\u{1160}',
             '\u{3164}',
             '\u{ffa0}',
-            '\u{fe0f}',
+            '\u{fe00}',
             '\u{e0100}',
             '\u{e0001}',
             '\u{e0041}',
@@ -400,5 +511,60 @@ mod tests {
         }
         assert!(hidden('\u{1b}') && !invisible('\u{1b}'));
         assert!(!hidden('a') && !hidden(' ') && !hidden('\u{a0}') && !hidden('\u{301}'));
+    }
+
+    // Joiners and the emoji selector, kept where they do their job.
+
+    const FILES_FA: &str = "پرونده\u{200c}ها";
+
+    #[test]
+    fn a_persian_name_keeps_its_non_joiner() {
+        assert_eq!(line(FILES_FA, 32), FILES_FA);
+        assert_eq!(tidy(FILES_FA, 100, false), FILES_FA);
+        assert_eq!(shown(FILES_FA), FILES_FA);
+        // A conjunct held apart by a joiner after the virama.
+        let conjunct = "क\u{94d}\u{200d}ष";
+        assert_eq!(line(conjunct, 32), conjunct);
+    }
+
+    #[test]
+    fn emoji_sequences_stay_whole() {
+        let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}";
+        let heart_on_fire = "\u{2764}\u{fe0f}\u{200d}\u{1f525}";
+        let runner = "\u{1f3c3}\u{200d}\u{2640}\u{fe0f}";
+        for sequence in [family, heart_on_fire, runner] {
+            assert_eq!(line(sequence, 32), sequence);
+            assert_eq!(tidy(sequence, 100, true), sequence);
+            assert_eq!(shown(sequence), sequence);
+        }
+        assert_eq!(
+            line("Build \u{2705}\u{fe0f} done", 32),
+            "Build \u{2705}\u{fe0f} done"
+        );
+    }
+
+    #[test]
+    fn joiners_are_dropped_where_they_join_nothing() {
+        // At the edges.
+        assert_eq!(line("\u{200d}ab\u{200c}", 32), "ab");
+        assert_eq!(tidy("\u{200c}ab\u{200d}", 100, false), "ab");
+        assert_eq!(shown("\u{fe0f}ab\u{200d}"), "ab");
+        // In runs: a wall of them is still nothing.
+        assert_eq!(line("a\u{200d}\u{200d}b", 32), "ab");
+        assert_eq!(line("a\u{200c}\u{200d}\u{200c}b", 32), "ab");
+        // Nor does one that follows something else that was dropped.
+        assert_eq!(line("a\u{200b}\u{200d}b", 32), "ab");
+        assert_eq!(tidy("a\u{200d}\u{200d}b", 100, false), "ab");
+        assert_eq!(shown("a\u{200c}\u{200c}b"), "ab");
+        assert_eq!(shown(&"\u{200d}".repeat(50)), "");
+        assert_eq!(line("a\u{fe0f}\u{fe0f}b", 32), "a\u{fe0f}b");
+        // Next to spaces, digits and punctuation.
+        assert_eq!(line("a \u{200d}b", 32), "a b");
+        assert_eq!(line("a\u{200c} b", 32), "a b");
+        assert_eq!(tidy("a \u{fe0f}b", 100, false), "a b");
+        assert_eq!(line("1\u{200d}2 a\u{200c}.", 32), "12 a.");
+        // A cut does not leave one hanging before the ellipsis.
+        assert_eq!(line("ab\u{200c}cd", 3), "ab\u{2026}");
+        assert_eq!(tidy("ab\u{200c}cd", 4, false), "ab\u{2026}");
     }
 }

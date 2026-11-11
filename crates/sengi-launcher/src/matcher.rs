@@ -76,14 +76,21 @@ fn is_combining_mark(c: char) -> bool {
     ('\u{0300}'..='\u{036f}').contains(&c)
 }
 
+/// Zero-width non-joiner and joiner, and the emoji variation selector.
+/// They shape the text around them and are not typed as letters.
+fn is_joiner(c: char) -> bool {
+    matches!(c, '\u{200c}' | '\u{200d}' | '\u{fe0f}')
+}
+
 impl Folded {
     fn new(text: &str) -> Self {
         let mut folded = Folded::default();
         let mut previous: Option<char> = None;
         for (start, c) in text.char_indices() {
-            if is_combining_mark(c) {
+            if is_combining_mark(c) || is_joiner(c) {
                 // Keep a mark with the letter it sits on, so a highlight
-                // never splits the two.
+                // never splits the two. Joiners go the same way: a name
+                // is found whether or not the query was typed with them.
                 let end = start + c.len_utf8();
                 for span in folded.spans.iter_mut().rev() {
                     if span.1 != start {
@@ -484,6 +491,19 @@ mod tests {
         }
         out.push_str(&name[at..]);
         out
+    }
+
+    #[test]
+    fn joiners_do_not_stand_between_a_query_and_a_name() {
+        let fold = |s: &str| Folded::new(s).chars.into_iter().collect::<String>();
+        let with = "پرونده\u{200c}ها";
+        let without = "پروندهها";
+        assert_eq!(fold(with), fold(without));
+        // The joiner stays with the letter before it, so a highlight of
+        // the whole name covers the whole name.
+        let folded = Folded::new(with);
+        assert_eq!(folded.spans.last().map(|span| span.1), Some(with.len()));
+        assert_eq!(fold("\u{200c}a\u{200d}b\u{fe0f}"), "ab");
     }
 
     #[test]
