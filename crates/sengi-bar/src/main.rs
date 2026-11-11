@@ -7,16 +7,17 @@
 mod status;
 mod tray;
 
-use std::cell::RefCell;
+use std::cell::{Cell, OnceCell, RefCell};
 use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 use std::rc::Rc;
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use sengi_layer::{Anchor, App, Config, Instances, Layer, Outputs};
-use slint::{Timer, TimerMode};
+use slint::{Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, Timer, TimerMode, VecModel};
 
 slint::include_modules!();
 
@@ -124,9 +125,79 @@ fn read_slow() -> Slow {
     }
 }
 
+/// The tray as the bars draw it. Every bar shows the same model.
+#[derive(Default)]
+struct TrayIcons {
+    model: Rc<VecModel<TrayEntry>>,
+    /// The image made from each item's pixels, so an update that leaves an
+    /// icon alone does not make a new one.
+    images: Vec<(u32, Arc<tray::Pixels>, Image)>,
+}
+
+impl TrayIcons {
+    fn image(&self, id: u32, pixels: &Arc<tray::Pixels>) -> Option<Image> {
+        let held = self.images.iter().find(|(held, ..)| *held == id);
+        if let Some((_, _, image)) = held.filter(|(_, held, _)| held == pixels) {
+            return Some(image.clone());
+        }
+        let side = pixels.size;
+        if side == 0 || pixels.data.len() != (side * side * 4) as usize {
+            return None;
+        }
+        let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&pixels.data, side, side);
+        Some(Image::from_rgba8_premultiplied(buffer))
+    }
+
+    /// Shows these items. Returns whether the set of items changed, as
+    /// opposed to how some of them look.
+    fn show(&mut self, views: Vec<tray::View>) -> bool {
+        let mut images = Vec::new();
+        let entries: Vec<TrayEntry> = views
+            .into_iter()
+            .map(|view| {
+                let image = view.icon.as_ref().and_then(|pixels| {
+                    let image = self.image(view.id, pixels)?;
+                    images.push((view.id, pixels.clone(), image.clone()));
+                    Some(image)
+                });
+                TrayEntry {
+                    id: view.id as i32,
+                    has_icon: image.is_some(),
+                    icon: image.unwrap_or_default(),
+                    letter: view.letter.into(),
+                    label: view.label.into(),
+                    attention: view.attention,
+                }
+            })
+            .collect();
+        self.images = images;
+
+        let held: Vec<i32> = self.model.iter().map(|entry| entry.id).collect();
+        let wanted: Vec<i32> = entries.iter().map(|entry| entry.id).collect();
+        if held != wanted {
+            self.model.set_vec(entries);
+            return true;
+        }
+        // The same items: change rows in place, so the icon under the
+        // pointer stays the icon under the pointer.
+        for (row, entry) in entries.into_iter().enumerate() {
+            if self.model.row_data(row).as_ref() != Some(&entry) {
+                self.model.set_row_data(row, entry);
+            }
+        }
+        false
+    }
+}
+
 fn run() -> Result<(), sengi_layer::Error> {
     let app = App::new()?;
     let bars: Instances<Bar> = Instances::new();
+
+    // The tray starts with the first bar, which is when the size icons are
+    // drawn at is known. Its threads feed `icons` through a channel.
+    let icons: Rc<RefCell<TrayIcons>> = Rc::default();
+    let tray: Rc<OnceCell<Option<tray::Tray>>> = Rc::default();
+    let tray_scale = Rc::new(Cell::new(1u32));
 
     // The slow readings come from a worker thread. The mute button sends
     // on `mute`, and the worker toggles and reads the result back in order.
@@ -203,6 +274,69 @@ fn run() -> Result<(), sengi_layer::Error> {
         bar.on_toggle_mute(move || {
             let _ = mute.send(());
         });
+
+        let icon_size = (bar.get_tray_icon_size().round() as u32).max(1);
+        let scale = context.output().map_or(1, |output| output.scale.max(1));
+        let started = tray.get_or_init(|| {
+            tray_scale.set(scale);
+            let (icons, bars) = (icons.clone(), bars.clone());
+            let show = move |views| {
+                if icons.borrow_mut().show(views) {
+                    bars.for_each(|bar| bar.invoke_tray_changed());
+                }
+            };
+            tray::Tray::start(&handle, icon_size * scale, show)
+                .inspect_err(|error| eprintln!("sengi-bar: no system tray: {error}"))
+                .ok()
+        });
+        if started.is_some() {
+            bar.set_tray(ModelRc::from(icons.borrow().model.clone()));
+            // Icons are decoded for the sharpest output there is.
+            let note_scale = {
+                let (tray, tray_scale) = (tray.clone(), tray_scale.clone());
+                move |scale: u32| {
+                    if scale > tray_scale.get() {
+                        tray_scale.set(scale);
+                        if let Some(Some(tray)) = tray.get() {
+                            tray.set_pixels(icon_size * scale);
+                        }
+                    }
+                }
+            };
+            note_scale(scale);
+            context
+                .surface()
+                .on_output_changed(move |output| note_scale(output.scale));
+
+            let output = context.output_name().unwrap_or_default().to_string();
+            bar.on_tray_pressed({
+                let tray = tray.clone();
+                move |id, button, x| {
+                    let button = match button {
+                        0 => tray::Button::Left,
+                        1 => tray::Button::Middle,
+                        _ => tray::Button::Right,
+                    };
+                    if let (Some(Some(tray)), Ok(id)) = (tray.get(), u32::try_from(id)) {
+                        tray.pressed(id, button, &output, x.round() as i32);
+                    }
+                }
+            });
+            bar.on_tray_scrolled({
+                let tray = tray.clone();
+                move |id, dx, dy| {
+                    let (delta, horizontal) = if dx.abs() > dy.abs() {
+                        (dx, true)
+                    } else {
+                        (dy, false)
+                    };
+                    // A wheel notch is 60 to Slint and 120 to the apps.
+                    if let (Some(Some(tray)), Ok(id)) = (tray.get(), u32::try_from(id)) {
+                        tray.scrolled(id, (delta * 2.0).round() as i32, horizontal);
+                    }
+                }
+            });
+        }
 
         apply_sys(&bar, &read_sys());
         refresh_clock(&bar);

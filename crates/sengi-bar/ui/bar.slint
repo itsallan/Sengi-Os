@@ -6,6 +6,18 @@ import { TrayMenu, MenuPanel, MenuRow } from "tray-menu.slint";
 // The menu is drawn by this same program, started again for the purpose.
 export { TrayMenu, MenuPanel, MenuRow }
 
+// One icon in the system tray.
+export struct TrayEntry {
+    id: int,
+    icon: image,
+    // False when the app gave no usable icon; the letter is shown instead.
+    has-icon: bool,
+    letter: string,
+    // Shown beside the tray while the pointer is over the icon.
+    label: string,
+    attention: bool,
+}
+
 // A piece of the bar that can be clicked.
 component BarItem inherits Rectangle {
     in property <string> text;
@@ -84,6 +96,72 @@ component IconItem inherits Rectangle {
     @children
 }
 
+// An app's icon in the tray. Sized and lit like the bar's own icon items.
+component TrayItem inherits Rectangle {
+    in property <TrayEntry> entry;
+    out property <bool> hovered: touch.has-hover;
+    // 0 is the left button, 1 the middle and 2 the right.
+    callback pressed(int);
+    callback scrolled(length, length);
+
+    border-radius: Tokens.radius;
+    background: touch.has-hover ? Tokens.color-surface-hover : transparent;
+    animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+    height: Tokens.bar-height - Tokens.space-xs;
+    width: Tokens.bar-icon + Tokens.space-sm * 2;
+
+    if root.entry.has-icon: Image {
+        width: Tokens.bar-icon;
+        height: Tokens.bar-icon;
+        source: root.entry.icon;
+        image-fit: contain;
+    }
+
+    if !root.entry.has-icon: Rectangle {
+        width: Tokens.bar-icon;
+        height: Tokens.bar-icon;
+        border-radius: Tokens.radius;
+        background: Tokens.color-surface-raised;
+
+        SengiText {
+            text: root.entry.letter;
+            font-size: Tokens.font-size-sm;
+            font-weight: Tokens.font-weight-bold;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    // The dot sits on the icon's top right corner, ringed in the bar's
+    // colour so it reads against any icon.
+    if root.entry.attention: Rectangle {
+        width: Tokens.space-sm;
+        height: self.width;
+        x: (parent.width + Tokens.bar-icon) / 2 - self.width / 2 - Tokens.space-xxs;
+        y: (parent.height - Tokens.bar-icon) / 2 - Tokens.space-xxs;
+        border-radius: self.width / 2;
+        border-width: Tokens.border-width;
+        border-color: Tokens.color-bg;
+        background: Tokens.color-accent;
+    }
+
+    touch := TouchArea {
+        clicked => { root.pressed(0); }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.up && event.button == PointerEventButton.middle {
+                root.pressed(1);
+            }
+            if event.kind == PointerEventKind.up && event.button == PointerEventButton.right {
+                root.pressed(2);
+            }
+        }
+        scroll-event(event) => {
+            root.scrolled(event.delta-x, event.delta-y);
+            return accept;
+        }
+    }
+}
+
 export component Bar inherits Window {
     in property <string> clock;
     in property <string> network: "Offline";
@@ -97,8 +175,13 @@ export component Bar inherits Window {
     in property <bool> battery-low: false;
     in property <bool> battery-warning: false;
 
+    // Icons of the apps running in the background. Empty is no tray at all.
+    in property <[TrayEntry]> tray;
+
     // Read by the program to size the layer surface.
     out property <length> bar-height: Tokens.bar-height;
+    // Read by the program to decode tray icons at the size they are drawn.
+    out property <length> tray-icon-size: Tokens.bar-icon;
 
     callback open-launcher();
     callback open-network();
@@ -106,6 +189,21 @@ export component Bar inherits Window {
     callback show-notifications();
     callback dismiss-notifications();
     callback open-session();
+    // A tray icon was clicked: its id, the button (0 left, 1 middle,
+    // 2 right) and where its left edge is, for the menu to open under.
+    callback tray-pressed(int, int, length);
+    // The wheel was turned over a tray icon: its id and the distance.
+    callback tray-scrolled(int, length, length);
+
+    // The tray icon under the pointer and what it is called.
+    private property <int> tray-hover: -1;
+    private property <string> tray-label;
+
+    // The program calls this when the icons change, since the one that was
+    // under the pointer may be gone.
+    public function tray-changed() {
+        root.tray-hover = -1;
+    }
 
     background: Tokens.color-bar;
     default-font-family: Tokens.font-family;
@@ -127,6 +225,39 @@ export component Bar inherits Window {
 
         Rectangle {
             horizontal-stretch: 1;
+
+            // There is no room under the bar for a tooltip, so the name of
+            // the tray icon under the pointer is shown beside the tray.
+            SengiText {
+                x: 0;
+                width: parent.width - Tokens.space-sm;
+                text: root.tray-label;
+                color: Tokens.color-text-muted;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+                overflow: elide;
+                opacity: root.tray-hover >= 0 ? 1 : 0;
+                animate opacity { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+            }
+        }
+
+        for entry in root.tray: VerticalLayout {
+            alignment: center;
+            item := TrayItem {
+                entry: entry;
+                pressed(button) => {
+                    root.tray-pressed(entry.id, button, item.absolute-position.x);
+                }
+                scrolled(dx, dy) => { root.tray-scrolled(entry.id, dx, dy); }
+                changed hovered => {
+                    if self.hovered {
+                        root.tray-label = entry.label;
+                        root.tray-hover = entry.id;
+                    } else if root.tray-hover == entry.id {
+                        root.tray-hover = -1;
+                    }
+                }
+            }
         }
 
         VerticalLayout {

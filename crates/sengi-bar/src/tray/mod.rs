@@ -18,9 +18,6 @@
 //! [`pixmap::MAX_SIDE`], [`menu::MAX_ENTRIES`] and the reply sizes in
 //! [`bus`].
 
-// Nothing starts the tray yet; the bar's own part comes next.
-#![allow(dead_code, unused_imports)]
-
 mod bus;
 mod host;
 pub mod icons;
