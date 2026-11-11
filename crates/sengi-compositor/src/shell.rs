@@ -51,6 +51,7 @@ impl CompositorHandler for State {
         }
 
         self.toplevel_commit(surface);
+        self.layer_commit(surface);
         self.popup_commit(surface);
     }
 }

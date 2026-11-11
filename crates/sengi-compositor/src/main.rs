@@ -4,6 +4,7 @@
 
 mod cli;
 mod headless;
+mod layer;
 mod layout;
 mod png;
 mod render;
