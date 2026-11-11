@@ -44,6 +44,8 @@ pub struct WindowData {
     /// Where the client area was when the window was minimised. Set for as
     /// long as it is hidden.
     pub minimised: Cell<Option<(i32, i32)>>,
+    /// The client asked to be maximised before its first buffer.
+    pub start_maximised: Cell<bool>,
     pub frame: RefCell<Option<FrameBuffers>>,
     /// The title last rasterised and its pixels, if the typeface is there.
     pub title: RefCell<Option<(String, Option<Rc<TextBitmap>>)>>,
@@ -278,13 +280,22 @@ impl State {
     }
 
     /// The client area a maximised `window` gets.
-    fn maximised_rect(&self, window: &Window) -> Rect {
+    pub fn maximised_rect(&self, window: &Window) -> Rect {
         let usable = self.usable_area();
-        if data(window).decorated.get() {
+        let mut rect = if data(window).decorated.get() {
             self.theme.metrics.client(usable)
         } else {
             usable
+        };
+        // A client that cannot grow that far stays in the top-left corner.
+        let (_, max) = self.size_limits(window);
+        if max.0 > 0 {
+            rect.w = rect.w.min(max.0);
         }
+        if max.1 > 0 {
+            rect.h = rect.h.min(max.1);
+        }
+        rect
     }
 
     pub fn set_maximised(&mut self, window: &Window, maximised: bool) {
@@ -324,6 +335,12 @@ impl State {
         });
         toplevel.send_configure();
         self.move_window(window, target.x, target.y);
+        if !maximised {
+            // The bar may have moved while the window was maximised.
+            if let Some(frame) = self.frame_rect(window) {
+                self.move_frame_to(window, frame.x, frame.y);
+            }
+        }
     }
 
     pub fn toggle_maximise(&mut self, window: &Window) {
