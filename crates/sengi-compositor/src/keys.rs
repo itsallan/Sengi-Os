@@ -18,9 +18,9 @@ pub fn vt_for(keysym: u32) -> Option<i32> {
         .then(|| (keysym - SWITCH_VT_1) as i32 + 1)
 }
 
-/// What locks the session unless `--locker` says otherwise. The shell
-/// replaces itself, so the locker has the pid we started.
-pub const DEFAULT_LOCKER: &str = "exec swaylock -f";
+/// What locks the session unless `--locker` says otherwise: a program and
+/// its arguments. It is started without a shell.
+pub const DEFAULT_LOCKER: &str = "swaylock -f";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {

@@ -243,6 +243,7 @@ impl Headless {
         screenshot: Option<&Path>,
     ) -> Result<(), Box<dyn Error>> {
         state.needs_redraw = false;
+        let epoch = state.lock_epoch();
         let mut target = self.renderer.bind(&mut self.image)?;
         // The image is reused, so it always holds the previous frame and
         // only damaged regions are painted.
@@ -260,7 +261,7 @@ impl Headless {
         drop(target);
 
         self.last_frame = Some(Instant::now());
-        render::presented(state, &self.output, &rendered.states);
+        render::presented(state, &self.output, &rendered.states, epoch);
         Ok(())
     }
 }

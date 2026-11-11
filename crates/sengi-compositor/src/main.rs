@@ -20,6 +20,7 @@ mod keys;
 mod layer;
 mod layout;
 mod lock;
+#[macro_use]
 mod log;
 mod png;
 mod render;
@@ -109,9 +110,8 @@ fn main() -> ExitCode {
 fn start_clients(state: &mut State, options: &Options) {
     println!("{}", state.socket_name.to_string_lossy());
 
-    if let Some(locker) = &options.locker {
-        state.locker_command = locker.clone();
-    }
+    let locker = options.locker.as_deref().unwrap_or(keys::DEFAULT_LOCKER);
+    state.set_locker(locker);
     for command in &options.startup {
         state.spawn(command);
     }

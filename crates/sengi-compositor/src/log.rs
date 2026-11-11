@@ -10,6 +10,26 @@ use tracing::{
     span, Event, Level, Metadata, Subscriber,
 };
 
+/// Prints a line on stderr with the program's name in front. A log that
+/// cannot be written to must never take the session down, so a failed
+/// write is ignored, which `eprintln!` would not do.
+#[macro_export]
+macro_rules! say {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), "sengi-compositor: {}", format_args!($($arg)*));
+    }};
+}
+
+/// The same for stdout, without the name.
+#[macro_export]
+macro_rules! tell {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stdout(), $($arg)*);
+    }};
+}
+
 /// The environment variable that sets how much is printed.
 pub const VARIABLE: &str = "SENGI_COMPOSITOR_LOG";
 

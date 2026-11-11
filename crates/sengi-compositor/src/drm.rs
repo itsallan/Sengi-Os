@@ -24,6 +24,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     rc::Rc,
+    time::Duration,
 };
 
 use smithay::{
@@ -139,10 +140,27 @@ struct Screen {
     output: Output,
     compositor: Compositor,
     /// The frame that is on its way to the screen, if any: what was visible
-    /// in it, for the frame callbacks sent when it gets there.
-    in_flight: Option<RenderElementStates>,
+    /// in it, for the frame callbacks sent when it gets there, and which
+    /// lock it was drawn under.
+    in_flight: Option<(RenderElementStates, Option<u64>)>,
     /// Something changed since this screen was last drawn.
     stale: bool,
+    /// A timer will draw this screen; until then it is left alone.
+    waiting: bool,
+    /// How many frames in a row could not be drawn.
+    failures: u32,
+}
+
+/// After this many failed frames in a row a screen is switched off if the
+/// session is locked: what it still shows must not stay on the glass.
+const FAILURES_UNDER_LOCK: u32 = 3;
+
+/// How long one refresh of `output` takes.
+fn refresh_interval(output: &Output) -> Duration {
+    let millihertz = output
+        .current_mode()
+        .map_or(60_000, |mode| mode.refresh.max(1_000));
+    Duration::from_micros(1_000_000_000 / millihertz as u64)
 }
 
 struct Drm {
@@ -488,11 +506,11 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
                         eprintln!("sengi-compositor: page flip: {err}");
                     }
                     let output = screen.output.clone();
-                    screen.in_flight.take().map(|states| (output, states))
+                    screen.in_flight.take().map(|frame| (output, frame))
                 })
             };
-            if let Some((output, states)) = shown {
-                render::presented(state, &output, &states);
+            if let Some((output, (states, epoch))) = shown {
+                render::presented(state, &output, &states, epoch);
             }
             draw_if_ready(&on_flip, state);
         }
@@ -592,6 +610,8 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
 
 fn draw_if_ready(backend: &Shared, state: &mut State) {
     let mut shown = Vec::new();
+    let mut retry = Vec::new();
+    let mut hopeless = Vec::new();
     {
         let mut backend = backend.borrow_mut();
         if !backend.active {
@@ -608,20 +628,82 @@ fn draw_if_ready(backend: &Shared, state: &mut State) {
         }
         for screen in screens.iter_mut() {
             // A screen with a frame under way is drawn when that lands.
-            if !screen.stale || screen.in_flight.is_some() {
+            if !screen.stale || screen.in_flight.is_some() || screen.waiting {
                 continue;
             }
             screen.stale = false;
-            match screen.frame(renderer, state) {
-                Ok(Some(states)) => shown.push((screen.output.clone(), states)),
-                Ok(None) => {}
-                Err(err) => eprintln!("sengi-compositor: frame failed: {err}"),
+            let epoch = state.lock_epoch();
+            match screen.frame(renderer, state, epoch) {
+                Ok(Some(states)) => {
+                    screen.failures = 0;
+                    shown.push((screen.output.clone(), states, epoch));
+                }
+                Ok(None) => screen.failures = 0,
+                Err(err) => {
+                    // The screen still shows what it showed. Try again
+                    // shortly, at growing intervals.
+                    screen.failures += 1;
+                    screen.stale = true;
+                    if screen.failures.is_power_of_two() {
+                        crate::say!(
+                            "{}: frame failed ({} in a row): {err}",
+                            screen.output.name(),
+                            screen.failures
+                        );
+                    }
+                    if state.is_locked() && screen.failures >= FAILURES_UNDER_LOCK {
+                        hopeless.push(screen.crtc);
+                    } else {
+                        screen.waiting = true;
+                        let pause = refresh_interval(&screen.output) * screen.failures.min(60);
+                        retry.push((screen.crtc, pause));
+                    }
+                }
+            }
+        }
+        for crtc in hopeless {
+            if let Some(at) = screens.iter().position(|screen| screen.crtc == crtc) {
+                // Dropping the screen turns its CRTC off.
+                let screen = screens.remove(at);
+                crate::say!(
+                    "{} cannot be drawn while locked, switched off",
+                    screen.output.name()
+                );
+                state.remove_output(&screen.output);
+            }
+        }
+    }
+    for (crtc, pause) in retry {
+        let again = backend.clone();
+        let armed =
+            state
+                .loop_handle
+                .insert_source(Timer::from_duration(pause), move |_, _, state| {
+                    let waited = again
+                        .borrow_mut()
+                        .screens
+                        .iter_mut()
+                        .find(|screen| screen.crtc == crtc)
+                        .map(|screen| screen.waiting = false);
+                    if waited.is_some() {
+                        draw_if_ready(&again, state);
+                    }
+                    TimeoutAction::Drop
+                });
+        if armed.is_err() {
+            if let Some(screen) = backend
+                .borrow_mut()
+                .screens
+                .iter_mut()
+                .find(|screen| screen.crtc == crtc)
+            {
+                screen.waiting = false;
             }
         }
     }
     // Nothing changed on these, so there is no flip to wait for.
-    for (output, states) in shown {
-        render::presented(state, &output, &states);
+    for (output, states, epoch) in shown {
+        render::presented(state, &output, &states, epoch);
     }
 }
 
@@ -634,6 +716,7 @@ impl Screen {
         &mut self,
         renderer: &mut Renderer,
         state: &mut State,
+        epoch: Option<u64>,
     ) -> Result<Option<RenderElementStates>, Box<dyn Error>> {
         // With a GPU, a client buffer or the cursor may go straight onto a
         // plane; pixman-composed frames gain nothing from that.
@@ -662,7 +745,7 @@ impl Screen {
             });
 
         if changed {
-            self.in_flight = Some(states);
+            self.in_flight = Some((states, epoch));
             Ok(None)
         } else {
             Ok(Some(states))
@@ -838,6 +921,8 @@ impl Drm {
             compositor,
             in_flight: None,
             stale: true,
+            waiting: false,
+            failures: 0,
         });
         Ok(())
     }

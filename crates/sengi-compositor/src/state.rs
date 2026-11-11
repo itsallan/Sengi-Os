@@ -52,7 +52,7 @@ use smithay::{
             },
             SelectionHandler,
         },
-        session_lock::{SessionLockManagerState, SessionLocker},
+        session_lock::SessionLockManagerState,
         shell::{
             wlr_layer::{KeyboardInteractivity, Layer, WlrLayerShellState},
             xdg::{decoration::XdgDecorationState, XdgShellState},
@@ -71,7 +71,7 @@ use crate::{
     input::Drag,
     keys::{self, Swallowed},
     layout::{self, FocusStack, Rect},
-    lock::Lock,
+    lock::{Lock, Lockers},
     render,
     text::Font,
 };
@@ -99,7 +99,12 @@ pub struct State {
     /// The slow tick for surfaces nobody can see is already scheduled.
     hidden_frames_armed: bool,
     /// A lock that is confirmed once the first locked frame is out.
-    pub pending_lock: Option<SessionLocker>,
+    /// How many times the session has been locked.
+    pub lock_count: u64,
+    /// Set while a request of the lock's holder is being handled.
+    pub lock_request_from_holder: bool,
+    /// Which program may lock.
+    pub lockers: Lockers,
     /// Switches to another virtual terminal, where the backend can.
     pub switch_vt: Option<Box<dyn FnMut(i32)>>,
     /// Frames shown on a real screen so far. Stays zero on backends that
@@ -194,7 +199,11 @@ impl State {
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
         let foreign_toplevels = ForeignToplevelState::new(&dh);
         let cursor_shape_state = CursorShapeManagerState::new::<Self>(&dh);
-        let session_lock_state = SessionLockManagerState::new::<Self, _>(&dh, |_| true);
+        // Only the locker program gets to see the lock.
+        let lockers = Lockers::default();
+        let known = lockers.clone();
+        let session_lock_state =
+            SessionLockManagerState::new::<Self, _>(&dh, move |client| known.recognises(client));
         let idle_notifier_state = IdleNotifierState::<Self>::new(&dh, event_loop.handle());
         let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
@@ -216,6 +225,7 @@ impl State {
             Signal::SIGHUP,
             Signal::SIGUSR1,
             Signal::SIGUSR2,
+            Signal::SIGCHLD,
         ])?;
         event_loop
             .handle()
@@ -227,6 +237,13 @@ impl State {
                         "sengi-compositor: {} page flips, {} with the cursor on its own plane, {} dmabufs imported, pointer at {:.0},{:.0}",
                         state.page_flips, state.cursor_plane_frames, state.dmabufs_imported, at.x, at.y
                     );
+                    eprintln!("sengi-compositor: {}", state.lock_status());
+                }
+                // A program we started has ended; a dead locker must be
+                // noticed without waiting for the next input.
+                Signal::SIGCHLD => {
+                    state.reap_children();
+                    state.watch_locker();
                 }
                 Signal::SIGUSR2 => {
                     if let Some(mut shoot) = state.take_screenshot.take() {
@@ -241,10 +258,11 @@ impl State {
         let socket_name = socket.socket_name().to_os_string();
         let handle = event_loop.handle();
         handle.insert_source(socket, |stream, _, state| {
-            if let Err(err) = state
-                .display_handle
-                .insert_client(stream, Arc::new(ClientState::default()))
-            {
+            let data = ClientState {
+                pid: peer_pid(&stream),
+                ..ClientState::default()
+            };
+            if let Err(err) = state.display_handle.insert_client(stream, Arc::new(data)) {
                 eprintln!("sengi-compositor: rejected a client: {err}");
             }
         })?;
@@ -278,7 +296,9 @@ impl State {
             needs_redraw: false,
             redraw_ping: None,
             hidden_frames_armed: false,
-            pending_lock: None,
+            lock_count: 0,
+            lock_request_from_holder: false,
+            lockers,
             switch_vt: None,
             page_flips: 0,
             cursor_plane_frames: 0,
@@ -381,16 +401,6 @@ impl State {
         self.hidden_frames_armed = armed.is_ok();
     }
 
-    /// A frame went out. If it was the first one of a locked session, the
-    /// locker may now be told that the screen is covered.
-    pub fn frame_presented(&mut self) {
-        if let Some(locker) = self.pending_lock.take() {
-            if self.is_locked() {
-                locker.lock();
-            }
-        }
-    }
-
     /// The colour behind all windows.
     pub fn desktop_color(&self) -> Color32F {
         let desktop = self
@@ -473,6 +483,8 @@ impl State {
             layer.layer_surface().send_close();
         }
         self.space.unmap_output(output);
+        self.lock_output_removed(output);
+        self.configure_lock_surfaces();
         if let Some(at) = self.output_globals.iter().position(|(o, _)| o == output) {
             let (_, global) = self.output_globals.remove(at);
             self.display_handle.remove_global::<Self>(global);
@@ -512,6 +524,7 @@ impl State {
         output.change_current_state(Some(mode), None, None, None);
         output.set_preferred(mode);
         layer_map_for_output(output).arrange();
+        self.configure_lock_surfaces();
         self.usable_area_changed();
         self.request_redraw();
     }
@@ -566,6 +579,30 @@ impl State {
             }
             Err(err) => {
                 eprintln!("sengi-compositor: cannot start `{command}`: {err}");
+                None
+            }
+        }
+    }
+
+    /// Starts `program` itself, without a shell in between.
+    pub fn spawn_program(
+        &mut self,
+        program: &std::path::Path,
+        arguments: &[String],
+    ) -> Option<u32> {
+        let child = Command::new(program)
+            .args(arguments)
+            .env("WAYLAND_DISPLAY", &self.socket_name)
+            .env(PID_VARIABLE, std::process::id().to_string())
+            .spawn();
+        match child {
+            Ok(child) => {
+                let pid = child.id();
+                self.children.push(child);
+                Some(pid)
+            }
+            Err(err) => {
+                crate::say!("cannot start {}: {err}", program.display());
                 None
             }
         }
@@ -635,7 +672,7 @@ impl State {
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
         if self.is_locked() {
             // Only the lock screen, or nobody until it has a surface.
-            let target = self.lock_surface();
+            let target = self.lock_focus();
             if keyboard.current_focus() != target {
                 keyboard.set_focus(self, target, SERIAL_COUNTER.next_serial());
             }
@@ -717,6 +754,17 @@ pub fn set_activated(window: &Window, active: bool) {
 #[derive(Default)]
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
+    /// The client came in through a sandbox's security context.
+    pub sandboxed: bool,
+    /// The process that connected, as the kernel reported it then.
+    pub pid: Option<i32>,
+}
+
+/// The process at the other end of a client's socket.
+pub fn peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<i32> {
+    smithay::reexports::rustix::net::sockopt::socket_peercred(stream)
+        .ok()
+        .map(|credentials| credentials.pid.as_raw_nonzero().get())
 }
 
 impl ClientData for ClientState {

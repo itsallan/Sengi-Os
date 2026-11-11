@@ -85,9 +85,7 @@ where
         // Nothing of the session may show: the lock surface if there is
         // one, on a plain background that also covers a locker that has
         // not drawn yet or has died.
-        // There is one lock surface; further screens stay plain.
-        let first = state.output().is_some_and(|first| &first == output);
-        if let Some(surface) = state.lock_surface().filter(|_| first) {
+        if let Some(surface) = state.lock_surface_on(output) {
             elements.extend(render_elements_from_surface_tree(
                 renderer,
                 &surface,
@@ -302,7 +300,14 @@ fn finish<E: std::fmt::Debug>(
 
 /// To be called once a frame is on its way to the screen: records which
 /// surfaces were visible in it and lets their clients draw the next one.
-pub fn presented(state: &mut State, output: &Output, states: &RenderElementStates) {
+///
+/// `epoch` is `State::lock_epoch` as it was when the frame was drawn.
+pub fn presented(
+    state: &mut State,
+    output: &Output,
+    states: &RenderElementStates,
+    epoch: Option<u64>,
+) {
     let seen = |surface: &WlSurface, data: &SurfaceData| {
         update_surface_primary_scanout_output(
             surface,
@@ -313,7 +318,7 @@ pub fn presented(state: &mut State, output: &Output, states: &RenderElementState
         );
     };
     if state.is_locked() {
-        if let Some(surface) = state.lock_surface() {
+        for surface in state.lock_surfaces() {
             with_surfaces_surface_tree(&surface, seen);
         }
     } else {
@@ -329,7 +334,7 @@ pub fn presented(state: &mut State, output: &Output, states: &RenderElementState
     }
 
     send_frames(state, output);
-    state.frame_presented();
+    state.frame_presented(output, epoch);
 }
 
 /// Sends frame callbacks: at once to surfaces that were visible on `output`
@@ -338,20 +343,19 @@ pub fn send_frames(state: &State, output: &Output) {
     let time = state.start_time.elapsed();
     let throttle = Some(HIDDEN_FRAME_INTERVAL);
 
-    if state.is_locked() {
-        if let Some(surface) = state.lock_surface() {
-            send_frames_surface_tree(
-                &surface,
-                output,
-                time,
-                throttle,
-                surface_primary_scanout_output,
-            );
-        }
-        return;
+    // Under the lock nothing else is on screen, and a minimised window
+    // never is. Their clients still get the slow tick: one that waits for
+    // a frame callback before it reads its socket must not hang.
+    for surface in state.lock_surfaces() {
+        send_frames_surface_tree(
+            &surface,
+            output,
+            time,
+            throttle,
+            surface_primary_scanout_output,
+        );
     }
-
-    for window in state.space.elements() {
+    for window in state.space.elements().chain(state.minimised.iter()) {
         window.send_frame(output, time, throttle, surface_primary_scanout_output);
     }
     for layer in layer_map_for_output(output).layers() {

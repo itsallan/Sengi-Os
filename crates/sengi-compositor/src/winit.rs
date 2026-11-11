@@ -100,6 +100,7 @@ fn redraw(
     state: &mut State,
 ) -> Result<(), Box<dyn Error>> {
     state.needs_redraw = false;
+    let epoch = state.lock_epoch();
     // How many frames old the buffer we are about to draw into is; the
     // damage tracker repaints only what changed since then.
     let age = backend.buffer_age().unwrap_or(0);
@@ -111,6 +112,6 @@ fn redraw(
     if let Some(damage) = &rendered.damage {
         backend.submit(Some(damage))?;
     }
-    render::presented(state, output, &rendered.states);
+    render::presented(state, output, &rendered.states, epoch);
     Ok(())
 }

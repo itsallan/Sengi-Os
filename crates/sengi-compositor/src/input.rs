@@ -316,14 +316,29 @@ impl State {
             _ => None,
         };
         if self.pointer_stale || pointer.current_focus() != wanted {
-            let time = self.start_time.elapsed().as_millis() as u32;
-            self.pointer_motion(location, time);
+            self.refocus_pointer();
         }
     }
 
+    /// Works out anew what the pointer is over, where it is. Nobody moved
+    /// it, so this is not the user being active.
+    pub fn refocus_pointer(&mut self) {
+        let pointer = self.seat.get_pointer().expect("seat has a pointer");
+        if !self.pointer_seen || pointer.is_grabbed() {
+            return;
+        }
+        let time = self.start_time.elapsed().as_millis() as u32;
+        self.place_pointer(pointer.current_location(), time);
+    }
+
+    /// The user moved the pointer.
     pub fn pointer_motion(&mut self, location: Point<f64, Logical>, time: u32) {
         self.note_activity();
         self.pointer_seen = true;
+        self.place_pointer(location, time);
+    }
+
+    fn place_pointer(&mut self, location: Point<f64, Logical>, time: u32) {
         self.pointer_stale = false;
 
         // During a drag the grab does the work, see `FrameGrab`.
@@ -588,17 +603,16 @@ impl State {
     /// windows with their frames, then bottom and background layers.
     fn target_at(&self, location: Point<f64, Logical>) -> Option<Target> {
         if self.is_locked() {
-            // The lock surface covers the output; nothing else exists.
-            let origin = self
-                .output()
-                .and_then(|output| self.space.output_geometry(&output))
-                .map(|geometry| geometry.loc.to_f64())
-                .unwrap_or_default();
-            return self.lock_surface().map(|surface| Target::Surface {
-                window: None,
-                surface,
-                origin,
-            });
+            // The lock surface covers its output; nothing else exists.
+            let output = self.output_at(location)?;
+            let origin = self.space.output_geometry(&output)?.loc.to_f64();
+            return self
+                .lock_surface_on(&output)
+                .map(|surface| Target::Surface {
+                    window: None,
+                    surface,
+                    origin,
+                });
         }
         let layer = |layers: &[Layer]| {
             let (surface, origin) = self.layer_surface_under(location, layers)?;
