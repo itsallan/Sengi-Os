@@ -2,11 +2,12 @@
 //!
 //! An item says which icon it wants with `IconName` and, optionally, a
 //! directory of its own in `IconThemePath`. Both come from an arbitrary
-//! app, so the directory is only used if it really is one, only image
-//! files are picked out of it, and no file is decoded in the bar itself:
-//! [`Decoder`] runs this program again as a short-lived child that decodes
-//! one file under tight limits and writes the pixels to its standard
-//! output.
+//! app, so the directory is only used if it really is one and only image
+//! files are picked out of it. The bar itself touches neither: a path may
+//! lead to a network or FUSE mount that never answers, and a file may be
+//! built to break a decoder. [`Decoder`] runs this program again as a
+//! short-lived child that finds and decodes one icon under tight limits
+//! and a timeout, and writes the pixels to its standard output.
 //!
 //! The lookup and the decoder follow sengi-dock's `icons.rs`, cut down to
 //! what the tray needs. They belong in a shared crate.
@@ -140,10 +141,10 @@ fn plain_name(name: &str) -> bool {
         && !name.contains(['/', '\\', '\0'])
 }
 
-/// The item's own icon directory, if it names a real one. It is resolved
-/// first, so a link cannot lead somewhere other than where it appears to,
-/// and the kernel's file systems are never searched.
-pub fn theme_path(path: &str) -> Option<PathBuf> {
+/// Where an item-supplied path really leads, unless that is into one of
+/// the kernel's file systems. Resolving first means a link cannot lead
+/// somewhere other than where it appears to.
+fn resolve(path: &str) -> Option<PathBuf> {
     if !path.starts_with('/') || path.len() > MAX_PATH {
         return None;
     }
@@ -151,7 +152,12 @@ pub fn theme_path(path: &str) -> Option<PathBuf> {
     let special = ["/proc", "/sys", "/dev"]
         .iter()
         .any(|root| real.starts_with(root));
-    (real != Path::new("/") && !special && real.is_dir()).then_some(real)
+    (!special).then_some(real)
+}
+
+/// The item's own icon directory, if it names a real one.
+pub fn theme_path(path: &str) -> Option<PathBuf> {
+    resolve(path).filter(|real| real != Path::new("/") && real.is_dir())
 }
 
 fn entries(dir: &Path) -> impl Iterator<Item = fs::DirEntry> {
@@ -201,8 +207,7 @@ fn themed(theme: &Path, name: &str, pixels: u32) -> Option<PathBuf> {
 pub fn find(dirs: &IconDirs, own: Option<&Path>, icon: &str, pixels: u32) -> Option<PathBuf> {
     // Some apps give a whole file name instead of an icon name.
     if icon.starts_with('/') {
-        let path = PathBuf::from(icon);
-        return (icon.len() <= MAX_PATH && supported(&path) && path.is_file()).then_some(path);
+        return resolve(icon).filter(|path| supported(path) && path.is_file());
     }
     let name = [".png", ".svg", ".xpm"]
         .iter()
@@ -330,11 +335,13 @@ fn render_svg(bytes: &[u8], size: u32) -> Option<Pixels> {
     })
 }
 
-/// The child's side: decodes one icon and writes its pixels to standard
-/// output. Returns None when the arguments are not a decode request, so
-/// `main` can call this first and carry on as usual otherwise.
+/// The child's side: finds and decodes one icon and writes its pixels to
+/// standard output. The arguments are the size, the item's theme path
+/// (which may be empty) and the icon name. Returns None when the
+/// arguments are not a decode request, so `main` can call this first and
+/// carry on as usual otherwise.
 pub fn run_decoder(args: &[String]) -> Option<ExitCode> {
-    let [flag, path, pixels] = args else {
+    let [flag, pixels, theme, name] = args else {
         return None;
     };
     if flag != DECODE_FLAG {
@@ -353,10 +360,11 @@ pub fn run_decoder(args: &[String]) -> Option<ExitCode> {
         // SAFETY: setrlimit only reads the struct it is handed.
         unsafe { libc::setrlimit(resource, &limit) };
     }
-    let decoded = pixels
-        .parse()
-        .ok()
-        .and_then(|pixels| load(Path::new(path), pixels));
+    let decoded = pixels.parse().ok().and_then(|pixels| {
+        let own = theme_path(theme);
+        let path = find(&IconDirs::from_env(), own.as_deref(), name, pixels)?;
+        load(&path, pixels)
+    });
     let written = decoded.is_some_and(|icon| {
         let mut out = std::io::stdout().lock();
         out.write_all(&icon.data).and_then(|()| out.flush()).is_ok()
@@ -368,39 +376,58 @@ pub fn run_decoder(args: &[String]) -> Option<ExitCode> {
     })
 }
 
-/// Decodes icons in a child process, so that no icon file can crash or
-/// stall the program that asked.
+/// The running program, to start again as a helper. Not `current_exe`:
+/// after a package upgrade that names a file that is gone, or worse, the
+/// new version, which may not speak to this one. This is the binary we
+/// are actually running, whatever has happened to its name.
+pub const THIS_PROGRAM: &str = "/proc/self/exe";
+
+/// Finds and decodes icons in a child process, so that no path and no
+/// icon file can crash or stall the program that asked.
 #[derive(Clone, Debug)]
 pub struct Decoder {
     program: PathBuf,
-    timeout: Duration,
+}
+
+impl Default for Decoder {
+    /// A decoder that runs the program we are part of.
+    fn default() -> Self {
+        Self::new(PathBuf::from(THIS_PROGRAM))
+    }
 }
 
 impl Decoder {
     /// A decoder that runs `program`, which must answer [`DECODE_FLAG`] by
     /// calling [`run_decoder`].
-    pub fn new(program: PathBuf, timeout: Duration) -> Self {
-        Self { program, timeout }
+    pub fn new(program: PathBuf) -> Self {
+        Self { program }
     }
 
-    /// A decoder that runs the program we are part of.
-    pub fn for_this_program() -> Option<Self> {
-        let program = std::env::current_exe().ok()?;
-        Some(Self::new(program, DECODE_TIMEOUT))
-    }
-
-    /// Decodes `path` to `pixels` per side. Blocks for at most the timeout,
-    /// so it is called from the tray's worker, never the UI thread. None
-    /// means the file is not a usable icon, whatever the reason.
-    pub fn decode(&self, path: &Path, pixels: u32) -> Option<Pixels> {
-        if pixels == 0 || pixels > MAX_ICON {
+    /// Finds the icon `name` and decodes it to `pixels` per side. Blocks
+    /// for at most `timeout`, so it is called from the tray's workers,
+    /// never the UI thread. None means there is no usable icon by that
+    /// name, whatever the reason.
+    pub fn decode(
+        &self,
+        name: &str,
+        theme_path: &str,
+        pixels: u32,
+        timeout: Duration,
+    ) -> Option<Pixels> {
+        // An argument cannot hold a NUL, and nothing real is this long.
+        let sane = |text: &str, limit: usize| text.len() <= limit && !text.contains('\0');
+        if pixels == 0 || pixels > MAX_ICON || name.is_empty() {
+            return None;
+        }
+        if !sane(name, MAX_PATH) || !sane(theme_path, MAX_PATH) {
             return None;
         }
         let expected = (pixels * pixels * 4) as usize;
         let mut child = Command::new(&self.program)
             .arg(DECODE_FLAG)
-            .arg(path)
             .arg(pixels.to_string())
+            .arg(theme_path)
+            .arg(name)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -409,7 +436,6 @@ impl Decoder {
         let mut output = child.stdout.take()?;
 
         // Someone has to watch the clock while the pipe is read.
-        let timeout = self.timeout;
         let watchdog = std::thread::spawn(move || {
             let started = Instant::now();
             loop {
@@ -436,6 +462,74 @@ impl Decoder {
         let finished = watchdog.join().unwrap_or(false);
         (finished && read.is_ok() && data.len() == expected)
             .then_some(Pixels { size: pixels, data })
+    }
+}
+
+/// How long a found (or not found) icon is remembered. Items flip between
+/// a few icons; this is long enough to make that free and short enough
+/// that an icon installed or replaced meanwhile shows up soon.
+const CACHE_TIME: Duration = Duration::from_secs(30);
+
+/// Answers that are remembered at once.
+const CACHE_SIZE: usize = 24;
+
+struct Cached {
+    name: String,
+    theme_path: String,
+    pixels: u32,
+    icon: Option<Pixels>,
+    at: Instant,
+}
+
+/// What the decoder said lately, so that asking again costs no child
+/// process and no walk through the theme directories.
+#[derive(Default)]
+pub struct Cache {
+    entries: Vec<Cached>,
+}
+
+impl Cache {
+    /// The remembered answer: `Some(None)` is "there is no such icon".
+    pub fn get(
+        &self,
+        name: &str,
+        theme_path: &str,
+        pixels: u32,
+        now: Instant,
+    ) -> Option<Option<Pixels>> {
+        self.entries
+            .iter()
+            .find(|held| {
+                held.pixels == pixels
+                    && held.name == name
+                    && held.theme_path == theme_path
+                    && now.saturating_duration_since(held.at) < CACHE_TIME
+            })
+            .map(|held| held.icon.clone())
+    }
+
+    pub fn put(
+        &mut self,
+        name: &str,
+        theme_path: &str,
+        pixels: u32,
+        icon: Option<Pixels>,
+        now: Instant,
+    ) {
+        self.entries.retain(|held| {
+            now.saturating_duration_since(held.at) < CACHE_TIME
+                && !(held.pixels == pixels && held.name == name && held.theme_path == theme_path)
+        });
+        if self.entries.len() >= CACHE_SIZE {
+            self.entries.remove(0);
+        }
+        self.entries.push(Cached {
+            name: name.to_string(),
+            theme_path: theme_path.to_string(),
+            pixels,
+            icon,
+            at: now,
+        });
     }
 }
 
@@ -621,6 +715,13 @@ mod tests {
         );
         assert_eq!(find(&dirs, None, "/etc/passwd", 16), None);
         assert_eq!(find(&dirs, None, "/dev/zero", 16), None);
+        // A whole path gets the same exclusions as a theme directory, and
+        // is judged by where it really leads.
+        assert_eq!(find(&dirs, None, "/proc/self/exe.png", 16), None);
+        assert_eq!(find(&dirs, None, "/sys/class/x.png", 16), None);
+        let link = root.join("via-link.png");
+        std::os::unix::fs::symlink("/proc/self/exe", &link).unwrap();
+        assert_eq!(find(&dirs, None, link.to_str().unwrap(), 16), None);
         assert_eq!(
             find(&dirs, None, own.join("zero.png").to_str().unwrap(), 16),
             None
@@ -690,40 +791,104 @@ mod tests {
     }
 
     #[test]
+    fn answers_are_remembered_for_a_while() {
+        let start = Instant::now();
+        let icon = Pixels {
+            size: 16,
+            data: vec![1; 16 * 16 * 4],
+        };
+        let mut cache = Cache::default();
+        assert_eq!(cache.get("chat", "", 16, start), None);
+        cache.put("chat", "", 16, Some(icon.clone()), start);
+        cache.put("missing", "", 16, None, start);
+        let soon = start + Duration::from_secs(5);
+        assert_eq!(cache.get("chat", "", 16, soon), Some(Some(icon.clone())));
+        // Not finding one is an answer too, and saves looking again.
+        assert_eq!(cache.get("missing", "", 16, soon), Some(None));
+        // Another size, or another app's directory, is another question.
+        assert_eq!(cache.get("chat", "", 32, soon), None);
+        assert_eq!(cache.get("chat", "/opt/chat", 16, soon), None);
+        // After a while the file may have changed.
+        assert_eq!(cache.get("chat", "", 16, start + CACHE_TIME), None);
+        // A newer answer replaces the old one.
+        cache.put("chat", "", 16, None, soon);
+        assert_eq!(cache.get("chat", "", 16, soon), Some(None));
+    }
+
+    #[test]
+    fn the_cache_does_not_grow_without_bound() {
+        let start = Instant::now();
+        let mut cache = Cache::default();
+        for n in 0..CACHE_SIZE * 4 {
+            cache.put(&format!("icon-{n}"), "", 16, None, start);
+        }
+        assert_eq!(cache.entries.len(), CACHE_SIZE);
+        assert_eq!(cache.get("icon-0", "", 16, start), None);
+        let last = format!("icon-{}", CACHE_SIZE * 4 - 1);
+        assert_eq!(cache.get(&last, "", 16, start), Some(None));
+    }
+
+    #[test]
     fn requests_that_are_not_for_the_decoder_are_passed_over() {
         let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert!(run_decoder(&args(&[])).is_none());
         assert!(run_decoder(&args(&["--menu", "eDP-1", "100"])).is_none());
-        assert!(run_decoder(&args(&[DECODE_FLAG, "only-a-path"])).is_none());
+        assert!(run_decoder(&args(&[DECODE_FLAG, "16", "only-two"])).is_none());
     }
 
     #[test]
     fn a_decoder_that_cannot_run_or_misbehaves_gives_nothing() {
         let root = temp_dir("icons");
-        let icon = root.join("icon.png");
-        write_png(&icon, 4, [1, 2, 3, 255]);
         let quick = Duration::from_millis(300);
+        let decode = |decoder: &Decoder| decoder.decode("icon", "", 4, quick);
 
-        let missing = Decoder::new(root.join("no-such-program"), quick);
-        assert_eq!(missing.decode(&icon, 4), None);
+        assert_eq!(decode(&Decoder::new(root.join("no-such-program"))), None);
 
         let script = |name: &str, body: &str| {
             use std::os::unix::fs::PermissionsExt;
             let path = root.join(name);
             fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-            path
+            Decoder::new(path)
         };
-        let short = Decoder::new(script("short", "printf abc"), quick);
-        assert_eq!(short.decode(&icon, 4), None);
-        let long = Decoder::new(script("long", "head -c 4096 /dev/zero"), quick);
-        assert_eq!(long.decode(&icon, 4), None);
-        let stuck = Decoder::new(script("stuck", "exec sleep 30"), quick);
+        assert_eq!(decode(&script("short", "printf abc")), None);
+        assert_eq!(decode(&script("long", "head -c 4096 /dev/zero")), None);
+        // A lookup that hangs, as on a dead network mount.
         let started = Instant::now();
-        assert_eq!(stuck.decode(&icon, 4), None);
+        assert_eq!(decode(&script("stuck", "exec sleep 30")), None);
         assert!(started.elapsed() < Duration::from_secs(5));
 
-        let good = Decoder::new(script("good", "head -c 64 /dev/zero"), quick);
-        assert_eq!(good.decode(&icon, 4).unwrap().data, [0u8; 64]);
+        let good = script("good", "head -c 64 /dev/zero");
+        assert_eq!(decode(&good).unwrap().data, [0u8; 64]);
+        // Requests that make no sense never start the child.
+        assert_eq!(good.decode("", "", 4, quick), None);
+        assert_eq!(good.decode("icon", "", 0, quick), None);
+        assert_eq!(good.decode("icon", "", MAX_ICON + 1, quick), None);
+        assert_eq!(good.decode("ic\0on", "", 4, quick), None);
+    }
+
+    #[test]
+    fn the_child_is_told_the_size_the_theme_path_and_the_name() {
+        let root = temp_dir("icons");
+        use std::os::unix::fs::PermissionsExt;
+        let path = root.join("echo");
+        let seen = root.join("seen");
+        fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\nprintf '%s|' \"$@\" >{}\nhead -c 64 /dev/zero\n",
+                seen.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        let decoder = Decoder::new(path);
+        assert!(decoder
+            .decode("chat-unread", "/opt/chat/icons", 4, Duration::from_secs(2))
+            .is_some());
+        assert_eq!(
+            fs::read_to_string(seen).unwrap(),
+            format!("{DECODE_FLAG}|4|/opt/chat/icons|chat-unread|")
+        );
     }
 }

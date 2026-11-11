@@ -100,10 +100,21 @@ impl Pacer {
         }
     }
 
-    /// The work came back. True means start it again at once.
-    pub fn finished(&mut self, now: Instant) -> bool {
+    /// The work came back. The interval runs from here, not from when the
+    /// work started, so an app that is slow to answer is not asked again
+    /// the moment it has: a request that came in meanwhile waits its turn
+    /// and [`Pacer::tick`] says when.
+    pub fn finished(&mut self, now: Instant) {
         self.in_flight = false;
-        std::mem::take(&mut self.again) && self.request(now)
+        self.limiter.last = Some(now);
+        if std::mem::take(&mut self.again) {
+            self.request(now);
+        }
+    }
+
+    #[cfg(test)]
+    pub fn in_flight(&self) -> bool {
+        self.in_flight
     }
 
     /// When [`Pacer::tick`] next has something to say.
@@ -147,26 +158,31 @@ mod tests {
         for n in 1..1000 {
             assert!(!pacer.request(start + ms(n) / 100));
         }
-        // It comes back quickly: the follow-up has to wait out the interval.
-        assert!(!pacer.finished(start + ms(20)));
-        assert_eq!(pacer.due(), Some(start + BASE_INTERVAL));
+        // The follow-up waits out the interval, counted from the reply.
+        pacer.finished(start + ms(20));
+        assert_eq!(pacer.due(), Some(start + ms(20) + BASE_INTERVAL));
         assert!(!pacer.tick(start + ms(100)));
-        assert!(pacer.tick(start + BASE_INTERVAL));
+        assert!(pacer.tick(start + ms(20) + BASE_INTERVAL));
         assert_eq!(pacer.due(), None);
         // And then nothing more is owed.
-        assert!(!pacer.finished(start + ms(300)));
+        pacer.finished(start + ms(300));
         assert_eq!(pacer.due(), None);
     }
 
     #[test]
-    fn a_slow_reply_is_followed_up_at_once() {
+    fn a_slow_reply_is_not_followed_up_at_once() {
         let mut pacer = Pacer::default();
         let start = Instant::now();
         assert!(pacer.request(start));
         assert!(!pacer.request(start + ms(10)));
-        // The read took longer than the interval, so there is no need to
-        // wait any more.
-        assert!(pacer.finished(start + ms(400)));
+        // The app took 1.9 s to answer. Asking again straight away would
+        // keep a worker on it for good.
+        pacer.finished(start + ms(1900));
+        assert!(!pacer.in_flight());
+        assert_eq!(pacer.due(), Some(start + ms(1900) + BASE_INTERVAL));
+        // A fresh request in the meantime changes nothing.
+        assert!(!pacer.request(start + ms(2000)));
+        assert!(pacer.tick(start + ms(1900) + BASE_INTERVAL));
     }
 
     #[test]
@@ -174,9 +190,9 @@ mod tests {
         let mut pacer = Pacer::default();
         let start = Instant::now();
         assert!(pacer.request(start));
-        assert!(!pacer.finished(start + ms(5)));
+        pacer.finished(start + ms(5));
         assert!(pacer.request(start + ms(300)));
-        assert!(!pacer.finished(start + ms(305)));
+        pacer.finished(start + ms(305));
         assert!(pacer.request(start + ms(900)));
     }
 
@@ -189,10 +205,7 @@ mod tests {
             let now = start + ms(t);
             if busy_until == Some(t) {
                 busy_until = None;
-                if pacer.finished(now) {
-                    starts.push(t);
-                    busy_until = Some(t + 5);
-                }
+                pacer.finished(now);
             }
             if pacer.tick(now) || pacer.request(now) {
                 starts.push(t);
@@ -207,11 +220,11 @@ mod tests {
         let mut pacer = Pacer::default();
         let start = Instant::now();
         let starts = spam(&mut pacer, start, 60_000);
-        // 0, then 250 ms, 500 ms, 1 s, 2 s, 4 s and 8 s apart from there on.
-        assert_eq!(&starts[..7], [0, 250, 750, 1750, 3750, 7750, 15750]);
+        // 0, then 250 ms, 500 ms, 1 s, 2 s, 4 s and 8 s after each reply.
+        assert_eq!(&starts[..7], [0, 255, 760, 1765, 3770, 7775, 15780]);
         assert!(starts.len() <= 13, "{starts:?}");
         let gaps: Vec<u64> = starts.windows(2).map(|w| w[1] - w[0]).collect();
-        assert!(gaps[6..].iter().all(|gap| *gap == 8000), "{gaps:?}");
+        assert!(gaps[6..].iter().all(|gap| *gap == 8005), "{gaps:?}");
     }
 
     #[test]
@@ -224,13 +237,13 @@ mod tests {
         let later = start + ms(20_000) + MAX_INTERVAL * 5;
         // A due follow-up from the spam is served first.
         if pacer.tick(later) {
-            assert!(!pacer.finished(later + ms(5)));
+            pacer.finished(later + ms(5));
         }
         let calm = later + MAX_INTERVAL * 5;
         assert!(pacer.request(calm));
-        assert!(!pacer.finished(calm + ms(5)));
+        pacer.finished(calm + ms(5));
         // Back to the short interval.
         assert!(!pacer.request(calm + ms(100)));
-        assert_eq!(pacer.due(), Some(calm + BASE_INTERVAL));
+        assert_eq!(pacer.due(), Some(calm + ms(5) + BASE_INTERVAL));
     }
 }

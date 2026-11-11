@@ -1,46 +1,54 @@
 //! The tray's side of the session bus.
 //!
-//! Four threads, none of them the UI's. The tray thread owns the [`Host`]
-//! and sleeps until an event arrives. A second forwards bus signals to it.
-//! Two workers make the calls that can be slow, because the other end is
-//! some app that may be busy or stuck: one reads items, the other carries
-//! out clicks and menu requests, so that a flood of reads cannot delay
-//! what the user asked for. Every call has a timeout.
+//! None of this runs on the UI thread. The tray thread owns the [`Host`]
+//! and sleeps until an event arrives. A second thread forwards bus signals
+//! to it. The calls that wait for an answer are made by two small pools of
+//! workers, because the other end is some app that may be busy or stuck:
+//! one pool reads items, the other carries out activations and menu
+//! requests, so that reads cannot delay what the user asked for. The host
+//! gives any one item at most one job of each kind at a time, so a dead
+//! app holds one worker of a pool and the rest carry on.
+//!
+//! Every call has a timeout and every job a budget for all of its calls
+//! together. Calls whose answer nobody needs are sent without waiting.
 
-use std::cell::RefCell;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::fd::AsRawFd;
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixStream};
-use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use enumflags2::BitFlags;
+use futures_lite::FutureExt;
 use zbus::address::transport::{Transport, UnixSocket};
 use zbus::blocking::{connection, Connection, MessageIterator};
-use zbus::export::serde::de::DeserializeOwned;
-use zbus::export::serde::Serialize;
-use zbus::fdo::{RequestNameFlags, RequestNameReply};
-use zbus::zvariant::{DeserializeValue, DynamicType, OwnedObjectPath, Structure, Type, Value};
-
-use super::host::{
-    Backend, Call, Event, Failure, Host, MenuAction, MenuRequest, Method, Place, Snapshot, View,
+use zbus::export::serde::de::{DeserializeOwned, SeqAccess, Visitor};
+use zbus::export::serde::{Deserialize, Deserializer, Serialize};
+use zbus::fdo::RequestNameReply;
+use zbus::message::Flags;
+use zbus::zvariant::{
+    DeserializeValue, DynamicType, OwnedObjectPath, Signature, Structure, Type, Value,
 };
-use super::icons::{self, Decoder, IconDirs};
-use super::item::{self, IconFiles, Properties, Raw, Status};
+
+use super::flow::{Budget, Latest};
+use super::host::{
+    Backend, Call, Event, Failure, Host, MenuAction, MenuRequest, Method, Place, Refresh, Snapshot,
+    View,
+};
+use super::icons::{Cache, Decoder, DECODE_TIMEOUT, THIS_PROGRAM};
+use super::item::{self, IconSource, Parts, Raw, Status, Which};
 use super::menu::{self, Entry};
 use super::menu_view;
 use super::pixmap::{self, Pixels, Pixmap, MAX_PIXMAPS};
-use super::watcher::{Address, FreedesktopWatcher, KdeWatcher, Registry, Shared};
+use super::watcher::{
+    Address, FreedesktopWatcher, KdeWatcher, Registry, Shared, FDO_WATCHER, KDE_WATCHER, MAX_ITEMS,
+};
 
 const KDE_ITEM: &str = "org.kde.StatusNotifierItem";
 const FDO_ITEM: &str = "org.freedesktop.StatusNotifierItem";
-const KDE_WATCHER: &str = "org.kde.StatusNotifierWatcher";
-const FDO_WATCHER: &str = "org.freedesktop.StatusNotifierWatcher";
 const WATCHER_PATH: &str = "/StatusNotifierWatcher";
 const DBUSMENU: &str = "com.canonical.dbusmenu";
 const DBUS: &str = "org.freedesktop.DBus";
@@ -50,46 +58,65 @@ const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 /// How long any one call to an app may take.
 const CALL_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Largest replies we will unpack. A reply over its limit is dropped
-/// whole, as if the property were not there.
-const TEXT_LIMIT: usize = 16 * 1024;
-const TOOLTIP_LIMIT: usize = 1024 * 1024;
-const PIXMAP_LIMIT: usize = 8 * 1024 * 1024;
-const MENU_LIMIT: usize = 4 * 1024 * 1024;
+/// How long reading an item may take, all of its calls and its icon
+/// together. Without this, an app that answers each of a dozen calls just
+/// inside the timeout would hold a worker for most of half a minute.
+const READ_BUDGET: Duration = Duration::from_secs(3);
 
-/// Replies from this size up are followed by handing freed memory back.
+/// The same for fetching a menu.
+const MENU_BUDGET: Duration = Duration::from_secs(3);
+
+/// Largest replies we will take. These are what the job needs with room
+/// to spare: a few lines of text, pixmaps of up to 256 pixels a side, a
+/// menu of a couple of hundred rows. A reply over its limit is not
+/// unpacked, and the connection that sent it is not listened to again
+/// until it has left the bus: asking once has already cost us the whole
+/// reply, and it would cost that on every change.
+const TEXT_LIMIT: usize = 16 * 1024;
+const PIXMAP_LIMIT: usize = 2 * 1024 * 1024;
+const MENU_LIMIT: usize = 512 * 1024;
+
+/// Messages from this size up are followed by handing freed memory back
+/// to the system.
 const LARGE_REPLY: usize = 256 * 1024;
 
-/// Clicks and scroll steps that may wait for the worker. Beyond this the
-/// app is not keeping up and more would only pile on.
-const MAX_QUEUED_ACTIONS: usize = 32;
+/// Threads that read items, and threads that act on them.
+const READERS: usize = 3;
+const ACTORS: usize = 2;
 
-/// Most a menu helper may say before it is taken to have gone wrong.
-const MAX_HELPER_OUTPUT: u64 = 4096;
+/// Activations and menu requests that may wait for a worker. The host
+/// allows each item one of each at a time, so this is never reached by
+/// one app alone.
+const MAX_QUEUED_ACTIONS: usize = 8;
 
-/// Icons decoded from files that are kept in case they are asked for
-/// again; items flip between a few.
-const ICON_CACHE: usize = 16;
+/// Longest line a menu helper may say.
+const MAX_HELPER_LINE: u64 = 64;
+
+/// Menus that may wait to be written to a helper.
+const MAX_QUEUED_MENUS: usize = 2;
 
 enum Job {
-    Refresh {
-        address: Address,
-        interface: Option<&'static str>,
-        pixels: u32,
-    },
-    Call(Call),
+    Refresh(Box<Refresh>),
+    Activate(Call),
     Menu(MenuRequest),
     Adopt,
 }
 
+/// Where the tray leaves what the bars should show, and how it says that
+/// something is there.
+pub struct Outbox {
+    pub views: Latest<Vec<View>>,
+    pub wake: sengi_layer::Sender<()>,
+}
+
 /// Starts the tray. Events for it go into the returned sender; what the
-/// bar should show comes back through `views`. If there is no session bus
-/// the bar simply has no tray.
-pub fn start(views: sengi_layer::Sender<Vec<View>>, pixels: u32) -> Sender<Event> {
+/// bars should show comes back through `outbox`. If there is no session
+/// bus the bar simply has no tray.
+pub fn start(outbox: Outbox, pixels: Vec<u32>) -> Sender<Event> {
     let (events, inbox) = mpsc::channel();
     let sender = events.clone();
     let spawned = thread::Builder::new().name("tray".into()).spawn(move || {
-        if let Err(error) = run(events, inbox, views, pixels) {
+        if let Err(error) = run(events, inbox, outbox, pixels) {
             eprintln!("sengi-bar: no system tray: {error}");
         }
     });
@@ -99,13 +126,16 @@ pub fn start(views: sengi_layer::Sender<Vec<View>>, pixels: u32) -> Sender<Event
     sender
 }
 
+/// The unique name of whoever owns the watcher name when it is not us.
+/// Only that connection is believed about which items exist.
+type WatcherOwner = Arc<Mutex<Option<String>>>;
+
 fn run(
     events: Sender<Event>,
     inbox: Receiver<Event>,
-    views: sengi_layer::Sender<Vec<View>>,
-    pixels: u32,
+    outbox: Outbox,
+    pixels: Vec<u32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    pin_mmap_threshold();
     let registry = Arc::new(Mutex::new(Registry::default()));
     let shared = Shared {
         registry: registry.clone(),
@@ -120,31 +150,43 @@ fn run(
         .unique_name()
         .map(|name| name.to_string())
         .unwrap_or_default();
+    let watcher: WatcherOwner = Arc::default();
 
     // Listening starts before anything is asked for, so nothing is missed.
     let signals = MessageIterator::from(&connection);
     {
-        let (events, unique) = (events.clone(), unique.clone());
+        let (events, unique, watcher) = (events.clone(), unique.clone(), watcher.clone());
         thread::Builder::new()
             .name("tray-signals".into())
-            .spawn(move || forward_signals(signals, &unique, &events))?;
+            .spawn(move || forward_signals(signals, &unique, &watcher, &events))?;
     }
     set_match(&connection, true, &owner_rule(KDE_WATCHER));
-    for watcher in [KDE_WATCHER, FDO_WATCHER] {
-        set_match(
-            &connection,
-            true,
-            &format!("type='signal',interface='{watcher}'"),
-        );
-    }
+    set_match(
+        &connection,
+        true,
+        &format!("type='signal',interface='{KDE_WATCHER}'"),
+    );
 
+    let icons = Arc::new(IconLoader::default());
     let (reads, read_jobs) = mpsc::channel();
     let (actions, action_jobs) = mpsc::sync_channel(MAX_QUEUED_ACTIONS);
-    for (name, jobs) in [("tray-reads", read_jobs), ("tray-actions", action_jobs)] {
-        let (connection, events) = (connection.clone(), events.clone());
-        thread::Builder::new()
-            .name(name.into())
-            .spawn(move || work(&connection, jobs, &events))?;
+    for (name, count, jobs) in [
+        ("tray-reads", READERS, read_jobs),
+        ("tray-actions", ACTORS, action_jobs),
+    ] {
+        let jobs = Arc::new(Mutex::new(jobs));
+        for _ in 0..count {
+            let worker = Worker {
+                connection: connection.clone(),
+                events: events.clone(),
+                icons: icons.clone(),
+                watcher: watcher.clone(),
+            };
+            let jobs = jobs.clone();
+            thread::Builder::new()
+                .name(name.into())
+                .spawn(move || worker.run(&jobs))?;
+        }
     }
 
     // With no flags at all: we do not push another watcher out, nobody
@@ -155,16 +197,18 @@ fn run(
         connection.request_name_with_flags(KDE_WATCHER, BitFlags::empty()),
         Ok(RequestNameReply::PrimaryOwner)
     );
-    let once = RequestNameFlags::DoNotQueue.into();
-    let _ = connection.request_name_with_flags(FDO_WATCHER, once);
+    let _ = connection.request_name_with_flags(FDO_WATCHER, BitFlags::empty());
     let host_name = format!("org.kde.StatusNotifierHost-{}", std::process::id());
-    let _ = connection.request_name_with_flags(host_name.as_str(), once);
+    let _ = connection.request_name_with_flags(
+        host_name.as_str(),
+        zbus::fdo::RequestNameFlags::DoNotQueue.into(),
+    );
 
     let backend = Bus {
         connection,
         reads,
         actions,
-        views,
+        outbox,
         events,
         helper: None,
     };
@@ -238,13 +282,74 @@ fn set_match(connection: &Connection, add: bool, rule: &str) {
     let _ = connection.call_method(Some(DBUS), DBUS_PATH, Some(DBUS), method, &rule);
 }
 
+/// Calls a method and waits for the answer, for no longer than `limit`.
+fn call<B: Serialize + DynamicType>(
+    connection: &Connection,
+    (bus, path, interface): (&str, &str, &str),
+    method: &str,
+    body: &B,
+    limit: Duration,
+) -> zbus::Result<zbus::Message> {
+    let answer = connection
+        .inner()
+        .call_method(Some(bus), path, Some(interface), method, body);
+    let clock = async {
+        async_io::Timer::after(limit).await;
+        Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into())
+    };
+    async_io::block_on(answer.or(clock))
+}
+
+/// Calls a method and does not wait: the app is told not to answer, and
+/// whether it is alive to hear makes no difference to us.
+fn send<B: Serialize + DynamicType>(
+    connection: &Connection,
+    (bus, path, interface): (&str, &str, &str),
+    method: &str,
+    body: &B,
+) {
+    let message = zbus::Message::method_call(path, method)
+        .and_then(|message| message.destination(bus))
+        .and_then(|message| message.interface(interface))
+        .and_then(|message| message.with_flags(Flags::NoReplyExpected))
+        .and_then(|message| message.build(body));
+    if let Ok(message) = message {
+        let _ = connection.send(&message);
+    }
+}
+
+/// Tells a menu about something that happened to one of its rows. The
+/// data and the timestamp have no use for the events we send.
+fn menu_event(connection: &Connection, request: &MenuRequest, id: i32, name: &str) {
+    let menu = (request.bus.as_str(), request.path.as_str(), DBUSMENU);
+    send(
+        connection,
+        menu,
+        "Event",
+        &(id, name, Value::from(0i32), 0u32),
+    );
+}
+
 /// Turns the signals we subscribed to into events. Bodies are tiny or are
 /// not looked at.
-fn forward_signals(signals: MessageIterator, unique: &str, events: &Sender<Event>) {
+fn forward_signals(
+    signals: MessageIterator,
+    unique: &str,
+    watcher: &WatcherOwner,
+    events: &Sender<Event>,
+) {
+    let mut large = false;
     for message in signals {
+        // Every message passes through here, replies included, and this
+        // is where the last hold on one is often let go.
+        if std::mem::take(&mut large) {
+            trim_heap();
+        }
         let Ok(message) = message else {
             return;
         };
+        let body = message.body();
+        large = body.len() > LARGE_REPLY;
         let header = message.header();
         if header.message_type() != zbus::message::Type::Signal {
             continue;
@@ -258,7 +363,6 @@ fn forward_signals(signals: MessageIterator, unique: &str, events: &Sender<Event
             .sender()
             .map(|name| name.as_str())
             .unwrap_or_default();
-        let body = message.body();
         let small = body.len() <= TEXT_LIMIT;
         let text = || small.then(|| body.deserialize::<String>().ok()).flatten();
 
@@ -268,34 +372,35 @@ fn forward_signals(signals: MessageIterator, unique: &str, events: &Sender<Event
                     continue;
                 };
                 if name == KDE_WATCHER {
+                    let ours = new == unique;
+                    if let Ok(mut owner) = watcher.lock() {
+                        *owner = (!ours && !new.is_empty()).then(|| new.clone());
+                    }
                     if new.is_empty() {
                         continue;
                     }
-                    Event::WatcherOwner {
-                        ours: new == unique,
-                    }
+                    Event::WatcherOwner { ours }
                 } else if new.is_empty() {
                     Event::OwnerLost(name)
                 } else {
-                    continue;
+                    Event::OwnerChanged { name, owner: new }
                 }
             }
             (KDE_ITEM | FDO_ITEM, member) => Event::Signal {
                 sender: sender.to_string(),
                 path: path.to_string(),
                 member: member.to_string(),
-                status: (member == "NewStatus").then(text).flatten(),
                 menu: false,
             },
             (DBUSMENU, member) => Event::Signal {
                 sender: sender.to_string(),
                 path: path.to_string(),
                 member: member.to_string(),
-                status: None,
                 menu: true,
             },
-            // Another watcher's announcements; our own come back to us too.
-            (KDE_WATCHER | FDO_WATCHER, member) if sender != unique => {
+            // Anyone can emit a signal that looks like a watcher's. Only
+            // the connection that owns the watcher name is believed.
+            (KDE_WATCHER, member) if believed(watcher, sender) => {
                 let Some(service) = text() else {
                     continue;
                 };
@@ -313,34 +418,12 @@ fn forward_signals(signals: MessageIterator, unique: &str, events: &Sender<Event
     }
 }
 
-fn work(connection: &Connection, jobs: Receiver<Job>, events: &Sender<Event>) {
-    let icons = IconLoader::new();
-    for job in jobs {
-        let event = match job {
-            Job::Refresh {
-                address,
-                interface,
-                pixels,
-            } => {
-                let outcome = read_item(connection, &address, interface, pixels, &icons);
-                Some(Event::Refreshed {
-                    address,
-                    outcome: outcome.map(Box::new),
-                })
-            }
-            Job::Call(call) => call_item(connection, call),
-            Job::Menu(request) => menu_request(connection, &request),
-            Job::Adopt => {
-                adopt(connection, events);
-                None
-            }
-        };
-        if let Some(event) = event {
-            if events.send(event).is_err() {
-                return;
-            }
-        }
-    }
+/// Whether `sender` is the watcher we are a guest of.
+fn believed(watcher: &WatcherOwner, sender: &str) -> bool {
+    !sender.is_empty()
+        && watcher
+            .lock()
+            .is_ok_and(|owner| owner.as_deref() == Some(sender))
 }
 
 /// Whether an error means the item is gone or stuck. None is an ordinary
@@ -349,35 +432,98 @@ fn failure(error: &zbus::Error) -> Option<Failure> {
     let zbus::Error::MethodError(name, _, _) = error else {
         return Some(Failure::Unreachable);
     };
-    match name.as_str().strip_prefix("org.freedesktop.DBus.Error.") {
+    classify(name.as_str())
+}
+
+fn classify(error_name: &str) -> Option<Failure> {
+    match error_name.strip_prefix("org.freedesktop.DBus.Error.") {
         Some("ServiceUnknown" | "NameHasNoOwner") => Some(Failure::Gone),
         Some("NoReply" | "Timeout" | "TimedOut" | "Disconnected") => Some(Failure::Unreachable),
         _ => None,
     }
 }
 
+/// An `IconPixmap` array, of which only the first few entries that could
+/// be drawn are kept. The rest are passed over where they lie in the
+/// reply; nothing is copied or collected for them.
+struct PixmapList(Vec<Pixmap>);
+
+impl Type for PixmapList {
+    const SIGNATURE: &'static Signature = <Vec<(i32, i32, Vec<u8>)> as Type>::SIGNATURE;
+}
+
+impl<'de> Deserialize<'de> for PixmapList {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Entries;
+
+        impl<'de> Visitor<'de> for Entries {
+            type Value = PixmapList;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an array of pixmaps")
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut entries: A) -> Result<PixmapList, A::Error> {
+                let mut kept = Vec::new();
+                let mut seen = 0;
+                while let Some((width, height, data)) =
+                    entries.next_element::<(i32, i32, &'de [u8])>()?
+                {
+                    seen += 1;
+                    if seen <= MAX_PIXMAPS && pixmap::plausible(width, height, data.len()) {
+                        kept.push(Pixmap {
+                            width,
+                            height,
+                            data: data.to_vec(),
+                        });
+                    }
+                }
+                Ok(PixmapList(kept))
+            }
+        }
+
+        deserializer.deserialize_seq(Entries)
+    }
+}
+
+type ToolTip = (String, PixmapList, String, String);
+
 /// Reads an item's properties one at a time. `GetAll` would be one call
-/// instead of a dozen, but then a single over-sized or mistyped property
-/// would cost all the others.
+/// instead of several, but then a single over-sized or mistyped property
+/// would cost all the others, and everything would be fetched when one
+/// thing changed.
 struct Reader<'a> {
     connection: &'a Connection,
     address: &'a Address,
     interface: &'static str,
+    icons: &'a IconLoader,
+    budget: Budget,
     /// The unique name the answers came from.
     owner: Option<String>,
     /// Whether any answer was big enough to be worth tidying up after.
     large: bool,
+    /// Pixmaps fetched during this read, so two sizes cost one fetch.
+    fetched: [Option<Vec<Pixmap>>; 2],
 }
 
 impl Reader<'_> {
-    /// The reply to `Get`, unless it is over `limit`.
+    /// The reply to `Get`. None is a property the item does not have.
     fn reply(&mut self, property: &str, limit: usize) -> Result<Option<zbus::Message>, Failure> {
-        let reply = self.connection.call_method(
-            Some(self.address.bus.as_str()),
+        let allowed = self
+            .budget
+            .next(Instant::now(), CALL_TIMEOUT)
+            .ok_or(Failure::Unreachable)?;
+        let item = (
+            self.address.bus.as_str(),
             self.address.path.as_str(),
-            Some(PROPERTIES),
+            PROPERTIES,
+        );
+        let reply = call(
+            self.connection,
+            item,
             "Get",
             &(self.interface, property),
+            allowed,
         );
         let message = match reply {
             Ok(message) => message,
@@ -388,7 +534,13 @@ impl Reader<'_> {
         }
         let size = message.body().len();
         self.large |= size > LARGE_REPLY;
-        Ok((size <= limit).then_some(message))
+        if size > limit {
+            let owner = self.owner.clone();
+            return Err(Failure::Oversized(
+                owner.unwrap_or_else(|| self.address.bus.clone()),
+            ));
+        }
+        Ok(Some(message))
     }
 
     fn get<T>(&mut self, property: &str, limit: usize) -> Result<Option<T>, Failure>
@@ -408,209 +560,204 @@ impl Reader<'_> {
     fn text(&mut self, property: &str) -> Result<Option<String>, Failure> {
         self.get(property, TEXT_LIMIT)
     }
+}
 
-    /// Pixmaps are looked at where they lie in the reply, and only the
-    /// ones that could be drawn are copied out of it.
-    fn pixmaps(&mut self, property: &str) -> Result<Option<Vec<Pixmap>>, Failure> {
-        let Some(message) = self.reply(property, PIXMAP_LIMIT)? else {
-            return Ok(None);
+impl IconSource for Reader<'_> {
+    type Error = Failure;
+
+    fn named(
+        &mut self,
+        name: &str,
+        theme_path: &str,
+        pixels: u32,
+    ) -> Result<Option<Pixels>, Failure> {
+        self.icons.named(name, theme_path, pixels, &self.budget)
+    }
+
+    fn pixmaps(&mut self, which: Which) -> Result<Vec<Pixmap>, Failure> {
+        let (slot, property) = match which {
+            Which::Icon => (0, "IconPixmap"),
+            Which::Attention => (1, "AttentionIconPixmap"),
         };
-        let body = message.body();
-        let Ok(list) = body.deserialize::<DeserializeValue<'_, Vec<(i32, i32, &[u8])>>>() else {
-            return Ok(None);
-        };
-        Ok(Some(
-            list.0
-                .into_iter()
-                .take(MAX_PIXMAPS)
-                .filter(|(width, height, data)| pixmap::plausible(*width, *height, data.len()))
-                .map(|(width, height, data)| Pixmap {
-                    width,
-                    height,
-                    data: data.to_vec(),
-                })
-                .collect(),
-        ))
+        if self.fetched[slot].is_none() {
+            let list = match self.reply(property, PIXMAP_LIMIT)? {
+                Some(message) => message
+                    .body()
+                    .deserialize::<DeserializeValue<'_, PixmapList>>()
+                    .map_or_else(|_| Vec::new(), |list| list.0 .0),
+                None => Vec::new(),
+            };
+            self.fetched[slot] = Some(list);
+        }
+        Ok(self.fetched[slot].clone().unwrap_or_default())
     }
 }
 
-type ToolTip = (String, Vec<(i32, i32, Vec<u8>)>, String, String);
-
 fn read_item(
     connection: &Connection,
-    address: &Address,
-    interface: Option<&'static str>,
-    pixels: u32,
+    request: &Refresh,
     icons: &IconLoader,
 ) -> Result<Snapshot, Failure> {
+    let previous = request.previous.as_ref();
     let mut reader = Reader {
         connection,
-        address,
-        interface: interface.unwrap_or(KDE_ITEM),
+        address: &request.address,
+        interface: previous.map_or(KDE_ITEM, |snapshot| snapshot.interface),
+        icons,
+        budget: Budget::starting(Instant::now(), READ_BUDGET),
         owner: None,
         large: false,
+        fetched: [None, None],
     };
-    let snapshot = read_properties(&mut reader, interface, pixels, icons);
+    let snapshot = read_parts(&mut reader, request);
     if reader.large {
         trim_heap();
     }
     snapshot
 }
 
-fn read_properties(
-    reader: &mut Reader<'_>,
-    interface: Option<&'static str>,
-    pixels: u32,
-    icons: &IconLoader,
-) -> Result<Snapshot, Failure> {
-    let mut id = reader.text("Id")?;
-    if id.is_none() && interface.is_none() {
-        // Perhaps it speaks the freedesktop draft's interface instead.
-        reader.interface = FDO_ITEM;
-        id = reader.text("Id")?;
-        if id.is_none() {
-            reader.interface = KDE_ITEM;
-        }
-    }
-    let status = reader.text("Status")?;
-    let attention = status.as_deref().map(Status::parse) == Some(Status::NeedsAttention);
-    let raw = Raw {
-        id,
-        title: reader.text("Title")?,
-        tooltip: reader
-            .get::<ToolTip>("ToolTip", TOOLTIP_LIMIT)?
-            .map(|(_icon, _pixmaps, title, body)| (title, body)),
-        is_menu: reader.get("ItemIsMenu", TEXT_LIMIT)?,
-        menu: reader
-            .get::<OwnedObjectPath>("Menu", TEXT_LIMIT)?
-            .map(|path| path.to_string()),
-        icon_theme_path: reader.text("IconThemePath")?,
-        icon_name: reader.text("IconName")?,
-        overlay_icon_name: reader.text("OverlayIconName")?,
-        icon_pixmaps: reader.pixmaps("IconPixmap")?,
-        // Only fetched when they would be shown.
-        attention_icon_name: if attention {
-            reader.text("AttentionIconName")?
-        } else {
-            None
-        },
-        attention_pixmaps: if attention {
-            reader.pixmaps("AttentionIconPixmap")?
-        } else {
-            None
-        },
-        status,
+fn read_parts(reader: &mut Reader<'_>, request: &Refresh) -> Result<Snapshot, Failure> {
+    let previous = request.previous.as_ref();
+    let parts = if previous.is_some() {
+        request.parts
+    } else {
+        Parts::ALL
     };
-    if raw.is_empty() {
+    let mut raw = Raw::default();
+    if parts.contains(Parts::IDENTITY) {
+        raw.id = reader.text("Id")?;
+        if raw.id.is_none() && previous.is_none() {
+            // Perhaps it speaks the freedesktop draft's interface instead.
+            reader.interface = FDO_ITEM;
+            raw.id = reader.text("Id")?;
+            if raw.id.is_none() {
+                reader.interface = KDE_ITEM;
+            }
+        }
+        raw.is_menu = reader.get("ItemIsMenu", TEXT_LIMIT)?;
+        raw.menu = reader
+            .get::<OwnedObjectPath>("Menu", TEXT_LIMIT)?
+            .map(|path| path.to_string());
+    }
+    if parts.contains(Parts::STATUS) {
+        raw.status = reader.text("Status")?;
+    }
+    if parts.contains(Parts::TITLE) {
+        raw.title = reader.text("Title")?;
+    }
+    if parts.contains(Parts::TOOLTIP) {
+        // A tooltip may carry an icon of its own, which is not used.
+        raw.tooltip = reader
+            .get::<ToolTip>("ToolTip", PIXMAP_LIMIT)?
+            .map(|(_icon, _pixmaps, title, body)| (title, body));
+    }
+    if parts.contains(Parts::ICON) {
+        raw.icon_theme_path = reader.text("IconThemePath")?;
+        raw.icon_name = reader.text("IconName")?;
+    }
+    if parts.contains(Parts::ATTENTION_ICON) {
+        raw.attention_icon_name = reader.text("AttentionIconName")?;
+    }
+    if parts.contains(Parts::OVERLAY_ICON) {
+        raw.overlay_icon_name = reader.text("OverlayIconName")?;
+    }
+    if previous.is_none() && raw.is_empty() {
         return Err(Failure::Unreachable);
     }
-    let properties = Properties::from(raw);
-    let icon = item::icon(&properties, pixels, icons).map(Arc::new);
+
+    let mut properties = previous
+        .map(|snapshot| snapshot.properties.clone())
+        .unwrap_or_default();
+    let attention = |status| status == Status::NeedsAttention;
+    let was_attention = attention(properties.status);
+    properties.update(parts, raw);
+
+    // The picture is drawn again only if something that goes into it
+    // changed: an icon, or which icon the status picks. The host asks for
+    // the icons again when the sizes change.
+    let held = previous.map(|snapshot| &snapshot.icons);
+    let redraw = parts.intersects(Parts::ICONS) || attention(properties.status) != was_attention;
+    let icons = match held {
+        Some(held) if !redraw => held.clone(),
+        _ => {
+            let mut icons = Vec::new();
+            for pixels in &request.pixels {
+                if let Some(icon) = item::icon(&properties, *pixels, reader)? {
+                    icons.push((*pixels, Arc::new(icon)));
+                }
+            }
+            icons
+        }
+    };
+    let owner = reader.owner.take();
     Ok(Snapshot {
-        owner: reader
-            .owner
-            .take()
+        owner: owner
+            .or_else(|| previous.map(|snapshot| snapshot.owner.clone()))
             .unwrap_or_else(|| reader.address.bus.clone()),
         interface: reader.interface,
-        properties: properties.without_pixmaps(),
-        icon,
+        properties,
+        icons,
     })
 }
 
-fn call_item(connection: &Connection, call: Call) -> Option<Event> {
-    let send = |method: &str, body: &dyn ErasedBody| {
-        body.call(connection, &call.bus, &call.path, call.interface, method)
-    };
-    // Where the click was on screen is not ours to know under Wayland.
-    let origin = (0i32, 0i32);
-    let result = match &call.method {
-        Method::Activate(_) => send("Activate", &origin),
-        Method::SecondaryActivate => send("SecondaryActivate", &origin),
-        Method::ContextMenu => send("ContextMenu", &origin),
-        Method::Scroll { delta, horizontal } => {
-            let orientation = if *horizontal {
-                "horizontal"
-            } else {
-                "vertical"
-            };
-            send("Scroll", &(*delta, orientation))
-        }
-    };
-    match (call.method, result) {
-        (Method::Activate(place), Err(error)) if failure(&error).is_none() => {
-            Some(Event::ActivateFailed { id: call.id, place })
-        }
-        _ => None,
-    }
-}
-
-/// A call body of any type, so one closure can send several kinds.
-trait ErasedBody {
-    fn call(
-        &self,
-        connection: &Connection,
-        bus: &str,
-        path: &str,
-        interface: &str,
-        method: &str,
-    ) -> zbus::Result<zbus::Message>;
-}
-
-impl<B: Serialize + DynamicType> ErasedBody for B {
-    fn call(
-        &self,
-        connection: &Connection,
-        bus: &str,
-        path: &str,
-        interface: &str,
-        method: &str,
-    ) -> zbus::Result<zbus::Message> {
-        connection.call_method(Some(bus), path, Some(interface), method, self)
-    }
-}
-
-fn menu_request(connection: &Connection, request: &MenuRequest) -> Option<Event> {
-    let send = |method: &str, body: &dyn ErasedBody| {
-        body.call(connection, &request.bus, &request.path, DBUSMENU, method)
-    };
-    let event = |id: i32, name: &str| {
-        // The data and the timestamp have no use for these two events.
-        let _ = send("Event", &(id, name, Value::from(0i32), 0u32));
-    };
-    match request.action {
-        MenuAction::Click(id) => {
-            event(id, "clicked");
-            return None;
-        }
-        MenuAction::Show(id) => {
-            let _ = send("AboutToShow", &id);
-            if id != 0 {
-                event(id, "opened");
-            }
-        }
-        MenuAction::Reload => {}
-    }
-    let layout = send(
-        "GetLayout",
-        &(0i32, menu::MAX_DEPTH as i32, menu::PROPERTIES.as_slice()),
+/// Sends `Activate` and waits to learn whether the item has one.
+fn activate(connection: &Connection, request: Call) -> Event {
+    let item = (
+        request.bus.as_str(),
+        request.path.as_str(),
+        request.interface,
     );
-    let entries = layout.ok().and_then(|message| {
+    // Where the click was on screen is not ours to know under Wayland.
+    let result = call(connection, item, "Activate", &(0i32, 0i32), CALL_TIMEOUT);
+    let refused = result.is_err_and(|error| failure(&error).is_none());
+    let fallback = match request.method {
+        Method::Activate(place) if refused => Some(place),
+        _ => None,
+    };
+    Event::Activated {
+        id: request.id,
+        fallback,
+    }
+}
+
+/// Tells the app a row is about to show, if asked to, and reads the
+/// menu's layout.
+fn read_menu(connection: &Connection, request: &MenuRequest, events: &Sender<Event>) -> Event {
+    let budget = Budget::starting(Instant::now(), MENU_BUDGET);
+    let menu = (request.bus.as_str(), request.path.as_str(), DBUSMENU);
+    let allowed = || budget.next(Instant::now(), CALL_TIMEOUT);
+    if let (MenuAction::Show(id), Some(limit)) = (request.action, allowed()) {
+        let _ = call(connection, menu, "AboutToShow", &id, limit);
+        if id != 0 {
+            menu_event(connection, request, id, "opened");
+        }
+    }
+    let wanted = (0i32, menu::MAX_DEPTH as i32, menu::PROPERTIES.as_slice());
+    let layout =
+        allowed().and_then(|limit| call(connection, menu, "GetLayout", &wanted, limit).ok());
+    let entries = layout.and_then(|message| {
         let body = message.body();
         if body.len() > MENU_LIMIT {
+            // Unpacking it would cost many times its size.
+            if let Some(owner) = message.header().sender() {
+                let _ = events.send(Event::Misbehaved {
+                    owner: owner.to_string(),
+                });
+            }
             return None;
         }
         let reply: Structure<'_> = body.deserialize().ok()?;
         Some(menu::parse(reply.fields().get(1)?))
     });
     trim_heap();
-    Some(Event::MenuLayout {
+    Event::MenuLayout {
         serial: request.serial,
         entries,
-    })
+    }
 }
 
 /// Unpacking a big reply leaves the allocator holding freed memory; give
-/// it back, so one huge menu does not stay on the bar's books for good.
+/// it back, so one huge reply does not stay on the bar's books for good.
 fn trim_heap() {
     #[cfg(target_env = "gnu")]
     // SAFETY: malloc_trim takes no pointers and may be called at any time.
@@ -619,104 +766,147 @@ fn trim_heap() {
     }
 }
 
-/// Keeps big buffers out of the heap. A reply of many megabytes is held
-/// in one allocation while it is looked at. glibc gives such an allocation
-/// a mapping of its own and returns it when freed, but it also raises the
-/// size from which it does so each time one is freed, up to 32 MB, and from
-/// then on keeps them. Naming the size switches that adjustment off.
-fn pin_mmap_threshold() {
-    #[cfg(target_env = "gnu")]
-    // SAFETY: mallopt takes two integers and may be called at any time.
-    unsafe {
-        libc::mallopt(libc::M_MMAP_THRESHOLD, LARGE_REPLY as libc::c_int);
-    }
-}
-
 /// Registers as host with the watcher that is already there and asks it
-/// what it has.
-fn adopt(connection: &Connection, events: &Sender<Event>) {
-    let host = connection
+/// who it is and what it has.
+fn adopt(connection: &Connection, watcher: &WatcherOwner, events: &Sender<Event>) {
+    let bus = (DBUS, DBUS_PATH, DBUS);
+    let owner = call(connection, bus, "GetNameOwner", &KDE_WATCHER, CALL_TIMEOUT)
+        .ok()
+        .and_then(|reply| reply.body().deserialize::<String>().ok());
+    let Some(owner) = owner else {
+        return;
+    };
+    let ours = connection
         .unique_name()
         .map(|name| name.to_string())
         .unwrap_or_default();
-    let _ = connection.call_method(
-        Some(KDE_WATCHER),
-        WATCHER_PATH,
-        Some(KDE_WATCHER),
+    if owner == ours {
+        return;
+    }
+    if let Ok(mut held) = watcher.lock() {
+        *held = Some(owner.clone());
+    }
+    // Asked of the owner by its unique name, so the answer is its own.
+    let there = (owner.as_str(), WATCHER_PATH, KDE_WATCHER);
+    let _ = call(
+        connection,
+        there,
         "RegisterStatusNotifierHost",
-        &host,
+        &ours,
+        CALL_TIMEOUT,
     );
-    let reply = connection.call_method(
-        Some(KDE_WATCHER),
-        WATCHER_PATH,
-        Some(PROPERTIES),
+    let listed = call(
+        connection,
+        (owner.as_str(), WATCHER_PATH, PROPERTIES),
         "Get",
         &(KDE_WATCHER, "RegisteredStatusNotifierItems"),
+        CALL_TIMEOUT,
     );
-    let Ok(message) = reply else {
+    let Ok(message) = listed else {
         return;
     };
     let body = message.body();
-    if body.len() > TOOLTIP_LIMIT {
+    if body.len() > MENU_LIMIT {
         return;
     }
     let Ok(services) = body.deserialize::<DeserializeValue<'_, Vec<String>>>() else {
         return;
     };
-    for service in services.0.into_iter().take(super::watcher::MAX_ITEMS * 2) {
+    for service in services.0.into_iter().take(MAX_ITEMS * 2) {
         let _ = events.send(Event::Announced(service));
     }
 }
 
-type CacheKey = (PathBuf, Option<SystemTime>, u64, u32);
-
-/// Finds icon files and has them decoded in a child process.
+/// Finds icon files and has them decoded in a child process, remembering
+/// the answers for a while. Shared by the readers.
+#[derive(Default)]
 struct IconLoader {
-    dirs: IconDirs,
-    decoder: Option<Decoder>,
-    cache: RefCell<Vec<(CacheKey, Pixels)>>,
+    decoder: Decoder,
+    cache: Mutex<Cache>,
 }
 
 impl IconLoader {
-    fn new() -> Self {
-        IconLoader {
-            dirs: IconDirs::from_env(),
-            decoder: Decoder::for_this_program(),
-            cache: RefCell::default(),
+    fn named(
+        &self,
+        name: &str,
+        theme_path: &str,
+        pixels: u32,
+        budget: &Budget,
+    ) -> Result<Option<Pixels>, Failure> {
+        let now = Instant::now();
+        // The cache is asked before anything else: an item that goes back
+        // and forth between two icons costs nothing after the first lap.
+        if let Some(known) = self
+            .cache
+            .lock()
+            .ok()
+            .and_then(|cache| cache.get(name, theme_path, pixels, now))
+        {
+            return Ok(known);
         }
+        let allowed = budget
+            .next(now, DECODE_TIMEOUT)
+            .ok_or(Failure::Unreachable)?;
+        let icon = self.decoder.decode(name, theme_path, pixels, allowed);
+        if let Ok(mut cache) = self.cache.lock() {
+            cache.put(name, theme_path, pixels, icon.clone(), Instant::now());
+        }
+        Ok(icon)
     }
 }
 
-impl IconFiles for IconLoader {
-    fn named(&self, name: &str, theme_path: &str, pixels: u32) -> Option<Pixels> {
-        let own = icons::theme_path(theme_path);
-        let path = icons::find(&self.dirs, own.as_deref(), name, pixels)?;
-        let meta = std::fs::metadata(&path).ok()?;
-        let key = (path, meta.modified().ok(), meta.len(), pixels);
-        let mut cache = self.cache.borrow_mut();
-        if let Some((_, icon)) = cache.iter().find(|(held, _)| *held == key) {
-            return Some(icon.clone());
+/// One of the threads that wait for apps.
+struct Worker {
+    connection: Connection,
+    events: Sender<Event>,
+    icons: Arc<IconLoader>,
+    watcher: WatcherOwner,
+}
+
+impl Worker {
+    fn run(&self, jobs: &Mutex<Receiver<Job>>) {
+        loop {
+            // The lock is held only while waiting for a job, not while
+            // doing one.
+            let job = match jobs.lock() {
+                Ok(jobs) => jobs.recv(),
+                Err(_) => return,
+            };
+            let event = match job {
+                Ok(Job::Refresh(request)) => {
+                    let outcome = read_item(&self.connection, &request, &self.icons);
+                    Event::Refreshed {
+                        address: request.address,
+                        outcome: outcome.map(Box::new),
+                    }
+                }
+                Ok(Job::Activate(call)) => activate(&self.connection, call),
+                Ok(Job::Menu(request)) => read_menu(&self.connection, &request, &self.events),
+                Ok(Job::Adopt) => {
+                    adopt(&self.connection, &self.watcher, &self.events);
+                    continue;
+                }
+                Err(_) => return,
+            };
+            if self.events.send(event).is_err() {
+                return;
+            }
         }
-        let icon = self.decoder.as_ref()?.decode(&key.0, pixels)?;
-        if cache.len() >= ICON_CACHE {
-            cache.remove(0);
-        }
-        cache.push((key, icon.clone()));
-        Some(icon)
     }
 }
 
 /// The process drawing the menu that is on screen.
 struct Helper {
     child: Child,
-    stdin: ChildStdin,
+    /// Menus on their way to the helper's standard input.
+    menus: SyncSender<String>,
 }
 
 struct Bus {
     connection: Connection,
     reads: Sender<Job>,
     actions: SyncSender<Job>,
-    views: sengi_layer::Sender<Vec<View>>,
+    outbox: Outbox,
     events: Sender<Event>,
     helper: Option<Helper>,
 }
@@ -734,34 +924,46 @@ impl Bus {
     }
 
     fn spawn_helper(&self, serial: u64, place: &Place) -> std::io::Result<Helper> {
-        let mut child = Command::new(std::env::current_exe()?)
+        let mut child = Command::new(THIS_PROGRAM)
             .arg(menu_view::FLAG)
             .arg(&place.output)
             .arg(place.x.to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()?;
-        let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
             let _ = child.kill();
             let _ = child.wait();
             return Err(std::io::ErrorKind::BrokenPipe.into());
         };
-        // A helper that stops reading must not stop the tray: a write that
-        // would block is dropped instead.
-        // SAFETY: fcntl on a descriptor we own, with no pointers involved.
-        unsafe {
-            let fd = stdin.as_raw_fd();
-            let flags = libc::fcntl(fd, libc::F_GETFL);
-            libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
-        }
+
+        // A menu can be bigger than a pipe holds and a helper can stop
+        // reading, so writing has a thread of its own that may wait.
+        let (menus, queued) = mpsc::sync_channel::<String>(MAX_QUEUED_MENUS);
+        thread::Builder::new()
+            .name("tray-menu-out".into())
+            .spawn(move || {
+                for text in queued {
+                    if stdin.write_all(text.as_bytes()).is_err() {
+                        return;
+                    }
+                }
+            })?;
 
         let events = self.events.clone();
         thread::Builder::new()
-            .name("tray-menu".into())
+            .name("tray-menu-in".into())
             .spawn(move || {
-                let lines = BufReader::new(stdout.take(MAX_HELPER_OUTPUT)).lines();
-                for line in lines.map_while(Result::ok) {
-                    let event = match menu_view::parse_report(&line) {
+                let mut reports = BufReader::new(stdout);
+                loop {
+                    // The length of a line is capped, not how many there
+                    // are: a menu may stay open for as long as it likes.
+                    let mut line = String::new();
+                    match (&mut reports).take(MAX_HELPER_LINE).read_line(&mut line) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                    let event = match menu_view::parse_report(line.trim_end()) {
                         Some(menu_view::Report::Clicked(id)) => Event::MenuClicked { serial, id },
                         Some(menu_view::Report::Opened(id)) => Event::MenuOpened { serial, id },
                         None => continue,
@@ -770,7 +972,7 @@ impl Bus {
                 }
                 let _ = events.send(Event::MenuClosed { serial });
             })?;
-        Ok(Helper { child, stdin })
+        Ok(Helper { child, menus })
     }
 }
 
@@ -785,16 +987,40 @@ impl Backend for Bus {
         set_match(&self.connection, false, &Self::item_rule(address));
     }
 
-    fn refresh(&mut self, address: &Address, interface: Option<&'static str>, pixels: u32) {
-        let _ = self.reads.send(Job::Refresh {
-            address: address.clone(),
-            interface,
-            pixels,
-        });
+    fn watch_owner(&mut self, name: &str) {
+        set_match(&self.connection, true, &owner_rule(name));
+    }
+
+    fn unwatch_owner(&mut self, name: &str) {
+        set_match(&self.connection, false, &owner_rule(name));
+    }
+
+    fn refresh(&mut self, request: Refresh) {
+        let _ = self.reads.send(Job::Refresh(Box::new(request)));
     }
 
     fn call(&mut self, call: Call) {
-        let _ = self.actions.try_send(Job::Call(call));
+        let item = (call.bus.as_str(), call.path.as_str(), call.interface);
+        let origin = (0i32, 0i32);
+        match &call.method {
+            Method::SecondaryActivate => send(&self.connection, item, "SecondaryActivate", &origin),
+            Method::ContextMenu => send(&self.connection, item, "ContextMenu", &origin),
+            Method::Scroll { delta, horizontal } => {
+                let orientation = if *horizontal {
+                    "horizontal"
+                } else {
+                    "vertical"
+                };
+                send(&self.connection, item, "Scroll", &(*delta, orientation));
+            }
+            Method::Activate(_) => {
+                let id = call.id;
+                if self.actions.try_send(Job::Activate(call)).is_err() {
+                    // The host is waiting to hear that this one is over.
+                    let _ = self.events.send(Event::Activated { id, fallback: None });
+                }
+            }
+        }
     }
 
     fn unregistered(&mut self, address: &Address) {
@@ -815,7 +1041,9 @@ impl Backend for Bus {
     }
 
     fn publish(&mut self, views: Vec<View>) {
-        let _ = self.views.send(views);
+        if self.outbox.views.put(views) {
+            let _ = self.outbox.wake.send(());
+        }
     }
 
     fn watch_menu(&mut self, bus: &str, path: &str) {
@@ -827,14 +1055,19 @@ impl Backend for Bus {
     }
 
     fn menu(&mut self, request: MenuRequest) {
-        let serial = request.serial;
-        let reads = !matches!(request.action, MenuAction::Click(_));
-        if self.actions.try_send(Job::Menu(request)).is_err() && reads {
-            // The host is waiting for an answer to this one.
-            let _ = self.events.send(Event::MenuLayout {
-                serial,
-                entries: None,
-            });
+        match request.action {
+            MenuAction::Click(id) => menu_event(&self.connection, &request, id, "clicked"),
+            MenuAction::Closed => menu_event(&self.connection, &request, 0, "closed"),
+            MenuAction::Show(_) | MenuAction::Reload => {
+                let serial = request.serial;
+                if self.actions.try_send(Job::Menu(request)).is_err() {
+                    // The host is waiting for an answer to this one.
+                    let _ = self.events.send(Event::MenuLayout {
+                        serial,
+                        entries: None,
+                    });
+                }
+            }
         }
     }
 
@@ -856,13 +1089,9 @@ impl Backend for Bus {
         let Some(helper) = &mut self.helper else {
             return;
         };
-        // Half a menu would garble the next one, so a helper that cannot
-        // take a whole one is closed. Its exit is reported as usual.
-        if helper
-            .stdin
-            .write_all(menu::encode(entries).as_bytes())
-            .is_err()
-        {
+        // A helper that has stopped taking menus is closed. Its exit is
+        // reported as usual.
+        if helper.menus.try_send(menu::encode(entries)).is_err() {
             self.close_menu();
         }
     }
@@ -872,5 +1101,100 @@ impl Backend for Bus {
             let _ = helper.child.kill();
             let _ = helper.child.wait();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zbus::zvariant::serialized::Context;
+    use zbus::zvariant::{to_bytes, SerializeValue, LE};
+
+    #[test]
+    fn errors_are_told_apart() {
+        let dbus = |name: &str| classify(&format!("org.freedesktop.DBus.Error.{name}"));
+        assert_eq!(dbus("ServiceUnknown"), Some(Failure::Gone));
+        assert_eq!(dbus("NameHasNoOwner"), Some(Failure::Gone));
+        assert_eq!(dbus("NoReply"), Some(Failure::Unreachable));
+        assert_eq!(dbus("Timeout"), Some(Failure::Unreachable));
+        // No such property or method is an answer, not a failure.
+        assert_eq!(dbus("UnknownProperty"), None);
+        assert_eq!(dbus("UnknownMethod"), None);
+        assert_eq!(dbus("InvalidArgs"), None);
+        assert_eq!(classify("org.example.Error.Custom"), None);
+        // A call that never came back, or a broken connection.
+        let timed_out = zbus::Error::from(std::io::Error::from(std::io::ErrorKind::TimedOut));
+        assert_eq!(failure(&timed_out), Some(Failure::Unreachable));
+    }
+
+    fn pixmaps(list: &[(i32, i32, Vec<u8>)]) -> Vec<Pixmap> {
+        let context = Context::new_dbus(LE, 0);
+        let bytes = to_bytes(context, &SerializeValue(&list.to_vec())).unwrap();
+        let list: DeserializeValue<'_, PixmapList> = bytes.deserialize().unwrap().0;
+        list.0 .0
+    }
+
+    #[test]
+    fn only_drawable_pixmaps_are_copied_out_of_a_reply() {
+        let good = |side: i32| (side, side, vec![7u8; (side * side * 4) as usize]);
+        let kept = pixmaps(&[
+            // Claims a size it does not have the data for.
+            (100_000, 100_000, vec![0; 4]),
+            good(16),
+            // Honest, and far too big for a tray.
+            good(300),
+            good(32),
+        ]);
+        let sides: Vec<i32> = kept.iter().map(|pixmap| pixmap.width).collect();
+        assert_eq!(sides, [16, 32]);
+        assert_eq!(kept[0].data.len(), 16 * 16 * 4);
+        assert!(pixmaps(&[]).is_empty());
+    }
+
+    #[test]
+    fn entries_past_the_cap_are_not_collected() {
+        let many: Vec<_> = (0..MAX_PIXMAPS + 50)
+            .map(|_| (1, 1, vec![9u8; 4]))
+            .collect();
+        assert_eq!(pixmaps(&many).len(), MAX_PIXMAPS);
+        // Junk in front does not use up the places of real ones behind
+        // it, but the search for them stops at the cap all the same.
+        let mut mixed: Vec<_> = (0..MAX_PIXMAPS).map(|_| (5, 5, vec![0u8; 1])).collect();
+        mixed.push((1, 1, vec![9u8; 4]));
+        assert!(pixmaps(&mixed).is_empty());
+    }
+
+    #[test]
+    fn something_that_is_not_a_pixmap_array_is_refused() {
+        let context = Context::new_dbus(LE, 0);
+        let bytes = to_bytes(context, &SerializeValue(&"not pixmaps")).unwrap();
+        assert!(bytes
+            .deserialize::<DeserializeValue<'_, PixmapList>>()
+            .is_err());
+    }
+
+    #[test]
+    fn only_the_watcher_we_are_a_guest_of_is_believed() {
+        let watcher: WatcherOwner = Arc::default();
+        // While the name is ours, nobody else speaks for it.
+        assert!(!believed(&watcher, ":1.9"));
+        *watcher.lock().unwrap() = Some(":1.7".into());
+        assert!(believed(&watcher, ":1.7"));
+        assert!(!believed(&watcher, ":1.9"));
+        assert!(!believed(&watcher, ""));
+    }
+
+    #[test]
+    fn match_rules_name_what_they_watch() {
+        let address = Address {
+            bus: ":1.42".into(),
+            path: "/StatusNotifierItem".into(),
+        };
+        assert_eq!(
+            Bus::item_rule(&address),
+            "type='signal',sender=':1.42',path='/StatusNotifierItem'"
+        );
+        assert!(owner_rule(":1.42").ends_with("member='NameOwnerChanged',arg0=':1.42'"));
+        assert!(Bus::menu_rule(":1.42", "/MenuBar").ends_with("interface='com.canonical.dbusmenu'"));
     }
 }

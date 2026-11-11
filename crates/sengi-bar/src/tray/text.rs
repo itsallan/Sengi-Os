@@ -11,14 +11,23 @@ pub const MAX_TEXT: usize = 96;
 /// How much of an over-long string is looked at before giving up on it.
 const MAX_SCAN: usize = MAX_TEXT * 8;
 
+/// Longest name shown beside the tray for the icon under the pointer.
+pub const MAX_LABEL: usize = 40;
+
 /// Characters that are dropped: the bidi embeddings, overrides and isolates,
 /// line and paragraph separators, zero-width spaces and marks used for
-/// spoofing, interlinear annotation and tag characters.
+/// spoofing, interlinear annotation and tag characters, and the fillers
+/// that draw as nothing but take up room.
 fn unwanted(c: char) -> bool {
     matches!(
         c,
         '\u{00ad}'
             | '\u{061c}'
+            | '\u{115f}'
+            | '\u{1160}'
+            | '\u{2800}'
+            | '\u{3164}'
+            | '\u{ffa0}'
             | '\u{180e}'
             | '\u{200b}'
             | '\u{200e}'
@@ -91,7 +100,7 @@ pub fn label(text: &str) -> String {
 /// The letter for the tile of an item with no usable icon.
 pub fn initial(name: &str) -> String {
     name.chars()
-        .find(|c| c.is_alphanumeric())
+        .find(|c| c.is_alphanumeric() && !unwanted(*c))
         .map(|c| c.to_uppercase().collect())
         .unwrap_or_else(|| "?".to_string())
 }
@@ -127,6 +136,15 @@ mod tests {
         assert_eq!(clean("tag\u{e0041}ged", MAX_TEXT), "tagged");
         // Joiners that scripts and emoji need are kept.
         assert_eq!(clean("a\u{200d}b", MAX_TEXT), "a\u{200d}b");
+    }
+
+    #[test]
+    fn fillers_that_draw_as_blank_space_are_dropped() {
+        // A title made of these would be a wide, empty, clickable gap.
+        let blank = "\u{3164}\u{115f}\u{1160}\u{ffa0}\u{2800}";
+        assert_eq!(clean(blank, MAX_TEXT), "");
+        assert_eq!(clean(&format!("a{blank}b"), MAX_TEXT), "ab");
+        assert_eq!(initial(blank), "?");
     }
 
     #[test]

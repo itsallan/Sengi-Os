@@ -5,8 +5,10 @@
 //! numbers come from the app, so nothing is allocated until they agree with
 //! each other and with our limits.
 
-/// Largest pixmap we will look at, in pixels per side.
-pub const MAX_SIDE: u32 = 1024;
+/// Largest pixmap we will look at, in pixels per side. The tray draws
+/// at 16 pixels times the output scale; anything bigger than this is not
+/// meant for a tray.
+pub const MAX_SIDE: u32 = 256;
 
 /// How many of an item's pixmaps are considered. Real items send a handful.
 pub const MAX_PIXMAPS: usize = 16;
@@ -64,37 +66,40 @@ fn rank(side: u32, wanted: u32) -> (u8, u32) {
     }
 }
 
-/// The pixmap to draw at `wanted` pixels, among the usable ones.
-pub fn choose(pixmaps: &[Pixmap], wanted: u32) -> Option<&Pixmap> {
-    pixmaps
+/// The usable pixmaps, best for drawing at `wanted` pixels first.
+pub fn ranked(pixmaps: &[Pixmap], wanted: u32) -> Vec<&Pixmap> {
+    let mut usable: Vec<_> = pixmaps
         .iter()
         .take(MAX_PIXMAPS)
         .filter_map(|pixmap| {
             let (width, height) = pixmap.size()?;
             Some((rank(width.max(height), wanted), pixmap))
         })
-        .min_by_key(|(rank, _)| *rank)
-        .map(|(_, pixmap)| pixmap)
+        .collect();
+    usable.sort_by_key(|(rank, _)| *rank);
+    usable.into_iter().map(|(_, pixmap)| pixmap).collect()
 }
 
-/// Chooses a pixmap and scales it to `wanted` pixels per side.
+/// Chooses a pixmap and scales it to `wanted` pixels per side. Some
+/// toolkits send a fully transparent placeholder among the real ones; it
+/// is passed over for the next best.
 pub fn render(pixmaps: &[Pixmap], wanted: u32) -> Option<Pixels> {
     if wanted == 0 || wanted > MAX_ICON {
         return None;
     }
-    let pixmap = choose(pixmaps, wanted)?;
-    let (width, height) = pixmap.size()?;
-    // Network order ARGB is the bytes A, R, G, B. Alpha is not
-    // premultiplied on the wire; `fit` does that.
-    let mut rgba = Vec::with_capacity(pixmap.data.len());
-    for p in pixmap.data.as_chunks::<4>().0 {
-        rgba.extend_from_slice(&[p[1], p[2], p[3], p[0]]);
-    }
-    // Some toolkits send a fully transparent placeholder first.
-    if rgba.as_chunks::<4>().0.iter().all(|p| p[3] == 0) {
-        return None;
-    }
-    Some(fit(&rgba, width, height, wanted))
+    ranked(pixmaps, wanted).into_iter().find_map(|pixmap| {
+        let (width, height) = pixmap.size()?;
+        if pixmap.data.as_chunks::<4>().0.iter().all(|p| p[0] == 0) {
+            return None;
+        }
+        // Network order ARGB is the bytes A, R, G, B. Alpha is not
+        // premultiplied on the wire; `fit` does that.
+        let mut rgba = Vec::with_capacity(pixmap.data.len());
+        for p in pixmap.data.as_chunks::<4>().0 {
+            rgba.extend_from_slice(&[p[1], p[2], p[3], p[0]]);
+        }
+        Some(fit(&rgba, width, height, wanted))
+    })
 }
 
 /// How much of source cell `cell` falls inside the span `[start, end)`.
@@ -182,7 +187,7 @@ mod tests {
     }
 
     fn sides(pixmaps: &[Pixmap], wanted: u32) -> Option<i32> {
-        choose(pixmaps, wanted).map(|pixmap| pixmap.width)
+        ranked(pixmaps, wanted).first().map(|pixmap| pixmap.width)
     }
 
     #[test]
@@ -283,7 +288,7 @@ mod tests {
             (MAX_SIDE * MAX_SIDE * 4) as usize
         ));
         assert!(!plausible(100_000, 100_000, 4));
-        assert!(!plausible(1100, 1100, 1100 * 1100 * 4));
+        assert!(!plausible(300, 300, 300 * 300 * 4));
         assert!(!plausible(22, 22, 22 * 22 * 4 + 1));
         assert!(!plausible(-22, -22, 22 * 22 * 4));
         assert!(!plausible(0, 0, 0));
@@ -297,8 +302,12 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_placeholder_is_not_an_icon() {
+    fn an_empty_placeholder_is_passed_over_for_the_next_best() {
         assert_eq!(render(&[solid(16, [0, 0, 0, 0])], 16), None);
+        // The transparent one is the exact size; the real one is not.
+        let set = [solid(16, [0, 9, 9, 9]), solid(32, [255, 1, 2, 3])];
+        let icon = render(&set, 16).unwrap();
+        assert_eq!(&icon.data[..4], [1, 2, 3, 255]);
     }
 
     #[test]

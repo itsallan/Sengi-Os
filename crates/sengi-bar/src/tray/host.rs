@@ -5,14 +5,22 @@
 //! [`Event`], and everything it wants done it asks of a [`Backend`]. It
 //! never touches the bus itself and never waits, so it can be driven by
 //! hand in tests and a stuck app cannot hold it up.
+//!
+//! Items are other people's programs, and the rules here are about what
+//! one of them can cost. An item is read at a bounded rate however often
+//! it says it has changed, and only the part it names is read. Nothing an
+//! item sends reaches the screen except through such a read. An item has
+//! at most one read, one activation and one menu request under way at a
+//! time, so a dead one ties up one worker of each kind and no more.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::item::{Properties, Status};
+use super::item::{Parts, Properties, Status};
 use super::menu::{self, Entry};
 use super::pace::Pacer;
 use super::pixmap::Pixels;
+use super::text;
 use super::watcher::{Address, Registry};
 
 /// Reads that may time out in a row before an item is dropped.
@@ -22,6 +30,13 @@ const MAX_FAILURES: u8 = 3;
 /// number of failures so far. An app that is still starting gets shown
 /// once it answers; one that is stuck costs three reads and is gone.
 const RETRY_DELAY: Duration = Duration::from_secs(5);
+
+/// Shortest time between two `Scroll` calls to one item. A touchpad sends
+/// a stream of small movements; they are added up and sent as one.
+const SCROLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Most scrolling that is kept for an item that is not being sent any.
+const MAX_SCROLL: f32 = 10_000.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Button {
@@ -37,6 +52,9 @@ pub struct Place {
     pub x: i32,
 }
 
+/// An item's icon at each size it is drawn at, smallest first.
+pub type Icons = Vec<(u32, Arc<Pixels>)>;
+
 /// An item as last read from the bus.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
@@ -45,28 +63,47 @@ pub struct Snapshot {
     /// The interface the item speaks, KDE's or the freedesktop draft's.
     pub interface: &'static str,
     pub properties: Properties,
-    pub icon: Option<Arc<Pixels>>,
+    pub icons: Icons,
 }
 
 /// Why an item could not be read.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Failure {
     /// It has left the bus.
     Gone,
     /// It did not answer in time, or answered nothing useful.
     Unreachable,
+    /// It answered with something far over a limit. Carries the unique
+    /// name that did, which is not listened to again.
+    Oversized(String),
+}
+
+/// A request to read an item, or some of it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refresh {
+    pub address: Address,
+    /// What was read before, to build on. None reads everything.
+    pub previous: Option<Snapshot>,
+    pub parts: Parts,
+    /// The sizes icons are wanted at.
+    pub pixels: Vec<u32>,
 }
 
 #[derive(Debug)]
 pub enum Event {
     /// An app registered with our watcher.
     Registered(Address),
-    /// Another watcher listed or announced an item.
+    /// The watcher we are a guest of listed or announced an item.
     Announced(String),
-    /// Another watcher says an item has left.
+    /// That watcher says an item has left.
     Withdrawn(String),
     /// A bus name has no owner any more.
     OwnerLost(String),
+    /// A well-known name passed straight from one connection to another.
+    OwnerChanged {
+        name: String,
+        owner: String,
+    },
     /// Whether the watcher name is ours or someone else's.
     WatcherOwner {
         ours: bool,
@@ -76,8 +113,6 @@ pub enum Event {
         sender: String,
         path: String,
         member: String,
-        /// The new status, for `NewStatus`.
-        status: Option<String>,
         menu: bool,
     },
     Refreshed {
@@ -89,18 +124,25 @@ pub enum Event {
         button: Button,
         place: Place,
     },
+    /// The wheel moved over an item, by this much.
     Scrolled {
         id: u32,
-        delta: i32,
+        delta: f32,
         horizontal: bool,
     },
-    /// The item has no `Activate` to call.
-    ActivateFailed {
-        id: u32,
+    /// The "more" item was pressed on a bar too narrow for these items.
+    More {
         place: Place,
+        hidden: Vec<u32>,
     },
-    /// Icons are now wanted at this many pixels per side.
-    Pixels(u32),
+    /// An `Activate` came back. `fallback` is where to open the menu
+    /// instead, when the item turned out to have no `Activate`.
+    Activated {
+        id: u32,
+        fallback: Option<Place>,
+    },
+    /// Icons are now wanted at these sizes.
+    Pixels(Vec<u32>),
     MenuLayout {
         serial: u64,
         entries: Option<Vec<Entry>>,
@@ -117,6 +159,10 @@ pub enum Event {
     MenuClosed {
         serial: u64,
     },
+    /// A connection sent something far over a limit outside a read.
+    Misbehaved {
+        owner: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -127,7 +173,8 @@ pub enum Method {
     Scroll { delta: i32, horizontal: bool },
 }
 
-/// A method call on an item.
+/// A method call on an item. Only `Activate` is waited for, and answered
+/// with [`Event::Activated`]; the others are sent and forgotten.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Call {
     pub id: u32,
@@ -137,7 +184,7 @@ pub struct Call {
     pub method: Method,
 }
 
-/// A request to read a menu, or to tell it about a click.
+/// A request to read a menu, or to tell it something.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MenuRequest {
     pub serial: u64,
@@ -149,11 +196,15 @@ pub struct MenuRequest {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuAction {
     /// Read the layout, first telling the app that this row (0 is the whole
-    /// menu) is about to be shown.
+    /// menu) is about to be shown. Answered with [`Event::MenuLayout`].
     Show(i32),
-    /// Read the layout again because the app says it changed.
+    /// Read the layout again because the app says it changed. Answered
+    /// with [`Event::MenuLayout`].
     Reload,
+    /// A row was chosen. Not answered.
     Click(i32),
+    /// The menu has gone from the screen. Not answered.
+    Closed,
 }
 
 /// One icon in the bar.
@@ -163,7 +214,7 @@ pub struct View {
     pub label: String,
     pub letter: String,
     pub attention: bool,
-    pub icon: Option<Arc<Pixels>>,
+    pub icons: Icons,
 }
 
 /// What the host needs done. Nothing here may block.
@@ -171,17 +222,20 @@ pub trait Backend {
     /// Start hearing about this item: its signals, and its name's owner.
     fn watch(&mut self, address: &Address);
     fn unwatch(&mut self, address: &Address);
+    /// Start hearing when this name leaves the bus, and nothing else.
+    fn watch_owner(&mut self, name: &str);
+    fn unwatch_owner(&mut self, name: &str);
     /// Read the item and answer with [`Event::Refreshed`].
-    fn refresh(&mut self, address: &Address, interface: Option<&'static str>, pixels: u32);
+    fn refresh(&mut self, request: Refresh);
     fn call(&mut self, call: Call);
     /// Tell the bus an item of our watcher has gone.
     fn unregistered(&mut self, address: &Address);
     /// Another watcher owns the name: register with it and list its items.
     fn adopt_watcher(&mut self);
+    /// The icons to draw, leftmost first.
     fn publish(&mut self, views: Vec<View>);
     fn watch_menu(&mut self, bus: &str, path: &str);
     fn unwatch_menu(&mut self, bus: &str, path: &str);
-    /// Answer with [`Event::MenuLayout`], except for a click.
     fn menu(&mut self, request: MenuRequest);
     fn show_menu(&mut self, serial: u64, place: &Place, entries: &[Entry]);
     fn update_menu(&mut self, entries: &[Entry]);
@@ -193,21 +247,45 @@ struct Item {
     address: Address,
     snapshot: Option<Snapshot>,
     pacer: Pacer,
+    /// What has changed since the last read began.
+    wanted: Parts,
+    /// What the read under way is fetching.
+    reading: Parts,
     failures: u8,
     /// When to read again after a read that failed.
     retry: Option<Instant>,
+    /// An `Activate` is on its way to the app and has not come back.
+    activating: bool,
+    /// Scrolling not yet sent on: vertical, then horizontal.
+    scroll: [f32; 2],
+    /// The earliest the next `Scroll` may go out.
+    scroll_after: Option<Instant>,
+    /// Set while scrolling is waiting for that moment.
+    scroll_due: Option<Instant>,
+}
+
+/// Whose menu is on screen.
+enum Target {
+    /// An item's own, read from the app.
+    Item {
+        bus: String,
+        owner: String,
+        path: String,
+    },
+    /// The list of items that did not fit on the bar.
+    Overflow,
 }
 
 /// The menu on screen, or on its way there.
 struct MenuSession {
     serial: u64,
-    bus: String,
-    owner: String,
-    path: String,
+    target: Target,
     place: Place,
     /// None until the first layout has arrived and been shown.
     entries: Option<Vec<Entry>>,
     pacer: Pacer,
+    /// A row the app is still to be told is about to show.
+    about: Option<i32>,
 }
 
 pub struct Host<B: Backend> {
@@ -215,7 +293,7 @@ pub struct Host<B: Backend> {
     registry: Arc<Mutex<Registry>>,
     items: Vec<Item>,
     next_id: u32,
-    pixels: u32,
+    pixels: Vec<u32>,
     /// Whether our own watcher is the one apps talk to.
     ours: bool,
     published: Vec<View>,
@@ -224,7 +302,7 @@ pub struct Host<B: Backend> {
 }
 
 impl<B: Backend> Host<B> {
-    pub fn new(backend: B, registry: Arc<Mutex<Registry>>, pixels: u32) -> Self {
+    pub fn new(backend: B, registry: Arc<Mutex<Registry>>, pixels: Vec<u32>) -> Self {
         Host {
             backend,
             registry,
@@ -249,13 +327,13 @@ impl<B: Backend> Host<B> {
         let menu = self.menu.as_ref().and_then(|menu| menu.pacer.due());
         self.items
             .iter()
-            .flat_map(|item| [item.pacer.due(), item.retry])
+            .flat_map(|item| [item.pacer.due(), item.retry, item.scroll_due])
             .flatten()
             .chain(menu)
             .min()
     }
 
-    /// Starts the reads that were put off and are now due.
+    /// Starts the work that was put off and is now due.
     pub fn tick(&mut self, now: Instant) {
         for index in 0..self.items.len() {
             if self.items[index].pacer.tick(now) {
@@ -263,11 +341,14 @@ impl<B: Backend> Host<B> {
             }
             if self.items[index].retry.is_some_and(|retry| retry <= now) {
                 self.items[index].retry = None;
-                self.request_refresh(index, now);
+                self.request_refresh(index, Parts::NONE, now);
+            }
+            if self.items[index].scroll_due.is_some_and(|due| due <= now) {
+                self.flush_scroll(index, now);
             }
         }
         if self.menu.as_mut().is_some_and(|menu| menu.pacer.tick(now)) {
-            self.reload_menu();
+            self.fetch_menu();
         }
     }
 
@@ -284,28 +365,32 @@ impl<B: Backend> Host<B> {
                     .registry
                     .lock()
                     .ok()
-                    .and_then(|mut registry| registry.register(&service, None).ok().flatten());
+                    .and_then(|mut registry| registry.adopt(&service).ok().flatten());
                 if let Some(address) = added {
                     self.add(address, now);
                 }
             }
             Event::Withdrawn(service) => {
-                if let (false, Some(address)) = (self.ours, Address::parse(&service, None)) {
+                if let (false, Some(address)) = (self.ours, Address::listed(&service)) {
                     self.remove(&address);
                 }
             }
             Event::OwnerLost(bus) => {
-                let gone = match self.registry.lock() {
+                let (gone, unbanned) = match self.registry.lock() {
                     Ok(mut registry) => registry.owner_lost(&bus),
-                    Err(_) => Vec::new(),
+                    Err(_) => (Vec::new(), false),
                 };
                 for address in &gone {
                     self.forget(address);
+                }
+                if unbanned {
+                    self.backend.unwatch_owner(&bus);
                 }
                 if !gone.is_empty() {
                     self.publish();
                 }
             }
+            Event::OwnerChanged { name, owner } => self.owner_changed(&name, &owner, now),
             Event::WatcherOwner { ours } => {
                 self.ours = ours;
                 if !ours {
@@ -316,13 +401,12 @@ impl<B: Backend> Host<B> {
                 sender,
                 path,
                 member,
-                status,
                 menu,
             } => {
                 if menu {
                     self.menu_changed(&sender, &path, now);
                 } else {
-                    self.item_changed(&sender, &path, &member, status, now);
+                    self.item_changed(&sender, &path, &member, now);
                 }
             }
             Event::Refreshed { address, outcome } => self.refreshed(&address, outcome, now),
@@ -331,14 +415,14 @@ impl<B: Backend> Host<B> {
                 id,
                 delta,
                 horizontal,
-            } => {
-                if delta != 0 {
-                    self.call(id, Method::Scroll { delta, horizontal });
+            } => self.scrolled(id, delta, horizontal, now),
+            Event::More { place, hidden } => self.open_overflow(place, &hidden),
+            Event::Activated { id, fallback } => {
+                if let Some(item) = self.items.iter_mut().find(|item| item.id == id) {
+                    item.activating = false;
                 }
-            }
-            Event::ActivateFailed { id, place } => {
                 // libappindicator items have a menu and nothing else.
-                if self.menu.is_none() {
+                if let (Some(place), true) = (fallback, self.menu.is_none()) {
                     self.open_menu(id, place, now);
                 }
             }
@@ -346,36 +430,19 @@ impl<B: Backend> Host<B> {
                 if pixels != self.pixels {
                     self.pixels = pixels;
                     for index in 0..self.items.len() {
-                        self.request_refresh(index, now);
+                        self.request_refresh(index, Parts::ICONS, now);
                     }
                 }
             }
             Event::MenuLayout { serial, entries } => self.menu_layout(serial, entries, now),
-            Event::MenuOpened { serial, id } => {
-                let Some(session) = self.session(serial) else {
-                    return;
-                };
-                let known = session.entries.as_deref().unwrap_or_default();
-                if menu::find(known, id).is_some_and(|entry| entry.submenu) {
-                    self.menu_request(MenuAction::Show(id));
-                }
-            }
-            Event::MenuClicked { serial, id } => {
-                let Some(session) = self.session(serial) else {
-                    return;
-                };
-                // Only a row we showed, and only one that can be chosen.
-                let known = session.entries.as_deref().unwrap_or_default();
-                if menu::find(known, id).is_some_and(|entry| entry.enabled && !entry.submenu) {
-                    self.menu_request(MenuAction::Click(id));
-                }
-                self.end_menu();
-            }
+            Event::MenuOpened { serial, id } => self.menu_opened(serial, id, now),
+            Event::MenuClicked { serial, id } => self.menu_clicked(serial, id, now),
             Event::MenuClosed { serial } => {
                 if self.session(serial).is_some() {
                     self.end_menu();
                 }
             }
+            Event::Misbehaved { owner } => self.ban(&owner),
         }
     }
 
@@ -393,14 +460,20 @@ impl<B: Backend> Host<B> {
                     address,
                     snapshot: None,
                     pacer: Pacer::default(),
+                    wanted: Parts::NONE,
+                    reading: Parts::NONE,
                     failures: 0,
                     retry: None,
+                    activating: false,
+                    scroll: [0.0; 2],
+                    scroll_after: None,
+                    scroll_due: None,
                 });
                 self.next_id = self.next_id.wrapping_add(1).max(1);
                 self.items.len() - 1
             }
         };
-        self.request_refresh(index, now);
+        self.request_refresh(index, Parts::ALL, now);
     }
 
     /// Drops an item from the registry and from the bar.
@@ -422,25 +495,80 @@ impl<B: Backend> Host<B> {
         if self.ours {
             self.backend.unregistered(&item.address);
         }
-        if self
-            .menu
-            .as_ref()
-            .is_some_and(|menu| menu.bus == item.address.bus)
-        {
+        let theirs = self.menu.as_ref().is_some_and(|menu| match &menu.target {
+            Target::Item { bus, .. } => *bus == item.address.bus,
+            // The list is of items; with one gone it is out of date.
+            Target::Overflow => true,
+        });
+        if theirs {
             self.end_menu();
         }
     }
 
-    fn request_refresh(&mut self, index: usize, now: Instant) {
-        if self.items[index].pacer.request(now) {
+    /// Stops listening to a connection that sent something far over a
+    /// limit, until it leaves the bus. Being asked for the same megabytes
+    /// again on every change is how it would cost us.
+    fn ban(&mut self, owner: &str) {
+        let (gone, new) = match self.registry.lock() {
+            Ok(mut registry) => registry.ban(owner),
+            Err(_) => return,
+        };
+        for address in &gone {
+            self.forget(address);
+        }
+        if new {
+            // To know when the name is free again.
+            self.backend.watch_owner(owner);
+        }
+        self.publish();
+    }
+
+    fn owner_changed(&mut self, name: &str, owner: &str, now: Instant) {
+        for index in 0..self.items.len() {
+            let item = &mut self.items[index];
+            if item.address.bus != name {
+                continue;
+            }
+            // Its signals now come from the new owner, which may be quite
+            // another program.
+            if let Some(snapshot) = &mut item.snapshot {
+                snapshot.owner = owner.to_string();
+            }
+            self.request_refresh(index, Parts::ALL, now);
+        }
+        if let Some(Target::Item {
+            bus, owner: held, ..
+        }) = self.menu.as_mut().map(|menu| &mut menu.target)
+        {
+            if bus == name {
+                *held = owner.to_string();
+            }
+        }
+    }
+
+    /// Notes that these parts of an item have changed and reads them when
+    /// its pacer allows.
+    fn request_refresh(&mut self, index: usize, parts: Parts, now: Instant) {
+        let item = &mut self.items[index];
+        item.wanted |= parts;
+        if item.pacer.request(now) {
             self.start_refresh(index);
         }
     }
 
     fn start_refresh(&mut self, index: usize) {
-        let item = &self.items[index];
-        let interface = item.snapshot.as_ref().map(|snapshot| snapshot.interface);
-        self.backend.refresh(&item.address, interface, self.pixels);
+        let item = &mut self.items[index];
+        let mut parts = std::mem::take(&mut item.wanted);
+        if item.snapshot.is_none() || parts.is_empty() {
+            parts = Parts::ALL;
+        }
+        item.reading = parts;
+        self.backend.refresh(Refresh {
+            address: item.address.clone(),
+            previous: item.snapshot.clone(),
+            parts,
+            pixels: self.pixels.clone(),
+        });
     }
 
     fn refreshed(
@@ -453,36 +581,44 @@ impl<B: Backend> Host<B> {
             return;
         };
         let item = &mut self.items[index];
-        let again = item.pacer.finished(now);
+        item.pacer.finished(now);
         match outcome {
-            Ok(snapshot) => {
+            Ok(mut snapshot) => {
                 item.failures = 0;
                 item.retry = None;
+                // An icon that was drawn again and came out the same is
+                // the same icon: the bars keep the picture they have, and
+                // nothing has changed under the pointer.
+                if let Some(old) = &item.snapshot {
+                    for (size, icon) in &mut snapshot.icons {
+                        let held = old.icons.iter().find(|(s, held)| s == size && held == icon);
+                        if let Some((_, held)) = held {
+                            *icon = held.clone();
+                        }
+                    }
+                }
                 item.snapshot = Some(*snapshot);
             }
             Err(Failure::Gone) => return self.remove(address),
+            Err(Failure::Oversized(owner)) => return self.ban(&owner),
             Err(Failure::Unreachable) => {
                 item.failures += 1;
                 if item.failures >= MAX_FAILURES {
                     return self.remove(address);
                 }
+                // What was being read still needs reading.
+                item.wanted |= item.reading;
                 item.retry = Some(now + RETRY_DELAY * u32::from(item.failures));
             }
-        }
-        if again {
-            self.start_refresh(index);
         }
         self.publish();
     }
 
-    fn item_changed(
-        &mut self,
-        sender: &str,
-        path: &str,
-        member: &str,
-        status: Option<String>,
-        now: Instant,
-    ) {
+    fn item_changed(&mut self, sender: &str, path: &str, member: &str, now: Instant) {
+        let parts = Parts::for_signal(member);
+        if parts.is_empty() {
+            return;
+        }
         let found = self.items.iter().position(|item| {
             let owner = item
                 .snapshot
@@ -490,33 +626,31 @@ impl<B: Backend> Host<B> {
                 .map(|snapshot| snapshot.owner.as_str());
             item.address.path == path && (item.address.bus == sender || owner == Some(sender))
         });
-        let Some(index) = found else {
-            return;
-        };
-        if !(member.starts_with("New") || member.starts_with("XAyatanaNew")) {
-            return;
+        // Whatever the signal says, a new status included, is only a
+        // reason to read. What is shown comes from the read, which is
+        // paced; a signal that changed the screen directly would let an
+        // app redraw every bar as fast as it can send.
+        if let Some(index) = found {
+            self.request_refresh(index, parts, now);
         }
-        // The status comes with the signal, so it shows without waiting
-        // for the read, which may still change the icon.
-        if let (Some(status), Some(snapshot)) = (status, self.items[index].snapshot.as_mut()) {
-            snapshot.properties.status = Status::parse(&status);
-            self.publish();
-        }
-        self.request_refresh(index, now);
     }
 
+    /// The icons to draw, leftmost first. The newest item is on the left,
+    /// at the outer end of the tray, so that one arriving does not move
+    /// the others from under the pointer.
     fn views(&self) -> Vec<View> {
         self.items
             .iter()
+            .rev()
             .filter_map(|item| {
                 let snapshot = item.snapshot.as_ref()?;
                 let properties = &snapshot.properties;
                 (properties.status != Status::Passive).then(|| View {
                     id: item.id,
-                    label: properties.label().to_string(),
+                    label: text::clean(properties.label(), text::MAX_LABEL),
                     letter: properties.letter(),
                     attention: properties.status == Status::NeedsAttention,
-                    icon: snapshot.icon.clone(),
+                    icons: snapshot.icons.clone(),
                 })
             })
             .collect()
@@ -557,10 +691,59 @@ impl<B: Backend> Host<B> {
         let is_menu = snapshot.properties.is_menu;
         match button {
             Button::Left if is_menu && has_menu => self.open_menu(id, place, now),
-            Button::Left => self.call(id, Method::Activate(place)),
+            Button::Left => self.activate(id, place),
             Button::Middle => self.call(id, Method::SecondaryActivate),
             Button::Right if has_menu => self.open_menu(id, place, now),
             Button::Right => self.call(id, Method::ContextMenu),
+        }
+    }
+
+    /// Sends `Activate`, unless one is still on its way: an app that does
+    /// not answer gets one, not one per click.
+    fn activate(&mut self, id: u32, place: Place) {
+        let Some(item) = self.items.iter_mut().find(|item| item.id == id) else {
+            return;
+        };
+        if !std::mem::replace(&mut item.activating, true) {
+            self.call(id, Method::Activate(place));
+        }
+    }
+
+    fn scrolled(&mut self, id: u32, delta: f32, horizontal: bool, now: Instant) {
+        let Some(index) = self.items.iter().position(|item| item.id == id) else {
+            return;
+        };
+        if !delta.is_finite() {
+            return;
+        }
+        let kept = &mut self.items[index].scroll[usize::from(horizontal)];
+        *kept = (*kept + delta).clamp(-MAX_SCROLL, MAX_SCROLL);
+        self.flush_scroll(index, now);
+    }
+
+    /// Sends on the scrolling that has added up to whole steps, if the
+    /// item was not sent some a moment ago; otherwise leaves it for
+    /// [`Host::tick`]. What is less than a step is kept for next time.
+    fn flush_scroll(&mut self, index: usize, now: Instant) {
+        let item = &mut self.items[index];
+        if item.scroll_after.is_some_and(|after| now < after) {
+            item.scroll_due = item.scroll_after;
+            return;
+        }
+        item.scroll_due = None;
+        let id = item.id;
+        let mut steps = [0i32; 2];
+        for (kept, whole) in item.scroll.iter_mut().zip(&mut steps) {
+            *whole = kept.trunc() as i32;
+            *kept -= *whole as f32;
+        }
+        if steps != [0, 0] {
+            item.scroll_after = Some(now + SCROLL_INTERVAL);
+        }
+        for (delta, horizontal) in [(steps[0], false), (steps[1], true)] {
+            if delta != 0 {
+                self.call(id, Method::Scroll { delta, horizontal });
+            }
         }
     }
 
@@ -581,14 +764,49 @@ impl<B: Backend> Host<B> {
         self.backend.watch_menu(&bus, &path);
         self.menu = Some(MenuSession {
             serial,
-            bus,
-            owner,
-            path,
+            target: Target::Item { bus, owner, path },
             place,
             entries: None,
             pacer,
+            about: Some(0),
         });
-        self.menu_request(MenuAction::Show(0));
+        self.fetch_menu();
+    }
+
+    /// Shows the items that did not fit on a bar as a menu of their names.
+    fn open_overflow(&mut self, place: Place, hidden: &[u32]) {
+        let entries: Vec<Entry> = hidden
+            .iter()
+            .filter_map(|id| {
+                let (_, snapshot) = self.snapshot(*id)?;
+                let properties = &snapshot.properties;
+                let label = match properties.label() {
+                    "" => properties.letter(),
+                    label => text::clean(label, text::MAX_LABEL),
+                };
+                Some(Entry {
+                    id: i32::try_from(*id).ok()?,
+                    label,
+                    enabled: true,
+                    ..Entry::default()
+                })
+            })
+            .collect();
+        self.end_menu();
+        if entries.is_empty() {
+            return;
+        }
+        let serial = self.next_serial;
+        self.next_serial += 1;
+        self.backend.show_menu(serial, &place, &entries);
+        self.menu = Some(MenuSession {
+            serial,
+            target: Target::Overflow,
+            place,
+            entries: Some(entries),
+            pacer: Pacer::default(),
+            about: None,
+        });
     }
 
     fn session(&self, serial: u64) -> Option<&MenuSession> {
@@ -596,27 +814,43 @@ impl<B: Backend> Host<B> {
     }
 
     fn menu_request(&mut self, action: MenuAction) {
-        if let Some(session) = &self.menu {
+        if let Some(MenuSession {
+            serial,
+            target: Target::Item { bus, path, .. },
+            ..
+        }) = &self.menu
+        {
             self.backend.menu(MenuRequest {
-                serial: session.serial,
-                bus: session.bus.clone(),
-                path: session.path.clone(),
+                serial: *serial,
+                bus: bus.clone(),
+                path: path.clone(),
                 action,
             });
         }
     }
 
-    fn reload_menu(&mut self) {
-        self.menu_request(MenuAction::Reload);
+    /// Asks for the menu's layout. Only called when the session's pacer
+    /// has said so, which is what keeps it to one request at a time.
+    fn fetch_menu(&mut self) {
+        let about = self.menu.as_mut().and_then(|menu| menu.about.take());
+        self.menu_request(about.map_or(MenuAction::Reload, MenuAction::Show));
     }
 
     fn menu_changed(&mut self, sender: &str, path: &str, now: Instant) {
         let Some(session) = self.menu.as_mut() else {
             return;
         };
-        let theirs = session.path == path && (session.owner == sender || session.bus == sender);
+        let Target::Item {
+            bus,
+            owner,
+            path: held,
+        } = &session.target
+        else {
+            return;
+        };
+        let theirs = held == path && (owner == sender || bus == sender);
         if theirs && session.pacer.request(now) {
-            self.reload_menu();
+            self.fetch_menu();
         }
     }
 
@@ -624,7 +858,7 @@ impl<B: Backend> Host<B> {
         let Some(session) = self.menu.as_mut().filter(|menu| menu.serial == serial) else {
             return;
         };
-        let again = session.pacer.finished(now);
+        session.pacer.finished(now);
         let first = session.entries.is_none();
         match entries {
             Some(entries) if !entries.is_empty() => {
@@ -636,733 +870,71 @@ impl<B: Backend> Host<B> {
                 session.entries = Some(entries);
             }
             // Nothing to show. A menu already up stays as it was.
-            _ if first => return self.end_menu(),
+            _ if first => self.end_menu(),
             _ => {}
         }
-        if again {
-            self.reload_menu();
+    }
+
+    fn menu_opened(&mut self, serial: u64, id: i32, now: Instant) {
+        let Some(session) = self.menu.as_mut().filter(|menu| menu.serial == serial) else {
+            return;
+        };
+        let known = session.entries.as_deref().unwrap_or_default();
+        if !menu::find(known, id).is_some_and(|entry| entry.submenu) {
+            return;
+        }
+        session.about = Some(id);
+        if session.pacer.request(now) {
+            self.fetch_menu();
+        }
+    }
+
+    fn menu_clicked(&mut self, serial: u64, id: i32, now: Instant) {
+        let Some(session) = self.session(serial) else {
+            return;
+        };
+        // Only a row we showed, and only one that can be chosen.
+        let known = session.entries.as_deref().unwrap_or_default();
+        let valid = menu::find(known, id).is_some_and(|entry| entry.enabled && !entry.submenu);
+        let overflow = matches!(session.target, Target::Overflow);
+        let place = session.place.clone();
+        if valid && !overflow {
+            self.menu_request(MenuAction::Click(id));
+        }
+        self.end_menu();
+        if let (true, true, Ok(id)) = (valid, overflow, u32::try_from(id)) {
+            // The hidden item's own menu if it has one, as most that end
+            // up here are indicators; otherwise what a click would do.
+            let has_menu = self
+                .snapshot(id)
+                .is_some_and(|(_, snapshot)| snapshot.properties.menu.is_some());
+            if has_menu {
+                self.open_menu(id, place, now);
+            } else {
+                self.activate(id, place);
+            }
         }
     }
 
     fn end_menu(&mut self) {
+        if matches!(
+            self.menu,
+            Some(MenuSession {
+                target: Target::Item { .. },
+                ..
+            })
+        ) {
+            self.menu_request(MenuAction::Closed);
+        }
         if let Some(session) = self.menu.take() {
-            self.backend.unwatch_menu(&session.bus, &session.path);
+            if let Target::Item { bus, path, .. } = &session.target {
+                self.backend.unwatch_menu(bus, path);
+            }
             self.backend.close_menu();
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::tray::pace::BASE_INTERVAL;
-    use std::time::Duration;
-
-    const KDE: &str = "org.kde.StatusNotifierItem";
-
-    /// Writes down what the host asks for.
-    #[derive(Default)]
-    struct Recorder {
-        log: Vec<String>,
-        views: Vec<View>,
-        calls: Vec<Call>,
-        menus: Vec<MenuRequest>,
-        shown: Option<Vec<Entry>>,
-    }
-
-    impl Recorder {
-        fn take(&mut self) -> Vec<String> {
-            std::mem::take(&mut self.log)
-        }
-    }
-
-    impl Backend for Recorder {
-        fn watch(&mut self, address: &Address) {
-            self.log.push(format!("watch {}", address.service()));
-        }
-        fn unwatch(&mut self, address: &Address) {
-            self.log.push(format!("unwatch {}", address.service()));
-        }
-        fn refresh(&mut self, address: &Address, interface: Option<&'static str>, pixels: u32) {
-            let known = if interface.is_some() { " known" } else { "" };
-            self.log
-                .push(format!("refresh {} {pixels}{known}", address.service()));
-        }
-        fn call(&mut self, call: Call) {
-            self.log.push(format!("call {:?}", call.method));
-            self.calls.push(call);
-        }
-        fn unregistered(&mut self, address: &Address) {
-            self.log.push(format!("unregistered {}", address.service()));
-        }
-        fn adopt_watcher(&mut self) {
-            self.log.push("adopt".into());
-        }
-        fn publish(&mut self, views: Vec<View>) {
-            let ids: Vec<String> = views.iter().map(|view| view.label.clone()).collect();
-            self.log.push(format!("publish [{}]", ids.join(", ")));
-            self.views = views;
-        }
-        fn watch_menu(&mut self, bus: &str, path: &str) {
-            self.log.push(format!("watch menu {bus}{path}"));
-        }
-        fn unwatch_menu(&mut self, bus: &str, path: &str) {
-            self.log.push(format!("unwatch menu {bus}{path}"));
-        }
-        fn menu(&mut self, request: MenuRequest) {
-            self.log.push(format!("menu {:?}", request.action));
-            self.menus.push(request);
-        }
-        fn show_menu(&mut self, _serial: u64, place: &Place, entries: &[Entry]) {
-            self.log
-                .push(format!("show menu at {} {}", place.output, place.x));
-            self.shown = Some(entries.to_vec());
-        }
-        fn update_menu(&mut self, entries: &[Entry]) {
-            self.log.push("update menu".into());
-            self.shown = Some(entries.to_vec());
-        }
-        fn close_menu(&mut self) {
-            self.log.push("close menu".into());
-            self.shown = None;
-        }
-    }
-
-    struct Rig {
-        host: Host<Recorder>,
-        registry: Arc<Mutex<Registry>>,
-        now: Instant,
-    }
-
-    fn rig() -> Rig {
-        let registry = Arc::new(Mutex::new(Registry::default()));
-        Rig {
-            host: Host::new(Recorder::default(), registry.clone(), 16),
-            registry,
-            now: Instant::now(),
-        }
-    }
-
-    fn snapshot(title: &str) -> Snapshot {
-        Snapshot {
-            owner: ":1.50".into(),
-            interface: KDE,
-            properties: Properties {
-                title: title.into(),
-                ..Properties::default()
-            },
-            icon: None,
-        }
-    }
-
-    fn place() -> Place {
-        Place {
-            output: "eDP-1".into(),
-            x: 900,
-        }
-    }
-
-    impl Rig {
-        fn send(&mut self, event: Event) -> Vec<String> {
-            self.host.handle(event, self.now);
-            self.host.backend().take()
-        }
-
-        fn wait(&mut self, time: Duration) -> Vec<String> {
-            self.now += time;
-            self.host.tick(self.now);
-            self.host.backend().take()
-        }
-
-        /// Registers the way the watcher does, then tells the host.
-        fn register(&mut self, service: &str, sender: &str) -> (Address, Vec<String>) {
-            let address = self
-                .registry
-                .lock()
-                .unwrap()
-                .register(service, Some(sender))
-                .unwrap()
-                .unwrap();
-            let log = self.send(Event::Registered(address.clone()));
-            (address, log)
-        }
-
-        fn answer(&mut self, address: &Address, snapshot: Snapshot) -> Vec<String> {
-            self.send(Event::Refreshed {
-                address: address.clone(),
-                outcome: Ok(Box::new(snapshot)),
-            })
-        }
-
-        /// A registered item that has been read once.
-        fn item(&mut self, sender: &str, snapshot: Snapshot) -> (Address, u32) {
-            let (address, _) = self.register("/StatusNotifierItem", sender);
-            let snapshot = Snapshot {
-                owner: sender.into(),
-                ..snapshot
-            };
-            self.answer(&address, snapshot);
-            // Long enough ago that the next change is read at once.
-            self.now += Duration::from_secs(5);
-            let id = self.host.items.last().unwrap().id;
-            (address, id)
-        }
-
-        fn signal(&mut self, sender: &str, member: &str, status: Option<&str>) -> Vec<String> {
-            self.send(Event::Signal {
-                sender: sender.into(),
-                path: "/StatusNotifierItem".into(),
-                member: member.into(),
-                status: status.map(str::to_string),
-                menu: false,
-            })
-        }
-
-        fn press(&mut self, id: u32, button: Button) -> Vec<String> {
-            self.send(Event::Pressed {
-                id,
-                button,
-                place: place(),
-            })
-        }
-    }
-
-    fn with_menu(title: &str, is_menu: bool) -> Snapshot {
-        let mut snapshot = snapshot(title);
-        snapshot.properties.menu = Some("/MenuBar".into());
-        snapshot.properties.is_menu = is_menu;
-        snapshot
-    }
-
-    fn row(id: i32, label: &str) -> Entry {
-        Entry {
-            id,
-            label: label.into(),
-            enabled: true,
-            ..Entry::default()
-        }
-    }
-
-    #[test]
-    fn a_registered_item_is_watched_read_and_shown() {
-        let mut rig = rig();
-        let (address, log) = rig.register("/StatusNotifierItem", ":1.50");
-        assert_eq!(
-            log,
-            [
-                "watch :1.50/StatusNotifierItem",
-                "refresh :1.50/StatusNotifierItem 16"
-            ]
-        );
-        // Nothing is shown until it has answered.
-        assert!(rig.host.backend().views.is_empty());
-        assert_eq!(rig.answer(&address, snapshot("Chat")), ["publish [Chat]"]);
-        let view = &rig.host.backend().views[0];
-        assert_eq!((view.letter.as_str(), view.attention), ("C", false));
-        assert_eq!(rig.host.deadline(), None);
-    }
-
-    #[test]
-    fn registering_again_reads_the_item_again_but_adds_nothing() {
-        let mut rig = rig();
-        let (address, _) = rig.register("/StatusNotifierItem", ":1.50");
-        rig.answer(&address, snapshot("Chat"));
-        rig.now += Duration::from_secs(5);
-        let log = rig.send(Event::Registered(address.clone()));
-        assert_eq!(log, ["refresh :1.50/StatusNotifierItem 16 known"]);
-        assert_eq!(rig.host.items.len(), 1);
-    }
-
-    #[test]
-    fn items_keep_the_order_they_arrived_in() {
-        let mut rig = rig();
-        for (n, title) in ["One", "Two", "Three"].into_iter().enumerate() {
-            rig.item(&format!(":1.{n}"), snapshot(title));
-        }
-        let labels: Vec<_> = rig.host.backend().views.iter().map(|v| &v.label).collect();
-        assert_eq!(labels, ["One", "Two", "Three"]);
-    }
-
-    #[test]
-    fn an_item_whose_owner_leaves_disappears() {
-        let mut rig = rig();
-        rig.item(":1.50", snapshot("Chat"));
-        rig.item(":1.51", snapshot("Sync"));
-        let log = rig.send(Event::OwnerLost(":1.50".into()));
-        assert_eq!(
-            log,
-            [
-                "unwatch :1.50/StatusNotifierItem",
-                "unregistered :1.50/StatusNotifierItem",
-                "publish [Sync]"
-            ]
-        );
-        assert!(rig.registry.lock().unwrap().services().len() == 1);
-        // A name we never heard of is nothing to us.
-        assert!(rig.send(Event::OwnerLost(":1.99".into())).is_empty());
-    }
-
-    #[test]
-    fn an_item_that_has_left_the_bus_is_dropped_when_a_read_finds_out() {
-        let mut rig = rig();
-        let (address, _) = rig.register("/StatusNotifierItem", ":1.50");
-        let log = rig.send(Event::Refreshed {
-            address,
-            outcome: Err(Failure::Gone),
-        });
-        assert_eq!(
-            log,
-            [
-                "unwatch :1.50/StatusNotifierItem",
-                "unregistered :1.50/StatusNotifierItem"
-            ]
-        );
-        assert!(rig.registry.lock().unwrap().services().is_empty());
-    }
-
-    #[test]
-    fn an_item_that_keeps_timing_out_is_dropped() {
-        let mut rig = rig();
-        let (address, _) = rig.item(":1.50", snapshot("Stuck"));
-        for round in 1..=MAX_FAILURES {
-            rig.now += Duration::from_secs(60);
-            assert_eq!(rig.signal(":1.50", "NewIcon", None).len(), 1);
-            let log = rig.send(Event::Refreshed {
-                address: address.clone(),
-                outcome: Err(Failure::Unreachable),
-            });
-            if round < MAX_FAILURES {
-                // Until then it keeps the look it had.
-                assert!(log.is_empty(), "{log:?}");
-                assert_eq!(rig.host.backend().views.len(), 1);
-            } else {
-                assert!(log.contains(&"publish []".to_string()));
-            }
-        }
-        assert!(rig.host.items.is_empty());
-    }
-
-    #[test]
-    fn an_item_that_was_slow_to_answer_is_tried_again() {
-        let mut rig = rig();
-        // Still starting up: the first read times out.
-        let (address, _) = rig.register("/StatusNotifierItem", ":1.50");
-        let failed = rig.send(Event::Refreshed {
-            address: address.clone(),
-            outcome: Err(Failure::Unreachable),
-        });
-        assert!(failed.is_empty());
-        assert_eq!(rig.host.deadline(), Some(rig.now + RETRY_DELAY));
-        assert!(rig.wait(RETRY_DELAY / 2).is_empty());
-        assert_eq!(
-            rig.wait(RETRY_DELAY),
-            ["refresh :1.50/StatusNotifierItem 16"]
-        );
-        // This time it answers, and that is the end of the retries.
-        assert_eq!(rig.answer(&address, snapshot("Slow")), ["publish [Slow]"]);
-        assert_eq!(rig.host.deadline(), None);
-    }
-
-    #[test]
-    fn passive_items_are_hidden_and_attention_is_marked() {
-        let mut rig = rig();
-        let (address, _) = rig.item(":1.50", snapshot("Chat"));
-        assert_eq!(
-            rig.signal(":1.50", "NewStatus", Some("NeedsAttention")),
-            [
-                "publish [Chat]",
-                "refresh :1.50/StatusNotifierItem 16 known"
-            ]
-        );
-        assert!(rig.host.backend().views[0].attention);
-
-        rig.now += Duration::from_secs(5);
-        let mut passive = snapshot("Chat");
-        passive.properties.status = Status::Passive;
-        assert_eq!(rig.answer(&address, passive), ["publish []"]);
-        rig.signal(":1.50", "NewStatus", Some("Active"));
-        assert_eq!(rig.host.backend().views.len(), 1);
-        assert!(!rig.host.backend().views[0].attention);
-    }
-
-    #[test]
-    fn signals_are_matched_to_items_by_owner_and_path() {
-        let mut rig = rig();
-        // Registered under a well-known name, answered by :1.50.
-        let (address, _) = rig.register("org.example.Chat", ":1.50");
-        rig.answer(&address, snapshot("Chat"));
-        rig.now += Duration::from_secs(5);
-        assert_eq!(rig.signal(":1.50", "NewIcon", None).len(), 1);
-        rig.send(Event::Refreshed {
-            address: address.clone(),
-            outcome: Ok(Box::new(snapshot("Chat"))),
-        });
-        rig.now += Duration::from_secs(5);
-        // Someone else, or another object, or a signal that is not news.
-        assert!(rig.signal(":1.77", "NewIcon", None).is_empty());
-        assert!(rig.signal(":1.50", "SomethingElse", None).is_empty());
-        let stray = rig.send(Event::Signal {
-            sender: ":1.50".into(),
-            path: "/Other".into(),
-            member: "NewIcon".into(),
-            status: None,
-            menu: false,
-        });
-        assert!(stray.is_empty());
-    }
-
-    #[test]
-    fn an_item_spamming_new_icon_is_read_at_a_bounded_rate() {
-        let mut rig = rig();
-        rig.item(":1.50", snapshot("Spam"));
-        let mut reads = 0;
-        // Ten seconds of a signal every millisecond, each read answered
-        // straight away.
-        for _ in 0..10_000 {
-            rig.now += Duration::from_millis(1);
-            rig.host.tick(rig.now);
-            rig.host.handle(
-                Event::Signal {
-                    sender: ":1.50".into(),
-                    path: "/StatusNotifierItem".into(),
-                    member: "NewIcon".into(),
-                    status: None,
-                    menu: false,
-                },
-                rig.now,
-            );
-            let log = rig.host.backend().take();
-            for line in log {
-                assert!(line.starts_with("refresh"), "{line}");
-                reads += 1;
-                let address = rig.host.items[0].address.clone();
-                rig.host.handle(
-                    Event::Refreshed {
-                        address,
-                        outcome: Ok(Box::new(snapshot("Spam"))),
-                    },
-                    rig.now,
-                );
-            }
-        }
-        assert!((3..=8).contains(&reads), "{reads} reads");
-        // And it leaves a deadline only while a read is owed.
-        assert!(rig.host.deadline().is_some());
-        rig.wait(Duration::from_secs(20));
-        let address = rig.host.items[0].address.clone();
-        rig.answer(&address, snapshot("Spam"));
-        assert_eq!(rig.host.deadline(), None);
-    }
-
-    #[test]
-    fn a_deferred_read_starts_when_it_is_due() {
-        let mut rig = rig();
-        let (address, _) = rig.item(":1.50", snapshot("Chat"));
-        assert_eq!(rig.signal(":1.50", "NewIcon", None).len(), 1);
-        rig.answer(&address, snapshot("Chat"));
-        // A second change right behind the first has to wait.
-        assert!(rig.signal(":1.50", "NewIcon", None).is_empty());
-        let due = rig.host.deadline().unwrap();
-        assert!(due <= rig.now + BASE_INTERVAL);
-        assert!(rig.wait(Duration::from_millis(10)).is_empty());
-        assert_eq!(
-            rig.wait(BASE_INTERVAL),
-            ["refresh :1.50/StatusNotifierItem 16 known"]
-        );
-        assert_eq!(rig.host.deadline(), None);
-        rig.answer(&address, snapshot("Chat"));
-    }
-
-    #[test]
-    fn a_change_of_scale_reads_every_icon_again() {
-        let mut rig = rig();
-        rig.item(":1.50", snapshot("One"));
-        rig.item(":1.51", snapshot("Two"));
-        rig.now += Duration::from_secs(5);
-        let log = rig.send(Event::Pixels(32));
-        assert_eq!(
-            log,
-            [
-                "refresh :1.50/StatusNotifierItem 32 known",
-                "refresh :1.51/StatusNotifierItem 32 known"
-            ]
-        );
-        assert!(rig.send(Event::Pixels(32)).is_empty());
-    }
-
-    #[test]
-    fn clicks_become_calls_on_the_item() {
-        let mut rig = rig();
-        let (_, id) = rig.item(":1.50", snapshot("Chat"));
-        rig.press(id, Button::Left);
-        rig.press(id, Button::Middle);
-        // No menu of its own: the app is asked to show one.
-        rig.press(id, Button::Right);
-        rig.send(Event::Scrolled {
-            id,
-            delta: -120,
-            horizontal: false,
-        });
-        rig.send(Event::Scrolled {
-            id,
-            delta: 0,
-            horizontal: true,
-        });
-        let calls = &rig.host.backend().calls;
-        let methods: Vec<_> = calls.iter().map(|call| call.method.clone()).collect();
-        assert_eq!(
-            methods,
-            [
-                Method::Activate(place()),
-                Method::SecondaryActivate,
-                Method::ContextMenu,
-                Method::Scroll {
-                    delta: -120,
-                    horizontal: false
-                },
-            ]
-        );
-        assert_eq!(calls[0].bus, ":1.50");
-        assert_eq!(calls[0].path, "/StatusNotifierItem");
-        assert_eq!(calls[0].interface, KDE);
-        // A click on something that is not there does nothing.
-        assert!(rig.press(999, Button::Left).is_empty());
-    }
-
-    #[test]
-    fn a_right_click_fetches_and_shows_the_menu() {
-        let mut rig = rig();
-        let (_, id) = rig.item(":1.50", with_menu("Chat", false));
-        assert_eq!(
-            rig.press(id, Button::Right),
-            ["watch menu :1.50/MenuBar", "menu Show(0)"]
-        );
-        let serial = rig.host.backend().menus[0].serial;
-        let entries = vec![row(1, "Open"), row(2, "Quit")];
-        let log = rig.send(Event::MenuLayout {
-            serial,
-            entries: Some(entries.clone()),
-        });
-        assert_eq!(log, ["show menu at eDP-1 900"]);
-        assert_eq!(rig.host.backend().shown, Some(entries));
-
-        // Choosing a row tells the app and closes the menu.
-        let log = rig.send(Event::MenuClicked { serial, id: 2 });
-        assert_eq!(
-            log,
-            ["menu Click(2)", "unwatch menu :1.50/MenuBar", "close menu"]
-        );
-        // The helper exiting afterwards is old news.
-        assert!(rig.send(Event::MenuClosed { serial }).is_empty());
-    }
-
-    #[test]
-    fn a_left_click_opens_the_menu_of_an_item_that_is_only_a_menu() {
-        let mut rig = rig();
-        let (_, id) = rig.item(":1.50", with_menu("Indicator", true));
-        assert_eq!(rig.press(id, Button::Left)[1], "menu Show(0)");
-
-        // And of one that turns out to have no Activate.
-        let (_, id) = rig.item(":1.51", with_menu("Appindicator", false));
-        assert_eq!(
-            rig.press(id, Button::Left).last().unwrap(),
-            "call Activate(Place { output: \"eDP-1\", x: 900 })"
-        );
-        rig.send(Event::MenuClosed { serial: 1 });
-        let log = rig.send(Event::ActivateFailed { id, place: place() });
-        assert_eq!(log, ["watch menu :1.51/MenuBar", "menu Show(0)"]);
-    }
-
-    #[test]
-    fn only_rows_that_were_shown_and_can_be_chosen_are_clicked() {
-        let mut rig = rig();
-        let (_, id) = rig.item(":1.50", with_menu("Chat", false));
-        let open = |rig: &mut Rig| {
-            rig.press(id, Button::Right);
-            let serial = rig.host.backend().menus.last().unwrap().serial;
-            let disabled = Entry {
-                enabled: false,
-                ..row(2, "Greyed")
-            };
-            let sub = Entry {
-                submenu: true,
-                children: vec![row(4, "Inner")],
-                ..row(3, "More")
-            };
-            rig.send(Event::MenuLayout {
-                serial,
-                entries: Some(vec![row(1, "Open"), disabled, sub]),
-            });
-            serial
-        };
-        for (clicked, expected) in [(2, false), (3, false), (99, false), (4, true), (1, true)] {
-            let serial = open(&mut rig);
-            let log = rig.send(Event::MenuClicked {
-                serial,
-                id: clicked,
-            });
-            assert_eq!(
-                log.contains(&format!("menu Click({clicked})")),
-                expected,
-                "row {clicked}"
-            );
-            assert!(log.contains(&"close menu".to_string()));
-        }
-        // A click from a menu that is no longer the current one is ignored.
-        let stale = open(&mut rig);
-        open(&mut rig);
-        assert!(rig
-            .send(Event::MenuClicked {
-                serial: stale,
-                id: 1
-            })
-            .is_empty());
-    }
-
-    #[test]
-    fn opening_a_submenu_asks_the_app_to_fill_it() {
-        let mut rig = rig();
-        let (_, id) = rig.item(":1.50", with_menu("Chat", false));
-        rig.press(id, Button::Right);
-        let serial = rig.host.backend().menus[0].serial;
-        let sub = Entry {
-            submenu: true,
-            ..row(3, "More")
-        };
-        rig.send(Event::MenuLayout {
-            serial,
-            entries: Some(vec![row(1, "Open"), sub.clone()]),
-        });
-        assert_eq!(
-            rig.send(Event::MenuOpened { serial, id: 3 }),
-            ["menu Show(3)"]
-        );
-        // Not a submenu, or not a row at all.
-        assert!(rig.send(Event::MenuOpened { serial, id: 1 }).is_empty());
-        assert!(rig.send(Event::MenuOpened { serial, id: 77 }).is_empty());
-
-        let filled = Entry {
-            children: vec![row(4, "Inner")],
-            ..sub
-        };
-        let log = rig.send(Event::MenuLayout {
-            serial,
-            entries: Some(vec![row(1, "Open"), filled]),
-        });
-        assert_eq!(log, ["update menu"]);
-    }
-
-    #[test]
-    fn a_menu_that_changes_while_open_is_read_again_at_a_bounded_rate() {
-        let mut rig = rig();
-        let (_, id) = rig.item(":1.50", with_menu("Chat", false));
-        rig.press(id, Button::Right);
-        let serial = rig.host.backend().menus[0].serial;
-        rig.send(Event::MenuLayout {
-            serial,
-            entries: Some(vec![row(1, "Open")]),
-        });
-        let changed = |rig: &mut Rig, sender: &str, path: &str| {
-            rig.send(Event::Signal {
-                sender: sender.into(),
-                path: path.into(),
-                member: "LayoutUpdated".into(),
-                status: None,
-                menu: true,
-            })
-        };
-        // Too soon after the first read: put off, not dropped.
-        assert!(changed(&mut rig, ":1.50", "/MenuBar").is_empty());
-        assert!(changed(&mut rig, ":1.50", "/MenuBar").is_empty());
-        assert_eq!(rig.wait(BASE_INTERVAL), ["menu Reload"]);
-        // The same layout again is not sent to the screen twice.
-        let log = rig.send(Event::MenuLayout {
-            serial,
-            entries: Some(vec![row(1, "Open")]),
-        });
-        assert!(log.is_empty());
-        // Another app's menu, or another menu of this app, is not ours.
-        rig.now += Duration::from_secs(5);
-        assert!(changed(&mut rig, ":1.77", "/MenuBar").is_empty());
-        assert!(changed(&mut rig, ":1.50", "/Other").is_empty());
-        assert_eq!(changed(&mut rig, ":1.50", "/MenuBar"), ["menu Reload"]);
-    }
-
-    #[test]
-    fn an_empty_or_unreadable_menu_is_not_shown() {
-        let mut rig = rig();
-        let (_, id) = rig.item(":1.50", with_menu("Chat", false));
-        for entries in [None, Some(Vec::new())] {
-            rig.press(id, Button::Right);
-            let serial = rig.host.backend().menus.last().unwrap().serial;
-            let log = rig.send(Event::MenuLayout { serial, entries });
-            assert_eq!(log, ["unwatch menu :1.50/MenuBar", "close menu"]);
-        }
-    }
-
-    #[test]
-    fn the_menu_goes_when_its_item_does_or_another_is_opened() {
-        let mut rig = rig();
-        let (_, first) = rig.item(":1.50", with_menu("One", false));
-        let (_, second) = rig.item(":1.51", with_menu("Two", false));
-        rig.press(first, Button::Right);
-        let log = rig.press(second, Button::Right);
-        assert_eq!(
-            log,
-            [
-                "unwatch menu :1.50/MenuBar",
-                "close menu",
-                "watch menu :1.51/MenuBar",
-                "menu Show(0)"
-            ]
-        );
-        let log = rig.send(Event::OwnerLost(":1.51".into()));
-        assert!(log.contains(&"close menu".to_string()), "{log:?}");
-    }
-
-    #[test]
-    fn with_another_watcher_its_items_are_adopted() {
-        let mut rig = rig();
-        assert_eq!(rig.send(Event::WatcherOwner { ours: false }), ["adopt"]);
-        let log = rig.send(Event::Announced(":1.50/StatusNotifierItem".into()));
-        assert_eq!(
-            log,
-            [
-                "watch :1.50/StatusNotifierItem",
-                "refresh :1.50/StatusNotifierItem 16"
-            ]
-        );
-        // Listed again, or nonsense.
-        assert!(rig
-            .send(Event::Announced(":1.50/StatusNotifierItem".into()))
-            .is_empty());
-        assert!(rig
-            .send(Event::Announced("not a service".into()))
-            .is_empty());
-
-        // It is the other watcher's place to announce that one has left.
-        let log = rig.send(Event::Withdrawn(":1.50/StatusNotifierItem".into()));
-        assert_eq!(log, ["unwatch :1.50/StatusNotifierItem"]);
-        assert!(rig.registry.lock().unwrap().services().is_empty());
-    }
-
-    #[test]
-    fn taking_over_the_watcher_name_keeps_the_items() {
-        let mut rig = rig();
-        rig.send(Event::WatcherOwner { ours: false });
-        rig.send(Event::Announced(":1.50/StatusNotifierItem".into()));
-        assert!(rig.send(Event::WatcherOwner { ours: true }).is_empty());
-        assert_eq!(rig.host.items.len(), 1);
-        assert_eq!(
-            rig.registry.lock().unwrap().services(),
-            [":1.50/StatusNotifierItem"]
-        );
-        // From here on announcements from elsewhere are not believed.
-        assert!(rig
-            .send(Event::Announced(":1.51/StatusNotifierItem".into()))
-            .is_empty());
-        assert!(rig
-            .send(Event::Withdrawn(":1.50/StatusNotifierItem".into()))
-            .is_empty());
-    }
-}
+#[path = "host_tests.rs"]
+mod tests;
