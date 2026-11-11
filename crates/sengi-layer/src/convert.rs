@@ -146,16 +146,40 @@ const MODIFIER_GROUPS: [ModifierGroup; 4] = [
     (&[Key::Meta, Key::MetaR], |state| state.meta),
 ];
 
+/// The key behind a key text, if the text is a single character.
+fn single(text: &str) -> Option<char> {
+    let mut characters = text.chars();
+    match (characters.next(), characters.next()) {
+        (Some(first), None) => Some(first),
+        _ => None,
+    }
+}
+
 /// True for the key texts Slint treats as modifier keys.
 pub(crate) fn is_modifier(text: &str) -> bool {
-    let mut characters = text.chars();
-    let (Some(first), None) = (characters.next(), characters.next()) else {
+    let Some(key) = single(text) else {
         return false;
     };
-    MODIFIER_GROUPS
-        .iter()
-        .flat_map(|(keys, _)| keys.iter())
-        .any(|key| char::from(*key) == first)
+    key == char::from(Key::AltGr)
+        || MODIFIER_GROUPS
+            .iter()
+            .flat_map(|(keys, _)| keys.iter())
+            .any(|modifier| char::from(*modifier) == key)
+}
+
+/// Whether holding the key down should repeat it. Text, editing and
+/// navigation keys do. Modifiers and locks never do, and a held Escape or
+/// function key acting over and over helps nobody.
+pub(crate) fn key_repeats(text: &str) -> bool {
+    let Some(key) = single(text) else {
+        return !text.is_empty();
+    };
+    let function_keys = char::from(Key::F1)..=char::from(Key::F24);
+    !is_modifier(text)
+        && !function_keys.contains(&key)
+        && ![Key::CapsLock, Key::Escape, Key::Menu, Key::Insert]
+            .iter()
+            .any(|still| char::from(*still) == key)
 }
 
 /// Slint learns about modifiers from the presses and releases of the
@@ -371,7 +395,27 @@ mod tests {
     }
 
     #[test]
+    fn only_keys_worth_repeating_repeat() {
+        assert!(key_repeats("a"));
+        assert!(key_repeats(" "));
+        assert!(key_repeats("\u{e9}"));
+        assert!(key_repeats(&text(Key::Backspace)));
+        assert!(key_repeats(&text(Key::Delete)));
+        assert!(key_repeats(&text(Key::LeftArrow)));
+        assert!(key_repeats(&text(Key::DownArrow)));
+        assert!(key_repeats(&text(Key::Return)));
+        assert!(key_repeats(&text(Key::Tab)));
+        assert!(!key_repeats(&text(Key::Shift)));
+        assert!(!key_repeats(&text(Key::AltGr)));
+        assert!(!key_repeats(&text(Key::CapsLock)));
+        assert!(!key_repeats(&text(Key::Escape)));
+        assert!(!key_repeats(&text(Key::F5)));
+        assert!(!key_repeats(""));
+    }
+
+    #[test]
     fn modifier_keys_are_recognised() {
+        assert!(is_modifier(&text(Key::AltGr)));
         assert!(is_modifier(&text(Key::Shift)));
         assert!(is_modifier(&text(Key::ControlR)));
         assert!(is_modifier(&text(Key::Meta)));

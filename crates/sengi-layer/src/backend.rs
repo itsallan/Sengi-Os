@@ -36,7 +36,7 @@ use wayland_client::{Connection, QueueHandle};
 
 use crate::config::{Anchor, Config, KeyboardMode, Layer, Outputs};
 use crate::convert::{
-    is_modifier, key_text, modifier_fixes, pointer_button, repeats_due, scroll_delta,
+    is_modifier, key_repeats, key_text, modifier_fixes, pointer_button, repeats_due, scroll_delta,
     write_argb8888, ModifierState, RepeatTiming,
 };
 use crate::outputs::plan;
@@ -761,7 +761,7 @@ impl KeyboardHandler for State {
             if !self.held_modifiers.contains(&key) {
                 self.held_modifiers.push(key);
             }
-        } else if let Some(timing) = self.repeat_timing {
+        } else if let (Some(timing), true) = (self.repeat_timing, key_repeats(&text)) {
             self.repeat = Some(Repeat {
                 raw_code: event.raw_code,
                 text: text.clone(),
