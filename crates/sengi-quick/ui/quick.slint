@@ -1,0 +1,590 @@
+// The Sengi OS quick settings panel: the few controls reached for many
+// times a day, dropped down from the right end of the bar.
+
+import { Tokens, SengiText, SengiLabel, SengiSurface } from "components.slint";
+import {
+    Metrics, FocusRing, Switch, PushButton, IconButton, Slider, TextField, ListRow, Tile, TileHeader
+} from "controls.slint";
+import {
+    SignalIcon, WiredIcon, BluetoothIcon, SpeakerIcon, SunIcon, MoonIcon, LockIcon, BatteryIcon
+} from "icons.slint";
+
+export struct NetworkItem {
+    name: string,
+    secured: bool,
+    // iwd has joined it before and needs nothing typed.
+    known: bool,
+    // Signal, 1 to 4.
+    level: int,
+    // Being joined right now.
+    busy: bool,
+}
+
+// The networks in range. The list is one stop for the Tab key; the arrow
+// keys move through its rows and out of it at either end.
+component NetworkList inherits Rectangle {
+    in property <[NetworkItem]> networks;
+    callback chosen(int);
+    // An arrow key was pressed at the first or last row: -1 up, 1 down.
+    callback leave(int);
+
+    // Rows on show at once; the rest scroll.
+    private property <int> shown: Math.min(root.networks.length, 5);
+    private property <int> current: 0;
+    private property <length> label-gap: Tokens.space-sm;
+    private property <length> icons: Tokens.bar-icon * 2 + Tokens.space-sm * 3;
+
+    // Scroll so the keyboard's row can be seen.
+    function reveal() {
+        if root.current * Metrics.row < -flick.content-y {
+            flick.content-y = -root.current * Metrics.row;
+        } else if (root.current + 1) * Metrics.row > flick.height - flick.content-y {
+            flick.content-y = flick.height - (root.current + 1) * Metrics.row;
+        }
+    }
+
+    height: root.shown * Metrics.row;
+
+    scope := FocusScope {
+        focus-on-click: false;
+
+        key-pressed(event) => {
+            if event.text == Key.DownArrow {
+                if root.current + 1 < root.networks.length {
+                    root.current += 1;
+                    root.reveal();
+                } else {
+                    root.leave(1);
+                }
+            } else if event.text == Key.UpArrow {
+                if root.current > 0 {
+                    root.current = Math.min(root.current, root.networks.length) - 1;
+                    root.reveal();
+                } else {
+                    root.leave(-1);
+                }
+            } else if event.text == " " || event.text == Key.Return {
+                if root.current < root.networks.length {
+                    root.chosen(root.current);
+                }
+            } else {
+                return EventResult.reject;
+            }
+            return EventResult.accept;
+        }
+
+        flick := Flickable {
+            interactive: false;
+            content-width: self.width;
+            content-height: root.networks.length * Metrics.row;
+
+            for item[index] in root.networks: ListRow {
+                y: index * Metrics.row;
+                width: flick.width;
+                text: item.name;
+                current: scope.has-focus && index == root.current;
+                trailing: root.icons + (note.text != "" ? note.preferred-width + root.label-gap : 0);
+                clicked => { root.chosen(index); }
+
+                note := SengiLabel {
+                    x: parent.width - root.icons - self.width;
+                    width: self.preferred-width;
+                    height: parent.height;
+                    text: item.busy ? "Connecting\u{2026}" : item.known ? "Saved" : "";
+                    font-weight: Tokens.font-weight-regular;
+                    vertical-alignment: center;
+                }
+
+                if item.secured: LockIcon {
+                    x: parent.width - Tokens.space-sm * 2 - Tokens.bar-icon * 2;
+                    y: (parent.height - self.height) / 2;
+                    ink: Tokens.color-text-muted;
+                }
+
+                SignalIcon {
+                    x: parent.width - Tokens.space-sm - Tokens.bar-icon;
+                    y: (parent.height - self.height) / 2;
+                    level: item.level;
+                }
+            }
+        }
+    }
+
+    // Scroll position, when there is more than fits.
+    if root.networks.length > root.shown: Rectangle {
+        x: parent.width - self.width;
+        y: root.height * (-flick.content-y / flick.content-height);
+        width: Tokens.space-xxs;
+        height: root.height * root.shown / root.networks.length;
+        border-radius: self.width / 2;
+        background: Tokens.color-border;
+    }
+
+    FocusRing {
+        shown: scope.has-focus;
+    }
+}
+
+// Asks for the passphrase of a network joined for the first time.
+component PassphrasePrompt inherits Rectangle {
+    in property <string> network;
+    // What was wrong with the last attempt, or empty.
+    in property <string> problem;
+    // Sent; waiting to hear whether the network accepted it.
+    in property <bool> busy: false;
+    callback submitted(string);
+    callback cancelled();
+
+    // The typed text is handed over and wiped from the field at once.
+    function submit() {
+        if field.text != "" && !root.busy {
+            root.submitted(field.text);
+            field.clear();
+        }
+    }
+
+    height: content.preferred-height;
+
+    init => { field.take-focus(); }
+    changed busy => {
+        if !root.busy {
+            field.take-focus();
+        }
+    }
+
+    content := VerticalLayout {
+        padding: Tokens.space-md;
+        padding-top: Tokens.space-sm;
+        spacing: Tokens.space-sm;
+
+        SengiLabel {
+            text: "Passphrase for " + root.network;
+            overflow: elide;
+        }
+
+        field := TextField {
+            masked: true;
+            enabled: !root.busy;
+            placeholder: root.busy ? "Joining\u{2026}" : "8 to 63 characters";
+            accepted => { root.submit(); }
+            cancelled => { root.cancelled(); }
+        }
+
+        if root.problem != "": SengiLabel {
+            text: root.problem;
+            color: Tokens.color-danger;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            spacing: Tokens.space-sm;
+
+            PushButton {
+                text: "Cancel";
+                enabled: !root.busy;
+                clicked => { root.cancelled(); }
+            }
+
+            PushButton {
+                text: "Join";
+                primary: true;
+                enabled: !root.busy && field.text != "";
+                clicked => { root.submit(); }
+            }
+        }
+    }
+}
+
+// A slider with an icon in front and its value behind, as one tile row.
+// The icon is the child.
+component SliderRow inherits Rectangle {
+    in-out property <int> value <=> slider.value;
+    in property <int> minimum: 0;
+    in property <bool> enabled: true;
+    in property <bool> dim: false;
+    in property <string> label;
+    callback changed(int);
+
+    // Where the slider starts: in line with the text of the other tiles.
+    private property <length> start: Tokens.space-md * 2 + Tokens.bar-icon;
+    private property <length> label-width: Math.max(Tokens.space-xl + Tokens.space-lg, readout.preferred-width);
+
+    height: Metrics.tile;
+
+    @children
+
+    slider := Slider {
+        x: root.start;
+        y: (parent.height - self.height) / 2;
+        width: parent.width - root.start - Tokens.space-md * 2 - root.label-width;
+        minimum: root.minimum;
+        enabled: root.enabled;
+        dim: root.dim;
+        changed(value) => { root.changed(value); }
+    }
+
+    readout := SengiLabel {
+        x: parent.width - Tokens.space-md - root.label-width;
+        width: root.label-width;
+        height: parent.height;
+        text: root.label;
+        color: root.enabled ? Tokens.color-text-muted : Tokens.color-text-disabled;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+}
+
+export component QuickWindow inherits Window {
+    // Wi-Fi. Not enabled means no adapter, or not known yet.
+    in property <bool> wifi-enabled: false;
+    in-out property <bool> wifi-on: false;
+    in property <string> wifi-detail;
+    // Signal of the connected network, 1 to 4, or 0.
+    in property <int> wifi-level: 0;
+    // A cable is in: shown as a line of its own.
+    in property <bool> wired: false;
+    in property <[NetworkItem]> networks;
+    // Shown in place of an empty list.
+    in property <string> wifi-note;
+    // Why the last attempt to join failed.
+    in property <string> wifi-alert;
+    in property <bool> prompt-open: false;
+    in property <string> prompt-network;
+    in property <string> prompt-problem;
+    in property <bool> prompt-busy: false;
+
+    in property <bool> bluetooth-enabled: false;
+    in-out property <bool> bluetooth-on: false;
+    in property <string> bluetooth-detail;
+
+    in property <bool> volume-enabled: false;
+    in-out property <int> volume: 0;
+    in property <string> volume-label;
+    in property <bool> muted: false;
+
+    in property <bool> brightness-visible: false;
+    in-out property <int> brightness: 0;
+    in property <int> brightness-minimum: 0;
+    in property <string> brightness-label;
+
+    in property <bool> dnd-visible: false;
+    // The notification service cannot be asked, so the state is only
+    // known once it has been set from here.
+    in property <bool> dnd-known: false;
+    in property <bool> dnd-on: false;
+
+    in property <bool> battery-visible: false;
+    in property <int> battery-percent: 0;
+    in property <string> battery-label;
+    in property <string> battery-detail;
+    in property <bool> battery-charging: false;
+    in property <bool> battery-low: false;
+    in property <bool> battery-warning: false;
+
+    callback wifi-toggled(bool);
+    // A row of the network list, by index into networks.
+    callback network-chosen(int);
+    callback passphrase-submitted(string);
+    callback prompt-cancelled();
+    callback bluetooth-toggled(bool);
+    callback volume-changed(int);
+    callback mute-clicked();
+    callback brightness-changed(int);
+    callback dnd-set(bool);
+    callback lock();
+    callback session();
+    callback dismiss();
+    // Move the keyboard focus to the next (1) or previous (-1) control.
+    callback move-focus(int);
+
+    title: "Sengi OS quick settings";
+    no-frame: true;
+    background: transparent;
+    default-font-family: Tokens.font-family;
+    forward-focus: keys;
+
+    // A control that goes away while it has the focus would take the
+    // keyboard with it, Escape included.
+    changed prompt-open => {
+        if !root.prompt-open {
+            keys.focus();
+        }
+    }
+    changed wifi-enabled => {
+        if !root.wifi-enabled {
+            keys.focus();
+        }
+    }
+    changed bluetooth-enabled => {
+        if !root.bluetooth-enabled {
+            keys.focus();
+        }
+    }
+    changed volume-enabled => {
+        if !root.volume-enabled {
+            keys.focus();
+        }
+    }
+
+    // The window covers the whole output and is see-through around the
+    // panel, so a click anywhere else lands here and closes it.
+    keys := FocusScope {
+        focus-on-tab-navigation: false;
+
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.dismiss();
+            } else if event.text == Key.DownArrow {
+                root.move-focus(1);
+            } else if event.text == Key.UpArrow {
+                root.move-focus(-1);
+            } else {
+                return EventResult.reject;
+            }
+            return EventResult.accept;
+        }
+
+        TouchArea {
+            clicked => { root.dismiss(); }
+        }
+
+        // Top right, under the bar, the same distance from both.
+        SengiSurface {
+            x: root.width - self.width - Tokens.space-sm;
+            y: Tokens.bar-height + Tokens.space-sm;
+            width: Tokens.menu-width;
+            height: content.preferred-height;
+
+            // Clicks between the controls stay in the panel.
+            TouchArea { }
+
+            content := VerticalLayout {
+                padding: Tokens.space-sm;
+                spacing: Tokens.space-sm;
+
+                Tile {
+                    wifi := TileHeader {
+                        title: "Wi-Fi";
+                        detail: root.wifi-detail;
+                        enabled: root.wifi-enabled;
+                        trailing: wifi-switch.width + Tokens.space-md;
+
+                        SignalIcon {
+                            x: wifi.icon-x;
+                            y: (parent.height - self.height) / 2;
+                            level: root.wifi-enabled && root.wifi-on ? root.wifi-level : 0;
+                            faint: root.wifi-enabled && root.wifi-on
+                                ? Tokens.color-text-muted : Tokens.color-text-disabled;
+                        }
+
+                        wifi-switch := Switch {
+                            x: parent.width - self.width - Tokens.space-md;
+                            y: (parent.height - self.height) / 2;
+                            visible: root.wifi-enabled;
+                            enabled: root.wifi-enabled;
+                            checked <=> root.wifi-on;
+                            toggled(on) => { root.wifi-toggled(on); }
+                        }
+                    }
+
+                    if root.wired: Rectangle {
+                        height: Metrics.row;
+
+                        WiredIcon {
+                            x: wifi.icon-x;
+                            y: (parent.height - self.height) / 2;
+                        }
+
+                        SengiText {
+                            x: wifi.text-x;
+                            height: parent.height;
+                            text: "Wired, connected";
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    if root.wifi-enabled && root.wifi-on: Rectangle {
+                        height: Tokens.border-width;
+                        background: Tokens.color-surface-raised;
+                    }
+
+                    if root.wifi-enabled && root.wifi-on && root.prompt-open: PassphrasePrompt {
+                        network: root.prompt-network;
+                        problem: root.prompt-problem;
+                        busy: root.prompt-busy;
+                        submitted(passphrase) => { root.passphrase-submitted(passphrase); }
+                        cancelled => { root.prompt-cancelled(); }
+                    }
+
+                    if root.wifi-enabled && root.wifi-on && !root.prompt-open && root.networks.length > 0: Rectangle {
+                        height: list.height + Tokens.space-xs * 2;
+
+                        list := NetworkList {
+                            x: Tokens.space-xs;
+                            y: Tokens.space-xs;
+                            width: parent.width - Tokens.space-xs * 2;
+                            networks: root.networks;
+                            chosen(index) => { root.network-chosen(index); }
+                            leave(direction) => { root.move-focus(direction); }
+                        }
+                    }
+
+                    if root.wifi-enabled && root.wifi-on && !root.prompt-open && root.wifi-note != "": SengiText {
+                        height: Metrics.row + Tokens.space-xs * 2;
+                        text: root.wifi-note;
+                        color: Tokens.color-text-muted;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    if root.wifi-enabled && root.wifi-on && !root.prompt-open && root.wifi-alert != "": Rectangle {
+                        height: alert.preferred-height + Tokens.space-sm;
+
+                        alert := SengiLabel {
+                            x: Tokens.space-md;
+                            y: 0;
+                            width: parent.width - Tokens.space-md * 2;
+                            text: root.wifi-alert;
+                            color: Tokens.color-danger;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                Tile {
+                    bluetooth := TileHeader {
+                        title: "Bluetooth";
+                        detail: root.bluetooth-detail;
+                        enabled: root.bluetooth-enabled;
+                        trailing: bluetooth-switch.width + Tokens.space-md;
+
+                        BluetoothIcon {
+                            x: bluetooth.icon-x;
+                            y: (parent.height - self.height) / 2;
+                            ink: !root.bluetooth-enabled ? Tokens.color-text-disabled
+                                : root.bluetooth-on ? Tokens.color-text : Tokens.color-text-muted;
+                        }
+
+                        bluetooth-switch := Switch {
+                            x: parent.width - self.width - Tokens.space-md;
+                            y: (parent.height - self.height) / 2;
+                            visible: root.bluetooth-enabled;
+                            enabled: root.bluetooth-enabled;
+                            checked <=> root.bluetooth-on;
+                            toggled(on) => { root.bluetooth-toggled(on); }
+                        }
+                    }
+
+                    // Pairing goes here: a "Pair a device" row under the
+                    // header, opening a list of devices in range. It is
+                    // not part of this release.
+                }
+
+                Tile {
+                    SliderRow {
+                        value <=> root.volume;
+                        enabled: root.volume-enabled;
+                        dim: root.muted;
+                        label: root.volume-label;
+                        changed(value) => { root.volume-changed(value); }
+
+                        IconButton {
+                            x: Tokens.space-md - (self.width - Tokens.bar-icon) / 2;
+                            y: (parent.height - self.height) / 2;
+                            enabled: root.volume-enabled;
+                            clicked => { root.mute-clicked(); }
+
+                            SpeakerIcon {
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                                muted: root.muted;
+                                ink: !root.volume-enabled ? Tokens.color-text-disabled
+                                    : root.muted ? Tokens.color-text-muted : Tokens.color-text;
+                            }
+                        }
+                    }
+                }
+
+                if root.brightness-visible: Tile {
+                    SliderRow {
+                        value <=> root.brightness;
+                        minimum: root.brightness-minimum;
+                        label: root.brightness-label;
+                        changed(value) => { root.brightness-changed(value); }
+
+                        SunIcon {
+                            x: Tokens.space-md;
+                            y: (parent.height - self.height) / 2;
+                        }
+                    }
+                }
+
+                if root.dnd-visible: Tile {
+                    dnd := TileHeader {
+                        title: "Do not disturb";
+                        detail: !root.dnd-known ? "" : root.dnd-on ? "On" : "Off";
+                        trailing: dnd-buttons.width + Tokens.space-md;
+
+                        MoonIcon {
+                            x: dnd.icon-x;
+                            y: (parent.height - self.height) / 2;
+                            ink: root.dnd-known && root.dnd-on ? Tokens.color-text : Tokens.color-text-muted;
+                        }
+
+                        // Two buttons, not a switch: a switch would show
+                        // a position before anything is known.
+                        dnd-buttons := HorizontalLayout {
+                            x: parent.width - self.width - Tokens.space-md;
+                            y: (parent.height - self.height) / 2;
+                            width: Tokens.space-xl * 4 + Tokens.space-xs;
+                            height: Metrics.control;
+                            spacing: Tokens.space-xs;
+
+                            PushButton {
+                                text: "Off";
+                                primary: root.dnd-known && !root.dnd-on;
+                                clicked => { root.dnd-set(false); }
+                            }
+
+                            PushButton {
+                                text: "On";
+                                primary: root.dnd-known && root.dnd-on;
+                                clicked => { root.dnd-set(true); }
+                            }
+                        }
+                    }
+                }
+
+                if root.battery-visible: Tile {
+                    battery := TileHeader {
+                        title: root.battery-label;
+                        detail: root.battery-detail;
+
+                        BatteryIcon {
+                            x: battery.icon-x;
+                            y: (parent.height - self.height) / 2;
+                            percent: root.battery-percent;
+                            charging: root.battery-charging;
+                            charge: root.battery-low ? Tokens.color-danger
+                                : root.battery-warning ? Tokens.color-warning : Tokens.color-text;
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: Tokens.space-sm;
+
+                    PushButton {
+                        text: "Lock";
+                        clicked => { root.lock(); }
+                    }
+
+                    PushButton {
+                        text: "Session\u{2026}";
+                        clicked => { root.session(); }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -3575,6 +3575,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sengi-quick"
+version = "0.4.0"
+dependencies = [
+ "sengi-layer",
+ "slint",
+ "slint-build",
+ "zbus",
+]
+
+[[package]]
 name = "sengi-tokens"
 version = "0.4.0"
 

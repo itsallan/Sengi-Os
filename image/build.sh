@@ -22,7 +22,7 @@ mkdir -p "$work/iso/live" "$work/iso/boot/grub" "$out"
 # Our own programs, built against the same Debian the image is made of.
 export CARGO_HOME="$work/cargo" CARGO_TARGET_DIR="$work/target"
 export RUSTFLAGS="--remap-path-prefix=$src=. --remap-path-prefix=$work=/build"
-programs="sengi-bar sengi-dock sengi-focus sengi-launcher sengi-notify"
+programs="sengi-bar sengi-dock sengi-focus sengi-launcher sengi-notify sengi-quick"
 set --
 for program in $programs; do
 	set -- "$@" -p "$program"

@@ -1,0 +1,415 @@
+// Controls the shared library does not have yet. They are built from the
+// tokens alone and know nothing about quick settings, so they can move to
+// ui/components.slint as they are.
+//
+// Each control that can be operated takes the keyboard focus on Tab but not
+// on a click, so the focus ring only appears for someone using the keys.
+
+import { Tokens, SengiText, SengiLabel, SengiButton, SengiToggle } from "components.slint";
+
+// Sizes the tokens do not name, derived from the ones they do.
+export global Metrics {
+    // Height of a control that sits in a row: a button, a text field.
+    out property <length> control: Tokens.bar-height;
+    // A row of a list.
+    out property <length> row: Tokens.font-size-md + Tokens.space-sm * 2;
+    // A tile's header: an icon, two lines of text, a control.
+    out property <length> tile: Tokens.bar-height + Tokens.space-lg;
+    // The line of a focus ring, and its distance from the control.
+    out property <length> ring: Tokens.space-xxs;
+    out property <length> slider-knob: Tokens.space-lg;
+    out property <length> slider-track: Tokens.space-xs;
+}
+
+// Drawn around its parent while `shown`.
+export component FocusRing inherits Rectangle {
+    in property <bool> shown: false;
+    // The corner radius of what is being ringed.
+    in property <length> inner-radius: Tokens.radius;
+
+    // This element covers the parent; the ring is drawn outside it.
+    Rectangle {
+        x: -Metrics.ring * 2;
+        y: -Metrics.ring * 2;
+        width: parent.width + Metrics.ring * 4;
+        height: parent.height + Metrics.ring * 4;
+        visible: root.shown;
+        border-radius: root.inner-radius + Metrics.ring * 2;
+        border-width: Metrics.ring;
+        border-color: Tokens.color-focus-ring;
+    }
+}
+
+// SengiToggle with keyboard focus.
+export component Switch inherits Rectangle {
+    in-out property <bool> checked <=> toggle.checked;
+    // A switch that is not enabled cannot be focused. Hide it as well:
+    // SengiToggle has no look for "cannot be changed".
+    in property <bool> enabled: true;
+    callback toggled(bool);
+
+    width: toggle.width;
+    height: toggle.height;
+
+    scope := FocusScope {
+        focus-on-click: false;
+        enabled: root.enabled;
+
+        key-pressed(event) => {
+            if event.text == " " || event.text == Key.Return {
+                toggle.checked = !toggle.checked;
+                root.toggled(toggle.checked);
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+
+        toggle := SengiToggle {
+            x: 0;
+            y: 0;
+            toggled(on) => { root.toggled(on); }
+        }
+    }
+
+    FocusRing {
+        shown: scope.has-focus;
+        inner-radius: root.height / 2;
+    }
+}
+
+// SengiButton with keyboard focus.
+export component PushButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary: false;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: Metrics.control;
+    // The same for every button, whatever its text, so that buttons side
+    // by side in a layout come out the same width.
+    min-width: Metrics.control;
+    preferred-width: Metrics.control;
+    horizontal-stretch: 1;
+
+    scope := FocusScope {
+        focus-on-click: false;
+        enabled: root.enabled;
+
+        key-pressed(event) => {
+            if event.text == " " || event.text == Key.Return {
+                root.clicked();
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+
+        SengiButton {
+            text: root.text;
+            primary: root.primary;
+            enabled: root.enabled;
+            clicked => { root.clicked(); }
+        }
+    }
+
+    FocusRing {
+        shown: scope.has-focus;
+    }
+}
+
+// A square button around an icon, which is its child.
+export component IconButton inherits Rectangle {
+    in property <bool> enabled: true;
+    callback clicked();
+
+    width: Metrics.control;
+    height: Metrics.control;
+    border-radius: Tokens.radius;
+    background: root.enabled && touch.has-hover ? Tokens.color-surface-hover : transparent;
+    animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+
+    scope := FocusScope {
+        focus-on-click: false;
+        enabled: root.enabled;
+
+        key-pressed(event) => {
+            if event.text == " " || event.text == Key.Return {
+                root.clicked();
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+
+        touch := TouchArea {
+            enabled: root.enabled;
+            clicked => { root.clicked(); }
+        }
+    }
+
+    @children
+
+    FocusRing {
+        shown: scope.has-focus;
+    }
+}
+
+// A horizontal slider over whole numbers. `changed` is called for every
+// position the user moves it through; whoever listens decides how many of
+// those to act on.
+export component Slider inherits Rectangle {
+    in-out property <int> value: 0;
+    in property <int> minimum: 0;
+    in property <int> maximum: 100;
+    // What one press of an arrow key moves it by.
+    in property <int> step: 5;
+    in property <bool> enabled: true;
+    // Drawn without the accent: the value is kept but is not in effect,
+    // as with the volume while muted.
+    in property <bool> dim: false;
+    out property <bool> pressed: touch.pressed;
+    callback changed(int);
+
+    private property <length> travel: self.width - Metrics.slider-knob;
+    private property <float> fraction: root.maximum > root.minimum
+        ? Math.clamp((root.value - root.minimum) / (root.maximum - root.minimum), 0, 1) : 0;
+
+    function move(to: int) {
+        if Math.clamp(to, root.minimum, root.maximum) != root.value {
+            root.value = Math.clamp(to, root.minimum, root.maximum);
+            root.changed(root.value);
+        }
+    }
+
+    // The value under a pointer at `x`, with the knob centred on it.
+    pure function at(x: length) -> int {
+        Math.round(root.minimum
+            + (root.maximum - root.minimum) * (x - Metrics.slider-knob / 2) / root.travel)
+    }
+
+    height: Metrics.slider-knob;
+    min-width: Metrics.slider-knob * 4;
+
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: Metrics.slider-track;
+        border-radius: self.height / 2;
+        background: Tokens.color-surface-raised;
+    }
+
+    Rectangle {
+        x: 0;
+        y: (parent.height - self.height) / 2;
+        width: Metrics.slider-knob / 2 + root.travel * root.fraction;
+        height: Metrics.slider-track;
+        border-radius: self.height / 2;
+        background: !root.enabled ? Tokens.color-border
+            : root.dim ? Tokens.color-text-muted : Tokens.color-accent;
+        animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+        animate width {
+            duration: Tokens.motion-fast * (touch.pressed ? 0 : 1);
+            easing: Tokens.motion-easing;
+        }
+    }
+
+    scope := FocusScope {
+        focus-on-click: false;
+        enabled: root.enabled;
+
+        key-pressed(event) => {
+            if event.text == Key.LeftArrow {
+                root.move(root.value - root.step);
+            } else if event.text == Key.RightArrow {
+                root.move(root.value + root.step);
+            } else if event.text == Key.Home {
+                root.move(root.minimum);
+            } else if event.text == Key.End {
+                root.move(root.maximum);
+            } else {
+                return EventResult.reject;
+            }
+            return EventResult.accept;
+        }
+
+        touch := TouchArea {
+            enabled: root.enabled;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                    root.move(root.at(self.mouse-x));
+                }
+            }
+            moved => {
+                if self.pressed {
+                    root.move(root.at(self.mouse-x));
+                }
+            }
+            scroll-event(event) => {
+                if event.delta-y == 0 && event.delta-x == 0 {
+                    return EventResult.reject;
+                }
+                root.move(root.value + (event.delta-y + event.delta-x > 0 ? root.step : -root.step));
+                return EventResult.accept;
+            }
+        }
+    }
+
+    if root.enabled: Rectangle {
+        x: root.travel * root.fraction;
+        y: 0;
+        width: Metrics.slider-knob;
+        height: Metrics.slider-knob;
+        border-radius: self.height / 2;
+        background: Tokens.color-text;
+        animate x {
+            duration: Tokens.motion-fast * (touch.pressed ? 0 : 1);
+            easing: Tokens.motion-easing;
+        }
+
+        FocusRing {
+            shown: scope.has-focus;
+            inner-radius: parent.height / 2;
+        }
+    }
+}
+
+// A single-line text field. With `masked` it shows dots, for passphrases.
+export component TextField inherits Rectangle {
+    in-out property <string> text <=> input.text;
+    in property <string> placeholder;
+    in property <bool> masked: false;
+    in property <bool> enabled: true;
+    out property <bool> has-focus: input.has-focus;
+    // Return was pressed.
+    callback accepted(string);
+    // Escape was pressed.
+    callback cancelled();
+
+    public function take-focus() {
+        input.focus();
+    }
+
+    public function clear() {
+        input.text = "";
+    }
+
+    height: Metrics.control;
+    border-radius: Tokens.radius;
+    border-width: Tokens.border-width;
+    border-color: input.has-focus && root.enabled ? Tokens.color-focus-ring : Tokens.color-border;
+    background: Tokens.color-surface;
+    animate border-color { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+
+    if input.text == "": SengiText {
+        x: Tokens.space-sm;
+        width: parent.width - Tokens.space-sm * 2;
+        height: parent.height;
+        text: root.placeholder;
+        color: Tokens.color-text-disabled;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    input := TextInput {
+        x: Tokens.space-sm;
+        width: parent.width - Tokens.space-sm * 2;
+        height: parent.height;
+        enabled: root.enabled;
+        single-line: true;
+        input-type: root.masked ? InputType.password : InputType.text;
+        color: root.enabled ? Tokens.color-text : Tokens.color-text-muted;
+        font-family: Tokens.font-family;
+        font-size: Tokens.font-size-md;
+        vertical-alignment: center;
+        selection-background-color: Tokens.color-accent;
+        selection-foreground-color: Tokens.color-accent-text;
+        text-cursor-width: Tokens.space-xxs;
+
+        accepted => { root.accepted(self.text); }
+
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.cancelled();
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+    }
+}
+
+// A row of a list: a line of text, and whatever its children draw at the
+// right. `current` is the list's keyboard position.
+export component ListRow inherits Rectangle {
+    in property <string> text;
+    in property <bool> current: false;
+    in property <bool> strong: false;
+    // Room kept free at the right for the children.
+    in property <length> trailing;
+    callback clicked();
+
+    height: Metrics.row;
+    border-radius: Tokens.radius;
+    background: touch.has-hover || root.current ? Tokens.color-surface-hover : transparent;
+    animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+
+    SengiText {
+        x: Tokens.space-sm;
+        width: parent.width - Tokens.space-sm * 2 - root.trailing;
+        height: parent.height;
+        text: root.text;
+        font-weight: root.strong ? Tokens.font-weight-medium : Tokens.font-weight-regular;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    @children
+}
+
+// A block of the panel. Its children are stacked from the top.
+export component Tile inherits Rectangle {
+    border-radius: Tokens.radius;
+    background: Tokens.color-bg;
+
+    VerticalLayout {
+        @children
+    }
+}
+
+// The head of a tile: an icon at the left, a title with an optional second
+// line, and a control at the right. The icon and the control are children
+// and place themselves with `icon-x`, `control-right` and `centre`.
+export component TileHeader inherits Rectangle {
+    in property <string> title;
+    in property <string> detail;
+    in property <bool> enabled: true;
+    // Room kept free at the right for the control.
+    in property <length> trailing;
+    out property <length> icon-x: Tokens.space-md;
+    out property <length> text-x: Tokens.space-md * 2 + Tokens.bar-icon;
+
+    height: Metrics.tile;
+
+    VerticalLayout {
+        x: root.text-x;
+        width: parent.width - root.text-x - Tokens.space-md - root.trailing;
+        alignment: center;
+        spacing: Tokens.space-xxs;
+
+        SengiText {
+            text: root.title;
+            color: root.enabled ? Tokens.color-text : Tokens.color-text-disabled;
+            font-weight: Tokens.font-weight-medium;
+            overflow: elide;
+        }
+
+        if root.detail != "": SengiLabel {
+            text: root.detail;
+            color: root.enabled ? Tokens.color-text-muted : Tokens.color-text-disabled;
+            font-weight: Tokens.font-weight-regular;
+            overflow: elide;
+        }
+    }
+
+    @children
+}
