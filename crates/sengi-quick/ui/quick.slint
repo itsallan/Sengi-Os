@@ -1,10 +1,8 @@
 // The Sengi OS quick settings panel: the few controls reached for many
 // times a day, dropped down from the right end of the bar.
 
-import { Tokens, SengiText, SengiLabel, SengiSurface } from "components.slint";
-import {
-    Metrics, FocusRing, Switch, PushButton, IconButton, Slider, TextField, ListRow, Tile, TileHeader
-} from "controls.slint";
+import { Tokens, SengiText, SengiLabel, SengiSurface, SengiButton, SengiToggle } from "components.slint";
+import { Metrics, IconButton, Slider, TextField, ListRow, Tile, TileHeader } from "controls.slint";
 import {
     SignalIcon, WiredIcon, BluetoothIcon, SpeakerIcon, SunIcon, MoonIcon, LockIcon, BatteryIcon
 } from "icons.slint";
@@ -55,7 +53,7 @@ component NetworkList inherits Rectangle {
     private property <length> label-gap: Tokens.space-sm;
     private property <length> icons: Tokens.bar-icon * 2 + Tokens.space-sm * 3;
     // The button a row grows when it asks, in place of its icons.
-    private property <length> button: Tokens.space-xl * 2;
+    private property <length> button: Tokens.space-xl * 2 + Tokens.space-lg;
     private property <bool> hold: scope.has-focus || hover.has-hover;
 
     // Scroll so the keyboard's row can be seen.
@@ -137,7 +135,7 @@ component NetworkList inherits Rectangle {
 
                 // An open network joined for the first time: one click
                 // on the row only brings this up.
-                if item.confirm && !item.gone: PushButton {
+                if item.confirm && !item.gone: SengiButton {
                     x: parent.width - self.width - Tokens.space-xs;
                     y: (parent.height - self.height) / 2;
                     width: root.button;
@@ -172,8 +170,11 @@ component NetworkList inherits Rectangle {
         background: Tokens.color-border;
     }
 
-    FocusRing {
-        shown: scope.has-focus;
+    // The focus border, over the rows.
+    Rectangle {
+        border-radius: Tokens.radius;
+        border-width: scope.has-focus ? Tokens.focus-ring-width : 0;
+        border-color: Tokens.color-focus-ring;
     }
 }
 
@@ -244,13 +245,19 @@ component PassphrasePrompt inherits Rectangle {
         HorizontalLayout {
             spacing: Tokens.space-sm;
 
-            PushButton {
+            SengiButton {
+                horizontal-stretch: 1;
+                preferred-width: Tokens.button;
+                height: Tokens.button;
                 text: "Cancel";
                 enabled: !root.busy;
                 clicked => { root.cancelled(); }
             }
 
-            PushButton {
+            SengiButton {
+                horizontal-stretch: 1;
+                preferred-width: Tokens.button;
+                height: Tokens.button;
                 text: "Join";
                 primary: true;
                 enabled: !root.busy && field.text != "";
@@ -452,10 +459,9 @@ export component QuickWindow inherits Window {
                                 ? Tokens.color-text-muted : Tokens.color-text-disabled;
                         }
 
-                        wifi-switch := Switch {
+                        wifi-switch := SengiToggle {
                             x: parent.width - self.width - Tokens.space-md;
                             y: (parent.height - self.height) / 2;
-                            visible: root.wifi-enabled;
                             enabled: root.wifi-enabled;
                             checked <=> root.wifi-on;
                             toggled(on) => { root.wifi-toggled(on); }
@@ -545,10 +551,9 @@ export component QuickWindow inherits Window {
                                 : root.bluetooth-on ? Tokens.color-text : Tokens.color-text-muted;
                         }
 
-                        bluetooth-switch := Switch {
+                        bluetooth-switch := SengiToggle {
                             x: parent.width - self.width - Tokens.space-md;
                             y: (parent.height - self.height) / 2;
-                            visible: root.bluetooth-enabled;
                             enabled: root.bluetooth-enabled;
                             checked <=> root.bluetooth-on;
                             toggled(on) => { root.bluetooth-toggled(on); }
@@ -617,16 +622,22 @@ export component QuickWindow inherits Window {
                             x: parent.width - self.width - Tokens.space-md;
                             y: (parent.height - self.height) / 2;
                             width: Tokens.space-xl * 4 + Tokens.space-xs;
-                            height: Metrics.control;
+                            height: Tokens.button;
                             spacing: Tokens.space-xs;
 
-                            PushButton {
+                            SengiButton {
+                                horizontal-stretch: 1;
+                                preferred-width: Tokens.button;
+                                height: Tokens.button;
                                 text: "Off";
                                 primary: root.dnd-known && !root.dnd-on;
                                 clicked => { root.dnd-set(false); }
                             }
 
-                            PushButton {
+                            SengiButton {
+                                horizontal-stretch: 1;
+                                preferred-width: Tokens.button;
+                                height: Tokens.button;
                                 text: "On";
                                 primary: root.dnd-known && root.dnd-on;
                                 clicked => { root.dnd-set(true); }
@@ -654,12 +665,18 @@ export component QuickWindow inherits Window {
                 HorizontalLayout {
                     spacing: Tokens.space-sm;
 
-                    PushButton {
+                    SengiButton {
+                        horizontal-stretch: 1;
+                        preferred-width: Tokens.button;
+                        height: Tokens.button;
                         text: "Lock";
                         clicked => { root.lock(); }
                     }
 
-                    PushButton {
+                    SengiButton {
+                        horizontal-stretch: 1;
+                        preferred-width: Tokens.button;
+                        height: Tokens.button;
                         text: "Session\u{2026}";
                         clicked => { root.session(); }
                     }
