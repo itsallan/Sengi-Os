@@ -38,6 +38,7 @@ libgl1-mesa-dri
 librsvg2-common
 libfontconfig1
 libxkbcommon0
+libx11-data
 hicolor-icon-theme
 fonts-inter
 fonts-dejavu-mono
