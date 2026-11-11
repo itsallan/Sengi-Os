@@ -57,7 +57,10 @@ pub fn binding(mods: Mods, keysym: u32) -> Option<Action> {
 /// The shell command an action runs, for the ones that start a program.
 pub fn command(action: Action) -> Option<&'static str> {
     match action {
-        Action::Launcher => Some("exec fuzzel"),
+        // The session's own launcher; fuzzel where it is not installed.
+        Action::Launcher => Some(
+            "if command -v sengi-launcher >/dev/null 2>&1; then exec sengi-launcher; else exec fuzzel; fi",
+        ),
         // sengi-run puts the app in its own cgroup; plain foot will do on a
         // system without it.
         Action::Terminal => Some(
@@ -159,7 +162,10 @@ mod tests {
 
     #[test]
     fn programs_have_commands_and_window_actions_do_not() {
-        assert!(command(Action::Launcher).unwrap().contains("fuzzel"));
+        assert!(command(Action::Launcher)
+            .unwrap()
+            .contains("exec sengi-launcher"));
+        assert!(command(Action::Launcher).unwrap().contains("exec fuzzel"));
         assert!(command(Action::Terminal)
             .unwrap()
             .contains("sengi-run foot"));
