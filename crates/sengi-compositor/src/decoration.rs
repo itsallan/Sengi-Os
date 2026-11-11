@@ -64,7 +64,11 @@ impl Theme {
                 .get("type.family")
                 .expect("tokens define type.family")
                 .to_string(),
-            font_weight: px("type.weight-medium") as u32,
+            // A weight, not a length, so not read as pixels.
+            font_weight: tokens
+                .get("type.weight-medium")
+                .and_then(|weight| weight.parse().ok())
+                .expect("tokens define type.weight-medium"),
             font_px: px("type.size-md") as u32,
             active: color("color.surface"),
             inactive: color("color.bg"),

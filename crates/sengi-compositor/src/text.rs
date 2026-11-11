@@ -193,10 +193,16 @@ mod tests {
         );
     }
 
-    // Needs the typeface installed, which the build machine may not have.
+    // Needs the typeface installed. A machine without it has to say so by
+    // setting SENGI_TEST_WITHOUT_FONTS, so the gap is a choice and not a
+    // silent pass.
     #[test]
-    fn renders_text_when_the_font_is_installed() {
+    fn renders_text_with_the_installed_font() {
         let Some(font) = Font::load("Inter", 500, 13) else {
+            assert!(
+                std::env::var_os("SENGI_TEST_WITHOUT_FONTS").is_some(),
+                "Inter is not installed (fonts-inter); set SENGI_TEST_WITHOUT_FONTS=1 to skip"
+            );
             return;
         };
         let short = font.render("foot");
