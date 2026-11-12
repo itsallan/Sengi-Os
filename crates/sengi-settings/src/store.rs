@@ -4,7 +4,7 @@
 
 use std::fs;
 use std::io::{self, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -42,12 +42,35 @@ fn create_beside(dir: &Path, name: &str) -> io::Result<(fs::File, PathBuf)> {
     Err(io::Error::other("no free name for a temporary file"))
 }
 
+/// A chain of symbolic links longer than this is taken for a loop.
+const MAX_LINKS: usize = 16;
+
+/// The file a write to `path` lands in: `path`, or the file a symbolic
+/// link there leads to, which need not exist yet.
+fn destination(path: &Path) -> io::Result<PathBuf> {
+    let mut at = path.to_path_buf();
+    for _ in 0..MAX_LINKS {
+        match fs::read_link(&at) {
+            // A relative link is relative to where the link is.
+            Ok(target) => at = at.parent().unwrap_or(Path::new("/")).join(target),
+            Err(_) => return Ok(at),
+        }
+    }
+    Err(io::Error::other("too many symbolic links"))
+}
+
 /// Replace `path` with `contents` in one step: written to a file beside
 /// it, flushed to disk, then renamed over it. A reader sees the old file
 /// or the new one, never half of either, and a crash leaves the old one.
 /// Any number of threads and processes may do this to one path at once;
 /// the file is then the whole of what one of them wrote.
+///
+/// A file that is replaced keeps its permissions; a new one is readable
+/// by all. Where `path` is a symbolic link, somebody keeps the file
+/// elsewhere on purpose: the file it leads to is replaced and the link
+/// stays a link.
 pub fn write_atomic(path: &Path, contents: &str) -> io::Result<()> {
+    let path = &destination(path)?;
     let dir = path
         .parent()
         .ok_or_else(|| io::Error::other("no parent directory"))?;
@@ -56,8 +79,15 @@ pub fn write_atomic(path: &Path, contents: &str) -> io::Result<()> {
         .file_name()
         .ok_or_else(|| io::Error::other("no file name"))?
         .to_string_lossy();
+    let kept = fs::metadata(path)
+        .ok()
+        .filter(|meta| meta.is_file())
+        .map(|meta| meta.permissions().mode() & 0o7777);
     let (mut file, temporary) = create_beside(dir, &name)?;
     let written = (|| {
+        if let Some(mode) = kept {
+            file.set_permissions(fs::Permissions::from_mode(mode))?;
+        }
         file.write_all(contents.as_bytes())?;
         file.sync_all()?;
         fs::rename(&temporary, path)
@@ -148,6 +178,65 @@ mod tests {
             std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
             1
         );
+    }
+
+    fn mode(path: &Path) -> u32 {
+        fs::metadata(path).unwrap().permissions().mode() & 0o7777
+    }
+
+    #[test]
+    fn a_replaced_file_keeps_its_permissions() {
+        let tmp = TempDir::new();
+        let path = tmp.path().join("environment");
+        write_atomic(&path, "A=1\n").unwrap();
+        // Whatever the umask of the test run, nobody else can write it.
+        assert_eq!(mode(&path) & 0o133, 0);
+        for kept in [0o600, 0o640, 0o664] {
+            fs::set_permissions(&path, fs::Permissions::from_mode(kept)).unwrap();
+            write_atomic(&path, "A=2\n").unwrap();
+            assert_eq!(mode(&path), kept, "{kept:o}");
+        }
+        assert_eq!(fs::read_to_string(&path).unwrap(), "A=2\n");
+    }
+
+    #[test]
+    fn a_symbolic_link_is_written_through_not_replaced() {
+        let tmp = TempDir::new();
+        tmp.write("dotfiles/environment", "A=1\n");
+        fs::create_dir_all(tmp.path().join("config/labwc")).unwrap();
+        let link = tmp.path().join("config/labwc/environment");
+        // A relative link, as dotfile managers make them.
+        std::os::unix::fs::symlink("../../dotfiles/environment", &link).unwrap();
+        let target = tmp.path().join("dotfiles/environment");
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+
+        write_atomic(&link, "A=2\n").unwrap();
+        assert!(fs::symlink_metadata(&link).unwrap().is_symlink());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "A=2\n");
+        assert_eq!(mode(&target), 0o600);
+        // The temporary file was beside the target and is gone.
+        for dir in ["dotfiles", "config/labwc"] {
+            assert_eq!(fs::read_dir(tmp.path().join(dir)).unwrap().count(), 1);
+        }
+
+        // A link to a link, and one whose file is not there yet.
+        let second = tmp.path().join("config/second");
+        std::os::unix::fs::symlink(&link, &second).unwrap();
+        write_atomic(&second, "A=3\n").unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "A=3\n");
+        let dangling = tmp.path().join("config/dangling");
+        std::os::unix::fs::symlink(tmp.path().join("dotfiles/new"), &dangling).unwrap();
+        write_atomic(&dangling, "B=1\n").unwrap();
+        assert!(fs::symlink_metadata(&dangling).unwrap().is_symlink());
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("dotfiles/new")).unwrap(),
+            "B=1\n"
+        );
+
+        // A link that leads back to itself is an error, not a hang.
+        let round = tmp.path().join("config/round");
+        std::os::unix::fs::symlink(&round, &round).unwrap();
+        assert!(write_atomic(&round, "C=1\n").is_err());
     }
 
     #[test]

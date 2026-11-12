@@ -11,8 +11,10 @@
 //!   so. It is only written when a setting differs from labwc's default,
 //!   and removed again when none does, so most machines never have one.
 //!   A `rc.xml` without that comment is somebody's own and is left alone.
-//! * `~/.config/labwc/environment` keeps whatever the user wrote in it;
-//!   our lines live between two marker comments.
+//! * `~/.config/labwc/environment` keeps whatever the user wrote in it.
+//!   What we add lives between marker comments: the system file's lines
+//!   above the user's, which therefore win over them, and the settings
+//!   below.
 //!
 //! The copy goes stale when an update changes the system file. Running
 //! `sengi-settings --apply` at the start of the session, before labwc,
@@ -155,9 +157,9 @@ fn environment_lines(settings: &Settings) -> Vec<String> {
     lines
 }
 
-/// The user's `environment`: their own lines as they were, and between the
-/// markers the system file's lines followed by ours. `None` when the file
-/// would hold nothing.
+/// The user's `environment`: the system file's lines between markers,
+/// then the user's own lines as they were, then between markers again
+/// what Settings adds. `None` when the file would hold nothing.
 pub fn environment_text(
     system: Option<&str>,
     existing: Option<&str>,
@@ -176,41 +178,59 @@ pub fn environment_text(
             theirs.push(line);
         }
     }
-    while theirs.last().is_some_and(|line| line.trim().is_empty()) {
-        theirs.pop();
-    }
-    let user_has_lines = theirs.iter().any(|line| !line.trim().is_empty());
-    if ours.is_empty() && !user_has_lines {
+    // The blank lines that set their lines apart from ours are ours too.
+    let blank = |line: &&str| line.trim().is_empty();
+    let first = theirs.iter().position(|line| !blank(line));
+    let last = theirs.iter().rposition(|line| !blank(line));
+    let theirs = match (first, last) {
+        (Some(first), Some(last)) => &theirs[first..=last],
+        _ => &[],
+    };
+    if ours.is_empty() && theirs.is_empty() {
         return None;
     }
-    let mut out = String::new();
-    for line in &theirs {
-        out.push_str(line);
-        out.push('\n');
-    }
-    if ours.is_empty() && system.is_none() {
-        return Some(out);
-    }
-    if !out.is_empty() {
-        out.push('\n');
-    }
-    out.push_str(BEGIN);
-    out.push('\n');
     // labwc stops at the user's file, so what the system's says has to be
     // said again here.
-    for line in system.unwrap_or_default().lines() {
-        let line = line.trim();
-        if !line.is_empty() && !line.starts_with('#') {
+    let inherited: Vec<&str> = system
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+    let block = |out: &mut String, lines: &mut dyn Iterator<Item = &str>| {
+        out.push_str(BEGIN);
+        out.push('\n');
+        for line in lines {
             out.push_str(line);
             out.push('\n');
         }
+        out.push_str(END);
+        out.push('\n');
+    };
+    let ours = || ours.iter().map(String::as_str);
+    let mut out = String::new();
+    if theirs.is_empty() {
+        block(&mut out, &mut inherited.iter().copied().chain(ours()));
+        return Some(out);
     }
-    for line in &ours {
+    // labwc sets each variable as it comes to its line, so of two lines
+    // for one variable the later wins. The system's lines go first, where
+    // the user's own can override them as they did when their file was the
+    // only one read. What was chosen in Settings goes last: it is there
+    // only when it is not the default, and then it was chosen after
+    // whatever the file says.
+    if !inherited.is_empty() {
+        block(&mut out, &mut inherited.iter().copied());
+        out.push('\n');
+    }
+    for line in theirs {
         out.push_str(line);
         out.push('\n');
     }
-    out.push_str(END);
-    out.push('\n');
+    if ours().next().is_some() {
+        out.push('\n');
+        block(&mut out, &mut ours());
+    }
     Some(out)
 }
 
@@ -437,7 +457,96 @@ mod tests {
         // be repeated even when we have none of our own.
         let kept =
             environment_text(Some("XCURSOR_SIZE=24\n"), Some("A=1\n"), &settings("")).unwrap();
-        assert_eq!(kept, format!("A=1\n\n{BEGIN}\nXCURSOR_SIZE=24\n{END}\n"));
+        assert_eq!(kept, format!("{BEGIN}\nXCURSOR_SIZE=24\n{END}\n\nA=1\n"));
+    }
+
+    /// The environment labwc 0.8 ends up with after reading `text`: a
+    /// line that starts with `#` is a comment, a line without `=` is
+    /// skipped, name and value are trimmed, and each line is a `setenv`
+    /// that replaces what an earlier one set (`process_line` in its
+    /// `src/config/session.c`).
+    fn as_labwc_reads(text: &str) -> std::collections::BTreeMap<&str, &str> {
+        text.lines()
+            .filter(|line| !line.starts_with('#'))
+            .filter_map(|line| line.split_once('='))
+            .map(|(name, value)| (name.trim(), value.trim()))
+            .filter(|(name, _)| !name.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn the_users_lines_win_over_the_systems_and_settings_over_both() {
+        let system = "XCURSOR_SIZE=24\nXCURSOR_THEME=Sengi\n";
+        let theirs = "XCURSOR_SIZE=48\nTZ=Asia/Tokyo\n";
+        // Nothing set in Settings: the file says what it would have said
+        // had labwc read the system's file and then the user's.
+        let plain = environment_text(Some(system), Some(theirs), &settings("")).unwrap();
+        let read = as_labwc_reads(&plain);
+        assert_eq!(read["XCURSOR_SIZE"], "48");
+        assert_eq!(read["XCURSOR_THEME"], "Sengi");
+        assert_eq!(read["TZ"], "Asia/Tokyo");
+        // A zone chosen in Settings is the later word on the zone, and
+        // changes nothing else.
+        let paris = settings("[clock]\ntime-zone = \"Europe/Paris\"\n");
+        let chosen = environment_text(Some(system), Some(&plain), &paris).unwrap();
+        assert_eq!(
+            chosen,
+            format!(
+                "{BEGIN}\nXCURSOR_SIZE=24\nXCURSOR_THEME=Sengi\n{END}\n\n\
+                 XCURSOR_SIZE=48\nTZ=Asia/Tokyo\n\n{BEGIN}\nTZ=Europe/Paris\n{END}\n"
+            )
+        );
+        let read = as_labwc_reads(&chosen);
+        assert_eq!(read["XCURSOR_SIZE"], "48");
+        assert_eq!(read["TZ"], "Europe/Paris");
+        assert_eq!(
+            environment_text(Some(system), Some(&chosen), &paris).unwrap(),
+            chosen
+        );
+        // Back to the default: theirs counts again.
+        let back = environment_text(Some(system), Some(&chosen), &settings("")).unwrap();
+        assert_eq!(back, plain);
+    }
+
+    #[test]
+    fn a_file_in_the_old_order_is_put_in_the_new_one() {
+        // As written before: the user's lines, then one block holding the
+        // system's lines and ours, where the system's 24 beat the user's 48.
+        let old = format!("XCURSOR_SIZE=48\n\n{BEGIN}\nXCURSOR_SIZE=24\nTZ=Europe/Paris\n{END}\n");
+        assert_eq!(as_labwc_reads(&old)["XCURSOR_SIZE"], "24");
+        let paris = settings("[clock]\ntime-zone = \"Europe/Paris\"\n");
+        let new = environment_text(Some("XCURSOR_SIZE=24\n"), Some(&old), &paris).unwrap();
+        assert_eq!(
+            new,
+            format!(
+                "{BEGIN}\nXCURSOR_SIZE=24\n{END}\n\nXCURSOR_SIZE=48\n\n{BEGIN}\nTZ=Europe/Paris\n{END}\n"
+            )
+        );
+        assert_eq!(as_labwc_reads(&new)["XCURSOR_SIZE"], "48");
+    }
+
+    #[test]
+    fn applying_keeps_the_mode_and_writes_through_a_link() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new();
+        tmp.write("etc/labwc/environment", "XCURSOR_SIZE=24\n");
+        tmp.write("dotfiles/environment", "XCURSOR_SIZE=48\n");
+        let target = tmp.path().join("dotfiles/environment");
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::create_dir_all(tmp.path().join("home/labwc")).unwrap();
+        let link = tmp.path().join("home/labwc/environment");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let paris = settings("[clock]\ntime-zone = \"Europe/Paris\"\n");
+        assert_eq!(apply(&dirs(&tmp), &paris).environment, Ok(Wrote::Written));
+        assert!(fs::symlink_metadata(&link).unwrap().is_symlink());
+        let written = fs::read_to_string(&target).unwrap();
+        assert_eq!(as_labwc_reads(&written)["XCURSOR_SIZE"], "48");
+        assert_eq!(as_labwc_reads(&written)["TZ"], "Europe/Paris");
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
+            0o600
+        );
     }
 
     fn dirs(tmp: &TempDir) -> Dirs {
