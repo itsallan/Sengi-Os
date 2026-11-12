@@ -11,6 +11,11 @@
 //! Who owns the socket path is settled under a lock file, so two panels
 //! starting together cannot both take it, and a panel only ever removes
 //! the socket it created.
+//!
+//! A program that keeps a window, not a panel, wants the opposite: the
+//! window that is open stays, and a second invocation hands it a short
+//! message, such as the page to show, and leaves. That is [`deliver`],
+//! with the same care about the socket path.
 
 use std::fs::File;
 use std::io::{Read, Write};
@@ -216,6 +221,481 @@ impl Drop for Instance {
         if !slot(&self.slot).requested && identity(&owned.socket) == Some(owned.identity) {
             let _ = std::fs::remove_file(&owned.socket);
         }
+    }
+}
+
+/// How the invocations of a program that keeps one window find each
+/// other. A message is a line: a few bytes and a newline.
+#[derive(Debug, Clone, Copy)]
+pub struct Post<'a> {
+    /// File name of the socket under the runtime directory.
+    pub socket_name: &'a str,
+    /// File name of the lock that guards the socket path.
+    pub lock_name: &'a str,
+    /// The longest message taken, in bytes, without its newline.
+    pub max_len: usize,
+    /// Whether a message is one this program sends. The open window
+    /// runs it on what arrived; a connection that sends anything else,
+    /// or too much, or nothing, is ignored.
+    pub valid: fn(&[u8]) -> bool,
+}
+
+/// What the open window answers once a message is its to act on.
+const TAKEN: u8 = b'k';
+
+/// The outcome of [`deliver`].
+pub enum Delivery {
+    /// This process is the window. Later messages arrive in the mailbox.
+    Granted(Mailbox),
+    /// A window was open and has the message. This process should exit.
+    Forwarded,
+}
+
+/// Held by the process that owns the window, for as long as it lives.
+pub struct Mailbox {
+    owned: Option<Owned>,
+    letters: Arc<Mutex<Letters>>,
+}
+
+type Wake = Box<dyn Fn() + Send>;
+
+#[derive(Default)]
+struct Letters {
+    /// A message the window has not acted on yet. A newer one replaces it.
+    pending: Option<Vec<u8>>,
+    /// The window has closed for good. Nothing more is acknowledged.
+    retired: bool,
+    /// Tells the window a message is waiting.
+    wake: Option<Wake>,
+}
+
+fn letters(letters: &Mutex<Letters>) -> MutexGuard<'_, Letters> {
+    letters
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Hand `message` to the open window, if there is one that takes it.
+fn forward(path: &Path, message: &[u8]) -> bool {
+    let ask = || {
+        let mut stream = UnixStream::connect(path).ok()?;
+        stream.set_read_timeout(Some(REPLY_TIMEOUT)).ok()?;
+        stream.set_write_timeout(Some(REPLY_TIMEOUT)).ok()?;
+        let mut line = message.to_vec();
+        line.push(b'\n');
+        stream.write_all(&line).ok()?;
+        let mut reply = [0u8; 1];
+        stream.read_exact(&mut reply).ok()?;
+        Some(reply[0] == TAKEN)
+    };
+    ask().unwrap_or(false)
+}
+
+/// Become the one window, or pass `message` to the one that is open.
+/// Without a usable runtime directory there is nowhere to meet, and every
+/// invocation is granted.
+///
+/// `message` has to be one `post.valid` accepts, without a newline and
+/// no longer than `post.max_len`; one that is not is sent as the empty
+/// message.
+pub fn deliver(runtime_dir: Option<&Path>, post: &Post, message: &[u8]) -> Delivery {
+    let unowned = || {
+        Delivery::Granted(Mailbox {
+            owned: None,
+            letters: Arc::default(),
+        })
+    };
+    let Some(dir) = runtime_dir else {
+        return unowned();
+    };
+    let sendable =
+        message.len() <= post.max_len && !message.contains(&b'\n') && (post.valid)(message);
+    let message = if sendable { message } else { &[] };
+    let socket = dir.join(post.socket_name);
+    let lock_path = dir.join(post.lock_name);
+    // Held until this function returns: asking, removing and binding are one
+    // step as far as other invocations can tell.
+    let Some(_guard) = lock(&lock_path) else {
+        return unowned();
+    };
+
+    if forward(&socket, message) {
+        return Delivery::Forwarded;
+    }
+    // Nothing took the message: the file at the path, if any, was left by
+    // a crash, or belongs to a window that has retired or hung.
+    let _ = std::fs::remove_file(&socket);
+
+    let Ok(listener) = UnixListener::bind(&socket) else {
+        return unowned();
+    };
+    let Some(identity) = identity(&socket) else {
+        return unowned();
+    };
+    let letters: Arc<Mutex<Letters>> = Arc::default();
+    // Listening starts now, not when the window is up: one that is slow
+    // to start must still answer, or it would be taken for dead.
+    std::thread::spawn({
+        let letters = letters.clone();
+        let (max_len, valid) = (post.max_len, post.valid);
+        move || receive(listener, max_len, valid, &letters)
+    });
+    Delivery::Granted(Mailbox {
+        owned: Some(Owned {
+            socket,
+            lock: lock_path,
+            identity,
+        }),
+        letters,
+    })
+}
+
+/// One message: a line of at most `max_len` bytes that `valid` accepts.
+/// Anything else, or silence, is not another invocation of this program.
+fn read_message(
+    stream: &mut UnixStream,
+    max_len: usize,
+    valid: fn(&[u8]) -> bool,
+) -> Option<Vec<u8>> {
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        stream.read_exact(&mut byte).ok()?;
+        if byte[0] == b'\n' {
+            break;
+        }
+        if line.len() >= max_len {
+            return None;
+        }
+        line.push(byte[0]);
+    }
+    valid(&line).then_some(line)
+}
+
+fn receive(
+    listener: UnixListener,
+    max_len: usize,
+    valid: fn(&[u8]) -> bool,
+    shared: &Mutex<Letters>,
+) {
+    for stream in listener.incoming() {
+        let Ok(mut stream) = stream else { continue };
+        let _ = stream.set_read_timeout(Some(REPLY_TIMEOUT));
+        let _ = stream.set_write_timeout(Some(REPLY_TIMEOUT));
+        let Some(message) = read_message(&mut stream, max_len, valid) else {
+            continue;
+        };
+        let mut letters = letters(shared);
+        if letters.retired {
+            // No reply: the asker opens a window of its own.
+            break;
+        }
+        // Recorded before the reply goes out. Once the other side hears
+        // from us it exits, and the message is ours to honour.
+        letters.pending = Some(message);
+        if let Some(wake) = &letters.wake {
+            wake();
+        }
+        drop(letters);
+        let _ = stream.write_all(&[TAKEN]);
+    }
+}
+
+impl Mailbox {
+    /// Call `wake` whenever a message arrives. It runs on another thread,
+    /// with the message left for [`Mailbox::take`]; at once, if one has
+    /// come already.
+    pub fn on_message(&self, wake: impl Fn() + Send + 'static) {
+        let mut shared = letters(&self.letters);
+        if shared.pending.is_some() {
+            wake();
+        }
+        shared.wake = Some(Box::new(wake));
+    }
+
+    /// The message waiting to be acted on, if any.
+    pub fn take(&self) -> Option<Vec<u8>> {
+        letters(&self.letters).pending.take()
+    }
+
+    /// The window has closed. If a message slipped in while it was
+    /// closing, that message is returned and the window must come back
+    /// for it; otherwise this mailbox stops taking messages and the next
+    /// invocation opens its own window.
+    pub fn retire(&self) -> Option<Vec<u8>> {
+        let mut shared = letters(&self.letters);
+        let late = shared.pending.take();
+        shared.retired = late.is_none();
+        late
+    }
+}
+
+impl Drop for Mailbox {
+    fn drop(&mut self) {
+        letters(&self.letters).retired = true;
+        let Some(owned) = self.owned.take() else {
+            return;
+        };
+        let Some(_guard) = lock(&owned.lock) else {
+            return;
+        };
+        // Checked under the lock. If we were taken for dead the path holds
+        // someone else's socket.
+        if identity(&owned.socket) == Some(owned.identity) {
+            let _ = std::fs::remove_file(&owned.socket);
+        }
+    }
+}
+
+/// The tests that came with the settings application, whose window stays
+/// and is handed the page a later invocation asked for.
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+    use crate::testutil::TempDir;
+    use std::sync::{mpsc, Barrier};
+
+    const SOCKET_NAME: &str = "sengi-settings.sock";
+
+    fn page(message: &[u8]) -> bool {
+        [
+            &b""[..],
+            b"network",
+            b"sound",
+            b"display",
+            b"power",
+            b"about",
+        ]
+        .contains(&message)
+    }
+
+    fn deliver(runtime_dir: Option<&Path>, message: &str) -> Delivery {
+        super::deliver(
+            runtime_dir,
+            &Post {
+                socket_name: SOCKET_NAME,
+                lock_name: "sengi-settings.lock",
+                max_len: 32,
+                valid: page,
+            },
+            message.as_bytes(),
+        )
+    }
+
+    fn granted(delivery: Delivery) -> Mailbox {
+        match delivery {
+            Delivery::Granted(mailbox) => mailbox,
+            Delivery::Forwarded => panic!("expected to be granted"),
+        }
+    }
+
+    fn socket(tmp: &TempDir) -> PathBuf {
+        tmp.path().join(SOCKET_NAME)
+    }
+
+    fn message(text: &str) -> Option<Vec<u8>> {
+        Some(text.as_bytes().to_vec())
+    }
+
+    #[test]
+    fn the_first_window_is_granted_and_cleans_up_after_itself() {
+        let tmp = TempDir::new();
+        let mailbox = granted(deliver(Some(tmp.path()), ""));
+        assert!(mailbox.owned.is_some());
+        assert!(socket(&tmp).exists());
+        assert_eq!(mailbox.take(), None);
+        drop(mailbox);
+        assert!(!socket(&tmp).exists());
+    }
+
+    #[test]
+    fn a_second_invocation_hands_over_its_page_and_does_not_open() {
+        let tmp = TempDir::new();
+        let (woken, was_woken) = mpsc::channel();
+        let first = granted(deliver(Some(tmp.path()), ""));
+        first.on_message(move || woken.send(()).unwrap());
+
+        assert!(matches!(
+            deliver(Some(tmp.path()), "sound"),
+            Delivery::Forwarded
+        ));
+        was_woken.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(first.take(), message("sound"));
+        assert_eq!(first.take(), None);
+
+        // And again, any number of times; with no page it only raises.
+        assert!(matches!(deliver(Some(tmp.path()), ""), Delivery::Forwarded));
+        was_woken.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(first.take(), message(""));
+        assert!(socket(&tmp).exists());
+    }
+
+    #[test]
+    fn a_request_that_came_before_the_window_was_up_is_kept() {
+        let tmp = TempDir::new();
+        let slow = granted(deliver(Some(tmp.path()), ""));
+        assert!(matches!(
+            deliver(Some(tmp.path()), "display"),
+            Delivery::Forwarded
+        ));
+        assert!(matches!(
+            deliver(Some(tmp.path()), "about"),
+            Delivery::Forwarded
+        ));
+        let (woken, was_woken) = mpsc::channel();
+        slow.on_message(move || woken.send(()).unwrap());
+        was_woken.recv_timeout(Duration::from_secs(5)).unwrap();
+        // The newest is the one that counts.
+        assert_eq!(slow.take(), message("about"));
+    }
+
+    #[test]
+    fn a_request_that_arrives_as_the_window_closes_brings_it_back() {
+        let tmp = TempDir::new();
+        let first = granted(deliver(Some(tmp.path()), ""));
+        assert!(matches!(
+            deliver(Some(tmp.path()), "power"),
+            Delivery::Forwarded
+        ));
+        // The window closed without having looked at it.
+        assert_eq!(first.retire(), message("power"));
+        // It came back, so it still takes requests.
+        assert!(matches!(deliver(Some(tmp.path()), ""), Delivery::Forwarded));
+        assert_eq!(first.retire(), message(""));
+    }
+
+    #[test]
+    fn a_retired_window_takes_nothing_and_the_next_invocation_opens() {
+        let tmp = TempDir::new();
+        let first = granted(deliver(Some(tmp.path()), ""));
+        assert_eq!(first.retire(), None);
+        // Still alive, socket still there, but closed for business.
+        let second = granted(deliver(Some(tmp.path()), "sound"));
+        assert!(second.owned.is_some());
+        assert_eq!(first.take(), None);
+        // The first going away does not disturb the second's socket.
+        let theirs = identity(&socket(&tmp));
+        drop(first);
+        assert_eq!(identity(&socket(&tmp)), theirs);
+        assert!(matches!(deliver(Some(tmp.path()), ""), Delivery::Forwarded));
+        drop(second);
+        assert!(!socket(&tmp).exists());
+    }
+
+    #[test]
+    fn a_stale_socket_is_replaced() {
+        let tmp = TempDir::new();
+        // A socket file nobody listens on, as left behind by a crash.
+        drop(UnixListener::bind(socket(&tmp)).unwrap());
+        assert!(socket(&tmp).exists());
+        assert!(granted(deliver(Some(tmp.path()), "")).owned.is_some());
+
+        tmp.write("plain/sengi-settings.sock", "not a socket");
+        let plain = tmp.path().join("plain");
+        assert!(granted(deliver(Some(&plain), "")).owned.is_some());
+    }
+
+    #[test]
+    fn a_window_never_removes_a_socket_it_did_not_create() {
+        let tmp = TempDir::new();
+        let hung = granted(deliver(Some(tmp.path()), ""));
+        // Another invocation took this one for dead and put its own socket
+        // at the path.
+        std::fs::remove_file(socket(&tmp)).unwrap();
+        let successor = UnixListener::bind(socket(&tmp)).unwrap();
+        let theirs = identity(&socket(&tmp));
+        assert_ne!(theirs, hung.owned.as_ref().map(|o| o.identity));
+
+        drop(hung);
+        assert_eq!(identity(&socket(&tmp)), theirs);
+        drop(successor);
+    }
+
+    #[test]
+    fn two_starting_together_open_one_window() {
+        let tmp = TempDir::new();
+        for round in 0..40 {
+            let barrier = Arc::new(Barrier::new(2));
+            let threads: Vec<_> = (0..2)
+                .map(|_| {
+                    let (barrier, dir) = (barrier.clone(), tmp.path().to_path_buf());
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        deliver(Some(&dir), "network")
+                    })
+                })
+                .collect();
+            let all: Vec<Delivery> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+            let opened: Vec<&Mailbox> = all
+                .iter()
+                .filter_map(|delivery| match delivery {
+                    Delivery::Granted(mailbox) => Some(mailbox),
+                    Delivery::Forwarded => None,
+                })
+                .collect();
+            assert_eq!(opened.len(), 1, "round {round}");
+            // And the loser's page reached the winner.
+            assert_eq!(opened[0].take(), message("network"));
+            drop(all);
+            assert!(!socket(&tmp).exists(), "round {round}");
+        }
+    }
+
+    #[test]
+    fn strangers_on_the_socket_are_ignored() {
+        let tmp = TempDir::new();
+        let mailbox = granted(deliver(Some(tmp.path()), ""));
+        drop(UnixStream::connect(socket(&tmp)).unwrap());
+        for junk in [
+            &b"x"[..],
+            b"nowhere\n",
+            b"network",
+            &[b'a'; 200],
+            b"\xff\xfe\n",
+        ] {
+            let mut stream = UnixStream::connect(socket(&tmp)).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let _ = stream.write_all(junk);
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            // No acknowledgement: the stream just ends.
+            let mut reply = Vec::new();
+            let _ = stream.read_to_end(&mut reply);
+            assert!(reply.is_empty(), "{junk:?}");
+        }
+        assert_eq!(mailbox.take(), None);
+        // A real request still gets through afterwards.
+        assert!(matches!(
+            deliver(Some(tmp.path()), "about"),
+            Delivery::Forwarded
+        ));
+        assert_eq!(mailbox.take(), message("about"));
+    }
+
+    #[test]
+    fn a_message_the_program_would_not_take_is_sent_as_none() {
+        let tmp = TempDir::new();
+        let mailbox = granted(deliver(Some(tmp.path()), ""));
+        for odd in ["nowhere", "sound\nabout", &"s".repeat(64)] {
+            assert!(matches!(
+                deliver(Some(tmp.path()), odd),
+                Delivery::Forwarded
+            ));
+            assert_eq!(mailbox.take(), message(""), "{odd:?}");
+        }
+    }
+
+    #[test]
+    fn without_a_runtime_directory_everyone_is_granted() {
+        let first = granted(deliver(None, ""));
+        let second = granted(deliver(None, "sound"));
+        assert_eq!(first.take(), None);
+        assert_eq!(second.retire(), None);
+
+        let tmp = TempDir::new();
+        let missing = tmp.path().join("missing");
+        assert!(granted(deliver(Some(&missing), "")).owned.is_none());
     }
 }
 
