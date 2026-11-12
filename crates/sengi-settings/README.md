@@ -102,8 +102,8 @@ kernel (`getifaddrs`), whoever configured them.
   not unblocked.
 - The connected network has a card of its own with signal, security and
   address, and buttons to disconnect and to forget.
-- Networks iwd has joined before come first, then by signal level, then
-  by name. The list does not move while the pointer is over it or the
+- Up to 24 networks are listed. Those iwd has joined before come first,
+  then by signal level, then by name. The list does not move while the pointer is over it or the
   keyboard is in it; a network that drops out of range meanwhile stays as
   a row that cannot be used.
 - A known network joins at once. If its stored passphrase has stopped
@@ -116,7 +116,8 @@ kernel (`getifaddrs`), whoever configured them.
   disk by Settings; iwd stores it. sengi-system's `secret.rs` says which copies in
   memory are overwritten and which are only freed. The process cannot be
   core-dumped. The agent hands the passphrase only to the iwd it was
-  typed for, for the network it was typed for, once.
+  typed for, for the network it was typed for, once. All of this is
+  sengi-system's Wi-Fi service, the one the quick settings panel uses.
 - Names are chosen by strangers. They are stripped of control, direction
   and invisible characters, cut to 32 characters, and wrapped in
   directional isolates wherever they appear inside a sentence.
@@ -137,9 +138,13 @@ BlueZ on the system bus (`org.bluez`).
 - Pairing registers an `org.bluez.Agent1` (capability `KeyboardDisplay`,
   not the default agent) and shows what BlueZ asks in the dialog: a
   number to compare, a PIN or passkey to type, a number to type on the
-  device. The agent answers only the BlueZ it registered with, and only
-  about the device being paired; anything else is refused unseen. A PIN is
-  masked, held like a passphrase, and never logged.
+  device. The agent answers only the BlueZ the pairing was asked of, and
+  only about the device being paired; anything else is refused unseen,
+  a number that is only to be displayed included. A PIN is masked, held
+  like a passphrase, and never logged. The agent is sengi-system's
+  (`pairing`).
+- The page's worker and its watch on the bus run while the page is
+  showing, or a pairing or connection is under way, and not otherwise.
 - A paired device is marked trusted, so it can reconnect later without an
   agent, and connected.
 
@@ -156,8 +161,10 @@ inputs, `set-default`, `set-volume -l 1` and `set-mute` to change them.
   positions it has already moved on from.
 - Changes made elsewhere (the volume keys, headphones plugged in) show at
   once. `wpctl` cannot wait for a change, so a `pw-dump --monitor` child
-  is kept for as long as the page has been opened and read only for the
-  fact that it printed something. It is killed when the window closes,
+  is kept while the page is showing and read for which object changed:
+  only a node, a device or the defaults is a reason to read again. The
+  page's own `wpctl` shows there as a client coming and going, and is
+  not. The child is killed when the page is left or the window closes,
   and by the kernel if Settings dies first.
 
 Not done: a level meter (it would need a capture stream of its own, which
