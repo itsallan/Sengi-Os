@@ -95,7 +95,7 @@ fn parse_node(line: &str) -> Option<Node> {
     }
     Some(Node {
         id,
-        name: names::name(name, "Unnamed device"),
+        name: names::device_name(name, "Unnamed device"),
         // Far above anything real, but it keeps the arithmetic in range.
         percent: (level * 100.0).round().clamp(0.0, 1000.0) as u32,
         muted: parts.any(|part| part == "MUTED"),
@@ -549,7 +549,12 @@ Settings
         let audio = parse_status(&status);
         assert_eq!(audio.outputs.len(), MAX_NODES);
         assert!(audio.outputs[0].name.starts_with("Evil speaker"));
-        assert_eq!(audio.outputs[0].name.chars().count(), names::MAX_NAME_CHARS);
+        assert!(audio.outputs[0].name.ends_with("goes on and on and on"));
+        let endless = format!("Audio\n ├─ Sinks:\n │  1. {} [vol: 1]\n", "x".repeat(500));
+        assert_eq!(
+            parse_status(&endless).outputs[0].name.chars().count(),
+            names::MAX_DEVICE_NAME_CHARS
+        );
         // A volume far out of range is held to something that can be shown.
         let loud = parse_status("Audio\n ├─ Sinks:\n │  1. X [vol: 99999]\n │  2. Y [vol: -3]\n");
         assert_eq!(loud.outputs[0].percent, 1000);

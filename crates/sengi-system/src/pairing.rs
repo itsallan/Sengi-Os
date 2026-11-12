@@ -337,7 +337,7 @@ pub fn reading(objects: &[Object]) -> Adapter {
             let name = bus::text(props, "Alias").or(own).unwrap_or_default();
             Some(Device {
                 id: object.path.clone(),
-                name: names::name(name, "Unnamed device"),
+                name: names::device_name(name, "Unnamed device"),
                 kind: Kind::from_icon(bus::text(props, "Icon").unwrap_or_default()),
                 paired,
                 connected: bus::flag(props, "Connected").unwrap_or(false),
