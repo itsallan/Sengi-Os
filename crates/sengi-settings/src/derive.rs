@@ -157,6 +157,53 @@ fn environment_lines(settings: &Settings) -> Vec<String> {
     lines
 }
 
+/// The variables Settings writes into the environment.
+const OUR_VARIABLES: [&str; 4] = [
+    "TZ",
+    "XKB_DEFAULT_LAYOUT",
+    "XKB_DEFAULT_VARIANT",
+    "XKB_DEFAULT_OPTIONS",
+];
+
+/// The user's own lines of an environment file: all that is not a marker
+/// and not between a pair of them.
+///
+/// A file edited by hand can have a block that is opened and never
+/// closed, and then nothing says where our lines end and the user's go
+/// on. Taking the rest of the file for ours would delete whatever they
+/// wrote below it. So out of an unclosed block only the lines that
+/// `written_by_us` knows are dropped, and every other line is kept as
+/// the user's.
+fn their_lines(existing: &str, written_by_us: impl Fn(&str) -> bool) -> Vec<&str> {
+    let mut theirs = Vec::new();
+    // The lines since a marker that opened a block, until one closes it.
+    let mut open: Option<Vec<&str>> = None;
+    let keep_unclosed = |theirs: &mut Vec<_>, mut block: Vec<_>| {
+        block.retain(|line: &&str| !written_by_us(line.trim()));
+        theirs.append(&mut block);
+    };
+    for line in existing.lines() {
+        match line.trim() {
+            BEGIN => {
+                if let Some(unclosed) = open.replace(Vec::new()) {
+                    keep_unclosed(&mut theirs, unclosed);
+                }
+            }
+            // Closes a block, whose lines go; or closes nothing, and then
+            // only the stray marker goes.
+            END => open = None,
+            _ => match &mut open {
+                Some(block) => block.push(line),
+                None => theirs.push(line),
+            },
+        }
+    }
+    if let Some(unclosed) = open {
+        keep_unclosed(&mut theirs, unclosed);
+    }
+    theirs
+}
+
 /// The user's `environment`: the system file's lines between markers,
 /// then the user's own lines as they were, then between markers again
 /// what Settings adds. `None` when the file would hold nothing.
@@ -166,18 +213,21 @@ pub fn environment_text(
     settings: &Settings,
 ) -> Option<String> {
     let ours = environment_lines(settings);
-    // The user's lines: everything outside the markers.
-    let mut theirs: Vec<&str> = Vec::new();
-    let mut inside = false;
-    for line in existing.unwrap_or_default().lines() {
-        if line.trim() == BEGIN {
-            inside = true;
-        } else if line.trim() == END {
-            inside = false;
-        } else if !inside {
-            theirs.push(line);
-        }
-    }
+    // labwc stops at the user's file, so what the system's says has to be
+    // said again here.
+    let inherited: Vec<&str> = system
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+    let theirs = their_lines(existing.unwrap_or_default(), |line| {
+        inherited.contains(&line)
+            || OUR_VARIABLES.iter().any(|name| {
+                line.strip_prefix(name)
+                    .is_some_and(|rest| rest.starts_with('='))
+            })
+    });
     // The blank lines that set their lines apart from ours are ours too.
     let blank = |line: &&str| line.trim().is_empty();
     let first = theirs.iter().position(|line| !blank(line));
@@ -189,14 +239,6 @@ pub fn environment_text(
     if ours.is_empty() && theirs.is_empty() {
         return None;
     }
-    // labwc stops at the user's file, so what the system's says has to be
-    // said again here.
-    let inherited: Vec<&str> = system
-        .unwrap_or_default()
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .collect();
     let block = |out: &mut String, lines: &mut dyn Iterator<Item = &str>| {
         out.push_str(BEGIN);
         out.push('\n');
@@ -523,6 +565,62 @@ mod tests {
             )
         );
         assert_eq!(as_labwc_reads(&new)["XCURSOR_SIZE"], "48");
+    }
+
+    #[test]
+    fn a_block_that_is_never_closed_costs_the_user_no_line() {
+        let system = "XCURSOR_SIZE=24\n";
+        let paris = settings("[clock]\ntime-zone = \"Europe/Paris\"\n");
+        let good =
+            format!("{BEGIN}\nXCURSOR_SIZE=24\n{END}\n\nA=1\n\n{BEGIN}\nTZ=Europe/Paris\n{END}\n");
+        let rewrite = |existing: &str| environment_text(Some(system), Some(existing), &paris);
+        assert_eq!(rewrite(&good).unwrap(), good);
+
+        // The last marker was deleted and lines were added below.
+        let cut = format!(
+            "{BEGIN}\nXCURSOR_SIZE=24\n{END}\n\nA=1\n\n{BEGIN}\nTZ=Europe/Paris\nB=2\n# mine\n"
+        );
+        assert_eq!(
+            rewrite(&cut).unwrap(),
+            format!(
+                "{BEGIN}\nXCURSOR_SIZE=24\n{END}\n\nA=1\n\nB=2\n# mine\n\n{BEGIN}\nTZ=Europe/Paris\n{END}\n"
+            )
+        );
+        // The first block lost its end: the user's lines run into it.
+        let run_on =
+            format!("{BEGIN}\nXCURSOR_SIZE=24\n\nA=1\n\n{BEGIN}\nTZ=Europe/Paris\n{END}\n");
+        assert_eq!(rewrite(&run_on).unwrap(), good);
+        // An end with nothing to end, before everything.
+        let stray = format!("{END}\nA=1\n{BEGIN}\nTZ=Asia/Tokyo\n{END}\n");
+        assert_eq!(rewrite(&stray).unwrap(), good);
+        // Markers with spaces after them, as an editor may leave them.
+        let spaced = format!(
+            "{BEGIN}  \nXCURSOR_SIZE=24\n{END}\t\nA=1\n {BEGIN}\nTZ=Europe/Paris\n{END} \n"
+        );
+        assert_eq!(rewrite(&spaced).unwrap(), good);
+        // Nothing but openings.
+        let openings = format!("{BEGIN}\nA=1\n{BEGIN}\n{BEGIN}\nXCURSOR_SIZE=24\nC=3\n");
+        assert_eq!(
+            rewrite(&openings).unwrap(),
+            format!(
+                "{BEGIN}\nXCURSOR_SIZE=24\n{END}\n\nA=1\nC=3\n\n{BEGIN}\nTZ=Europe/Paris\n{END}\n"
+            )
+        );
+        // An end, an opening, an end, an end, an opening: every line that
+        // is not ours comes through, in order.
+        let mess = format!("{END}\nA=1\n{BEGIN}\nold=gone\n{END}\n{END}\nB=2\n{BEGIN}\nXKB_DEFAULT_LAYOUT=de\nTZX=kept\nC=3\n");
+        let kept = rewrite(&mess).unwrap();
+        let theirs: Vec<&str> = kept
+            .lines()
+            .filter(|line| ["A=1", "B=2", "TZX=kept", "C=3", "old=gone"].contains(line))
+            .collect();
+        assert_eq!(theirs, ["A=1", "B=2", "TZX=kept", "C=3"]);
+        assert!(!kept.contains("XKB_DEFAULT_LAYOUT"));
+        // And whatever came in, what goes out is stable.
+        for text in [&cut, &run_on, &stray, &spaced, &openings, &mess] {
+            let once = rewrite(text).unwrap();
+            assert_eq!(rewrite(&once).unwrap(), once);
+        }
     }
 
     #[test]
