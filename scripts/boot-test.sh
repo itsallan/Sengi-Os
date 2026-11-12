@@ -37,26 +37,25 @@ if [ -w /dev/kvm ]; then accel=kvm cpu=host; fi
 now() { date +%s.%N; }
 
 # The preview entry is reached the way a person reaches it: by its hotkey in
-# the hidden boot menu. GRUB looks for a key once, so one has to be waiting.
-# Keys pressed while SeaBIOS is still setting the keyboard up can get lost
-# with the keyboard, so the firmware's own log is watched and the key is
-# pressed, over and over, from the moment it hands over to the disk until the
-# desktop reports in. The guest says which compositor it was asked for, and
-# that is checked at the end. Under UEFI there is no such line to wait for
-# and the key is pressed from the start.
+# the hidden boot menu. GRUB looks for a key once, and a key pressed before
+# GRUB runs does not count, so the firmware's own log is watched and the key
+# is pressed many times a second from the moment SeaBIOS hands over to the
+# disk. The guest says which compositor it was asked for, and that is checked
+# at the end. Under UEFI there is no such line to wait for; the key is
+# pressed from the start and for longer.
 preview=${SENGI_PREVIEW:-0}
 want=labwc
 handover=
+presses=100
 if [ "$preview" = 1 ]; then
 	want=sengi-compositor
 	if [ -z "${SENGI_UEFI:-}" ]; then
 		handover='Booting from 0000:7c00'
 		: >"$out/firmware.log"
+	else
+		presses=400
 	fi
 fi
-handed_over() {
-	[ -z "$handover" ] || grep -q "$handover" "$out/firmware.log"
-}
 
 # Read the ISO once so the host's disk cache does not count against the guest.
 cat "$iso" >/dev/null
@@ -98,15 +97,28 @@ stop() {
 
 wait_for() {
 	while ! grep -q "$1" "$out/serial.log"; do
-		if [ "$preview" = 1 ] && [ "$1" = SENGI-BOOT ] && handed_over; then
-			echo "sendkey p" >&3
-		fi
 		kill -0 "$qemu" 2>/dev/null || { echo "qemu exited early" >&2; return 1; }
 		elapsed=$(echo "$(now) $start" | awk '{printf "%d", $1 - $2}')
 		[ "$elapsed" -lt "$timeout_s" ] || { echo "timed out waiting for $1" >&2; return 1; }
 		sleep 0.1
 	done
 }
+
+if [ "$preview" = 1 ]; then
+	i=0
+	if [ -n "$handover" ]; then
+		until grep -q "$handover" "$out/firmware.log" || [ $i -ge 1500 ]; do
+			sleep 0.02
+			i=$((i + 1))
+		done
+	fi
+	i=0
+	while [ $i -lt $presses ]; do
+		echo "sendkey p" >&3
+		sleep 0.03
+		i=$((i + 1))
+	done
+fi
 
 if ! wait_for SENGI-BOOT; then
 	echo "screendump $out/desktop.png -f png" >&3
