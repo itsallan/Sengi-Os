@@ -97,6 +97,52 @@ fn rc_block(settings: &Settings) -> String {
     )
 }
 
+/// `text` as it may stand inside an XML comment. Two hyphens in a row are
+/// not allowed there, and `-->` would end the comment early; a directory
+/// in `XDG_CONFIG_DIRS` can be called anything.
+fn in_comment(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c == '-' && out.ends_with('-') {
+            out.push(' ');
+        }
+        out.push(if c.is_control() { ' ' } else { c });
+    }
+    out
+}
+
+/// Where the tag that closes the document starts: the last
+/// `</labwc_config>` that is a tag, not the same letters inside a comment
+/// or a CDATA section.
+fn closing_tag(xml: &str) -> Option<usize> {
+    const CLOSE: &str = "</labwc_config";
+    let mut found = None;
+    let mut at = 0;
+    while let Some(next) = xml[at..].find('<') {
+        at += next;
+        let rest = &xml[at..];
+        let skip = |open: &str, close: &str| {
+            rest.strip_prefix(open)
+                .map(|inside| inside.find(close).map(|end| open.len() + end + close.len()))
+        };
+        at += match skip("<!--", "-->").or_else(|| skip("<![CDATA[", "]]>")) {
+            Some(Some(length)) => length,
+            // Never closed: the rest of the file is inside it.
+            Some(None) => break,
+            None => {
+                let closes = rest
+                    .strip_prefix(CLOSE)
+                    .is_some_and(|after| after.trim_start().starts_with('>'));
+                if closes {
+                    found = Some(at);
+                }
+                1
+            }
+        };
+    }
+    found
+}
+
 /// The user's `rc.xml`: the system's with our settings added at the end,
 /// where they override anything said earlier. `None` when no file is
 /// needed.
@@ -113,7 +159,8 @@ pub fn rc_text(system: Option<(&Path, &str)>, settings: &Settings) -> Option<Str
         ),
     };
     let mark = format!(
-        "{RC_MARK} from {source}.\n     Change sengi-os/settings.toml or use Settings; this file is rewritten. -->\n"
+        "{RC_MARK} from {}.\n     Change sengi-os/settings.toml or use Settings; this file is rewritten. -->\n",
+        in_comment(&source)
     );
     // The mark goes after the XML declaration, which must stay first.
     let (declaration, rest) = match body.find("?>") {
@@ -123,7 +170,7 @@ pub fn rc_text(system: Option<(&Path, &str)>, settings: &Settings) -> Option<Str
         }
         _ => ("", body),
     };
-    let close = rest.rfind("</labwc_config>")?;
+    let close = closing_tag(rest)?;
     let mut out = String::with_capacity(body.len() + mark.len() + block.len() + 2);
     if !declaration.is_empty() {
         out.push_str(declaration);
@@ -659,6 +706,55 @@ mod tests {
         }
         let touchpad = text.split("category=\"touchpad\"").nth(1).unwrap();
         assert!(touchpad.contains("<naturalScroll>yes</naturalScroll>"));
+    }
+
+    #[test]
+    fn settings_go_before_the_tag_that_really_closes_the_file() {
+        let s = settings("[mouse]\nnatural-scroll = true\n");
+        let rc = |body: &str| rc_text(Some((Path::new("/etc/rc.xml"), body)), &s);
+        // The same letters in a comment after the end, in one before it,
+        // and in a CDATA section.
+        let trailing =
+            "<labwc_config>\n  <core/>\n</labwc_config>\n<!-- ends with </labwc_config> -->\n";
+        let text = rc(trailing).unwrap();
+        assert!(
+            text.ends_with("  </libinput>\n</labwc_config>\n<!-- ends with </labwc_config> -->\n"),
+            "{text}"
+        );
+        let inside = "<labwc_config>\n<!-- </labwc_config> -->\n<![CDATA[</labwc_config>]]>\n</labwc_config >\n";
+        let text = rc(inside).unwrap();
+        assert!(text.contains("]]>\n  <keyboard>\n"), "{text}");
+        assert!(
+            text.ends_with("  </libinput>\n</labwc_config >\n"),
+            "{text}"
+        );
+        // Only ever in a comment, or in one that never ends: no place.
+        assert_eq!(rc("<labwc_config>\n<!-- </labwc_config> -->\n"), None);
+        assert_eq!(rc("<labwc_config>\n<!-- \n</labwc_config>\n"), None);
+        assert_eq!(rc("<labwc_config>\n</labwc_configuration>\n"), None);
+    }
+
+    #[test]
+    fn the_path_of_the_system_file_cannot_end_the_comment_it_is_named_in() {
+        let s = settings("[mouse]\nnatural-scroll = true\n");
+        for path in [
+            "/etc/x--y/labwc/rc.xml",
+            "/etc/-->/labwc/rc.xml",
+            "/etc/a---b/--/rc.xml",
+            "/etc/line\nbreak/rc.xml",
+        ] {
+            let text = rc_text(Some((Path::new(path), SYSTEM_RC)), &s).unwrap();
+            let comment = text
+                .split_once("<!--")
+                .and_then(|(_, rest)| rest.split_once("-->"))
+                .unwrap()
+                .0;
+            assert!(!comment.contains("--"), "{comment}");
+            assert!(comment.ends_with("this file is rewritten. "), "{comment}");
+            // And the file is still taken for ours the next time.
+            assert!(text.contains(RC_MARK));
+        }
+        assert_eq!(in_comment("/etc/xdg/labwc/rc.xml"), "/etc/xdg/labwc/rc.xml");
     }
 
     #[test]
