@@ -24,8 +24,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::settings::{Settings, KEYS};
+use sengi_config::settings::{zone_file, ZONE_DIR};
+
+use crate::keyboard::parse_database;
+use crate::settings::{Layout, Settings, KEYS};
 use crate::store::{self, Dirs};
+
+/// XKB's list of the layouts it has. The Keyboard page offers from it.
+const XKB_LIST: &str = "/usr/share/X11/xkb/rules/evdev.lst";
 
 const RC: &str = "labwc/rc.xml";
 const ENVIRONMENT: &str = "labwc/environment";
@@ -136,25 +142,115 @@ pub fn rc_text(system: Option<(&Path, &str)>, settings: &Settings) -> Option<Str
     Some(out)
 }
 
-/// The lines of ours that go into labwc's environment.
-fn environment_lines(settings: &Settings) -> Vec<String> {
-    let mut lines = Vec::new();
-    let zone = settings.text("clock", "time-zone");
-    if !zone.is_empty() {
-        lines.push(format!("TZ={zone}"));
+/// Where the names that are about to be handed to labwc are looked up.
+#[derive(Debug, Clone)]
+pub struct Known {
+    /// tzdata's directory of zones.
+    pub zones: PathBuf,
+    /// XKB's list of layouts and their variants, `evdev.lst`.
+    pub layouts: PathBuf,
+}
+
+impl Default for Known {
+    fn default() -> Known {
+        Known {
+            zones: PathBuf::from(ZONE_DIR),
+            layouts: PathBuf::from(XKB_LIST),
+        }
     }
-    let layouts = settings.layouts();
-    let switch = settings.text("keyboard", "switch");
-    let plain = layouts.len() == 1 && layouts[0].layout == "us" && layouts[0].variant.is_empty();
-    if !layouts.is_empty() && !(plain && switch.is_empty()) {
-        let join = |pick: fn(&crate::settings::Layout) -> &str| {
-            layouts.iter().map(pick).collect::<Vec<_>>().join(",")
-        };
-        lines.push(format!("XKB_DEFAULT_LAYOUT={}", join(|l| &l.layout)));
-        lines.push(format!("XKB_DEFAULT_VARIANT={}", join(|l| &l.variant)));
-        lines.push(format!("XKB_DEFAULT_OPTIONS={switch}"));
+}
+
+/// What Settings hands to labwc through its environment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Exports {
+    zone: String,
+    layouts: Vec<Layout>,
+    switch: String,
+    /// What the settings ask for that cannot be passed on, in words for
+    /// the user.
+    pub left_out: Vec<String>,
+}
+
+impl Exports {
+    /// The settings as they stand.
+    fn unchecked(settings: &Settings) -> Exports {
+        Exports {
+            zone: settings.text("clock", "time-zone"),
+            layouts: settings.layouts(),
+            switch: settings.text("keyboard", "switch"),
+            left_out: Vec::new(),
+        }
     }
-    lines
+
+    /// The settings, less the names the system does not have.
+    ///
+    /// A name in the settings file has only been checked for its letters:
+    /// the file can be edited by hand, or brought from another machine.
+    /// labwc 0.8 given a layout XKB does not know logs an error and goes
+    /// on with `us` alone, losing the other layouts; given a variant XKB
+    /// does not know it tries `us` with that same variant, fails again
+    /// and is left with no keymap at all, which is a session without a
+    /// keyboard. A `TZ` that names no zone silently means UTC. So nothing
+    /// is exported that was not found first.
+    pub fn checked(settings: &Settings, known: &Known) -> Exports {
+        let mut exports = Exports::unchecked(settings);
+        if !exports.zone.is_empty() && zone_file(&known.zones, &exports.zone).is_none() {
+            exports.left_out.push(format!(
+                "There is no time zone called {} on this system, so the system's zone is used.",
+                exports.zone
+            ));
+            exports.zone.clear();
+        }
+        // Without the list nothing can be told from anything, and then
+        // labwc has no keyboard data to go wrong with either.
+        let list = read(&known.layouts)
+            .map(|text| parse_database(&text))
+            .filter(|list| !list.layouts.is_empty());
+        if let Some(list) = list {
+            for layout in std::mem::take(&mut exports.layouts) {
+                let found = list.layouts.iter().any(|l| l.name == layout.layout)
+                    && (layout.variant.is_empty()
+                        || list
+                            .variants
+                            .iter()
+                            .any(|v| v.layout == layout.layout && v.name == layout.variant));
+                if found {
+                    exports.layouts.push(layout);
+                } else {
+                    exports.left_out.push(format!(
+                        "There is no keyboard layout called {} on this system, so it is not used.",
+                        layout.render()
+                    ));
+                }
+            }
+            if exports.layouts.is_empty() {
+                exports.layouts.push(Layout {
+                    layout: "us".to_string(),
+                    variant: String::new(),
+                });
+            }
+        }
+        exports
+    }
+
+    /// The lines of ours that go into labwc's environment.
+    fn lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        if !self.zone.is_empty() {
+            lines.push(format!("TZ={}", self.zone));
+        }
+        let layouts = &self.layouts;
+        let plain =
+            layouts.len() == 1 && layouts[0].layout == "us" && layouts[0].variant.is_empty();
+        if !layouts.is_empty() && !(plain && self.switch.is_empty()) {
+            let join =
+                |pick: fn(&Layout) -> &str| layouts.iter().map(pick).collect::<Vec<_>>().join(",");
+            lines.push(format!("XKB_DEFAULT_LAYOUT={}", join(|l| &l.layout)));
+            lines.push(format!("XKB_DEFAULT_VARIANT={}", join(|l| &l.variant)));
+            lines.push(format!("XKB_DEFAULT_OPTIONS={}", self.switch));
+        }
+        lines
+    }
 }
 
 /// The variables Settings writes into the environment.
@@ -207,12 +303,12 @@ fn their_lines(existing: &str, written_by_us: impl Fn(&str) -> bool) -> Vec<&str
 /// The user's `environment`: the system file's lines between markers,
 /// then the user's own lines as they were, then between markers again
 /// what Settings adds. `None` when the file would hold nothing.
-pub fn environment_text(
+pub fn environment_file(
     system: Option<&str>,
     existing: Option<&str>,
-    settings: &Settings,
+    exports: &Exports,
 ) -> Option<String> {
-    let ours = environment_lines(settings);
+    let ours = exports.lines();
     // labwc stops at the user's file, so what the system's says has to be
     // said again here.
     let inherited: Vec<&str> = system
@@ -301,6 +397,9 @@ fn settle(path: &Path, existing: Option<&str>, wanted: Option<String>) -> Result
 pub struct Applied {
     pub rc: Result<Wrote, String>,
     pub environment: Result<Wrote, String>,
+    /// Settings that name something this system does not have, and were
+    /// therefore not passed on.
+    pub left_out: Vec<String>,
 }
 
 impl Applied {
@@ -325,17 +424,24 @@ impl Applied {
                     .to_string(),
             );
         }
+        found.extend(self.left_out.iter().cloned());
         found
     }
 }
 
 /// Bring both files in line with `settings`.
 pub fn apply(dirs: &Dirs, settings: &Settings) -> Applied {
+    apply_with(dirs, settings, &Known::default())
+}
+
+/// The same, with the zones and layouts looked up where `known` says.
+pub fn apply_with(dirs: &Dirs, settings: &Settings, known: &Known) -> Applied {
     let Some(user_rc) = dirs.user(RC) else {
         let nowhere = Err("there is no home directory to write labwc's files in".to_string());
         return Applied {
             rc: nowhere.clone(),
             environment: nowhere,
+            left_out: Vec::new(),
         };
     };
     let user_environment: PathBuf = dirs.user(ENVIRONMENT).unwrap_or_default();
@@ -359,15 +465,20 @@ pub fn apply(dirs: &Dirs, settings: &Settings) -> Applied {
         }
     };
 
+    let exports = Exports::checked(settings, known);
     let existing = read(&user_environment);
     let environment = if user_environment.exists() && existing.is_none() {
         Err(format!("cannot read {}", user_environment.display()))
     } else {
         let system = dirs.system(ENVIRONMENT).as_deref().and_then(read);
-        let wanted = environment_text(system.as_deref(), existing.as_deref(), settings);
+        let wanted = environment_file(system.as_deref(), existing.as_deref(), &exports);
         settle(&user_environment, existing.as_deref(), wanted)
     };
-    Applied { rc, environment }
+    Applied {
+        rc,
+        environment,
+        left_out: exports.left_out,
+    }
 }
 
 /// Have the running labwc read its files again. Blocks until the command
@@ -393,6 +504,109 @@ mod tests {
     use crate::testutil::TempDir;
 
     const SYSTEM_RC: &str = "<?xml version=\"1.0\"?>\n<labwc_config>\n  <theme>\n    <name>Sengi</name>\n  </theme>\n  <keyboard>\n    <default />\n  </keyboard>\n</labwc_config>\n";
+
+    /// A corner of `evdev.lst`.
+    const XKB: &str = "! model\n  pc105           Generic 105-key PC\n\n! layout\n  us              English (US)\n  fr              French\n  de              German\n\n! variant\n  azerty          fr: French (AZERTY)\n  nodeadkeys      de: German (no dead keys)\n  intl            us: English (US, intl., with dead keys)\n\n! option\n  grp:alt_shift_toggle Alt+Shift\n";
+
+    /// A system that has two zones and the layouts above.
+    fn known(tmp: &TempDir) -> Known {
+        tmp.write("zoneinfo/Europe/Paris", "TZif");
+        tmp.write("zoneinfo/Asia/Tokyo", "TZif");
+        tmp.write("xkb/evdev.lst", XKB);
+        Known {
+            zones: tmp.path().join("zoneinfo"),
+            layouts: tmp.path().join("xkb/evdev.lst"),
+        }
+    }
+
+    /// The file for these settings, taken at their word.
+    fn environment_text(
+        system: Option<&str>,
+        existing: Option<&str>,
+        settings: &Settings,
+    ) -> Option<String> {
+        environment_file(system, existing, &Exports::unchecked(settings))
+    }
+
+    /// Applies on the system `known` describes, not the one the tests
+    /// happen to run on.
+    fn apply(dirs: &Dirs, settings: &Settings) -> Applied {
+        let tmp = TempDir::new();
+        apply_with(dirs, settings, &known(&tmp))
+    }
+
+    #[test]
+    fn names_the_system_does_not_have_are_not_exported() {
+        let tmp = TempDir::new();
+        let known = known(&tmp);
+        let checked = |user: &str| Exports::checked(&settings(user), &known);
+
+        let fine = checked(
+            "[clock]\ntime-zone = \"Europe/Paris\"\n[keyboard]\nlayouts = [\"us\", \"fr(azerty)\", \"de\"]\n",
+        );
+        assert!(fine.left_out.is_empty());
+        assert_eq!(
+            fine.lines(),
+            [
+                "TZ=Europe/Paris",
+                "XKB_DEFAULT_LAYOUT=us,fr,de",
+                "XKB_DEFAULT_VARIANT=,azerty,",
+                "XKB_DEFAULT_OPTIONS="
+            ]
+        );
+
+        // A layout that does not exist, a variant that does not, and a
+        // variant that is another layout's.
+        let some =
+            checked("[keyboard]\nlayouts = [\"uss\", \"fr\", \"de(azertyy)\", \"us(azerty)\"]\n");
+        assert_eq!(some.left_out.len(), 3, "{:?}", some.left_out);
+        assert!(some.left_out[0].contains("uss"));
+        assert!(some.left_out[1].contains("de(azertyy)"));
+        assert_eq!(some.lines()[0], "XKB_DEFAULT_LAYOUT=fr");
+        assert_eq!(some.lines()[1], "XKB_DEFAULT_VARIANT=");
+
+        // None left: the default layout, which needs no line at all.
+        let none = checked("[keyboard]\nlayouts = [\"uss\"]\n");
+        assert_eq!(none.left_out.len(), 1);
+        assert!(none.lines().is_empty());
+        // Unless there is a shortcut to keep.
+        let shortcut =
+            checked("[keyboard]\nlayouts = [\"zz\"]\nswitch = \"grp:alt_shift_toggle\"\n");
+        assert_eq!(shortcut.lines()[0], "XKB_DEFAULT_LAYOUT=us");
+
+        // A zone that is not there.
+        let zone = checked("[clock]\ntime-zone = \"Europe/Atlantis\"\n");
+        assert_eq!(zone.left_out.len(), 1);
+        assert!(zone.lines().is_empty());
+        // A directory is not a zone.
+        assert!(checked("[clock]\ntime-zone = \"Europe\"\n")
+            .lines()
+            .is_empty());
+
+        // With no list to look in, the layouts are passed on as they are.
+        let blind = Known {
+            layouts: tmp.path().join("nowhere"),
+            ..known.clone()
+        };
+        let passed = Exports::checked(&settings("[keyboard]\nlayouts = [\"uss\"]\n"), &blind);
+        assert!(passed.left_out.is_empty());
+        assert_eq!(passed.lines()[0], "XKB_DEFAULT_LAYOUT=uss");
+    }
+
+    #[test]
+    fn applying_says_what_it_left_out_and_writes_the_rest() {
+        let tmp = TempDir::new();
+        let dirs = dirs(&tmp);
+        let s = settings(
+            "[clock]\ntime-zone = \"Mars/Olympus\"\n[keyboard]\nlayouts = [\"uss\", \"de\"]\n",
+        );
+        let applied = apply(&dirs, &s);
+        assert_eq!(applied.environment, Ok(Wrote::Written));
+        assert_eq!(applied.problems().len(), 2, "{:?}", applied.problems());
+        let written = fs::read_to_string(tmp.path().join("home/labwc/environment")).unwrap();
+        assert!(written.contains("XKB_DEFAULT_LAYOUT=de\n"));
+        assert!(!written.contains("TZ=") && !written.contains("uss"));
+    }
 
     fn settings(user: &str) -> Settings {
         Settings::from_documents(Document::default(), Document::parse(user).0, None)
