@@ -40,9 +40,17 @@ for marker in zbus resvg '/png-[0-9]'; do
 		exit 1
 	fi
 done
+# Settings is an ordinary window, the one program that wants the toolkit's
+# window backend and its font lookup. Built together with the others it
+# would turn those features on for all of them, so it gets a build to
+# itself and the shell's programs stay what they were without it.
+cargo build --release --locked --manifest-path "$src/Cargo.toml" -p sengi-settings
+programs="$programs sengi-settings"
 for program in $programs; do
 	install -D -m 0755 "$work/target/release/$program" "$work/overlay/usr/bin/$program"
 done
+install -D -m 0644 "$src/crates/sengi-settings/sengi-settings.desktop" \
+	"$work/overlay/usr/share/applications/sengi-settings.desktop"
 
 components=main
 packages=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$src/image/packages.list" | paste -sd, -)

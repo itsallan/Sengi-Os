@@ -5,4 +5,4 @@
 # app's .desktop file, with or without the suffix). The search button always
 # comes first and is not listed here.
 
-pinned = ["foot"]
+pinned = ["foot", "sengi-settings"]
