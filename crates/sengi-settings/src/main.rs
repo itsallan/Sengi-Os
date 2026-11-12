@@ -48,6 +48,7 @@ fn load_settings(dirs: &Dirs) -> Settings {
 fn main() -> ExitCode {
     let started = Instant::now();
     // First, before a passphrase can be anywhere in memory.
+    sengi_system::set_program_name("sengi-settings");
     secret::forbid_core_dumps();
     let action = match cli::parse(std::env::args().skip(1)) {
         Ok(action) => action,

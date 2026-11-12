@@ -13,6 +13,11 @@ build = "build.rs"
 # the icons, which are paths.
 slint = { workspace = true, features = ["software-renderer-systemfonts", "software-renderer-path"] }
 
+# The bus, iwd and BlueZ basics, the backlight, secrets, and the cleaning
+# of names that strangers chose.
+sengi-system = { path = "../sengi-system", features = ["services"] }
+sengi-text = { path = "../sengi-text" }
+
 # The blocking API on zbus's own small executor. No tokio.
 zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
 
@@ -24,6 +29,9 @@ wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 # For prctl: the process is kept out of core dumps. See secret.rs. And
 # getifaddrs, for the addresses on the Network page, and poll.
 libc = "0.2"
+
+[dev-dependencies]
+sengi-system = { path = "../sengi-system", features = ["services", "testing"] }
 
 [build-dependencies]
 slint-build.workspace = true

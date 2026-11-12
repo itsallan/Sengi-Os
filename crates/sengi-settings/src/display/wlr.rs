@@ -504,7 +504,10 @@ impl DisplayService for Wlr {
     }
 
     fn set_brightness(&self, name: &str, raw: u32) {
-        backlight::set(&self.bus, name, raw);
+        use sengi_system::services::Machine;
+        // logind sets it: the one route open to an ordinary user.
+        sengi_system::machine::Sysfs::new(self.bus.clone(), self.class.clone())
+            .set_backlight(name, raw);
     }
 
     fn watch(&self, changed: Notify) {

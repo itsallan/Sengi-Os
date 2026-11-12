@@ -8,11 +8,13 @@
 //! it is confirmed, and the worker, not the window, holds the clock: if
 //! the window hangs, or is closed, the old settings still come back.
 
-pub mod backlight;
 pub mod page;
 pub mod wlr;
 
 use std::sync::Arc;
+
+/// The backlight under `/sys/class/backlight`, as sengi-system reads it.
+pub use sengi_system::backlight;
 use std::time::{Duration, Instant};
 
 use crate::worker::{self, Handle, Inbox, Notify, Waited};
