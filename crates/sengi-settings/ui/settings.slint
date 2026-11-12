@@ -164,10 +164,10 @@ export component SettingsWindow inherits Window {
     }
 
     title: "Settings";
-    preferred-width: Metrics.sidebar + Metrics.page + Tokens.space-xl * 2;
-    preferred-height: Tokens.dock-icon * 15;
-    min-width: Tokens.dock-icon * 18;
-    min-height: Tokens.dock-icon * 12;
+    preferred-width: Tokens.settings-window-width;
+    preferred-height: Tokens.settings-window-height;
+    min-width: Tokens.settings-window-min-width;
+    min-height: Tokens.settings-window-min-height;
     background: Tokens.color-bg;
     default-font-family: Tokens.font-family;
     default-font-size: Tokens.font-size-md;

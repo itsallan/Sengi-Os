@@ -21,6 +21,7 @@ export global Tokens {
     out property <color> color-dock: @{color.dock};
     out property <color> color-scrim: @{color.scrim};
     out property <color> color-focus-ring: @{color.focus-ring};
+    out property <color> color-outline-disabled: @{color.outline-disabled};
 
     out property <length> radius: @{radius.base}px;
     out property <length> border-width: @{border.width}px;
@@ -54,6 +55,22 @@ export global Tokens {
     out property <length> notification-width: @{size.notification-width}px;
     out property <length> bar-icon: @{size.bar-icon}px;
     out property <length> button: @{size.button}px;
+    out property <length> list-row-height: @{size.list-row-height}px;
+    out property <length> dialog-width: @{size.dialog-width}px;
+    out property <length> chooser-width: @{size.chooser-width}px;
+    out property <int> chooser-lines: @{size.chooser-lines};
+    out property <length> value-column-sm: @{size.value-column-sm}px;
+    out property <length> value-column-md: @{size.value-column-md}px;
+    out property <length> value-column-lg: @{size.value-column-lg}px;
+    out property <int> scroll-page-percent: @{size.scroll-page-percent};
+    out property <length> settings-window-width: @{size.settings-window-width}px;
+    out property <length> settings-window-height: @{size.settings-window-height}px;
+    out property <length> settings-window-min-width: @{size.settings-window-min-width}px;
+    out property <length> settings-window-min-height: @{size.settings-window-min-height}px;
+    out property <length> settings-sidebar-width: @{size.settings-sidebar-width}px;
+    out property <length> settings-page-width: @{size.settings-page-width}px;
+    out property <length> settings-control-width: @{size.settings-control-width}px;
+    out property <length> settings-control-wide: @{size.settings-control-wide}px;
 
     out property <duration> motion-fast: @{motion.fast}ms;
     out property <duration> motion-base: @{motion.base}ms;

@@ -28,9 +28,20 @@ export component SengiSurface inherits Rectangle {
     border-color: Tokens.color-border;
 }
 
+// A button that cannot be used is drawn as an outline with no fill. A
+// fill in a surface colour would vanish on whichever surface has that
+// colour, leaving bare words that do not look like a button at all.
 export component SengiButton inherits Rectangle {
     in property <string> text;
     in property <bool> primary: false;
+    // The words in the danger colour: it removes or forgets something.
+    in property <bool> danger: false;
+    // With a line around it, for a button on a surface that may take on
+    // the button's own colours, such as a list row under the pointer.
+    in property <bool> outlined: false;
+    // False for a button that only repeats, for the pointer, what a key
+    // already does where the keyboard is: it is then no stop for Tab.
+    in property <bool> focusable: true;
     in property <bool> enabled: true;
     out property <bool> has-focus: scope.has-focus;
     callback clicked();
@@ -38,9 +49,11 @@ export component SengiButton inherits Rectangle {
     forward-focus: scope;
     min-height: Tokens.button;
     border-radius: Tokens.radius;
-    border-width: scope.has-focus ? Tokens.focus-ring-width : 0;
-    border-color: Tokens.color-focus-ring;
-    background: !root.enabled ? Tokens.color-surface
+    border-width: scope.has-focus ? Tokens.focus-ring-width
+        : root.outlined || !root.enabled ? Tokens.border-width : 0;
+    border-color: scope.has-focus ? Tokens.color-focus-ring
+        : !root.enabled ? Tokens.color-outline-disabled : Tokens.color-border;
+    background: !root.enabled ? transparent
         : root.primary ? (touch.has-hover ? Tokens.color-accent-hover : Tokens.color-accent)
         : (touch.has-hover ? Tokens.color-surface-hover : Tokens.color-surface-raised);
     animate background { duration: Tokens.motion-fast; easing: @{motion.easing}; }
@@ -51,7 +64,8 @@ export component SengiButton inherits Rectangle {
         Text {
             text: root.text;
             color: !root.enabled ? Tokens.color-text-disabled
-                : root.primary ? Tokens.color-accent-text : Tokens.color-text;
+                : root.primary ? Tokens.color-accent-text
+                : root.danger ? Tokens.color-danger : Tokens.color-text;
             font-family: Tokens.font-family;
             font-size: Tokens.font-size-md;
             font-weight: Tokens.font-weight-medium;
@@ -63,7 +77,7 @@ export component SengiButton inherits Rectangle {
 
     // Return and Space press the button when it has keyboard focus.
     scope := FocusScope {
-        enabled: root.enabled;
+        enabled: root.enabled && root.focusable;
         key-pressed(event) => {
             if (event.text == Key.Return || event.text == " ") {
                 root.clicked();
@@ -79,6 +93,7 @@ export component SengiButton inherits Rectangle {
     }
 }
 
+// Switched off for good, the track is an outline, like a button's.
 export component SengiToggle inherits Rectangle {
     in-out property <bool> checked: false;
     in property <bool> enabled: true;
@@ -94,9 +109,10 @@ export component SengiToggle inherits Rectangle {
     width: Tokens.space-xl * 1.5;
     height: Tokens.space-lg + Tokens.space-xs;
     border-radius: self.height / 2;
-    border-width: scope.has-focus ? Tokens.focus-ring-width : 0;
-    border-color: Tokens.color-focus-ring;
-    background: !root.enabled ? Tokens.color-surface
+    border-width: scope.has-focus ? Tokens.focus-ring-width
+        : !root.enabled ? Tokens.border-width : 0;
+    border-color: scope.has-focus ? Tokens.color-focus-ring : Tokens.color-outline-disabled;
+    background: !root.enabled ? transparent
         : root.checked ? Tokens.color-accent : Tokens.color-surface-raised;
     animate background { duration: Tokens.motion-fast; easing: @{motion.easing}; }
 

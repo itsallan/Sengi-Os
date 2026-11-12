@@ -67,7 +67,7 @@ component VolumeRow inherits SettingRow {
     }
 
     RowValue {
-        width: Tokens.dock-icon;
+        width: Tokens.value-column-sm;
         text: root.side.present ? root.value + "%" : "";
     }
 }
@@ -82,9 +82,10 @@ component DeviceRow inherits SettingRow {
     VerticalLayout {
         alignment: center;
         ChoiceButton {
-            width: Metrics.control + Tokens.dock-icon;
+            width: Metrics.control-wide;
             text: root.side.present ? root.side.device : "None";
-            enabled: root.side.choice;
+            // With no device there is nothing to choose, whatever else is said.
+            enabled: root.side.present && root.side.choice;
             clicked => { SoundData.choose(root.output); }
         }
     }
