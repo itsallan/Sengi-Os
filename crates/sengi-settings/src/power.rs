@@ -13,6 +13,7 @@
 //! which takes root; they are shown, with where to change them.
 
 use std::fs;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
@@ -27,6 +28,8 @@ use crate::ui::{InfoRow, PowerData};
 
 /// The battery is read again this often, and only while the page shows.
 const BATTERY_PERIOD: Duration = Duration::from_secs(30);
+/// More batteries than any laptop has.
+pub const MAX_BATTERIES: usize = 8;
 
 /// The idle times offered, in seconds. Zero is never.
 pub const IDLE_CHOICES: [i64; 8] = [60, 120, 300, 600, 900, 1800, 3600, 0];
@@ -58,6 +61,9 @@ pub enum Charge {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Battery {
+    /// What the kernel calls it, such as `BAT0`. Empty for several
+    /// taken together.
+    pub name: String,
     pub percent: u32,
     pub charge: Charge,
     /// Watt-hours it holds now when full, and held when new.
@@ -153,7 +159,9 @@ fn read_battery(dir: &Path) -> Option<Battery> {
         .map(|raw| text::clean(&raw, 24))
         .filter(|word| !word.is_empty() && word != "Unknown")
         .collect();
+    let name = dir.file_name().map(|name| name.to_string_lossy());
     Some(Battery {
+        name: text::clean(&name.unwrap_or_default(), 24),
         percent: percent.round().clamp(0.0, 100.0) as u32,
         charge: match file("status").unwrap_or_default().trim() {
             "Charging" => Charge::Charging,
@@ -173,15 +181,67 @@ fn read_battery(dir: &Path) -> Option<Battery> {
     })
 }
 
-/// The system's battery: the first by name, if there is one.
-pub fn battery(power_supply: &Path) -> Option<Battery> {
+/// The system's batteries, by name. Some laptops have two.
+pub fn batteries(power_supply: &Path) -> Vec<Battery> {
     let mut entries: Vec<_> = fs::read_dir(power_supply)
-        .ok()?
+        .into_iter()
+        .flatten()
         .flatten()
         .take(32)
         .collect();
     entries.sort_by_key(|entry| entry.file_name());
-    entries.iter().find_map(|entry| read_battery(&entry.path()))
+    entries
+        .iter()
+        .filter_map(|entry| read_battery(&entry.path()))
+        .take(MAX_BATTERIES)
+        .collect()
+}
+
+/// Several batteries as the one supply they are to the user: energies
+/// and power added up, and the charge worked out from the energy, so
+/// that a large battery counts for more than a small one.
+pub fn combined(batteries: &[Battery]) -> Option<Battery> {
+    let (first, rest) = batteries.split_first()?;
+    if rest.is_empty() {
+        return Some(first.clone());
+    }
+    // A sum only means something if every battery gave its part.
+    let total =
+        |part: fn(&Battery) -> Option<f64>| -> Option<f64> { batteries.iter().map(part).sum() };
+    let (now_wh, full_wh) = (total(|b| b.now_wh), total(|b| b.full_wh));
+    let percent = match (now_wh, full_wh) {
+        (Some(now), Some(full)) if full > 0.0 => now / full * 100.0,
+        _ => batteries.iter().map(|b| f64::from(b.percent)).sum::<f64>() / batteries.len() as f64,
+    };
+    let any = |charge: Charge| batteries.iter().any(|b| b.charge == charge);
+    let charge = if any(Charge::Charging) {
+        Charge::Charging
+    } else if any(Charge::Discharging) {
+        Charge::Discharging
+    } else if batteries.iter().all(|b| b.charge == Charge::Full) {
+        Charge::Full
+    } else if any(Charge::Holding) || any(Charge::Full) {
+        Charge::Holding
+    } else {
+        Charge::Unknown
+    };
+    let rates: Vec<f64> = batteries.iter().filter_map(|b| b.watts).collect();
+    Some(Battery {
+        name: String::new(),
+        percent: percent.round().clamp(0.0, 100.0) as u32,
+        charge,
+        full_wh,
+        design_wh: total(|b| b.design_wh),
+        now_wh,
+        watts: (!rates.is_empty()).then(|| rates.iter().sum()),
+        cycles: None,
+        kind: String::new(),
+    })
+}
+
+/// The system's battery, or all of them taken together.
+pub fn battery(power_supply: &Path) -> Option<Battery> {
+    combined(&batteries(power_supply))
 }
 
 /// What logind does for a key or the lid, in words.
@@ -213,33 +273,74 @@ fn logind_actions(bus: &Bus) -> Option<(String, String)> {
     ))
 }
 
+/// Whether the process whose `/proc` directory is `dir` is a `swayidle`
+/// of this user and this compositor that the session has said it will
+/// start again.
+fn restartable(dir: &Path, uid: u32, wayland_display: &str) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let wanted = format!("WAYLAND_DISPLAY={wayland_display}");
+    let is = || -> Option<bool> {
+        if fs::metadata(dir).ok()?.uid() != uid
+            || fs::read_to_string(dir.join("comm")).ok()?.trim() != "swayidle"
+        {
+            return Some(false);
+        }
+        let environment = fs::read(dir.join("environ")).ok()?;
+        let has = |wanted: &str| {
+            environment
+                .split(|byte| *byte == 0)
+                .any(|entry| entry == wanted.as_bytes())
+        };
+        Some(has(SUPERVISED) && has(&wanted))
+    };
+    is().unwrap_or(false)
+}
+
 /// The process ids, under `proc`, of this session's `swayidle` processes
 /// that the session has said it will start again: same user, same
 /// compositor, and the mark in their environment.
 pub fn restartable_idlers(proc: &Path, uid: u32, wayland_display: &str) -> Vec<i32> {
-    use std::os::unix::fs::MetadataExt;
-    let wanted = format!("WAYLAND_DISPLAY={wayland_display}");
     fs::read_dir(proc)
         .into_iter()
         .flatten()
         .flatten()
         .filter_map(|entry| {
             let pid: i32 = entry.file_name().to_str()?.parse().ok()?;
-            let dir = entry.path();
-            if fs::metadata(&dir).ok()?.uid() != uid
-                || fs::read_to_string(dir.join("comm")).ok()?.trim() != "swayidle"
-            {
-                return None;
-            }
-            let environment = fs::read(dir.join("environ")).ok()?;
-            let has = |wanted: &str| {
-                environment
-                    .split(|byte| *byte == 0)
-                    .any(|entry| entry == wanted.as_bytes())
-            };
-            (pid > 1 && has(SUPERVISED) && has(&wanted)).then_some(pid)
+            (pid > 1 && restartable(&entry.path(), uid, wayland_display)).then_some(pid)
         })
         .collect()
+}
+
+/// Send SIGTERM to process `pid` if `still` says it is the one meant.
+///
+/// A process id found in `/proc` a moment ago may by now belong to some
+/// other process. So the process is first taken hold of with a pidfd,
+/// which names that one process for as long as it is open, and looked at
+/// again only then. If the look passes, the pidfd names what was looked
+/// at; had the number changed hands in between, the look would be at a
+/// stranger and fail, or the pidfd would name a process already dead, to
+/// which a signal does nothing.
+fn end_if(pid: i32, still: impl FnOnce() -> bool) -> bool {
+    // SAFETY: pidfd_open takes a process id and flags and returns a new
+    // descriptor or -1.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    if fd < 0 {
+        return false;
+    }
+    // SAFETY: the descriptor was just returned to us and is ours alone.
+    let fd = unsafe { OwnedFd::from_raw_fd(fd as libc::c_int) };
+    // SAFETY: pidfd_send_signal is given the pidfd, a signal number, no
+    // siginfo and no flags.
+    still()
+        && unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                fd.as_raw_fd(),
+                libc::SIGTERM,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        } == 0
 }
 
 /// End the restartable `swayidle` of this session so that it comes back
@@ -250,17 +351,18 @@ fn restart_idler() -> bool {
     };
     // SAFETY: getuid has no arguments and cannot fail.
     let uid = unsafe { libc::getuid() };
-    let pids = restartable_idlers(Path::new("/proc"), uid, &display);
-    for pid in &pids {
-        // SAFETY: kill is given a process id found a moment ago, of this
-        // user's own swayidle, and a signal number.
-        unsafe { libc::kill(*pid, libc::SIGTERM) };
+    let proc = Path::new("/proc");
+    let mut ended = false;
+    for pid in restartable_idlers(proc, uid, &display) {
+        ended |= end_if(pid, || {
+            restartable(&proc.join(pid.to_string()), uid, &display)
+        });
     }
-    !pids.is_empty()
+    ended
 }
 
 struct Facts {
-    battery: Option<Battery>,
+    batteries: Vec<Battery>,
     actions: Option<(String, String)>,
 }
 
@@ -277,24 +379,55 @@ fn row(title: &str, value: &str) -> InfoRow {
     }
 }
 
-fn battery_rows(battery: &Battery) -> Vec<InfoRow> {
-    let mut rows = vec![row("Charge", &battery.summary())];
-    if let (Some(health), Some(full), Some(design)) =
-        (battery.health(), battery.full_wh, battery.design_wh)
-    {
-        rows.push(row(
-            "Health",
-            &format!("{health}% of its original capacity ({full:.1} of {design:.1} Wh)"),
-        ));
+fn health_words(battery: &Battery) -> Option<String> {
+    let (health, full, design) = (battery.health()?, battery.full_wh?, battery.design_wh?);
+    Some(format!(
+        "{health}% of its original capacity ({full:.1} of {design:.1} Wh)"
+    ))
+}
+
+/// The card's rows. One battery is described in full. Several are added
+/// up for the charge and the power, and then each has a row for what is
+/// its own: how full it is and how worn.
+fn battery_rows(batteries: &[Battery]) -> Vec<InfoRow> {
+    let Some(whole) = combined(batteries) else {
+        return Vec::new();
+    };
+    let mut rows = vec![row("Charge", &whole.summary())];
+    if let [battery] = batteries {
+        if let Some(health) = health_words(battery) {
+            rows.push(row("Health", &health));
+        }
     }
-    if let Some(watts) = battery.watts.filter(|watts| *watts > 0.05) {
+    if let Some(watts) = whole.watts.filter(|watts| *watts > 0.05) {
         rows.push(row("Power", &format!("{watts:.1} W")));
     }
-    if let Some(cycles) = battery.cycles {
-        rows.push(row("Charge cycles", &cycles.to_string()));
-    }
-    if !battery.kind.is_empty() {
-        rows.push(row("Type", &battery.kind));
+    match batteries {
+        [battery] => {
+            if let Some(cycles) = battery.cycles {
+                rows.push(row("Charge cycles", &cycles.to_string()));
+            }
+            if !battery.kind.is_empty() {
+                rows.push(row("Type", &battery.kind));
+            }
+        }
+        several => {
+            for (index, battery) in several.iter().enumerate() {
+                let mut words = vec![format!("{}%", battery.percent)];
+                words.extend(health_words(battery).map(|health| format!("holds {health}")));
+                words.extend(
+                    battery
+                        .cycles
+                        .map(|cycles| format!("{cycles} charge cycles")),
+                );
+                let title = if battery.name.is_empty() {
+                    format!("Battery {}", index + 1)
+                } else {
+                    format!("Battery {} ({})", index + 1, battery.name)
+                };
+                rows.push(row(&title, &words.join(", ")));
+            }
+        }
     }
     rows
 }
@@ -381,27 +514,30 @@ impl PowerPage {
 
     fn refresh(&self) {
         let (bus, class) = (self.bus.clone(), self.class.clone());
-        std::thread::spawn(move || {
-            let facts = Facts {
-                battery: battery(&class.join("power_supply")),
-                actions: logind_actions(&bus),
-            };
-            app::post(move |app| {
-                let data = app.window.global::<PowerData>();
-                data.set_has_battery(facts.battery.is_some());
-                data.set_battery(app::model(
-                    facts.battery.as_ref().map(battery_rows).unwrap_or_default(),
-                ));
-                let (key, lid) = match &facts.actions {
-                    Some((key, lid)) => (action_words(key), action_words(lid)),
-                    None => ("Unknown", "Unknown"),
+        let spawned = std::thread::Builder::new()
+            .name("settings-power".to_string())
+            .spawn(move || {
+                let facts = Facts {
+                    batteries: batteries(&class.join("power_supply")),
+                    actions: logind_actions(&bus),
                 };
-                data.set_buttons(app::model(vec![
-                    row("Power button", key),
-                    row("Closing the lid", lid),
-                ]));
+                app::post(move |app| {
+                    let data = app.window.global::<PowerData>();
+                    data.set_has_battery(!facts.batteries.is_empty());
+                    data.set_battery(app::model(battery_rows(&facts.batteries)));
+                    let (key, lid) = match &facts.actions {
+                        Some((key, lid)) => (action_words(key), action_words(lid)),
+                        None => ("Unknown", "Unknown"),
+                    };
+                    data.set_buttons(app::model(vec![
+                        row("Power button", key),
+                        row("Closing the lid", lid),
+                    ]));
+                });
             });
-        });
+        if let Err(error) = spawned {
+            eprintln!("sengi-settings: could not start a thread to read the battery: {error}");
+        }
     }
 }
 
@@ -472,12 +608,140 @@ mod tests {
         // 24.07 Wh at 9.5 W.
         assert_eq!(battery.minutes_left(), Some(152));
         assert_eq!(battery.summary(), "58%, on battery, about 2 h 32 min left");
-        let rows = battery_rows(&battery);
+        assert_eq!(battery.name, "BAT0");
+        let rows = battery_rows(&[battery]);
         assert_eq!(rows.len(), 5);
         assert_eq!(
             rows[1].value,
             "86% of its original capacity (41.5 of 48.0 Wh)"
         );
+    }
+
+    #[test]
+    fn two_batteries_are_one_charge_weighted_by_what_each_holds() {
+        let tmp = TempDir::new();
+        // A small one nearly full and a large one nearly empty.
+        for (name, status, now, full, design, power, cycles) in [
+            (
+                "BAT0", "Unknown", "18000000", "20000000", "24000000", "0", "410",
+            ),
+            (
+                "BAT1",
+                "Discharging",
+                "12000000",
+                "60000000",
+                "72000000",
+                "12000000",
+                "95",
+            ),
+        ] {
+            for (file, value) in [
+                ("type", "Battery"),
+                ("status", status),
+                ("energy_now", now),
+                ("energy_full", full),
+                ("energy_full_design", design),
+                ("power_now", power),
+                ("cycle_count", cycles),
+            ] {
+                tmp.write(&format!("{name}/{file}"), value);
+            }
+        }
+        let both = batteries(tmp.path());
+        assert_eq!(both.len(), 2);
+        assert_eq!((both[0].percent, both[1].percent), (90, 20));
+        let whole = battery(tmp.path()).unwrap();
+        // 30 of 80 Wh, not the 55% that averaging the two would give.
+        assert_eq!(whole.percent, 38);
+        assert_eq!(whole.charge, Charge::Discharging);
+        assert_eq!(whole.now_wh, Some(30.0));
+        assert_eq!(whole.watts, Some(12.0));
+        assert_eq!(whole.minutes_left(), Some(150));
+        let rows = battery_rows(&both);
+        let shown: Vec<(String, String)> = rows
+            .iter()
+            .map(|row| (row.title.to_string(), row.value.to_string()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (
+                    "Charge".to_string(),
+                    "38%, on battery, about 2 h 30 min left".to_string()
+                ),
+                ("Power".to_string(), "12.0 W".to_string()),
+                (
+                    "Battery 1 (BAT0)".to_string(),
+                    "90%, holds 83% of its original capacity (20.0 of 24.0 Wh), 410 charge cycles"
+                        .to_string()
+                ),
+                (
+                    "Battery 2 (BAT1)".to_string(),
+                    "20%, holds 83% of its original capacity (60.0 of 72.0 Wh), 95 charge cycles"
+                        .to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn batteries_that_do_not_give_their_energy_are_averaged() {
+        let full = Battery {
+            name: "BAT0".to_string(),
+            percent: 100,
+            charge: Charge::Full,
+            full_wh: None,
+            design_wh: None,
+            now_wh: None,
+            watts: None,
+            cycles: None,
+            kind: String::new(),
+        };
+        let half = Battery {
+            name: "BAT1".to_string(),
+            percent: 50,
+            charge: Charge::Charging,
+            now_wh: Some(10.0),
+            full_wh: Some(20.0),
+            ..full.clone()
+        };
+        let whole = combined(&[full.clone(), half]).unwrap();
+        assert_eq!(whole.percent, 75);
+        assert_eq!(whole.charge, Charge::Charging);
+        assert_eq!(
+            (whole.now_wh, whole.full_wh, whole.watts),
+            (None, None, None)
+        );
+        assert_eq!(
+            combined(&[full.clone(), full.clone()]).unwrap().charge,
+            Charge::Full
+        );
+        assert_eq!(combined(&[]), None);
+        assert_eq!(combined(std::slice::from_ref(&full)), Some(full));
+    }
+
+    #[test]
+    fn a_process_is_ended_only_if_it_is_still_the_one_meant() {
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::{Command, Stdio};
+        let sleeper = || {
+            Command::new("/bin/sleep")
+                .arg("30")
+                .stdin(Stdio::null())
+                .spawn()
+                .unwrap()
+        };
+        let mut spared = sleeper();
+        assert!(!end_if(spared.id() as i32, || false));
+        assert_eq!(spared.try_wait().unwrap(), None);
+        spared.kill().unwrap();
+        spared.wait().unwrap();
+        // Gone and reaped: there is nothing to take hold of.
+        assert!(!end_if(spared.id() as i32, || true));
+
+        let mut ended = sleeper();
+        assert!(end_if(ended.id() as i32, || true));
+        assert_eq!(ended.wait().unwrap().signal(), Some(libc::SIGTERM));
     }
 
     #[test]
