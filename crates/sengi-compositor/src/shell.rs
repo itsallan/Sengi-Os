@@ -19,12 +19,13 @@ use smithay::{
     utils::{Point, Rectangle, Serial},
     wayland::{
         compositor::{
-            get_parent, is_sync_subsurface, CompositorClientState, CompositorHandler,
+            get_parent, get_role, is_sync_subsurface, CompositorClientState, CompositorHandler,
             CompositorState,
         },
+        shell::wlr_layer::LAYER_SURFACE_ROLE,
         shell::xdg::{
             decoration::XdgDecorationHandler, PopupSurface, PositionerState, ToplevelSurface,
-            XdgShellHandler, XdgShellState,
+            XdgShellHandler, XdgShellState, XDG_POPUP_ROLE, XDG_TOPLEVEL_ROLE,
         },
     },
 };
@@ -67,9 +68,14 @@ impl CompositorHandler for State {
             }
         }
 
-        self.toplevel_commit(surface);
-        self.layer_commit(surface);
-        self.popup_commit(surface);
+        // Each of these looks its surface up among all the others of its
+        // kind, so only the one the surface's role names is asked.
+        match get_role(surface) {
+            Some(XDG_TOPLEVEL_ROLE) => self.toplevel_commit(surface),
+            Some(LAYER_SURFACE_ROLE) => self.layer_commit(surface),
+            Some(XDG_POPUP_ROLE) => self.popup_commit(surface),
+            _ => {}
+        }
     }
 }
 
