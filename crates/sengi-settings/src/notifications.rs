@@ -3,30 +3,15 @@
 //! command as the quick settings panel does: `sengi-notify --dnd
 //! on|off|status` and `sengi-notify --dismiss-all`.
 
-use std::process::{Command, Stdio};
 use std::rc::Rc;
 
 use slint::ComponentHandle;
 
-use sengi_system::programs::{find_program, parse_dnd};
+use sengi_system::commands::{DISMISS_ALL, DND_FLAG, DND_OFF, DND_ON, DND_STATUS, NOTIFY};
+use sengi_system::programs::{find_program, output, parse_dnd};
 
 use crate::app::{self, App, Controller};
 use crate::ui::NotificationsData;
-
-const NOTIFY: &str = "sengi-notify";
-
-fn run(args: &[&str]) -> Option<String> {
-    let output = Command::new(NOTIFY)
-        .args(args)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
-}
 
 /// Run the command with `args`, then ask for the state and show it.
 fn act(args: &'static [&'static str]) {
@@ -34,10 +19,10 @@ fn act(args: &'static [&'static str]) {
         let path = std::env::var("PATH").unwrap_or_default();
         let installed = find_program(NOTIFY, &path).is_some();
         if installed && !args.is_empty() {
-            run(args);
+            output(NOTIFY, args);
         }
         let dnd = if installed {
-            run(&["--dnd", "status"]).and_then(|output| parse_dnd(&output))
+            output(NOTIFY, &[DND_FLAG, DND_STATUS]).and_then(|printed| parse_dnd(&printed))
         } else {
             None
         };
@@ -64,12 +49,12 @@ impl NotificationsPage {
         let data = app.window.global::<NotificationsData>();
         data.on_set_dnd(|on| {
             act(if on {
-                &["--dnd", "on"]
+                &[DND_FLAG, DND_ON]
             } else {
-                &["--dnd", "off"]
+                &[DND_FLAG, DND_OFF]
             });
         });
-        data.on_clear(|| act(&["--dismiss-all"]));
+        data.on_clear(|| act(&[DISMISS_ALL]));
         Rc::new(NotificationsPage)
     }
 }

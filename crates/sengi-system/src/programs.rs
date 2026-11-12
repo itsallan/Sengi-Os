@@ -23,7 +23,7 @@ const MAX_OUTPUT: usize = 256 * 1024;
 /// Run `program`, found on `PATH` and started by its full path, to the
 /// end and return what it printed, if it succeeded. One that takes too
 /// long or prints too much is killed and counts as failed.
-pub(crate) fn output(program: &str, args: &[&str]) -> Option<String> {
+pub fn output(program: &str, args: &[&str]) -> Option<String> {
     let path = std::env::var("PATH").unwrap_or_default();
     run(&find_program(program, &path)?, args, DEADLINE, MAX_OUTPUT)
 }

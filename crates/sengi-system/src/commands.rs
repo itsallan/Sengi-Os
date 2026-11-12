@@ -19,5 +19,7 @@ pub const DND_FLAG: &str = "--dnd";
 pub const DND_ON: &str = "on";
 /// Its argument, and its answer, for off.
 pub const DND_OFF: &str = "off";
+/// The option that dismisses every notification on screen.
+pub const DISMISS_ALL: &str = "--dismiss-all";
 /// Its argument that asks which it is.
 pub const DND_STATUS: &str = "status";
