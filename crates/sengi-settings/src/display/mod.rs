@@ -6,7 +6,9 @@
 //! A mode the panel cannot show leaves the user looking at nothing, with
 //! no way to press a button they cannot see. So no change is final until
 //! it is confirmed, and the worker, not the window, holds the clock: if
-//! the window hangs, or is closed, the old settings still come back.
+//! the window hangs, or is closed, the old settings still come back. The
+//! clock is looked at on every turn of the worker's loop, so news from
+//! the compositor, however steady, cannot put the moment off.
 
 pub mod page;
 pub mod wlr;
@@ -21,6 +23,9 @@ use crate::worker::{self, Handle, Inbox, Notify, Waited};
 
 /// How long a change waits to be confirmed.
 pub const TRIAL: Duration = Duration::from_secs(15);
+/// How many times going back is tried when the compositor says the
+/// outputs changed under it.
+pub const REVERT_TRIES: u32 = 4;
 pub const MAX_OUTPUTS: usize = 16;
 pub const MAX_MODES: usize = 256;
 
@@ -143,6 +148,12 @@ impl Output {
         same.or(rates.first()).copied()
     }
 
+    /// Whether `change` would leave this output different.
+    pub fn changed_by(&self, change: &Change) -> bool {
+        change.mode.is_some_and(|mode| Some(mode) != self.current)
+            || change.scale.is_some_and(|scale| scale != self.scale)
+    }
+
     /// The change that puts things back as they are now.
     pub fn restore(&self) -> Change {
         Change {
@@ -167,8 +178,12 @@ pub enum ApplyError {
     Refused,
     /// The outputs changed while it was being made. Nothing was applied.
     Outdated,
-    /// The output is not there, or the compositor is not answering.
+    /// The output is not there, or there is no compositor to ask.
     Unavailable,
+    /// The output does not have the mode that was asked for.
+    NoSuchMode,
+    /// The compositor did not answer in time.
+    Silent,
 }
 
 impl ApplyError {
@@ -179,6 +194,8 @@ impl ApplyError {
                 "The displays changed while the setting was being applied. Try again."
             }
             ApplyError::Unavailable => "The display is no longer there.",
+            ApplyError::NoSuchMode => "The display does not offer that mode any more.",
+            ApplyError::Silent => "The compositor did not answer.",
         }
     }
 }
@@ -195,7 +212,12 @@ pub trait DisplayService: Send + Sync + 'static {
     /// Returns when the compositor has taken the change or refused it.
     fn apply(&self, change: &Change) -> Result<(), ApplyError>;
     fn set_brightness(&self, name: &str, raw: u32);
+    /// Have `changed` called when a later read could differ. A second
+    /// call replaces the first.
     fn watch(&self, changed: Notify);
+    /// Catch up with the compositor after it said the outputs changed,
+    /// so that the next `apply` is made against what is there now.
+    fn settle(&self) {}
 }
 
 /// A change that is in effect but not yet kept.
@@ -283,6 +305,39 @@ pub enum Event {
         timed_out: bool,
     },
     Failed(ApplyError),
+    /// The old settings could not be put back.
+    RevertFailed(ApplyError),
+}
+
+/// Put things back. An answer that the outputs changed meanwhile, or no
+/// answer, is not the end of it: nobody chose the settings on trial.
+fn revert(service: &dyn DisplayService, restore: &Change) -> Result<(), ApplyError> {
+    let mut last = ApplyError::Outdated;
+    for _ in 0..REVERT_TRIES {
+        match service.apply(restore) {
+            Ok(()) => return Ok(()),
+            Err(error @ (ApplyError::Outdated | ApplyError::Silent)) => {
+                last = error;
+                service.settle();
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last)
+}
+
+fn undo(service: &dyn DisplayService, restore: &Change, timed_out: bool, emit: &impl Fn(Event)) {
+    match revert(service, restore) {
+        Ok(()) => emit(Event::Reverted { timed_out }),
+        Err(error) => {
+            eprintln!(
+                "sengi-settings: could not put {} back as it was: {}",
+                restore.output,
+                error.words()
+            );
+            emit(Event::RevertFailed(error));
+        }
+    }
 }
 
 pub fn run(
@@ -304,15 +359,14 @@ fn run_with(
     service.watch(handle.notifier());
     emit(Event::Reading(service.read()));
     loop {
+        // Before anything else, whatever woke the loop.
+        if let Some(restore) = trial.expire(Instant::now()) {
+            undo(&*service, &restore, true, &emit);
+            emit(Event::Reading(service.read()));
+        }
         let command = match inbox.wait_until(trial.deadline()) {
             Waited::Stopped => break,
-            Waited::TimedOut => {
-                if let Some(restore) = trial.expire(Instant::now()) {
-                    let _ = service.apply(&restore);
-                    emit(Event::Reverted { timed_out: true });
-                }
-                None
-            }
+            Waited::TimedOut => continue,
             Waited::Refresh => None,
             Waited::Command(command) => Some(command),
         };
@@ -320,19 +374,26 @@ fn run_with(
             None => {}
             Some(Command::Apply(change)) => {
                 let before = service.read();
-                let restore = before
+                let output = before
                     .outputs
                     .iter()
                     .flatten()
-                    .find(|output| output.name == change.output)
-                    .map(Output::restore);
-                match (restore, service.apply(&change)) {
-                    (Some(restore), Ok(())) => {
-                        trial.begin(restore, Instant::now());
-                        emit(Event::Trying);
+                    .find(|output| output.name == change.output);
+                match output {
+                    None => emit(Event::Failed(ApplyError::Unavailable)),
+                    // Nothing would change, so there is nothing to keep.
+                    Some(output) if !output.changed_by(&change) => {}
+                    // Without the mode it runs at now there is no way back.
+                    Some(output) if change.mode.is_some() && output.current.is_none() => {
+                        emit(Event::Failed(ApplyError::Unavailable));
                     }
-                    (None, _) => emit(Event::Failed(ApplyError::Unavailable)),
-                    (_, Err(error)) => emit(Event::Failed(error)),
+                    Some(output) => match service.apply(&change) {
+                        Ok(()) => {
+                            trial.begin(output.restore(), Instant::now());
+                            emit(Event::Trying);
+                        }
+                        Err(error) => emit(Event::Failed(error)),
+                    },
                 }
             }
             Some(Command::Keep) => {
@@ -342,8 +403,7 @@ fn run_with(
             }
             Some(Command::Revert) => {
                 if let Some(restore) = trial.abandon() {
-                    let _ = service.apply(&restore);
-                    emit(Event::Reverted { timed_out: false });
+                    undo(&*service, &restore, false, &emit);
                 }
             }
             Some(Command::Brightness(percent)) => {
@@ -355,9 +415,15 @@ fn run_with(
         emit(Event::Reading(service.read()));
     }
     // The window is going away with a change still on trial. Nobody can
-    // say to keep it now.
+    // say to keep it now, and there is no window to report to.
     if let Some(restore) = trial.abandon() {
-        let _ = service.apply(&restore);
+        if let Err(error) = revert(&*service, &restore) {
+            eprintln!(
+                "sengi-settings: could not put {} back as it was: {}",
+                restore.output,
+                error.words()
+            );
+        }
     }
 }
 
@@ -408,6 +474,11 @@ pub mod testing {
         pub backlight: Mutex<Option<backlight::Backlight>>,
         pub log: Mutex<Vec<String>>,
         pub refuse: Mutex<bool>,
+        /// This many of the next changes are answered as made against
+        /// outputs that have changed since.
+        pub stale: Mutex<u32>,
+        /// How often it was asked to catch up.
+        pub settled: Mutex<u32>,
     }
 
     impl Fake {
@@ -443,6 +514,13 @@ pub mod testing {
         fn apply(&self, change: &Change) -> Result<(), ApplyError> {
             if *self.refuse.lock().unwrap_or_else(|p| p.into_inner()) {
                 return Err(ApplyError::Refused);
+            }
+            {
+                let mut stale = self.stale.lock().unwrap_or_else(|p| p.into_inner());
+                if *stale > 0 {
+                    *stale -= 1;
+                    return Err(ApplyError::Outdated);
+                }
             }
             let mut outputs = self.outputs.lock().unwrap_or_else(|p| p.into_inner());
             let output = outputs
@@ -483,6 +561,10 @@ pub mod testing {
         }
 
         fn watch(&self, _changed: Notify) {}
+
+        fn settle(&self) {
+            *self.settled.lock().unwrap_or_else(|p| p.into_inner()) += 1;
+        }
     }
 }
 
@@ -654,6 +736,168 @@ mod tests {
             fake.log(),
             ["eDP-1 1600 × 900 100%", "eDP-1 1920 × 1080 100%"]
         );
+    }
+
+    /// Runs the worker on a thread of its own with a trial of `length`.
+    fn working(
+        fake: &Arc<Fake>,
+        length: Duration,
+    ) -> (
+        Handle<Command>,
+        mpsc::Receiver<Event>,
+        std::thread::JoinHandle<()>,
+    ) {
+        let (tx, rx) = mpsc::channel();
+        let tx = Mutex::new(tx);
+        let (handle, inbox) = worker::channel();
+        let thread = std::thread::spawn({
+            let (fake, handle) = (fake.clone(), handle.clone());
+            move || {
+                run_with(
+                    fake,
+                    handle,
+                    inbox,
+                    move |event| {
+                        let _ = tx.lock().unwrap().send(event);
+                    },
+                    Trial::lasting(length),
+                )
+            }
+        });
+        (handle, rx, thread)
+    }
+
+    /// Events up to and including the first that `last` picks out.
+    fn until(rx: &mpsc::Receiver<Event>, last: impl Fn(&Event) -> bool) -> Vec<Event> {
+        let mut seen = Vec::new();
+        loop {
+            let event = rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the event waited for");
+            let done = last(&event);
+            if !matches!(event, Event::Reading(_)) {
+                seen.push(event);
+            }
+            if done {
+                return seen;
+            }
+        }
+    }
+
+    #[test]
+    fn steady_news_from_the_compositor_does_not_put_the_revert_off() {
+        let fake = Fake::with(vec![laptop()]);
+        *fake.backlight.lock().unwrap() = backlight::parse("intel_backlight", "100", "1000");
+        let (handle, rx, thread) = working(&fake, Duration::from_millis(150));
+        handle.send(Command::Apply(change(1600, 900)));
+        // An output that flaps and a hand on the brightness keys: the
+        // worker is never left to wait in peace.
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let noise = std::thread::spawn({
+            let (handle, stop) = (handle.clone(), stop.clone());
+            move || {
+                let mut turn = 0u32;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    handle.refresh();
+                    if turn.is_multiple_of(8) {
+                        handle.send(Command::Brightness(40 + turn % 50));
+                    }
+                    turn += 1;
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        });
+        let started = Instant::now();
+        let seen = until(&rx, |event| matches!(event, Event::Reverted { .. }));
+        let took = started.elapsed();
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        noise.join().unwrap();
+        handle.stop();
+        thread.join().unwrap();
+        assert_eq!(seen, [Event::Trying, Event::Reverted { timed_out: true }]);
+        // The trial and a burst of news waited out, not for as long as
+        // the news keeps coming.
+        assert!(took < Duration::from_secs(5), "{took:?}");
+        let sizes: Vec<String> = fake
+            .log()
+            .into_iter()
+            .filter(|line| line.starts_with("eDP-1"))
+            .collect();
+        assert_eq!(sizes, ["eDP-1 1600 × 900 100%", "eDP-1 1920 × 1080 100%"]);
+    }
+
+    #[test]
+    fn a_revert_the_compositor_cancels_is_tried_again() {
+        let fake = Fake::with(vec![laptop()]);
+        let (handle, rx, thread) = working(&fake, Duration::from_secs(60));
+        handle.send(Command::Apply(change(1600, 900)));
+        until(&rx, |event| *event == Event::Trying);
+        *fake.stale.lock().unwrap() = 2;
+        handle.send(Command::Revert);
+        let seen = until(&rx, |event| matches!(event, Event::Reverted { .. }));
+        assert_eq!(seen, [Event::Reverted { timed_out: false }]);
+        // It caught up with the compositor before each new try.
+        assert_eq!(*fake.settled.lock().unwrap(), 2);
+        assert_eq!(
+            fake.log(),
+            ["eDP-1 1600 × 900 100%", "eDP-1 1920 × 1080 100%"]
+        );
+        handle.stop();
+        thread.join().unwrap();
+    }
+
+    #[test]
+    fn a_revert_that_never_goes_through_is_reported() {
+        let fake = Fake::with(vec![laptop()]);
+        let (handle, rx, thread) = working(&fake, Duration::from_secs(60));
+        handle.send(Command::Apply(change(1600, 900)));
+        until(&rx, |event| *event == Event::Trying);
+        *fake.stale.lock().unwrap() = 1000;
+        handle.send(Command::Revert);
+        let seen = until(&rx, |event| matches!(event, Event::RevertFailed(_)));
+        assert_eq!(seen, [Event::RevertFailed(ApplyError::Outdated)]);
+        assert_eq!(*fake.stale.lock().unwrap(), 1000 - REVERT_TRIES);
+        // The new mode is still there, and nothing says otherwise.
+        assert_eq!(fake.log(), ["eDP-1 1600 × 900 100%"]);
+        handle.stop();
+        thread.join().unwrap();
+        // A refusal is final: asking again would get the same answer.
+        let fake = Fake::with(vec![laptop()]);
+        *fake.refuse.lock().unwrap() = true;
+        assert_eq!(
+            revert(&*fake, &laptop().restore()),
+            Err(ApplyError::Refused)
+        );
+        assert_eq!(*fake.settled.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn a_change_that_changes_nothing_is_not_put_on_trial() {
+        let fake = Fake::with(vec![laptop()]);
+        let same = Change {
+            output: "eDP-1".to_string(),
+            mode: Some(mode(1920, 1080, 60)),
+            scale: Some(1000),
+        };
+        assert!(worked(&fake, vec![Command::Apply(same)]).is_empty());
+        assert!(fake.log().is_empty());
+    }
+
+    #[test]
+    fn a_mode_is_not_tried_without_one_to_go_back_to() {
+        let mut blind = laptop();
+        blind.current = None;
+        let fake = Fake::with(vec![blind]);
+        let events = worked(&fake, vec![Command::Apply(change(1600, 900))]);
+        assert_eq!(events, [Event::Failed(ApplyError::Unavailable)]);
+        assert!(fake.log().is_empty());
+        // A scale can still be: the scale it has now is known.
+        let scale = Change {
+            output: "eDP-1".to_string(),
+            mode: None,
+            scale: Some(2000),
+        };
+        assert_eq!(worked(&fake, vec![Command::Apply(scale)]), [Event::Trying]);
     }
 
     #[test]

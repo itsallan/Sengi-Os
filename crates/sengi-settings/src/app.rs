@@ -4,6 +4,7 @@
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -221,6 +222,37 @@ thread_local! {
     static APP: RefCell<Option<Rc<App>>> = const { RefCell::new(None) };
 }
 
+type LastWords = Box<dyn Fn() + Send>;
+
+static LAST_WORDS: Mutex<Vec<LastWords>> = Mutex::new(Vec::new());
+static TERMINATING: AtomicBool = AtomicBool::new(false);
+
+/// Something that must be done before the process ends when it is told
+/// to end by a signal: undoing a display change still on trial, landing
+/// the last setting. It is run on the thread that hears of the signal,
+/// not the UI thread, which may be the reason the signal was sent; so it
+/// may only touch what any thread may.
+pub fn on_terminate(hook: impl Fn() + Send + 'static) {
+    LAST_WORDS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .push(Box::new(hook));
+}
+
+/// The process has been told to end: do what was registered with
+/// [`on_terminate`], in order. Returns when all of it is done.
+pub fn terminate() {
+    TERMINATING.store(true, Ordering::SeqCst);
+    let hooks = LAST_WORDS.lock().unwrap_or_else(|p| p.into_inner());
+    for hook in hooks.iter() {
+        hook();
+    }
+}
+
+pub fn terminating() -> bool {
+    TERMINATING.load(Ordering::SeqCst)
+}
+
 /// Run `task` on the UI thread with the application, from any thread. If
 /// the window has gone the task is dropped.
 pub fn post(task: impl FnOnce(&Rc<App>) + Send + 'static) {
@@ -284,6 +316,12 @@ impl App {
             chooser: RefCell::default(),
         });
         APP.with(|slot| *slot.borrow_mut() = Some(app.clone()));
+        on_terminate({
+            let applier = app.applier.clone();
+            move || {
+                applier.finish(LAST_APPLY);
+            }
+        });
 
         let weak = Rc::downgrade(&app);
         app.window.on_page_selected(move |name| {
@@ -743,6 +781,18 @@ mod tests {
             task();
         }
         assert_eq!(*ran.lock().unwrap(), ["first", "second"]);
+    }
+
+    #[test]
+    fn what_was_registered_runs_when_the_process_is_told_to_end() {
+        let ran = Arc::new(Mutex::new(0));
+        on_terminate({
+            let ran = ran.clone();
+            move || *ran.lock().unwrap() += 1
+        });
+        terminate();
+        assert!(terminating());
+        assert_eq!(*ran.lock().unwrap(), 1);
     }
 
     #[test]
