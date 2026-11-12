@@ -28,12 +28,17 @@ use crate::services::Notify;
 /// A service can describe any number of objects. This is far more than
 /// iwd or BlueZ have on a real machine, and bounds the work on the rest.
 const MAX_OBJECTS: usize = 1024;
+/// The one service that may be started by being asked: see
+/// [`Bus::timedate_properties`].
+const TIMEDATE: &str = "org.freedesktop.timedate1";
+const TIMEDATE_PATH: &str = "/org/freedesktop/timedate1";
 /// Signals waiting to be looked at. Each only says "read again", so
 /// losing some to a full queue costs nothing.
 const SIGNAL_QUEUE: usize = 16;
 
 /// A property value, of the few kinds the panel reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Prop {
     /// A boolean.
     Bool(bool),
@@ -291,26 +296,24 @@ impl Bus {
         Some(converted(&all))
     }
 
-    /// As [`Bus::properties`], for a service that is meant to be started
-    /// by being asked: timedated is not kept running, it is brought up
-    /// for each question and leaves again. The one exception to the rule
-    /// that nothing here starts a service; never to be used for iwd or
-    /// BlueZ.
-    pub fn properties_of_helper(
-        &self,
-        service: &str,
-        path: &str,
-        interface: &str,
-    ) -> Option<Props> {
+    /// What timedated says of the system's clock: its
+    /// `org.freedesktop.timedate1` properties.
+    ///
+    /// timedated is meant to be started by being asked: it is not kept
+    /// running, it is brought up for each question and leaves again. So
+    /// this call, and this call alone, goes without the no-auto-start
+    /// flag. The name is fixed here and cannot be given by a caller:
+    /// there is no way to start iwd, BlueZ or anything else through it.
+    pub fn timedate_properties(&self) -> Option<Props> {
         let proxy = Proxy::new(
             self.connection()?,
-            service.to_string(),
-            path.to_string(),
+            TIMEDATE,
+            TIMEDATE_PATH,
             "org.freedesktop.DBus.Properties",
         )
         .ok()?;
         let all: HashMap<String, zbus::zvariant::OwnedValue> =
-            proxy.call("GetAll", &(interface,)).ok()?;
+            proxy.call("GetAll", &(TIMEDATE,)).ok()?;
         Some(converted(&all))
     }
 
@@ -387,6 +390,39 @@ pub fn error_name(error: &zbus::Error) -> Option<&str> {
 mod tests {
     use super::testing::object;
     use super::*;
+
+    #[test]
+    fn the_only_name_that_may_be_started_by_asking_is_timedated() {
+        // The exception is one fixed name, not a parameter.
+        assert_eq!(TIMEDATE, "org.freedesktop.timedate1");
+        assert_eq!(TIMEDATE_PATH, "/org/freedesktop/timedate1");
+        // Every other call goes through `Bus::call`, which sets the flag.
+        // The needle is put together here so that it does not find itself.
+        let source = include_str!("bus.rs");
+        let unflagged = ["proxy", ".call("].concat();
+        assert_eq!(
+            source.matches(&unflagged).count(),
+            1,
+            "a call without the no-auto-start flag was added"
+        );
+        let helper = source
+            .split("pub fn timedate_properties")
+            .nth(1)
+            .and_then(|rest| {
+                rest.split(
+                    "
+    }
+",
+                )
+                .next()
+            })
+            .unwrap();
+        assert!(helper.contains(&unflagged));
+        assert!(
+            !helper.contains("service"),
+            "the name must not be a parameter"
+        );
+    }
 
     #[test]
     fn only_objects_with_a_wanted_interface_are_kept() {

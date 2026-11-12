@@ -154,12 +154,7 @@ pub fn ntp_words(system: &System) -> &'static str {
 }
 
 fn system(bus: &Bus) -> System {
-    let props = bus.properties_of_helper(
-        "org.freedesktop.timedate1",
-        "/org/freedesktop/timedate1",
-        "org.freedesktop.timedate1",
-    );
-    let Some(props) = props else {
+    let Some(props) = bus.timedate_properties() else {
         return System::default();
     };
     System {
