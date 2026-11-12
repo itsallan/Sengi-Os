@@ -174,8 +174,13 @@ Wayland connection of its own; brightness read from
   it and counts down from 15 seconds; "Go back", Escape, no answer, or
   closing the window all restore what was there before. The clock is the
   worker thread's, not the window's, so a window that cannot be seen or
-  has hung still gets its picture back. Only killing Settings outright in
-  those 15 seconds leaves the new mode in place.
+  has hung still gets its picture back, and it is looked at on every turn
+  of the worker's loop, so a compositor with a lot to say cannot put the
+  moment off. SIGTERM, SIGINT and SIGHUP restore it too, from a thread of
+  their own, before Settings exits; only SIGKILL in those 15 seconds
+  leaves the new mode in place. If the compositor says the outputs
+  changed while it was going back, Settings asks again a few times, and
+  if it still cannot go back it says so instead of claiming it did.
 - An output that lists no modes with a refresh rate, as in a virtual
   machine, takes any size and is offered a few common ones.
 - The brightness slider never goes below 5%.
@@ -188,8 +193,10 @@ given only until it exits; a kept mode is not written to a file yet).
 
 - The battery from `/sys/class/power_supply`: charge, state and time
   left, health (what it holds now against what it held new), draw, cycle
-  count and type. Read when the page opens and every 30 seconds while it
-  is showing, not otherwise.
+  count and type. Two batteries are one charge, worked out from the
+  energy in both, and each has a row for its own charge and health. Read
+  when the page opens and every 30 seconds while it is showing, not
+  otherwise.
 - When to switch the screen off and when to lock it, and whether to lock
   on sleep: `power.blank-after`, `power.lock-after`,
   `power.lock-on-sleep`. The session's start-up script reads them with
