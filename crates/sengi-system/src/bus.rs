@@ -41,6 +41,8 @@ pub enum Prop {
     Text(String),
     /// An object path.
     Path(String),
+    /// Any of the integer types, widened.
+    Int(i64),
     /// Anything else. Its value is not kept.
     Other,
 }
@@ -88,13 +90,35 @@ pub fn path<'a>(props: &'a Props, name: &str) -> Option<&'a str> {
     }
 }
 
+/// The whole number `name` holds, if it holds one.
+pub fn int(props: &Props, name: &str) -> Option<i64> {
+    match props.get(name)? {
+        Prop::Int(value) => Some(*value),
+        _ => None,
+    }
+}
+
 fn prop(value: &Value<'_>) -> Prop {
     match value {
         Value::Bool(value) => Prop::Bool(*value),
         Value::Str(value) => Prop::Text(value.as_str().to_string()),
         Value::ObjectPath(value) => Prop::Path(value.as_str().to_string()),
+        Value::U8(value) => Prop::Int(i64::from(*value)),
+        Value::I16(value) => Prop::Int(i64::from(*value)),
+        Value::U16(value) => Prop::Int(i64::from(*value)),
+        Value::I32(value) => Prop::Int(i64::from(*value)),
+        Value::U32(value) => Prop::Int(i64::from(*value)),
+        Value::I64(value) => Prop::Int(*value),
+        Value::U64(value) => i64::try_from(*value).map_or(Prop::Other, Prop::Int),
         _ => Prop::Other,
     }
+}
+
+fn converted(all: &HashMap<String, zbus::zvariant::OwnedValue>) -> Props {
+    all.iter()
+        .take(MAX_OBJECTS)
+        .map(|(key, value)| (key.clone(), prop(value)))
+        .collect()
 }
 
 /// What a service said when asked for its objects.
@@ -149,10 +173,21 @@ fn objects(managed: ManagedObjects, interfaces: &[&str]) -> Vec<Object> {
     keep(converted, interfaces)
 }
 
-/// Whether a call failed because the bus policy forbids it.
+/// Whether a call failed because the bus policy, or polkit behind the
+/// service, forbids it.
 pub fn denied(error: &zbus::Error) -> bool {
-    matches!(error, zbus::Error::FDO(inner) if matches!(**inner, zbus::fdo::Error::AccessDenied(_)))
-        || error_name(error) == Some("org.freedesktop.DBus.Error.AccessDenied")
+    matches!(error, zbus::Error::FDO(inner) if matches!(**inner,
+        zbus::fdo::Error::AccessDenied(_)
+        | zbus::fdo::Error::AuthFailed(_)
+        | zbus::fdo::Error::InteractiveAuthorizationRequired(_)))
+        || matches!(
+            error_name(error),
+            Some(
+                "org.freedesktop.DBus.Error.AccessDenied"
+                    | "org.freedesktop.DBus.Error.InteractiveAuthorizationRequired"
+                    | "org.freedesktop.PolicyKit1.Error.NotAuthorized"
+            )
+        )
 }
 
 /// The system bus connection, made on first use and shared by the
@@ -237,6 +272,46 @@ impl Bus {
             // claims to be. Either way there is nothing to show.
             Err(_) => Listing::Absent,
         }
+    }
+
+    /// Every property of one interface of one object. `None` when the
+    /// service is not running or will not say. Like every other call, this
+    /// does not start the service.
+    pub fn properties(&self, service: &str, path: &str, interface: &str) -> Option<Props> {
+        self.owner(service)?;
+        let all: HashMap<String, zbus::zvariant::OwnedValue> = self
+            .call(
+                service,
+                path,
+                "org.freedesktop.DBus.Properties",
+                "GetAll",
+                &(interface,),
+            )
+            .ok()?;
+        Some(converted(&all))
+    }
+
+    /// As [`Bus::properties`], for a service that is meant to be started
+    /// by being asked: timedated is not kept running, it is brought up
+    /// for each question and leaves again. The one exception to the rule
+    /// that nothing here starts a service; never to be used for iwd or
+    /// BlueZ.
+    pub fn properties_of_helper(
+        &self,
+        service: &str,
+        path: &str,
+        interface: &str,
+    ) -> Option<Props> {
+        let proxy = Proxy::new(
+            self.connection()?,
+            service.to_string(),
+            path.to_string(),
+            "org.freedesktop.DBus.Properties",
+        )
+        .ok()?;
+        let all: HashMap<String, zbus::zvariant::OwnedValue> =
+            proxy.call("GetAll", &(interface,)).ok()?;
+        Some(converted(&all))
     }
 
     /// Sets a boolean property through `org.freedesktop.DBus.Properties`.
@@ -377,7 +452,10 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+/// Builders of made-up bus objects, for tests here and, with the
+/// `testing` feature, in the programs that read objects through this
+/// crate.
+#[cfg(any(test, feature = "testing"))]
 pub mod testing {
     use super::*;
 
@@ -401,5 +479,12 @@ pub mod testing {
 
     pub fn path(value: &str) -> Prop {
         Prop::Path(value.to_string())
+    }
+
+    /// `base` with the interfaces of `extra` added: one object that has
+    /// several.
+    pub fn merged(mut base: Object, extra: Object) -> Object {
+        base.interfaces.extend(extra.interfaces);
+        base
     }
 }
