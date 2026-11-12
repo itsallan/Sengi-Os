@@ -10,7 +10,8 @@ use super::{
     Answer, Bluetooth, BluetoothService, Command, Device, Event, Model, Pairing, Prompt, Question,
 };
 use crate::app::{self, item, App, Controller};
-use crate::network::{Block, Refusal};
+use crate::held::Row;
+use crate::network::{Block, Refusal, Words};
 use crate::secret::Secret;
 use crate::text;
 use crate::ui::{BluetoothData, DialogSpec, Item};
@@ -343,7 +344,7 @@ impl BluetoothPage {
             Pairing::Running { id, .. } => Some(id.as_str()),
             _ => None,
         };
-        let row = |device: &Device| -> Item {
+        let row = |device: &Row<Device>| -> Item {
             let connecting = model.is_connecting(&device.id);
             let pairing = pairing_with == Some(device.id.as_str());
             let busy = connecting || pairing;
@@ -354,7 +355,7 @@ impl BluetoothPage {
                 (_, false, _) => "",
             };
             Item {
-                icon: device.kind.icon().into(),
+                icon: super::icon(device.kind).into(),
                 action: match (busy || device.gone, device.paired, device.connected) {
                     (true, _, _) => "",
                     (_, false, _) => "Pair",

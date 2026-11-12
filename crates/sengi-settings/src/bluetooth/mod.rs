@@ -1,86 +1,36 @@
 //! The Bluetooth page's rules: which devices are listed where, and the
 //! steps of pairing one, including the questions BlueZ asks on the way.
-//! Nothing here talks to BlueZ; `bluez` does, and `page` puts it in the
-//! window.
+//! Nothing here talks to BlueZ; sengi-system's `pairing` does, with the
+//! agent, and `page` puts it in the window.
 
 pub mod bluez;
 pub mod page;
 
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::{Arc, Condvar, Mutex};
-use std::task::{Context, Poll, Waker};
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use crate::network::{Block, Refusal};
-use crate::secret::Secret;
-use crate::worker::{self, Handle, Inbox, Next, Notify};
+pub use sengi_system::pairing::{
+    arrange, Adapter as Bluetooth, Answer, Device, Kind, PairError, Prompt, Prompter, Question,
+    Reply, MAX_DEVICES,
+};
 
-/// How many devices a list holds. A train carriage has hundreds in range.
-pub const MAX_DEVICES: usize = 32;
+use crate::held::Row;
+use crate::network::{Block, Refusal, Words};
+use crate::worker::{self, Handle, Inbox, Notify, Waited};
+
 /// A search for devices stops by itself after this long. It keeps the
 /// radio busy, and nobody watches the list for longer.
 pub const SEARCH_TIME: Duration = Duration::from_secs(30);
 
-/// What kind of thing a device says it is, for its icon.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
-    Audio,
-    Keyboard,
-    Mouse,
-    Computer,
-    Other,
-}
-
-impl Kind {
-    /// From BlueZ's `Icon` property, which is a freedesktop icon name.
-    pub fn from_icon(icon: &str) -> Kind {
-        match icon {
-            name if name.starts_with("audio-") => Kind::Audio,
-            "input-keyboard" => Kind::Keyboard,
-            "input-mouse" | "input-tablet" => Kind::Mouse,
-            "computer" => Kind::Computer,
-            _ => Kind::Other,
-        }
+/// The name of the icon for a kind of device.
+pub fn icon(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Audio => "headphones",
+        Kind::Keyboard => "keyboard",
+        Kind::Mouse => "mouse",
+        Kind::Computer => "display",
+        Kind::Other => "bluetooth",
     }
-
-    pub fn icon(self) -> &'static str {
-        match self {
-            Kind::Audio => "headphones",
-            Kind::Keyboard => "keyboard",
-            Kind::Mouse => "mouse",
-            Kind::Computer => "display",
-            Kind::Other => "bluetooth",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Device {
-    /// Opaque to everything but the service: BlueZ's object path.
-    pub id: String,
-    /// Already cleaned for display.
-    pub name: String,
-    pub kind: Kind,
-    pub paired: bool,
-    pub connected: bool,
-    /// No longer there, kept in a held list so rows do not move.
-    pub gone: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Bluetooth {
-    /// BlueZ is not running or has no adapter.
-    Absent,
-    /// BlueZ is running and the bus policy keeps this user out.
-    Denied,
-    Off,
-    On {
-        /// The adapter is looking for devices.
-        searching: bool,
-        /// Paired ones first, by name; then the others, by name.
-        devices: Vec<Device>,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,32 +41,8 @@ pub struct Reading {
     pub block: Block,
 }
 
-/// Paired devices first, each group by name, bounded.
-pub fn arrange(mut devices: Vec<Device>) -> Vec<Device> {
-    devices.sort_by(|a, b| (!a.paired, &a.name, &a.id).cmp(&(!b.paired, &b.name, &b.id)));
-    // The paired ones are the user's own and are never cut; what is cut
-    // is the crowd of strangers.
-    let paired = devices.iter().filter(|device| device.paired).count();
-    devices.truncate(paired + MAX_DEVICES);
-    devices
-}
-
-/// Why pairing failed, in BlueZ's terms.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PairError {
-    /// The PIN or passkey did not match, or the device said no.
-    AuthenticationFailed,
-    /// Called off, here or on the device.
-    Canceled,
-    Timeout,
-    /// The device could not be reached.
-    Unreachable,
-    Denied,
-    Unavailable,
-}
-
-impl PairError {
-    pub fn words(self) -> &'static str {
+impl Words for PairError {
+    fn words(self) -> &'static str {
         match self {
             PairError::AuthenticationFailed => {
                 "The PIN or passkey did not match, or the device refused."
@@ -128,142 +54,11 @@ impl PairError {
                  and in pairing mode."
             }
             PairError::Denied => "You are not allowed to pair Bluetooth devices.",
-            PairError::Unavailable => "The Bluetooth service is not answering.",
+            // Unavailable, and any reason added later.
+            _ => "The Bluetooth service is not answering.",
         }
     }
 }
-
-/// What BlueZ wants from the user in the middle of pairing.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Question {
-    /// Both sides show a number; the user says whether they match.
-    ConfirmPasskey(u32),
-    /// The device has a fixed PIN, or shows one, to be typed here.
-    EnterPin,
-    /// A number to be typed here.
-    EnterPasskey,
-    /// A PIN to be typed on the device.
-    ShowPin(String),
-    /// A number to be typed on the device.
-    ShowPasskey(u32),
-    /// Nothing to compare; just whether to go ahead.
-    Authorize,
-}
-
-impl Question {
-    /// Whether BlueZ is waiting for an answer, or only wants it shown.
-    pub fn wants_answer(&self) -> bool {
-        !matches!(self, Question::ShowPin(_) | Question::ShowPasskey(_))
-    }
-}
-
-pub enum Answer {
-    Yes,
-    No,
-    /// A PIN, or a passkey as its digits.
-    Typed(Secret),
-    /// The question was withdrawn.
-    Cancelled,
-}
-
-impl std::fmt::Debug for Answer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Answer::Yes => "Yes",
-            Answer::No => "No",
-            Answer::Typed(_) => "Typed(..)",
-            Answer::Cancelled => "Cancelled",
-        })
-    }
-}
-
-#[derive(Default)]
-struct Waiting {
-    answer: Option<Answer>,
-    waker: Option<Waker>,
-}
-
-/// Where the answer to one question is left. Whoever asked waits on it,
-/// asleep, either as a future or on a thread; the page answers once.
-#[derive(Clone, Default)]
-pub struct Reply {
-    shared: Arc<(Mutex<Waiting>, Condvar)>,
-}
-
-impl Reply {
-    pub fn new() -> Reply {
-        Reply::default()
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, Waiting> {
-        self.shared.0.lock().unwrap_or_else(|p| p.into_inner())
-    }
-
-    /// Give the answer. Only the first one counts.
-    pub fn answer(&self, answer: Answer) {
-        let mut waiting = self.lock();
-        if waiting.answer.is_none() {
-            waiting.answer = Some(answer);
-        }
-        if let Some(waker) = waiting.waker.take() {
-            waker.wake();
-        }
-        self.shared.1.notify_all();
-    }
-
-    /// Wait for the answer without blocking the thread.
-    pub fn wait(&self) -> impl Future<Output = Answer> + Send {
-        struct Wait(Reply);
-        impl Future for Wait {
-            type Output = Answer;
-            fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Answer> {
-                let mut waiting = self.0.lock();
-                match waiting.answer.take() {
-                    Some(answer) => Poll::Ready(answer),
-                    None => {
-                        waiting.waker = Some(context.waker().clone());
-                        Poll::Pending
-                    }
-                }
-            }
-        }
-        Wait(self.clone())
-    }
-
-    /// Wait for the answer on this thread, for at most `limit`.
-    pub fn wait_blocking(&self, limit: Duration) -> Answer {
-        let mut waiting = self.lock();
-        let deadline = std::time::Instant::now() + limit;
-        loop {
-            if let Some(answer) = waiting.answer.take() {
-                return answer;
-            }
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
-            if left.is_zero() {
-                return Answer::Cancelled;
-            }
-            waiting = self
-                .shared
-                .1
-                .wait_timeout(waiting, left)
-                .unwrap_or_else(|p| p.into_inner())
-                .0;
-        }
-    }
-}
-
-/// A question on its way to the page.
-#[derive(Clone)]
-pub struct Prompt {
-    /// The device it is about.
-    pub device: String,
-    pub question: Question,
-    pub reply: Reply,
-}
-
-/// Called by the service, from any thread, when BlueZ asks something.
-/// `None` withdraws whatever was being asked.
-pub type Prompter = Arc<dyn Fn(Option<Prompt>) + Send + Sync>;
 
 pub trait BluetoothService: Send + Sync + 'static {
     fn read(&self) -> Reading;
@@ -288,8 +83,6 @@ pub trait BluetoothService: Send + Sync + 'static {
 pub enum Command {
     Power(bool),
     Search(bool),
-    /// The search started as number `0` has run its time.
-    SearchOver(u64),
     Pair(String),
     CancelPairing(String),
     Connect(String),
@@ -322,6 +115,7 @@ pub fn run(
     service: Arc<dyn BluetoothService>,
     handle: Handle<Command>,
     mut inbox: Inbox<Command>,
+    search_time: Duration,
     emit: impl Fn(Event) + Send + Sync + 'static,
 ) {
     let emit = Arc::new(emit);
@@ -331,8 +125,20 @@ pub fn run(
         Arc::new(move |prompt| emit(Event::Prompt(prompt)))
     });
     emit(Event::Reading(service.read()));
-    let mut searches = 0u64;
-    while let Some(next) = inbox.wait() {
+    // When the search under way has run its time.
+    let mut search_ends: Option<Instant> = None;
+    loop {
+        let next = match inbox.wait_until(search_ends) {
+            Waited::Command(command) => Some(command),
+            Waited::Refresh => None,
+            Waited::TimedOut => {
+                search_ends = None;
+                service.search(false);
+                emit(Event::Reading(service.read()));
+                continue;
+            }
+            Waited::Stopped => break,
+        };
         let refused = |what: &'static str, result: Result<(), Refusal>| {
             if let Err(refusal) = result {
                 emit(Event::Refused { what, refusal });
@@ -351,30 +157,16 @@ pub fn run(
             }
         };
         match next {
-            Next::Refresh => {}
-            Next::Command(Command::Power(on)) => {
+            None => {}
+            Some(Command::Power(on)) => {
                 refused("switch Bluetooth", service.set_powered(on));
             }
-            Next::Command(Command::Search(on)) => {
-                searches += 1;
+            Some(Command::Search(on)) => {
                 service.search(on);
-                if on {
-                    let (handle, number) = (handle.clone(), searches);
-                    let _ = std::thread::Builder::new()
-                        .name("settings-search".to_string())
-                        .spawn(move || {
-                            std::thread::sleep(SEARCH_TIME);
-                            handle.send(Command::SearchOver(number));
-                        });
-                }
+                // Started again, the clock starts again.
+                search_ends = on.then(|| Instant::now() + search_time);
             }
-            Next::Command(Command::SearchOver(number)) => {
-                // A search stopped and started again since is not this one.
-                if number == searches {
-                    service.search(false);
-                }
-            }
-            Next::Command(Command::Pair(id)) => {
+            Some(Command::Pair(id)) => {
                 let service = service.clone();
                 background(
                     "pair",
@@ -384,8 +176,8 @@ pub fn run(
                     }),
                 );
             }
-            Next::Command(Command::CancelPairing(id)) => service.cancel_pairing(&id),
-            Next::Command(Command::Connect(id)) => {
+            Some(Command::CancelPairing(id)) => service.cancel_pairing(&id),
+            Some(Command::Connect(id)) => {
                 let service = service.clone();
                 background(
                     "connect",
@@ -395,10 +187,10 @@ pub fn run(
                     }),
                 );
             }
-            Next::Command(Command::Disconnect(id)) => {
+            Some(Command::Disconnect(id)) => {
                 refused("disconnect the device", service.disconnect(&id));
             }
-            Next::Command(Command::Remove(id)) => {
+            Some(Command::Remove(id)) => {
                 refused("remove the device", service.remove(&id));
             }
         }
@@ -413,7 +205,7 @@ pub fn start(
     emit: impl Fn(Event) + Send + Sync + 'static,
 ) -> Handle<Command> {
     worker::spawn("bluetooth", move |handle, inbox| {
-        run(service, handle, inbox, emit)
+        run(service, handle, inbox, SEARCH_TIME, emit)
     })
 }
 
@@ -438,8 +230,8 @@ pub enum Pairing {
 pub struct Model {
     reading: Option<Reading>,
     /// The two lists as shown, which while held keep their rows in place.
-    mine: Vec<Device>,
-    nearby: Vec<Device>,
+    mine: Vec<Row<Device>>,
+    nearby: Vec<Row<Device>>,
     pub pairing: Pairing,
     /// Devices a connection is being made to.
     connecting: Vec<String>,
@@ -482,9 +274,11 @@ impl Model {
         if !on {
             self.connecting.clear();
         }
-        let (mine, nearby): (Vec<Device>, Vec<Device>) =
-            devices.into_iter().partition(|device| device.paired);
-        let merge = |shown: &[Device], fresh: Vec<Device>, held: bool| {
+        let (mine, nearby): (Vec<Row<Device>>, Vec<Row<Device>>) = devices
+            .into_iter()
+            .map(Row::new)
+            .partition(|device| device.paired);
+        let merge = |shown: &[Row<Device>], fresh: Vec<Row<Device>>, held: bool| {
             crate::held::merge(
                 shown,
                 fresh,
@@ -505,15 +299,15 @@ impl Model {
         }
     }
 
-    pub fn mine(&self) -> &[Device] {
+    pub fn mine(&self) -> &[Row<Device>] {
         &self.mine
     }
 
-    pub fn nearby(&self) -> &[Device] {
+    pub fn nearby(&self) -> &[Row<Device>] {
         &self.nearby
     }
 
-    pub fn find(&self, id: &str) -> Option<&Device> {
+    pub fn find(&self, id: &str) -> Option<&Row<Device>> {
         self.mine
             .iter()
             .chain(&self.nearby)
@@ -662,6 +456,7 @@ impl Model {
 #[cfg(any(test, debug_assertions))]
 pub mod testing {
     use super::*;
+    use std::sync::Mutex;
 
     pub fn device(id: &str, name: &str, kind: Kind, paired: bool, connected: bool) -> Device {
         Device {
@@ -670,7 +465,6 @@ pub mod testing {
             kind,
             paired,
             connected,
-            gone: false,
         }
     }
 
@@ -855,7 +649,8 @@ pub mod testing {
 mod tests {
     use super::testing::*;
     use super::*;
-    use std::sync::mpsc;
+    use crate::secret::Secret;
+    use std::sync::{mpsc, Mutex};
 
     fn sample() -> Vec<Device> {
         vec![
@@ -902,7 +697,7 @@ mod tests {
     #[test]
     fn paired_devices_and_nearby_ones_are_listed_apart_by_name() {
         let model = model();
-        let names = |devices: &[Device]| -> Vec<String> {
+        let names = |devices: &[Row<Device>]| -> Vec<String> {
             devices.iter().map(|d| d.name.clone()).collect()
         };
         assert_eq!(names(model.mine()), ["Keyboard K3", "Trail headphones"]);
@@ -910,41 +705,10 @@ mod tests {
     }
 
     #[test]
-    fn a_crowd_of_strangers_is_cut_and_paired_devices_never_are() {
-        let mut many: Vec<Device> = (0..200)
-            .map(|i| {
-                device(
-                    &format!("/s/{i:03}"),
-                    &format!("Stranger {i:03}"),
-                    Kind::Other,
-                    false,
-                    false,
-                )
-            })
-            .collect();
-        for i in 0..40 {
-            many.push(device(
-                &format!("/p/{i}"),
-                &format!("Mine {i:02}"),
-                Kind::Other,
-                true,
-                false,
-            ));
-        }
-        let arranged = arrange(many);
-        assert_eq!(arranged.iter().filter(|d| d.paired).count(), 40);
-        assert_eq!(arranged.len(), 40 + MAX_DEVICES);
-    }
-
-    #[test]
     fn icons_by_kind() {
-        assert_eq!(Kind::from_icon("audio-headset"), Kind::Audio);
-        assert_eq!(Kind::from_icon("audio-card"), Kind::Audio);
-        assert_eq!(Kind::from_icon("input-keyboard"), Kind::Keyboard);
-        assert_eq!(Kind::from_icon("input-mouse"), Kind::Mouse);
-        assert_eq!(Kind::from_icon("phone"), Kind::Other);
-        assert_eq!(Kind::from_icon(""), Kind::Other);
-        assert_eq!(Kind::Audio.icon(), "headphones");
+        assert_eq!(icon(Kind::from_icon("audio-headset")), "headphones");
+        assert_eq!(icon(Kind::from_icon("input-keyboard")), "keyboard");
+        assert_eq!(icon(Kind::from_icon("phone")), "bluetooth");
     }
 
     #[test]
@@ -1079,26 +843,6 @@ mod tests {
     }
 
     #[test]
-    fn a_reply_is_given_once_and_can_be_awaited() {
-        let reply = Reply::new();
-        reply.answer(Answer::Yes);
-        reply.answer(Answer::No);
-        assert!(matches!(answered(&reply), Answer::Yes));
-        // Nothing left, and nobody answering: it gives up.
-        assert!(matches!(answered(&reply), Answer::Cancelled));
-
-        // As a future, woken from another thread.
-        let reply = Reply::new();
-        let waiter = std::thread::spawn({
-            let reply = reply.clone();
-            move || zbus::block_on(reply.wait())
-        });
-        std::thread::sleep(Duration::from_millis(20));
-        reply.answer(Answer::Typed(Secret::new("0000".to_string())));
-        assert!(matches!(waiter.join().unwrap(), Answer::Typed(pin) if pin.expose() == "0000"));
-    }
-
-    #[test]
     fn held_lists_keep_their_rows() {
         let mut model = model();
         let mut next = sample();
@@ -1131,6 +875,9 @@ mod tests {
 
     type Events = mpsc::Receiver<Event>;
 
+    /// How long a search lasts in these tests.
+    const SEARCH: Duration = Duration::from_millis(300);
+
     fn worker(fake: &Arc<Fake>) -> (Handle<Command>, Events, std::thread::JoinHandle<()>) {
         let (tx, rx) = mpsc::channel();
         let tx = Mutex::new(tx);
@@ -1138,7 +885,7 @@ mod tests {
         let thread = std::thread::spawn({
             let (service, handle) = (fake.clone(), handle.clone());
             move || {
-                run(service, handle, inbox, move |event| {
+                run(service, handle, inbox, SEARCH, move |event| {
                     let _ = tx.lock().unwrap().send(event);
                 })
             }
@@ -1232,9 +979,6 @@ mod tests {
             }) if devices.iter().any(|d| d.id == "/d/new") => Some(()),
             _ => None,
         });
-        // A search that was stopped and started again is not ended by the
-        // first one's clock.
-        handle.send(Command::SearchOver(0));
         handle.send(Command::Search(false));
         fake.lock().deny = true;
         handle.send(Command::Power(false));
@@ -1247,5 +991,48 @@ mod tests {
         handle.stop();
         thread.join().unwrap();
         assert_eq!(fake.log(), ["search true", "search false", "search false"]);
+    }
+
+    #[test]
+    fn a_search_ends_by_itself_and_starting_again_restarts_its_one_clock() {
+        let fake = Fake::with(sample());
+        let (handle, rx, thread) = worker(&fake);
+        let searching = |wanted: bool| {
+            move |event| match event {
+                Event::Reading(Reading {
+                    bluetooth: Bluetooth::On { searching, .. },
+                    ..
+                }) if searching == wanted => Some(Instant::now()),
+                _ => None,
+            }
+        };
+        handle.send(Command::Search(true));
+        until(&rx, searching(true));
+        // Pressed again most of the way through: the time starts over,
+        // and nothing is left behind to end this search early.
+        std::thread::sleep(SEARCH * 2 / 3);
+        let restarted = Instant::now();
+        handle.send(Command::Search(true));
+        let ended = until(&rx, searching(false));
+        assert!(ended.duration_since(restarted) >= SEARCH, "ended early");
+        // One clock: once it has run out nothing else stops a search.
+        handle.send(Command::Search(true));
+        until(&rx, searching(true));
+        handle.send(Command::Search(false));
+        until(&rx, searching(false));
+        std::thread::sleep(SEARCH * 2);
+        handle.stop();
+        thread.join().unwrap();
+        assert_eq!(
+            fake.log(),
+            [
+                "search true",
+                "search true",
+                "search false",
+                "search true",
+                "search false",
+                "search false"
+            ]
+        );
     }
 }

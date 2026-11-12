@@ -1,20 +1,20 @@
 //! Bluetooth through BlueZ on the system bus: the adapter's power switch
 //! and the names of the devices connected to it.
 //!
-//! Pairing is not done here. It needs an `org.bluez.Agent1` for PIN and
-//! passkey confirmation and a discovery list; when the panel grows a
-//! "Pair a device" row, the discovery and agent code belongs in this file.
+//! The devices one by one, searching and pairing are in
+//! [`pairing`](crate::pairing), for a program that asks for them with the
+//! `settings` feature.
 
 use std::sync::Arc;
 
 use crate::bluetooth::{Bluetooth, MAX_DEVICES};
 use crate::bus::{self, Bus, Listing, Object};
 use crate::names;
-use crate::services::{BluetoothService, Notify};
+use crate::services::{BluetoothService, Notify, Refusal};
 
-const SERVICE: &str = "org.bluez";
-const ADAPTER: &str = "org.bluez.Adapter1";
-const DEVICE: &str = "org.bluez.Device1";
+pub(crate) const SERVICE: &str = "org.bluez";
+pub(crate) const ADAPTER: &str = "org.bluez.Adapter1";
+pub(crate) const DEVICE: &str = "org.bluez.Device1";
 
 /// The first adapter's path and whether it is powered.
 pub fn adapter(objects: &[Object]) -> Option<(&str, bool)> {
@@ -56,13 +56,20 @@ pub fn reading(objects: &[Object]) -> Bluetooth {
 
 /// Bluetooth through BlueZ on the system bus.
 pub struct Bluez {
-    bus: Arc<Bus>,
+    pub(crate) bus: Arc<Bus>,
+    /// The pairing under way and where its questions go.
+    #[cfg(feature = "settings")]
+    pub(crate) desk: crate::pairing::Shared,
 }
 
 impl Bluez {
     /// A service over `bus`. Nothing is called until it is first used.
     pub fn new(bus: Arc<Bus>) -> Bluez {
-        Bluez { bus }
+        Bluez {
+            bus,
+            #[cfg(feature = "settings")]
+            desk: Default::default(),
+        }
     }
 }
 
@@ -76,17 +83,23 @@ impl BluetoothService for Bluez {
     }
 
     fn set_powered(&self, on: bool) {
+        // Said on standard error by `try_set_powered`. The tile then
+        // shows it still off.
+        let _ = self.try_set_powered(on);
+    }
+
+    fn try_set_powered(&self, on: bool) -> Result<(), Refusal> {
         let Listing::Objects(objects) = self.bus.objects(SERVICE, &[ADAPTER]) else {
-            return;
+            return Err(Refusal::Failed);
         };
-        let Some((path, _)) = adapter(&objects) else {
-            return;
-        };
-        // Fails when the radio is blocked by a hardware switch or rfkill;
-        // the tile then shows it still off.
-        if let Err(error) = self.bus.set_flag(SERVICE, path, ADAPTER, "Powered", on) {
-            eprintln!("{}: switching Bluetooth: {error}", crate::program_name());
-        }
+        let (path, _) = adapter(&objects).ok_or(Refusal::Failed)?;
+        // Fails when the radio is blocked by a hardware switch or rfkill.
+        self.bus
+            .set_flag(SERVICE, path, ADAPTER, "Powered", on)
+            .map_err(|error| {
+                eprintln!("{}: switching Bluetooth: {error}", crate::program_name());
+                Refusal::of(&error)
+            })
     }
 
     fn watch(&self, changed: Notify) {
