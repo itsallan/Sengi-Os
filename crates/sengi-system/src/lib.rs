@@ -22,11 +22,14 @@
 //! With the `settings` feature comes what a settings application needs
 //! on top of that and the panel does not: leaving and forgetting
 //! networks, the cabled interfaces and addresses ([`links`]), and the
-//! Bluetooth devices one by one with the agent for pairing ([`pairing`]).
+//! Bluetooth devices one by one with the agent for pairing ([`pairing`]),
+//! and the audio devices one by one ([`audio`]).
 //!
 //! Nothing here starts a service that is not running: every call on the
 //! system bus carries the no-auto-start flag.
 
+#[cfg(feature = "settings")]
+pub mod audio;
 #[cfg(feature = "bus")]
 pub mod connect;
 pub mod instance;

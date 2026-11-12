@@ -8,12 +8,12 @@ use crate::bluetooth::{self, BluetoothService};
 use crate::bus::Bus;
 use crate::display::{self, DisplayService};
 use crate::network::{self, NetworkService};
-use crate::sound::{self, AudioService};
+use crate::sound::{self, AudioDevices};
 
 pub struct Services {
     pub network: Arc<dyn NetworkService>,
     pub bluetooth: Arc<dyn BluetoothService>,
-    pub sound: Arc<dyn AudioService>,
+    pub sound: Arc<dyn AudioDevices>,
     pub display: Arc<dyn DisplayService>,
     /// For the pages that only read a few properties off the bus.
     pub bus: Arc<Bus>,
@@ -48,7 +48,7 @@ pub fn real() -> Services {
         display: Arc::new(display::wlr::Wlr::new(bus.clone(), class.clone())),
         bus,
         class,
-        sound: Arc::new(sound::wpctl::Wpctl::default()),
+        sound: Arc::new(sengi_system::audio::Pipewire::default()),
     }
 }
 

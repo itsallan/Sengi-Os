@@ -5,11 +5,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::commands;
-use crate::services::{AudioService, DndService};
+use crate::services::{AudioService, DndService, Refusal};
 use crate::volume::{self, Volume};
 
 /// Run to the end and return what it printed, if it succeeded.
-fn output(program: &str, args: &[&str]) -> Option<String> {
+pub(crate) fn output(program: &str, args: &[&str]) -> Option<String> {
     let output = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
@@ -31,16 +31,29 @@ impl AudioService for Wpctl {
     }
 
     fn set_volume(&self, percent: u32) {
-        let args = volume::set_volume_args(percent);
-        let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        output(commands::WPCTL, &args);
+        let _ = self.try_set_volume(percent);
     }
 
     fn set_muted(&self, muted: bool) {
+        let _ = self.try_set_muted(muted);
+    }
+
+    fn try_set_volume(&self, percent: u32) -> Result<(), Refusal> {
+        let args = volume::set_volume_args(percent);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        done(output(commands::WPCTL, &args))
+    }
+
+    fn try_set_muted(&self, muted: bool) -> Result<(), Refusal> {
         let args = volume::set_mute_args(muted);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        output(commands::WPCTL, &args);
+        done(output(commands::WPCTL, &args))
     }
+}
+
+/// A command run for what it does, not for what it prints.
+fn done(output: Option<String>) -> Result<(), Refusal> {
+    output.map(|_| ()).ok_or(Refusal::Failed)
 }
 
 /// Where `program` is on a `PATH`-style list of directories.
@@ -97,12 +110,16 @@ impl DndService for Notify {
     }
 
     fn set(&self, on: bool) {
+        let _ = self.try_set(on);
+    }
+
+    fn try_set(&self, on: bool) -> Result<(), Refusal> {
         let state = if on {
             commands::DND_ON
         } else {
             commands::DND_OFF
         };
-        output(commands::NOTIFY, &[commands::DND_FLAG, state]);
+        done(output(commands::NOTIFY, &[commands::DND_FLAG, state]))
     }
 }
 

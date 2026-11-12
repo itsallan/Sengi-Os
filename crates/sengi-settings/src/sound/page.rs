@@ -6,13 +6,13 @@ use std::sync::Arc;
 
 use slint::ComponentHandle;
 
-use super::{Audio, AudioService, Command, Latest, Node, Side, MAX_PERCENT};
+use super::{Audio, AudioDevices, Command, Latest, Node, Side, MAX_PERCENT};
 use crate::app::{self, App, Choice, Controller};
 use crate::ui::{SoundData, SoundSide};
 use crate::worker::Handle;
 
 pub struct SoundPage {
-    service: Arc<dyn AudioService>,
+    service: Arc<dyn AudioDevices>,
     worker: RefCell<Option<Handle<Command>>>,
     latest: Arc<Latest>,
     audio: RefCell<Option<Audio>>,
@@ -41,7 +41,7 @@ fn shown(nodes: &[Node]) -> SoundSide {
 }
 
 impl SoundPage {
-    pub fn attach(app: &Rc<App>, service: Arc<dyn AudioService>) -> Rc<SoundPage> {
+    pub fn attach(app: &Rc<App>, service: Arc<dyn AudioDevices>) -> Rc<SoundPage> {
         let page = Rc::new(SoundPage {
             service,
             worker: RefCell::default(),

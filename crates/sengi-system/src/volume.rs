@@ -28,25 +28,36 @@ pub fn parse(output: &str) -> Option<Volume> {
     })
 }
 
-/// The arguments for `wpctl` that set the volume. `-l 1` holds it at 100%
-/// whatever is asked for.
-pub fn set_volume_args(percent: u32) -> [String; 5] {
+/// The arguments for `wpctl` that set the volume of `target`, which is a
+/// node's number or one of wpctl's names for a default. `-l 1` holds it at
+/// 100% whatever is asked for.
+pub fn volume_args(target: &str, percent: u32) -> [String; 5] {
     [
         "set-volume".to_string(),
         "-l".to_string(),
         "1".to_string(),
-        crate::commands::SINK.to_string(),
+        target.to_string(),
         format!("{}%", percent.min(MAX_PERCENT)),
     ]
 }
 
-/// The arguments for `wpctl` that mute or unmute the output.
-pub fn set_mute_args(muted: bool) -> [String; 3] {
+/// The arguments for `wpctl` that mute or unmute `target`.
+pub fn mute_args(target: &str, muted: bool) -> [String; 3] {
     [
         "set-mute".to_string(),
-        crate::commands::SINK.to_string(),
+        target.to_string(),
         if muted { "1" } else { "0" }.to_string(),
     ]
+}
+
+/// The arguments for `wpctl` that set the default output's volume.
+pub fn set_volume_args(percent: u32) -> [String; 5] {
+    volume_args(crate::commands::SINK, percent)
+}
+
+/// The arguments for `wpctl` that mute or unmute the default output.
+pub fn set_mute_args(muted: bool) -> [String; 3] {
+    mute_args(crate::commands::SINK, muted)
 }
 
 /// A change asked for by a slider, numbered so its echo can be told from
@@ -132,6 +143,16 @@ mod tests {
         assert_eq!(set_volume_args(40)[3], "@DEFAULT_AUDIO_SINK@");
         assert_eq!(set_mute_args(true)[2], "1");
         assert_eq!(set_mute_args(false)[2], "0");
+    }
+
+    #[test]
+    fn a_node_is_addressed_by_its_number() {
+        assert_eq!(
+            volume_args("46", 40),
+            ["set-volume", "-l", "1", "46", "40%"]
+        );
+        assert_eq!(volume_args("46", 400)[4], "100%");
+        assert_eq!(mute_args("46", true), ["set-mute", "46", "1"]);
     }
 
     fn steps(values: &[u32]) -> Vec<Step> {

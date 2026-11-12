@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::bus::Bus;
-use crate::services::{Block, Hardware, Machine};
+use crate::services::{Block, Hardware, Machine, Refusal};
 use crate::{backlight, battery};
 
 const LOGIND: &str = "org.freedesktop.login1";
@@ -183,6 +183,11 @@ impl Machine for Sysfs {
     }
 
     fn set_backlight(&self, name: &str, raw: u32) {
+        // Said on standard error by `try_set_backlight`.
+        let _ = self.try_set_backlight(name, raw);
+    }
+
+    fn try_set_backlight(&self, name: &str, raw: u32) -> Result<(), Refusal> {
         let result: zbus::Result<()> = self.bus.call(
             LOGIND,
             SESSION_PATH,
@@ -190,9 +195,10 @@ impl Machine for Sysfs {
             "SetBrightness",
             &("backlight", name, raw),
         );
-        if let Err(error) = result {
+        result.map_err(|error| {
             eprintln!("{}: setting the brightness: {error}", crate::program_name());
-        }
+            Refusal::of(&error)
+        })
     }
 }
 
