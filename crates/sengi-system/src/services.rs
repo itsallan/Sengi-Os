@@ -22,6 +22,26 @@ use crate::wifi::{JoinError, Request, Wifi};
 /// Called by a service, from any thread, when a later read could differ.
 pub type Notify = Box<dyn Fn() + Send + Sync>;
 
+/// A request a service turned down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal {
+    /// The bus policy, or polkit behind the service, does not allow it.
+    Denied,
+    /// It could not be done, or there was nobody to ask.
+    Failed,
+}
+
+impl Refusal {
+    /// What a failed call on the bus comes to.
+    pub fn of(error: &zbus::Error) -> Refusal {
+        if crate::bus::denied(error) {
+            Refusal::Denied
+        } else {
+            Refusal::Failed
+        }
+    }
+}
+
 /// Wi-Fi: reading its state, switching the radio, scanning and joining a
 /// network.
 pub trait WifiService: Send + Sync + 'static {
@@ -30,11 +50,31 @@ pub trait WifiService: Send + Sync + 'static {
     fn read(&self) -> Wifi;
     /// Switch the radio on or off. The change shows in a later `read`.
     fn set_powered(&self, on: bool);
+    /// As `set_powered`, for a caller that can show why it did not work.
+    fn try_set_powered(&self, on: bool) -> Result<(), Refusal> {
+        self.set_powered(on);
+        Ok(())
+    }
     /// Ask for a fresh look at what is in range. Returns at once.
     fn scan(&self);
     /// Returns when the network is joined or the attempt has failed, which
     /// can take half a minute. `read` and the rest stay usable meanwhile.
     fn join(&self, request: Request) -> Result<(), JoinError>;
+    /// Leave the connected network, or call off a join under way. A
+    /// service that only joins refuses.
+    fn disconnect(&self) -> Result<(), Refusal> {
+        Err(Refusal::Failed)
+    }
+    /// Have the service drop what it stored about the network `id`. A
+    /// service that only joins refuses.
+    fn forget(&self, _id: &str) -> Result<(), Refusal> {
+        Err(Refusal::Failed)
+    }
+    /// The kernel's name for the device the last `read` was about, such
+    /// as `wlan0`, if the service knows it.
+    fn interface(&self) -> Option<String> {
+        None
+    }
     /// Arrange for `changed` to be called whenever a later `read` could
     /// differ.
     fn watch(&self, changed: Notify);
@@ -48,6 +88,11 @@ pub trait BluetoothService: Send + Sync + 'static {
     fn read(&self) -> Bluetooth;
     /// Switch the adapter on or off. The change shows in a later `read`.
     fn set_powered(&self, on: bool);
+    /// As `set_powered`, for a caller that can show why it did not work.
+    fn try_set_powered(&self, on: bool) -> Result<(), Refusal> {
+        self.set_powered(on);
+        Ok(())
+    }
     /// Arrange for `changed` to be called whenever a later `read` could
     /// differ.
     fn watch(&self, changed: Notify);
@@ -61,6 +106,16 @@ pub trait AudioService: Send + 'static {
     fn set_volume(&self, percent: u32);
     /// Mute or unmute the output.
     fn set_muted(&self, muted: bool);
+    /// As `set_volume`, for a caller that can show that it did not work.
+    fn try_set_volume(&self, percent: u32) -> Result<(), Refusal> {
+        self.set_volume(percent);
+        Ok(())
+    }
+    /// As `set_muted`, for a caller that can show that it did not work.
+    fn try_set_muted(&self, muted: bool) -> Result<(), Refusal> {
+        self.set_muted(muted);
+        Ok(())
+    }
 }
 
 /// What the kernel says about the machine itself.
@@ -70,6 +125,11 @@ pub trait Machine: Send + 'static {
     /// Set the backlight called `name` to `raw`, in the device's own units:
     /// see [`Backlight::raw`].
     fn set_backlight(&self, name: &str, raw: u32);
+    /// As `set_backlight`, for a caller that can show why it did not work.
+    fn try_set_backlight(&self, name: &str, raw: u32) -> Result<(), Refusal> {
+        self.set_backlight(name, raw);
+        Ok(())
+    }
 }
 
 /// Do-not-disturb, which the notification service owns.
@@ -80,6 +140,11 @@ pub trait DndService: Send + 'static {
     fn read(&self) -> Option<bool>;
     /// Switch do-not-disturb on or off.
     fn set(&self, on: bool);
+    /// As `set`, for a caller that can show that it did not work.
+    fn try_set(&self, on: bool) -> Result<(), Refusal> {
+        self.set(on);
+        Ok(())
+    }
 }
 
 /// Whether the kernel's rfkill is holding a radio off.

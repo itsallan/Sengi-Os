@@ -132,6 +132,8 @@ pub enum JoinError {
     NotConfigured,
     /// iwd cannot join this kind of network.
     NotSupported,
+    /// The bus policy does not let this user join networks.
+    Denied,
     /// The service went away or would not take the request.
     Unavailable,
 }
@@ -177,9 +179,10 @@ pub struct Request {
 }
 
 /// Where the user is in joining a network.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Join {
     /// Nothing is being joined.
+    #[default]
     Idle,
     /// An open network nobody has joined before was picked. Anyone can
     /// put up an open network under any name, and everything sent over it

@@ -9,7 +9,7 @@ use slint::ComponentHandle;
 
 use super::{
     level, strength, Block, Command, Event, Join, Link, Model, NetworkService, Problem, Refusal,
-    Step, Wifi,
+    Step, Wifi, Words,
 };
 use crate::app::{self, item, App, Controller};
 use crate::secret::Secret;
@@ -188,7 +188,7 @@ impl NetworkPage {
                     },
                 );
             }
-            Join::Confirming { name, .. } => {
+            Join::Confirming { id, name } => {
                 self.asking.set(true);
                 let (confirm, cancel) = (Rc::downgrade(self), Rc::downgrade(self));
                 app.open_dialog(
@@ -209,7 +209,7 @@ impl NetworkPage {
                         let Some(page) = confirm.upgrade() else {
                             return;
                         };
-                        let request = page.model.borrow_mut().join.confirm();
+                        let request = page.model.borrow_mut().join.confirm(&id);
                         page.asking.set(false);
                         app.close_dialog();
                         if let Some(request) = request {
@@ -318,23 +318,23 @@ impl NetworkPage {
         };
         data.set_note(note.into());
         data.set_note_warning(warning);
-        data.set_available(matches!(reading.wifi, Wifi::Off | Wifi::On(_)));
+        data.set_available(matches!(reading.wifi, Wifi::Off | Wifi::On { .. }));
         data.set_powered(model.switch_on());
 
-        let station = model.station();
+        let link = model.link();
         let connected = model.connected();
-        data.set_scanning(station.is_some_and(|station| station.scanning));
+        data.set_scanning(model.scanning());
         data.set_status(
-            match (station, connected) {
+            match (link, connected) {
                 (None, _) => "Off",
                 (Some(_), Some(_)) => "Connected",
-                (Some(station), None) if station.link == Link::Connecting => "Connecting…",
+                (Some(Link::Connecting), None) => "Connecting…",
                 (Some(_), None) => "Not connected",
             }
             .into(),
         );
         data.set_connected(connected.is_some());
-        if let (Some(station), Some(network)) = (station, connected) {
+        if let Some(network) = connected {
             data.set_name(network.name.as_str().into());
             data.set_saved(network.known);
             data.set_signal(
@@ -346,10 +346,10 @@ impl NetworkPage {
                 .into(),
             );
             data.set_security(network.security.words().into());
-            data.set_address(if station.addresses.is_empty() {
+            data.set_address(if reading.addresses.is_empty() {
                 "Waiting for an address…".into()
             } else {
-                station.addresses.join(", ").into()
+                reading.addresses.join(", ").into()
             });
         }
 

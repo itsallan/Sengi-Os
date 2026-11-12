@@ -24,7 +24,7 @@ use super::{
     Question, Reading, Reply,
 };
 use crate::bus::{self, Bus, Listing, Object};
-use crate::network::{links, Refusal};
+use crate::network::Refusal;
 use crate::secret::Secret;
 use crate::text;
 use crate::worker::Notify;
@@ -452,7 +452,7 @@ impl BluetoothService for Bluez {
         Reading {
             bluetooth,
             hardware,
-            block: links::block(&self.class.join("rfkill"), "bluetooth"),
+            block: sengi_system::machine::block(&self.class.join("rfkill"), "bluetooth"),
         }
     }
 

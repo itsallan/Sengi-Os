@@ -30,33 +30,88 @@ struct Links {
     wifi: bool,
 }
 
+/// What kind of link an interface is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkKind {
+    /// Ethernet. A USB adapter or a tethered phone is Ethernet too, as
+    /// far as the kernel can tell, and is called wired.
+    Wired,
+    /// Wi-Fi.
+    Wifi,
+    /// Something else with hardware behind it, such as a mobile
+    /// broadband modem.
+    Other,
+}
+
+/// One network interface of the machine's own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Interface {
+    /// The kernel's name for it, as the directory is called.
+    pub name: String,
+    /// What kind of link it is.
+    pub kind: LinkKind,
+    /// The link is up: for a cable, that it is plugged in.
+    pub up: bool,
+}
+
+/// An interface name the kernel could have given: short and plain. Fit
+/// to be compared with what `getifaddrs` returns and to be shown.
+pub fn plain_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() < 16
+        && name != "."
+        && name != ".."
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':' | '@'))
+}
+
 /// What `/sys/class/net` says. Only interfaces with a device behind them
 /// count: bridges, tunnels and the like say nothing about the machine's
 /// own links, as in sengi-bar.
+pub fn interfaces(net: &Path) -> Vec<Interface> {
+    fs::read_dir(net)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .take(64)
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.join("device").exists() {
+                return None;
+            }
+            let file = |name: &str| fs::read_to_string(path.join(name)).unwrap_or_default();
+            let kind = if path.join("wireless").exists() || path.join("phy80211").exists() {
+                LinkKind::Wifi
+            } else if matches!(file("type").trim(), "" | ARPHRD_ETHER) {
+                LinkKind::Wired
+            } else {
+                LinkKind::Other
+            };
+            Some(Interface {
+                name: entry.file_name().to_string_lossy().into_owned(),
+                kind,
+                up: file("operstate").trim() == "up",
+            })
+        })
+        .collect()
+}
+
 fn links(net: &Path) -> Links {
     let mut links = Links::default();
-    for entry in fs::read_dir(net).into_iter().flatten().flatten().take(64) {
-        let path = entry.path();
-        if !path.join("device").exists() {
-            continue;
-        }
-        let file = |name: &str| fs::read_to_string(path.join(name)).unwrap_or_default();
-        if path.join("wireless").exists() || path.join("phy80211").exists() {
-            links.wifi = true;
-        } else if file("operstate").trim() == "up" {
-            // A USB adapter or a tethered phone is Ethernet too, as far as
-            // the kernel can tell, and is called wired.
-            if matches!(file("type").trim(), "" | ARPHRD_ETHER) {
-                links.wired = true;
-            } else {
-                links.other = true;
-            }
+    for interface in interfaces(net) {
+        match interface.kind {
+            LinkKind::Wifi => links.wifi = true,
+            LinkKind::Wired => links.wired |= interface.up,
+            LinkKind::Other => links.other |= interface.up,
         }
     }
     links
 }
 
-fn has_bluetooth(root: &Path) -> bool {
+/// Whether there is Bluetooth hardware under `root`, which is
+/// `/sys/class/bluetooth`.
+pub fn has_bluetooth(root: &Path) -> bool {
     fs::read_dir(root)
         .into_iter()
         .flatten()
@@ -67,7 +122,7 @@ fn has_bluetooth(root: &Path) -> bool {
 /// Whether rfkill holds the radios of `kind` ("wlan", "bluetooth") off. A
 /// machine often has two switches for one radio, the laptop's and the
 /// card's; any one of them blocks it.
-fn block(rfkill: &Path, kind: &str) -> Block {
+pub fn block(rfkill: &Path, kind: &str) -> Block {
     let mut found = Block::None;
     for entry in fs::read_dir(rfkill)
         .into_iter()
@@ -196,6 +251,42 @@ mod tests {
         sys.write("rfkill/rfkill1/soft", "1\n");
         sys.write("rfkill/rfkill0/hard", "1\n");
         assert_eq!(read(sys.path()).wifi_block, Block::Hard);
+    }
+
+    #[test]
+    fn interface_names() {
+        for good in ["eth0", "enp0s31f6", "wlan0", "usb0", "eth0.100"] {
+            assert!(plain_name(good), "{good}");
+        }
+        for bad in [
+            "",
+            ".",
+            "..",
+            "a/b",
+            "name with space",
+            "sixteen-chars-xx",
+            "é",
+        ] {
+            assert!(!plain_name(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn rfkill_blocks_by_kind() {
+        let tmp = TempDir::new();
+        tmp.write("rfkill/rfkill0/type", "bluetooth\n");
+        tmp.write("rfkill/rfkill0/soft", "1\n");
+        tmp.write("rfkill/rfkill0/hard", "0\n");
+        tmp.write("rfkill/rfkill1/type", "wlan\n");
+        tmp.write("rfkill/rfkill1/soft", "0\n");
+        tmp.write("rfkill/rfkill1/hard", "0\n");
+        let rfkill = tmp.path().join("rfkill");
+        assert_eq!(block(&rfkill, "wlan"), Block::None);
+        assert_eq!(block(&rfkill, "bluetooth"), Block::Soft);
+        tmp.write("rfkill/rfkill2/type", "wlan\n");
+        tmp.write("rfkill/rfkill2/hard", "1\n");
+        assert_eq!(block(&rfkill, "wlan"), Block::Hard);
+        assert_eq!(block(&tmp.path().join("missing"), "wlan"), Block::None);
     }
 
     #[test]

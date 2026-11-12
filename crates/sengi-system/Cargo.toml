@@ -11,6 +11,9 @@ bus = ["dep:zbus"]
 # iwd, BlueZ, logind brightness, audio, battery, link state and rfkill, and
 # the worker threads that run them.
 services = ["bus", "dep:libc", "dep:sengi-text"]
+# What a settings application manages and the panel does not. Kept apart
+# so the panel is not built with code it never calls.
+settings = ["services"]
 # The builders of made-up bus objects, for the tests of a program that
 # reads objects through this crate.
 testing = ["services"]

@@ -15,7 +15,7 @@ use zbus::zvariant::{ObjectPath, OwnedObjectPath, Signature, Type};
 use crate::bus::{self, Bus, Listing, Object};
 use crate::names;
 use crate::secret::Secret;
-use crate::services::{Notify, WifiService};
+use crate::services::{Notify, Refusal, WifiService};
 use crate::wifi::{self, JoinError, Link, Network, Request, Security, Wifi};
 
 const SERVICE: &str = "net.connman.iwd";
@@ -23,9 +23,13 @@ const ADAPTER: &str = "net.connman.iwd.Adapter";
 const DEVICE: &str = "net.connman.iwd.Device";
 const STATION: &str = "net.connman.iwd.Station";
 const NETWORK: &str = "net.connman.iwd.Network";
+#[cfg(feature = "settings")]
+const KNOWN: &str = "net.connman.iwd.KnownNetwork";
 const AGENT_MANAGER: &str = "net.connman.iwd.AgentManager";
 const MANAGER_PATH: &str = "/net/connman/iwd";
 const AGENT_PATH: &str = "/org/sengios/quick/agent";
+/// Every object of iwd's lives under this.
+const PREFIX: &str = "/net/connman/iwd/";
 
 /// Networks taken from one scan before they are sorted and cut down.
 const MAX_SCANNED: usize = 256;
@@ -39,6 +43,8 @@ pub struct Device {
     pub adapter: Option<String>,
     /// Whether the device is switched on.
     pub powered: bool,
+    /// The kernel's name for it, such as `wlan0`, as iwd gives it.
+    pub name: String,
     /// Present when the device is up and in station mode.
     pub station: Option<Station>,
 }
@@ -85,11 +91,18 @@ pub fn device(objects: &[Object]) -> Option<Device> {
                 path: object.path.clone(),
                 adapter,
                 powered,
+                name: bus::text(props, "Name").unwrap_or_default().to_string(),
                 station,
             })
         })
         // Stable sort: one with a station first, otherwise the first path.
         .min_by_key(|device| device.station.is_none())
+}
+
+/// The device's name, if it is one the kernel could have given. What iwd
+/// says is not used to look anything up otherwise.
+pub fn interface(device: &Device) -> Option<&str> {
+    Some(device.name.as_str()).filter(|name| crate::machine::plain_name(name))
 }
 
 /// What the panel shows for `device`, given the networks its station
@@ -121,6 +134,23 @@ pub fn reading(objects: &[Object], device: &Device, ordered: &[(String, i16)]) -
         scanning: station.scanning,
         networks: wifi::arrange(networks),
     }
+}
+
+/// Whether `path` is one of iwd's own objects. The ids the program hands
+/// in came from iwd by way of the UI; only its own paths go back to it.
+fn ours(path: &str) -> bool {
+    path.starts_with(PREFIX) && ObjectPath::try_from(path).is_ok()
+}
+
+/// The stored network behind the network at `id`, if iwd has one.
+#[cfg(feature = "settings")]
+pub fn known_path<'a>(objects: &'a [Object], id: &str) -> Option<&'a str> {
+    objects
+        .iter()
+        .find(|object| object.path == id)?
+        .interface(NETWORK)
+        .and_then(|props| bus::path(props, "KnownNetwork"))
+        .filter(|path| ours(path))
 }
 
 /// iwd's errors for a failed `Connect`.
@@ -294,6 +324,8 @@ impl Agent {
 pub struct Iwd {
     bus: Arc<Bus>,
     slot: Slot,
+    /// The name of the device the last read was about.
+    interface: Mutex<Option<String>>,
 }
 
 impl Iwd {
@@ -302,6 +334,7 @@ impl Iwd {
         Iwd {
             bus,
             slot: Slot::default(),
+            interface: Mutex::default(),
         }
     }
 
@@ -356,7 +389,13 @@ impl WifiService for Iwd {
             Listing::Denied => return Wifi::Denied,
             Listing::Absent => return Wifi::Absent,
         };
-        let Some(device) = device(&objects) else {
+        let device = device(&objects);
+        *self
+            .interface
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            device.as_ref().and_then(interface).map(str::to_string);
+        let Some(device) = device else {
             return Wifi::Absent;
         };
         let ordered: Vec<(OwnedObjectPath, i16)> = match &device.station {
@@ -374,9 +413,12 @@ impl WifiService for Iwd {
     }
 
     fn set_powered(&self, on: bool) {
-        let Some((_, device)) = self.device() else {
-            return;
-        };
+        // Said on standard error by `try_set_powered`.
+        let _ = self.try_set_powered(on);
+    }
+
+    fn try_set_powered(&self, on: bool) -> Result<(), Refusal> {
+        let (_, device) = self.device().ok_or(Refusal::Failed)?;
         let mut result = match &device.adapter {
             Some(adapter) => self.bus.set_flag(SERVICE, adapter, ADAPTER, "Powered", on),
             None => Ok(()),
@@ -387,9 +429,10 @@ impl WifiService for Iwd {
                 .bus
                 .set_flag(SERVICE, &device.path, DEVICE, "Powered", true);
         }
-        if let Err(error) = result {
+        result.map_err(|error| {
             eprintln!("{}: switching Wi-Fi: {error}", crate::program_name());
-        }
+            Refusal::of(&error)
+        })
     }
 
     fn scan(&self) {
@@ -401,10 +444,7 @@ impl WifiService for Iwd {
 
     fn join(&self, request: Request) -> Result<(), JoinError> {
         let asker = self.bus.owner(SERVICE).ok_or(JoinError::Unavailable)?;
-        // The id came from iwd by way of the UI. Only its own paths go back.
-        if !request.id.starts_with("/net/connman/iwd/")
-            || ObjectPath::try_from(request.id.as_str()).is_err()
-        {
+        if !ours(&request.id) {
             return Err(JoinError::Unavailable);
         }
         // The agent is there for every join, typed passphrase or not. iwd
@@ -418,8 +458,12 @@ impl WifiService for Iwd {
         slot(&self.slot).asked_in_vain(&request.id);
         let mut ticket = None;
         if let Some(passphrase) = request.passphrase {
-            if registered.is_err() {
-                return Err(JoinError::Unavailable);
+            if let Err(error) = &registered {
+                return Err(if bus::denied(error) {
+                    JoinError::Denied
+                } else {
+                    JoinError::Unavailable
+                });
             }
             ticket = Some(slot(&self.slot).put(&request.id, &asker, passphrase));
         }
@@ -432,10 +476,46 @@ impl WifiService for Iwd {
         result.map_err(|error| {
             if slot(&self.slot).asked_in_vain(&request.id) {
                 JoinError::NeedsPassphrase
+            } else if bus::denied(&error) {
+                JoinError::Denied
             } else {
                 join_error(bus::error_name(&error))
             }
         })
+    }
+
+    #[cfg(feature = "settings")]
+    fn disconnect(&self) -> Result<(), Refusal> {
+        let (_, device) = self.device().ok_or(Refusal::Failed)?;
+        let result: zbus::Result<()> =
+            self.bus
+                .call(SERVICE, &device.path, STATION, "Disconnect", &());
+        match result {
+            // Nothing was connected: the same end by another road.
+            Err(error) if bus::error_name(&error) == Some("net.connman.iwd.NotConnected") => Ok(()),
+            other => other.map_err(|error| Refusal::of(&error)),
+        }
+    }
+
+    #[cfg(feature = "settings")]
+    fn forget(&self, id: &str) -> Result<(), Refusal> {
+        let (objects, _) = self.device().ok_or(Refusal::Failed)?;
+        // Already forgotten is forgotten.
+        let Some(known) = known_path(&objects, id) else {
+            return Ok(());
+        };
+        let result: zbus::Result<()> = self.bus.call(SERVICE, known, KNOWN, "Forget", &());
+        result.map_err(|error| {
+            eprintln!("{}: forgetting a network: {error}", crate::program_name());
+            Refusal::of(&error)
+        })
+    }
+
+    fn interface(&self) -> Option<String> {
+        self.interface
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     fn watch(&self, changed: Notify) {
@@ -600,6 +680,7 @@ mod tests {
         assert_eq!(device.path, WLAN);
         assert_eq!(device.adapter.as_deref(), Some("/net/connman/iwd/0"));
         assert!(!device.powered);
+        assert_eq!(device.name, "wlan0");
         assert_eq!(reading(&objects, &device, &[]), Wifi::Off);
 
         // Powered device under an adapter that is off: still off.
@@ -706,6 +787,25 @@ mod tests {
     }
 
     #[test]
+    fn a_device_name_that_is_not_one_is_not_used() {
+        let named = |name: &str| {
+            let objects = [object(
+                WLAN,
+                DEVICE,
+                &[
+                    ("Name", text(name)),
+                    ("Powered", Prop::Bool(true)),
+                    ("Mode", text("station")),
+                ],
+            )];
+            device(&objects).unwrap()
+        };
+        assert_eq!(interface(&named("wlan0")), Some("wlan0"));
+        assert_eq!(interface(&named("../../etc\u{202e}")), None);
+        assert_eq!(interface(&named("")), None);
+    }
+
+    #[test]
     fn a_flood_of_networks_is_cut_down() {
         let mut objects = vec![station("disconnected", false)];
         let mut listed = Vec::new();
@@ -744,6 +844,35 @@ mod tests {
             panic!("expected Wi-Fi to be on");
         };
         assert!(networks.is_empty());
+    }
+
+    #[cfg(feature = "settings")]
+    #[test]
+    fn only_a_stored_network_of_iwds_own_can_be_forgotten() {
+        let stranger = object(
+            &format!("{WLAN}/evil_psk"),
+            NETWORK,
+            &[("KnownNetwork", path("/org/freedesktop/login1"))],
+        );
+        let objects = [
+            net("486f6d65_psk", "Home", "psk", true, false),
+            net("43616665_open", "Cafe", "open", false, false),
+            stranger,
+        ];
+        assert_eq!(
+            known_path(&objects, &format!("{WLAN}/486f6d65_psk")),
+            Some("/net/connman/iwd/known")
+        );
+        assert_eq!(known_path(&objects, &format!("{WLAN}/43616665_open")), None);
+        assert_eq!(known_path(&objects, &format!("{WLAN}/evil_psk")), None);
+        assert_eq!(known_path(&objects, "/somewhere/else"), None);
+    }
+
+    #[test]
+    fn only_iwds_own_paths_go_back_to_it() {
+        assert!(ours("/net/connman/iwd/0/4/486f6d65_psk"));
+        assert!(!ours("/net/connman/iwd/../x y"));
+        assert!(!ours("/org/bluez/hci0"));
     }
 
     #[test]

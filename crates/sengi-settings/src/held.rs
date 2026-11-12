@@ -9,6 +9,29 @@
 //! that has gone stays as a row that cannot be used, and new ones are added
 //! at the end. When the list is let go it takes the fresh order.
 
+/// One row of such a list: what the service last said of it, and whether
+/// it has gone since. It reads as the thing itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Row<T> {
+    pub item: T,
+    /// No longer there, kept so that the rows below it do not move.
+    pub gone: bool,
+}
+
+impl<T> Row<T> {
+    pub fn new(item: T) -> Row<T> {
+        Row { item, gone: false }
+    }
+}
+
+impl<T> std::ops::Deref for Row<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.item
+    }
+}
+
 /// The rows to show. `shown` is what is on screen, `fresh` what the
 /// service now says, in its own order. `gone` turns a row into one that
 /// is no longer there.

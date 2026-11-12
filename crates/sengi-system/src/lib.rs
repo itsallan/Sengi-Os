@@ -19,6 +19,10 @@
 //! [`wifi`], [`bluetooth`], [`volume`], [`backlight`] and [`battery`] hold
 //! the plain types those traits speak in and the rules that go with them.
 //!
+//! With the `settings` feature comes what a settings application needs
+//! on top of that and the panel does not: leaving and forgetting
+//! networks, and the cabled interfaces and addresses ([`links`]).
+//!
 //! Nothing here starts a service that is not running: every call on the
 //! system bus carries the no-auto-start flag.
 
@@ -39,6 +43,8 @@ pub mod bus;
 pub mod commands;
 #[cfg(feature = "services")]
 pub mod iwd;
+#[cfg(feature = "settings")]
+pub mod links;
 #[cfg(feature = "services")]
 pub mod machine;
 #[cfg(feature = "services")]

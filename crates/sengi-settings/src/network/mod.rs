@@ -1,51 +1,34 @@
 //! The Network page's rules: what Wi-Fi and the wired links look like to
-//! the page, which networks are listed and in what order, and the steps
-//! of joining one. Nothing here talks to iwd or reads `/sys`; `iwd` and
-//! `links` turn what those say into these types, and `page` puts them in
-//! the window.
+//! the page, which networks are listed, and what the page does about the
+//! user's choices. Nothing here talks to iwd or reads `/sys`.
 //!
-//! The types and the joining steps follow sengi-quick's `wifi.rs`, which
-//! the shared sengi-system crate is to provide; what is added here is
-//! leaving a network, forgetting one, and addresses.
+//! The networks, their order and the steps of joining one are
+//! sengi-system's `wifi`, the same as the quick settings panel uses.
+//! What is added here is the words for them, the held list, and a
+//! reading that also has the cabled interfaces and the addresses.
 
 pub mod iwd;
-pub mod links;
 pub mod page;
 
 use std::sync::Arc;
 
-use crate::secret::Secret;
+pub use sengi_system::links::Wired;
+pub use sengi_system::services::{Block, Refusal};
+pub use sengi_system::wifi::{
+    arrange, check_passphrase, level, Join, JoinError, Link, Network, Problem, Request, Security,
+    Wifi, MAX_NETWORKS,
+};
+
+use crate::held::Row;
 use crate::worker::{self, Handle, Inbox, Next, Notify};
 
-/// How many networks the list holds. A busy building has hundreds in
-/// range, and anything past the strongest few dozen is out of reach.
-pub const MAX_NETWORKS: usize = 32;
-pub const MAX_WIRED: usize = 8;
-pub const MAX_ADDRESSES: usize = 4;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Security {
-    Open,
-    /// A shared passphrase: WPA2 or WPA3 personal.
-    Passphrase,
-    /// 802.1X. iwd only joins these from a provisioning file.
-    Enterprise,
-    /// WEP and whatever else may turn up. Not joinable.
-    Other,
+/// The page's words for a thing of sengi-system's.
+pub trait Words {
+    fn words(self) -> &'static str;
 }
 
-impl Security {
-    /// From the `Type` property of an iwd network.
-    pub fn from_iwd(kind: &str) -> Security {
-        match kind {
-            "open" => Security::Open,
-            "psk" => Security::Passphrase,
-            "8021x" => Security::Enterprise,
-            _ => Security::Other,
-        }
-    }
-
-    pub fn words(self) -> &'static str {
+impl Words for Security {
+    fn words(self) -> &'static str {
         match self {
             Security::Open => "Open, not encrypted",
             Security::Passphrase => "Password protected",
@@ -55,86 +38,34 @@ impl Security {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Network {
-    /// Opaque to everything but the service: iwd's object path.
-    pub id: String,
-    /// Already cleaned for display.
-    pub name: String,
-    pub security: Security,
-    /// iwd has joined it before and holds what it needs to do so again.
-    pub known: bool,
-    pub connected: bool,
-    /// Signal strength in hundredths of a dBm, as iwd reports it.
-    pub signal: i16,
-    /// No longer in range, kept in a held list so rows do not move.
-    pub gone: bool,
+impl Words for JoinError {
+    fn words(self) -> &'static str {
+        match self {
+            JoinError::Failed => "The network refused the connection.",
+            JoinError::NeedsPassphrase => "The network needs a password.",
+            JoinError::Aborted => "The attempt was called off.",
+            JoinError::Timeout => "The network did not answer in time.",
+            JoinError::NotConfigured => {
+                "This is an enterprise network. It has to be set up with a provisioning \
+                 file in /var/lib/iwd before it can be joined."
+            }
+            JoinError::NotSupported => "This kind of network is not supported.",
+            JoinError::Denied => "You are not allowed to change Wi-Fi connections.",
+            // Unavailable, and any reason added later.
+            _ => "The Wi-Fi service is not answering.",
+        }
+    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Link {
-    Disconnected,
-    Connecting,
-    Connected,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Station {
-    pub link: Link,
-    pub scanning: bool,
-    /// Arranged: see [`arrange`].
-    pub networks: Vec<Network>,
-    /// The kernel's name for the device, cleaned.
-    pub interface: String,
-    pub addresses: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Wifi {
-    /// iwd is not running or has no device.
-    Absent,
-    /// iwd is running and the bus policy keeps this user out.
-    Denied,
-    Off,
-    On(Station),
-}
-
-/// Whether the kernel's rfkill is holding the radio off.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Block {
-    #[default]
-    None,
-    /// By software: a key on the keyboard, or `rfkill block`.
-    Soft,
-    /// By a physical switch. Nothing on the screen can undo it.
-    Hard,
-}
-
-/// A cabled interface.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Wired {
-    pub interface: String,
-    /// A cable is in and the link is up.
-    pub up: bool,
-    pub addresses: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Reading {
-    pub wifi: Wifi,
-    /// There is Wi-Fi hardware, whatever iwd says.
-    pub hardware: bool,
-    pub block: Block,
-    pub wired: Vec<Wired>,
-}
-
-/// Bars to light for a signal, 1 to 4. iwd gives dBm times 100.
-pub fn level(signal: i16) -> i32 {
-    match signal {
-        -6000.. => 4,
-        -7000..=-6001 => 3,
-        -8000..=-7001 => 2,
-        _ => 1,
+impl Words for Problem {
+    fn words(self) -> &'static str {
+        match self {
+            Problem::TooShort => "A password has at least 8 characters.",
+            Problem::TooLong => "A password has at most 63 characters.",
+            Problem::NotPlain => "A password is made of plain letters, digits and symbols.",
+            Problem::Rejected => "That password was not accepted. Try again.",
+            Problem::Stale => "The saved password no longer works. Enter the new one.",
+        }
     }
 }
 
@@ -147,284 +78,15 @@ pub fn strength(signal: i16) -> &'static str {
     }
 }
 
-/// The list as shown: one entry per name and kind of security, the
-/// connected network first, then the ones iwd knows, then by signal.
-///
-/// Signal counts by its level, not its exact value, and equal levels go
-/// by name. Readings wobble from scan to scan; the list should not, and a
-/// network must not be able to shoulder its way up a row by shouting.
-pub fn arrange(mut networks: Vec<Network>) -> Vec<Network> {
-    let order = |network: &Network| (!network.connected, !network.known, -level(network.signal));
-    networks.sort_by(|a, b| {
-        order(a)
-            .cmp(&order(b))
-            .then_with(|| a.name.cmp(&b.name))
-            .then_with(|| a.id.cmp(&b.id))
-    });
-    let mut seen = std::collections::HashSet::new();
-    // The best of each came first in the sort, so the first is kept.
-    networks.retain(|network| seen.insert((network.name.clone(), network.security)));
-    networks.truncate(MAX_NETWORKS);
-    networks
-}
-
-/// Why an attempt to join failed, in iwd's terms.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum JoinError {
-    /// The network refused, which for a typed passphrase nearly always
-    /// means it was wrong.
-    Failed,
-    /// iwd wanted a passphrase and none had been typed. It asks again for
-    /// a network it knows once the stored one has failed.
-    NeedsPassphrase,
-    /// Another request took over, or the user called it off.
-    Aborted,
-    Timeout,
-    /// An enterprise network without a provisioning file.
-    NotConfigured,
-    NotSupported,
-    /// The bus policy does not let this user join networks.
-    Denied,
-    /// The service went away or would not take the request.
-    Unavailable,
-}
-
-impl JoinError {
-    pub fn words(self) -> &'static str {
-        match self {
-            JoinError::Failed => "The network refused the connection.",
-            JoinError::NeedsPassphrase => "The network needs a password.",
-            JoinError::Aborted => "The attempt was called off.",
-            JoinError::Timeout => "The network did not answer in time.",
-            JoinError::NotConfigured => {
-                "This is an enterprise network. It has to be set up with a provisioning \
-                 file in /var/lib/iwd before it can be joined."
-            }
-            JoinError::NotSupported => "This kind of network is not supported.",
-            JoinError::Denied => "You are not allowed to change Wi-Fi connections.",
-            JoinError::Unavailable => "The Wi-Fi service is not answering.",
-        }
-    }
-}
-
-/// What is wrong with a passphrase before or after trying it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Problem {
-    TooShort,
-    TooLong,
-    /// WPA passphrases are printable ASCII.
-    NotPlain,
-    /// The network turned it down.
-    Rejected,
-    /// The one iwd had stored stopped working: it was changed at the
-    /// router since.
-    Stale,
-}
-
-impl Problem {
-    pub fn words(self) -> &'static str {
-        match self {
-            Problem::TooShort => "A password has at least 8 characters.",
-            Problem::TooLong => "A password has at most 63 characters.",
-            Problem::NotPlain => "A password is made of plain letters, digits and symbols.",
-            Problem::Rejected => "That password was not accepted. Try again.",
-            Problem::Stale => "The saved password no longer works. Enter the new one.",
-        }
-    }
-}
-
-/// WPA's rules: 8 to 63 printable ASCII characters. iwd applies the same
-/// and would only answer with a vaguer error.
-pub fn check_passphrase(passphrase: &str) -> Result<(), Problem> {
-    if !passphrase.bytes().all(|b| (0x20..0x7f).contains(&b)) {
-        Err(Problem::NotPlain)
-    } else if passphrase.len() < 8 {
-        Err(Problem::TooShort)
-    } else if passphrase.len() > 63 {
-        Err(Problem::TooLong)
-    } else {
-        Ok(())
-    }
-}
-
-/// What to ask the service for.
-#[derive(Debug)]
-pub struct Request {
-    pub id: String,
-    pub passphrase: Option<Secret>,
-}
-
-/// Where the user is in joining a network.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum Join {
-    #[default]
-    Idle,
-    /// An open network nobody has joined before was picked. Anyone can
-    /// put up an open network under any name, and everything sent over it
-    /// can be read, so one click is not enough: the page asks first.
-    Confirming { id: String, name: String },
-    /// The passphrase is being asked for.
-    Asking {
-        id: String,
-        name: String,
-        problem: Option<Problem>,
-    },
-    /// The service is working on it.
-    Joining {
-        id: String,
-        name: String,
-        /// A passphrase was typed for this attempt.
-        typed: bool,
-        /// The network takes a passphrase, so one can be asked for if
-        /// this attempt shows it is needed.
-        secured: bool,
-    },
-    /// The last attempt failed and there is nothing to retype.
-    Failed { name: String, error: JoinError },
-}
-
-impl Join {
-    /// A network in the list was picked.
-    pub fn choose(&mut self, network: &Network) -> Option<Request> {
-        if matches!(self, Join::Joining { .. }) || network.connected || network.gone {
-            return None;
-        }
-        let (id, name) = (network.id.clone(), network.name.clone());
-        let direct = network.known;
-        let request = direct.then(|| Request {
-            id: id.clone(),
-            passphrase: None,
-        });
-        *self = match network.security {
-            _ if direct => Join::Joining {
-                id,
-                name,
-                typed: false,
-                secured: network.security == Security::Passphrase,
-            },
-            Security::Open => Join::Confirming { id, name },
-            Security::Passphrase => Join::Asking {
-                id,
-                name,
-                problem: None,
-            },
-            Security::Enterprise => Join::Failed {
-                name,
-                error: JoinError::NotConfigured,
-            },
-            Security::Other => Join::Failed {
-                name,
-                error: JoinError::NotSupported,
-            },
-        };
-        request
-    }
-
-    /// The user said yes to the open network being asked about.
-    pub fn confirm(&mut self) -> Option<Request> {
-        let Join::Confirming { id, name } = self else {
-            return None;
-        };
-        let request = Request {
-            id: id.clone(),
-            passphrase: None,
-        };
-        *self = Join::Joining {
-            id: std::mem::take(id),
-            name: std::mem::take(name),
-            typed: false,
-            secured: false,
-        };
-        Some(request)
-    }
-
-    /// A passphrase was entered.
-    pub fn submit(&mut self, passphrase: Secret) -> Option<Request> {
-        let Join::Asking { id, name, problem } = self else {
-            return None;
-        };
-        if let Err(found) = check_passphrase(passphrase.expose()) {
-            *problem = Some(found);
-            return None;
-        }
-        let request = Request {
-            id: id.clone(),
-            passphrase: Some(passphrase),
-        };
-        *self = Join::Joining {
-            id: std::mem::take(id),
-            name: std::mem::take(name),
-            typed: true,
-            secured: true,
-        };
-        Some(request)
-    }
-
-    /// The question was dismissed, or a failure acknowledged. An attempt
-    /// that is under way is not undone by this; the page asks the service
-    /// to call it off, and its end arrives through [`Join::finished`].
-    pub fn cancel(&mut self) {
-        if !matches!(self, Join::Joining { .. }) {
-            *self = Join::Idle;
-        }
-    }
-
-    /// The service has finished with the request for `finished_id`.
-    pub fn finished(&mut self, finished_id: &str, result: Result<(), JoinError>) {
-        let Join::Joining {
-            id,
-            name,
-            typed,
-            secured,
-        } = self
-        else {
-            return;
-        };
-        if id != finished_id {
-            return;
-        }
-        *self = match result {
-            Ok(()) | Err(JoinError::Aborted) => Join::Idle,
-            // Wrong, whether it was typed just now or stored long ago.
-            // Either way the cure is to type the right one.
-            Err(JoinError::Failed | JoinError::NeedsPassphrase) if *secured => Join::Asking {
-                id: std::mem::take(id),
-                name: std::mem::take(name),
-                problem: Some(if *typed {
-                    Problem::Rejected
-                } else {
-                    Problem::Stale
-                }),
-            },
-            Err(error) => Join::Failed {
-                name: std::mem::take(name),
-                error,
-            },
-        };
-    }
-
-    /// Wi-Fi was switched off or went away: nothing is left to join.
-    pub fn reset(&mut self) {
-        *self = Join::Idle;
-    }
-
-    /// The network being asked about or joined.
-    pub fn target(&self) -> Option<&str> {
-        match self {
-            Join::Confirming { id, .. } | Join::Asking { id, .. } | Join::Joining { id, .. } => {
-                Some(id)
-            }
-            _ => None,
-        }
-    }
-}
-
-/// A request the service turned down.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Refusal {
-    /// The bus policy does not allow it.
-    Denied,
-    Failed,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reading {
+    pub wifi: Wifi,
+    /// The Wi-Fi interface's addresses, while it is on a network.
+    pub addresses: Vec<String>,
+    /// There is Wi-Fi hardware, whatever iwd says.
+    pub hardware: bool,
+    pub block: Block,
+    pub wired: Vec<Wired>,
 }
 
 pub trait NetworkService: Send + Sync + 'static {
@@ -477,7 +139,7 @@ pub fn run(
     let emit = Arc::new(emit);
     service.watch(handle.notifier());
     let first = service.read();
-    let on = matches!(first.wifi, Wifi::On(_));
+    let on = matches!(first.wifi, Wifi::On { .. });
     emit(Event::Reading(first));
     if on {
         service.scan();
@@ -535,7 +197,7 @@ pub struct Model {
     reading: Option<Reading>,
     /// The networks as listed, which while the list is held is not the
     /// order they were last read in.
-    shown: Vec<Network>,
+    shown: Vec<Row<Network>>,
     pub join: Join,
     /// What the Wi-Fi switch was last set to and has not yet been seen
     /// to take effect.
@@ -558,26 +220,42 @@ impl Model {
         self.reading.as_ref()
     }
 
-    pub fn station(&self) -> Option<&Station> {
+    /// The networks in range, when Wi-Fi is on.
+    fn networks(&self) -> &[Network] {
+        match self.reading.as_ref().map(|reading| &reading.wifi) {
+            Some(Wifi::On { networks, .. }) => networks,
+            _ => &[],
+        }
+    }
+
+    /// Where the device stands, when Wi-Fi is on.
+    pub fn link(&self) -> Option<Link> {
         match self.reading.as_ref()?.wifi {
-            Wifi::On(ref station) => Some(station),
+            Wifi::On { link, .. } => Some(link),
             _ => None,
         }
+    }
+
+    pub fn scanning(&self) -> bool {
+        matches!(
+            self.reading.as_ref().map(|reading| &reading.wifi),
+            Some(Wifi::On { scanning: true, .. })
+        )
     }
 
     /// Take in a fresh reading. `held` is whether the pointer or the
     /// keyboard is on the list.
     pub fn update(&mut self, reading: Reading, held: bool) {
-        let fresh: Vec<Network> = match &reading.wifi {
-            Wifi::On(station) => station
-                .networks
+        let fresh: Vec<Row<Network>> = match &reading.wifi {
+            Wifi::On { networks, .. } => networks
                 .iter()
                 .filter(|network| !network.connected)
                 .cloned()
+                .map(Row::new)
                 .collect(),
             _ => Vec::new(),
         };
-        let on = matches!(reading.wifi, Wifi::On(_));
+        let on = matches!(reading.wifi, Wifi::On { .. });
         if !on {
             self.join.reset();
         }
@@ -604,22 +282,25 @@ impl Model {
 
     /// The networks to list: all in range but the connected one, which
     /// has a place of its own.
-    pub fn listed(&self) -> &[Network] {
+    pub fn listed(&self) -> &[Row<Network>] {
         &self.shown
     }
 
     pub fn connected(&self) -> Option<&Network> {
-        self.station()?
-            .networks
-            .iter()
-            .find(|network| network.connected)
+        self.networks().iter().find(|network| network.connected)
     }
 
     fn find(&self, id: &str) -> Option<&Network> {
         self.shown
             .iter()
-            .chain(self.station().into_iter().flat_map(|s| s.networks.iter()))
+            .map(|row| &row.item)
+            .chain(self.networks())
             .find(|network| network.id == id)
+    }
+
+    /// Whether the row for `id` is of a network that has left.
+    fn gone(&self, id: &str) -> bool {
+        self.shown.iter().any(|row| row.gone && row.id == id)
     }
 
     pub fn name_of(&self, id: &str) -> Option<&str> {
@@ -640,7 +321,7 @@ impl Model {
     pub fn switch_on(&self) -> bool {
         self.wanted.unwrap_or(matches!(
             self.reading.as_ref().map(|r| &r.wifi),
-            Some(Wifi::On(_))
+            Some(Wifi::On { .. })
         ))
     }
 
@@ -649,6 +330,11 @@ impl Model {
         let Some(network) = self.find(id).cloned() else {
             return Step::Nothing;
         };
+        // A row that has left the air is kept in a held list and cannot
+        // be joined.
+        if self.gone(id) {
+            return Step::Nothing;
+        }
         if let Some(request) = self.join.choose(&network) {
             return Step::Send(request);
         }
@@ -683,13 +369,12 @@ pub mod testing {
             known,
             connected: false,
             signal,
-            gone: false,
         }
     }
 
     pub fn reading(networks: Vec<Network>) -> Reading {
         Reading {
-            wifi: Wifi::On(Station {
+            wifi: Wifi::On {
                 link: if networks.iter().any(|n| n.connected) {
                     Link::Connected
                 } else {
@@ -697,9 +382,8 @@ pub mod testing {
                 },
                 scanning: false,
                 networks: arrange(networks),
-                interface: "wlan0".to_string(),
-                addresses: Vec::new(),
-            }),
+            },
+            addresses: Vec::new(),
             hardware: true,
             block: Block::None,
             wired: Vec::new(),
@@ -749,6 +433,7 @@ pub mod testing {
             if !state.powered {
                 return Reading {
                     wifi: Wifi::Off,
+                    addresses: Vec::new(),
                     hardware: true,
                     block: Block::None,
                     wired: Vec::new(),
@@ -756,10 +441,12 @@ pub mod testing {
             }
             let mut reading = reading(state.networks.clone());
             reading.wired = state.wired.clone();
-            if let Wifi::On(station) = &mut reading.wifi {
-                if station.link == Link::Connected {
-                    station.addresses = vec!["192.168.1.42".to_string()];
-                }
+            if let Wifi::On {
+                link: Link::Connected,
+                ..
+            } = reading.wifi
+            {
+                reading.addresses = vec!["192.168.1.42".to_string()];
             }
             reading
         }
@@ -843,6 +530,7 @@ pub mod testing {
 mod tests {
     use super::testing::*;
     use super::*;
+    use crate::secret::Secret;
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -993,7 +681,9 @@ mod tests {
         let mut declined = model.join.clone();
         declined.cancel();
         assert_eq!(declined, Join::Idle);
-        let request = model.join.confirm().unwrap();
+        // A yes to some other network's question is not a yes to this one.
+        assert!(model.join.confirm("/n/home").is_none());
+        let request = model.join.confirm("/n/cafe").unwrap();
         assert_eq!(request.id, "/n/cafe");
         assert!(request.passphrase.is_none());
         // A failure of an open network is not a passphrase problem.
@@ -1006,7 +696,7 @@ mod tests {
             }
         ));
         // Nothing to confirm when nothing was asked.
-        assert!(Join::Idle.confirm().is_none());
+        assert!(Join::Idle.confirm("/n/cafe").is_none());
     }
 
     #[test]
@@ -1086,6 +776,7 @@ mod tests {
         model.update(
             Reading {
                 wifi: Wifi::Off,
+                addresses: Vec::new(),
                 hardware: true,
                 block: Block::None,
                 wired: Vec::new(),
@@ -1209,7 +900,7 @@ mod tests {
         let Event::Reading(reading) = rx.recv_timeout(Duration::from_secs(5)).unwrap() else {
             panic!("expected a reading");
         };
-        assert!(matches!(reading.wifi, Wifi::On(station) if station.networks.is_empty()));
+        assert!(matches!(reading.wifi, Wifi::On { networks, .. } if networks.is_empty()));
         handle.stop();
         thread.join().unwrap();
     }
