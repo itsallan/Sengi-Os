@@ -71,6 +71,10 @@ impl BluetoothService for Bluez {
         self.bluez.watch(changed);
     }
 
+    fn unwatch(&self) {
+        self.bluez.unwatch();
+    }
+
     fn on_prompt(&self, prompter: Prompter) {
         self.bluez.on_prompt(prompter);
     }

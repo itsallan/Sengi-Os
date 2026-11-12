@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use zbus::export::serde::{Serialize, Serializer};
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, Signature, Type};
 
-use crate::bus::{self, Bus, Listing, Object};
+use crate::bus::{self, Bus, Listing, Object, Watch};
 use crate::names;
 use crate::secret::Secret;
 use crate::services::{Notify, Refusal, WifiService};
@@ -331,6 +331,7 @@ pub struct Iwd {
     slot: Slot,
     /// The name of the device the last read was about.
     interface: Mutex<Option<String>>,
+    watches: Mutex<Vec<Watch>>,
 }
 
 impl Iwd {
@@ -340,6 +341,7 @@ impl Iwd {
             bus,
             slot: Slot::default(),
             interface: Mutex::default(),
+            watches: Mutex::default(),
         }
     }
 
@@ -524,7 +526,23 @@ impl WifiService for Iwd {
     }
 
     fn watch(&self, changed: Notify) {
-        self.bus.watch(SERVICE, changed);
+        let watch = self.bus.watch(SERVICE, changed);
+        self.watches
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(watch);
+    }
+
+    fn unwatch(&self) {
+        let watches = std::mem::take(
+            &mut *self
+                .watches
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        for watch in watches {
+            watch.stop();
+        }
     }
 }
 

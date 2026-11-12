@@ -161,12 +161,19 @@ impl Controller for SoundPage {
         }
     }
 
+    /// Nobody is looking: no worker, and no monitor running beside it.
+    /// Coming back starts both again.
+    fn hide(&self, _app: &Rc<App>) {
+        self.shutdown();
+    }
+
     fn shutdown(&self) {
-        if let Some(worker) = self.worker.borrow().as_ref() {
+        if let Some(worker) = self.worker.borrow_mut().take() {
             worker.stop();
         }
         // Not left to the worker, which may be in the middle of a wpctl:
-        // the monitor must be gone before this process is.
+        // the monitor must be gone before this process is, and before
+        // the page's next worker starts its own.
         self.service.close();
     }
 

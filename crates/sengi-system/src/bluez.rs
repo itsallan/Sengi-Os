@@ -5,10 +5,10 @@
 //! [`pairing`](crate::pairing), for a program that asks for them with the
 //! `settings` feature.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::bluetooth::{Bluetooth, MAX_DEVICES};
-use crate::bus::{self, Bus, Listing, Object};
+use crate::bus::{self, Bus, Listing, Object, Watch};
 use crate::names;
 use crate::services::{BluetoothService, Notify, Refusal};
 
@@ -57,6 +57,7 @@ pub fn reading(objects: &[Object]) -> Bluetooth {
 /// Bluetooth through BlueZ on the system bus.
 pub struct Bluez {
     pub(crate) bus: Arc<Bus>,
+    watches: Mutex<Vec<Watch>>,
     /// The pairing under way and where its questions go.
     #[cfg(feature = "settings")]
     pub(crate) desk: crate::pairing::Shared,
@@ -67,6 +68,7 @@ impl Bluez {
     pub fn new(bus: Arc<Bus>) -> Bluez {
         Bluez {
             bus,
+            watches: Mutex::default(),
             #[cfg(feature = "settings")]
             desk: Default::default(),
         }
@@ -103,7 +105,23 @@ impl BluetoothService for Bluez {
     }
 
     fn watch(&self, changed: Notify) {
-        self.bus.watch(SERVICE, changed);
+        let watch = self.bus.watch(SERVICE, changed);
+        self.watches
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(watch);
+    }
+
+    fn unwatch(&self) {
+        let watches = std::mem::take(
+            &mut *self
+                .watches
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        for watch in watches {
+            watch.stop();
+        }
     }
 }
 

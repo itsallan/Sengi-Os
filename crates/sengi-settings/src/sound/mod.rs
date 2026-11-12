@@ -63,6 +63,9 @@ fn report(what: &str, result: Result<(), Refusal>) {
     }
 }
 
+/// The worker's loop. It starts the watch for changes and does not end
+/// it: the page does, when it stops the worker, so that a worker on its
+/// way out cannot take the next one's watch with it.
 pub fn run(
     service: Arc<dyn AudioDevices>,
     latest: Arc<Latest>,
@@ -100,7 +103,6 @@ pub fn run(
         }
         emit(service.read());
     }
-    service.close();
 }
 
 pub fn start(
@@ -256,10 +258,7 @@ mod tests {
             latest,
         );
         // Louder than the slider goes is held to its top.
-        assert_eq!(
-            log,
-            ["default 60", "mute 53 true", "volume 60 100", "close"]
-        );
+        assert_eq!(log, ["default 60", "mute 53 true", "volume 60 100"]);
         assert_eq!(readings.len(), 4);
         let last = readings.last().unwrap().as_ref().unwrap();
         assert_eq!(last.output().unwrap().id, 60);
@@ -286,7 +285,7 @@ mod tests {
             sequence: latest.next(Side::Input),
         });
         let (log, _) = worked(commands, latest);
-        assert_eq!(log, ["volume 35 60", "volume 53 10", "close"]);
+        assert_eq!(log, ["volume 35 60", "volume 53 10"]);
     }
 
     /// A PipeWire whose monitor reports what really happens when it is
@@ -370,8 +369,28 @@ mod tests {
 
         handle.stop();
         thread.join().unwrap();
-        // Stopped, it lets go of the monitor.
+    }
+
+    #[test]
+    fn a_stopped_worker_reads_no_more_whatever_the_monitor_says() {
+        let service = Arc::new(Echoing::default());
+        let (handle, inbox) = worker::channel();
+        let thread = std::thread::spawn({
+            let (service, handle) = (service.clone(), handle.clone());
+            move || run(service, Arc::default(), handle, inbox, |_| {})
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        // The page is hidden: it stops the worker and closes the watch.
+        handle.stop();
+        thread.join().unwrap();
+        let before = service.reads();
+        // A monitor that was slow to die still has something to say.
+        service
+            .monitor_prints(r#"[ { "id": 52, "type": "PipeWire:Interface:Node", "info": {} } ]"#);
+        service.close();
         assert!(service.monitor.lock().unwrap().is_none());
+        std::thread::sleep(worker::PATIENCE);
+        assert_eq!(service.reads(), before);
     }
 
     #[test]

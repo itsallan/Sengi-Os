@@ -9,11 +9,15 @@
 //! here, so the code that interprets it can be tested without a bus.
 
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::future::poll_fn;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::task::{Poll, Waker};
 use std::thread;
 
 use zbus::blocking::fdo::DBusProxy;
-use zbus::blocking::{Connection, MessageIterator, Proxy};
+use zbus::blocking::{Connection, Proxy};
+use zbus::export::futures_core::Stream;
 use zbus::export::serde::Serialize;
 use zbus::fdo::ManagedObjects;
 use zbus::message::Type as MessageType;
@@ -195,6 +199,46 @@ pub fn denied(error: &zbus::Error) -> bool {
         )
 }
 
+#[derive(Default)]
+struct Stop {
+    stopped: AtomicBool,
+    /// Wakes the watching thread out of its wait for the next signal.
+    waker: Mutex<Option<Waker>>,
+}
+
+impl Stop {
+    /// Whether to stop. Otherwise `waker` is kept, to be woken when
+    /// that changes.
+    fn stopped(&self, waker: &Waker) -> bool {
+        *self.waker.lock().unwrap_or_else(|p| p.into_inner()) = Some(waker.clone());
+        self.stopped.load(Ordering::SeqCst)
+    }
+}
+
+/// A watch started by [`Bus::watch`]. It goes on until it is stopped, or
+/// the connection ends; dropping this does not stop it.
+#[derive(Clone, Default)]
+pub struct Watch {
+    stop: Arc<Stop>,
+}
+
+impl Watch {
+    /// End the watch: its thread finishes and the bus stops sending it
+    /// the service's signals.
+    pub fn stop(&self) {
+        self.stop.stopped.store(true, Ordering::SeqCst);
+        let waker = self
+            .stop
+            .waker
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+}
+
 /// The system bus connection, made on first use and shared by the
 /// services.
 #[derive(Default)]
@@ -336,12 +380,13 @@ impl Bus {
     }
 
     /// Call `changed` whenever `service` emits any signal, and when it
-    /// appears on or leaves the bus.
-    pub fn watch(&self, service: &'static str, changed: Notify) {
+    /// appears on or leaves the bus, until the watch returned is stopped.
+    /// The bus is listening for both by the time this returns.
+    pub fn watch(&self, service: &'static str, changed: Notify) -> Watch {
+        let watch = Watch::default();
         let Some(connection) = self.connection() else {
-            return;
+            return watch;
         };
-        let changed = Arc::new(changed);
         let signals = MatchRule::builder()
             .msg_type(MessageType::Signal)
             .sender(service)
@@ -353,27 +398,55 @@ impl Bus {
             .and_then(|rule| rule.member("NameOwnerChanged"))
             .and_then(|rule| rule.arg(0, service))
             .map(|rule| rule.build());
+        let mut streams = Vec::new();
         for rule in [signals, comings] {
             let stream = rule.and_then(|rule| {
-                MessageIterator::for_match_rule(rule, connection, Some(SIGNAL_QUEUE))
+                zbus::block_on(zbus::MessageStream::for_match_rule(
+                    rule,
+                    connection.inner(),
+                    Some(SIGNAL_QUEUE),
+                ))
             });
             match stream {
-                Ok(stream) => {
-                    let changed = changed.clone();
-                    thread::spawn(move || {
-                        for message in stream {
-                            if message.is_err() {
-                                break;
-                            }
-                            changed();
-                        }
-                    });
-                }
+                Ok(stream) => streams.push(Box::pin(stream)),
                 Err(error) => {
                     eprintln!("{}: cannot watch {service}: {error}", crate::program_name())
                 }
             }
         }
+        if streams.is_empty() {
+            return watch;
+        }
+        let stop = watch.stop.clone();
+        // One thread for both, asleep until a signal comes or the watch
+        // is stopped. Its end drops the streams, which takes the match
+        // rules off the bus.
+        thread::spawn(move || {
+            zbus::block_on(async move {
+                loop {
+                    let signalled = poll_fn(|context| {
+                        if stop.stopped(context.waker()) {
+                            return Poll::Ready(false);
+                        }
+                        for stream in streams.iter_mut() {
+                            match stream.as_mut().poll_next(context) {
+                                Poll::Ready(Some(Ok(_))) => return Poll::Ready(true),
+                                // The connection has gone.
+                                Poll::Ready(_) => return Poll::Ready(false),
+                                Poll::Pending => {}
+                            }
+                        }
+                        Poll::Pending
+                    })
+                    .await;
+                    if !signalled {
+                        break;
+                    }
+                    changed();
+                }
+            });
+        });
+        watch
     }
 }
 
@@ -422,6 +495,29 @@ mod tests {
             !helper.contains("service"),
             "the name must not be a parameter"
         );
+    }
+
+    #[test]
+    fn stopping_a_watch_wakes_whoever_waits_on_it() {
+        use std::sync::atomic::AtomicUsize;
+        use std::task::Wake;
+
+        struct Counter(AtomicUsize);
+        impl Wake for Counter {
+            fn wake(self: Arc<Self>) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let woken = Arc::new(Counter(AtomicUsize::new(0)));
+        let waker = Waker::from(woken.clone());
+        let watch = Watch::default();
+        assert!(!watch.stop.stopped(&waker));
+        assert_eq!(woken.0.load(Ordering::SeqCst), 0);
+        watch.stop();
+        assert_eq!(woken.0.load(Ordering::SeqCst), 1);
+        assert!(watch.stop.stopped(&waker));
+        // Stopping twice is harmless.
+        watch.clone().stop();
     }
 
     #[test]

@@ -76,6 +76,8 @@ pub trait BluetoothService: Send + Sync + 'static {
     /// Unpair the device and drop what BlueZ stored about it.
     fn remove(&self, id: &str) -> Result<(), Refusal>;
     fn watch(&self, changed: Notify);
+    /// Stop the watches started with `watch`.
+    fn unwatch(&self);
     fn on_prompt(&self, prompter: Prompter);
 }
 
@@ -402,6 +404,12 @@ impl Model {
         }
     }
 
+    /// Whether the service is in the middle of something the user began
+    /// and is owed the end of: a pairing, or a connection being made.
+    pub fn busy(&self) -> bool {
+        matches!(self.pairing, Pairing::Running { .. }) || !self.connecting.is_empty()
+    }
+
     /// The user backed out. The attempt goes on until the service says it
     /// has ended; this only tells it to stop.
     pub fn cancel(&mut self) -> Option<Command> {
@@ -639,6 +647,10 @@ pub mod testing {
             self.lock().notify = Some(changed);
         }
 
+        fn unwatch(&self) {
+            self.lock().notify = None;
+        }
+
         fn on_prompt(&self, prompter: Prompter) {
             self.lock().prompter = Some(prompter);
         }
@@ -840,6 +852,23 @@ mod tests {
         other.pair("/d/mouse");
         assert!(other.paired("/d/phone", Ok(())).is_none());
         assert!(matches!(other.pairing, Pairing::Running { .. }));
+    }
+
+    #[test]
+    fn the_page_is_busy_while_a_pairing_or_a_connection_is_owed_its_end() {
+        let mut model = model();
+        assert!(!model.busy());
+        model.toggle("/d/head");
+        assert!(model.busy());
+        model.connected("/d/head");
+        assert!(!model.busy());
+        model.pair("/d/mouse");
+        assert!(model.busy());
+        // Paired: now it is being connected.
+        assert!(model.paired("/d/mouse", Ok(())).is_some());
+        assert!(model.busy());
+        model.connected("/d/mouse");
+        assert!(!model.busy());
     }
 
     #[test]

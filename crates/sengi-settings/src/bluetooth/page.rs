@@ -396,19 +396,29 @@ impl Controller for BluetoothPage {
         }
     }
 
-    /// A search is for someone looking at the list.
+    /// A search is for someone looking at the list, and so are the
+    /// worker and its watch on the bus: they go, and coming back starts
+    /// them again. Unless a pairing or a connection is under way, which
+    /// is owed its end wherever the user has gone meanwhile.
     fn hide(&self, _app: &Rc<App>) {
-        if self.model.borrow().searching() {
-            self.send(Command::Search(false));
+        if self.model.borrow().busy() {
+            if self.model.borrow().searching() {
+                self.send(Command::Search(false));
+            }
+            return;
         }
+        self.shutdown();
     }
 
     fn shutdown(&self) {
         // The worker stops the search on its way out. BlueZ would end it
         // anyway when this process leaves the bus.
-        if let Some(worker) = self.worker.borrow().as_ref() {
+        if let Some(worker) = self.worker.borrow_mut().take() {
             worker.stop();
         }
+        // The watch is ended here and not by the worker, so that one on
+        // its way out cannot take the next one's watch with it.
+        self.service.unwatch();
     }
 
     fn as_any(self: Rc<Self>) -> Rc<dyn std::any::Any> {

@@ -78,6 +78,9 @@ pub trait WifiService: Send + Sync + 'static {
     /// Arrange for `changed` to be called whenever a later `read` could
     /// differ.
     fn watch(&self, changed: Notify);
+    /// Stop every watch started with `watch`, and what it was using. A
+    /// program that exits when its panel closes has no need to.
+    fn unwatch(&self) {}
 }
 
 /// Bluetooth: whether there is an adapter, whether it is on, and what is
@@ -96,6 +99,9 @@ pub trait BluetoothService: Send + Sync + 'static {
     /// Arrange for `changed` to be called whenever a later `read` could
     /// differ.
     fn watch(&self, changed: Notify);
+    /// Stop every watch started with `watch`, and what it was using. A
+    /// program that exits when its panel closes has no need to.
+    fn unwatch(&self) {}
 }
 
 /// The default audio output.
