@@ -27,7 +27,7 @@ screen_h=800
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
 rm -f "$out/serial.log" "$out"/*.png "$out/metrics.txt" \
-	"$out/mon.in" "$out/qmp.in" "$out/qmp.out"
+	"$out/mon.in" "$out/qmp.in" "$out/qmp.out" "$out/firmware.log"
 : >"$out/serial.log"
 mkfifo "$out/mon.in" "$out/qmp.in" "$out/qmp.out"
 
@@ -35,6 +35,28 @@ accel=tcg cpu=max
 if [ -w /dev/kvm ]; then accel=kvm cpu=host; fi
 
 now() { date +%s.%N; }
+
+# The preview entry is reached the way a person reaches it: by its hotkey in
+# the hidden boot menu. GRUB looks for a key once, so one has to be waiting.
+# Keys pressed while SeaBIOS is still setting the keyboard up can get lost
+# with the keyboard, so the firmware's own log is watched and the key is
+# pressed, over and over, from the moment it hands over to the disk until the
+# desktop reports in. The guest says which compositor it was asked for, and
+# that is checked at the end. Under UEFI there is no such line to wait for
+# and the key is pressed from the start.
+preview=${SENGI_PREVIEW:-0}
+want=labwc
+handover=
+if [ "$preview" = 1 ]; then
+	want=sengi-compositor
+	if [ -z "${SENGI_UEFI:-}" ]; then
+		handover='Booting from 0000:7c00'
+		: >"$out/firmware.log"
+	fi
+fi
+handed_over() {
+	[ -z "$handover" ] || grep -q "$handover" "$out/firmware.log"
+}
 
 # Read the ISO once so the host's disk cache does not count against the guest.
 cat "$iso" >/dev/null
@@ -56,6 +78,7 @@ qemu-system-x86_64 -machine q35,accel=$accel -cpu $cpu -smp 2 -m 4096 \
 	-smbios type=11,value=io.systemd.credential:sengi.test=1 \
 	${SENGI_TEST_DEBUG:+-smbios "type=11,value=io.systemd.credential:sengi.test.debug=$SENGI_TEST_DEBUG"} \
 	-serial file:"$out/serial.log" \
+	${handover:+-chardev file,id=firmware,path="$out/firmware.log" -device isa-debugcon,iobase=0x402,chardev=firmware} \
 	-qmp pipe:"$out/qmp" \
 	-monitor stdio <"$out/mon.in" >"$out/monitor.log" 2>&1 &
 qemu=$!
@@ -73,17 +96,11 @@ stop() {
 	rm -f "$out/mon.in" "$out/qmp.in" "$out/qmp.out"
 }
 
-# The preview entry is reached the way a person reaches it: by its hotkey in
-# the boot menu. There is no telling from outside when GRUB is listening, so
-# the key is pressed over and over until the desktop reports in. The guest
-# says which compositor it was asked for, and that is checked at the end.
-preview=${SENGI_PREVIEW:-0}
-want=labwc
-if [ "$preview" = 1 ]; then want=sengi-compositor; fi
-
 wait_for() {
 	while ! grep -q "$1" "$out/serial.log"; do
-		if [ "$preview" = 1 ] && [ "$1" = SENGI-BOOT ]; then echo "sendkey p" >&3; fi
+		if [ "$preview" = 1 ] && [ "$1" = SENGI-BOOT ] && handed_over; then
+			echo "sendkey p" >&3
+		fi
 		kill -0 "$qemu" 2>/dev/null || { echo "qemu exited early" >&2; return 1; }
 		elapsed=$(echo "$(now) $start" | awk '{printf "%d", $1 - $2}')
 		[ "$elapsed" -lt "$timeout_s" ] || { echo "timed out waiting for $1" >&2; return 1; }
