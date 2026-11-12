@@ -61,8 +61,10 @@ export component IconButton inherits Rectangle {
 }
 
 // A horizontal slider over whole numbers. `changed` is called for every
-// position the user moves it through, `released` once when a drag or a
-// key press ends on a value; whoever listens picks the one that suits.
+// position the user moves it through, `released` once when a drag ends
+// on a value, or when a key that moved it is let go or has been quiet
+// for a moment: a held key repeats, and each repeat is not an ending.
+// Whoever listens picks the one that suits.
 export component Slider inherits Rectangle {
     in-out property <int> value: 0;
     in property <int> minimum: 0;
@@ -89,9 +91,27 @@ export component Slider inherits Rectangle {
         }
     }
 
+    // The keyboard has moved it and `released` has not been called yet.
+    private property <bool> owed: false;
+
     function key(to: int) {
         root.move(to);
-        root.released(root.value);
+        root.owed = true;
+        settle.restart();
+    }
+
+    function report() {
+        settle.stop();
+        if root.owed {
+            root.owed = false;
+            root.released(root.value);
+        }
+    }
+
+    settle := Timer {
+        interval: Tokens.input-settle;
+        running: false;
+        triggered => { root.report(); }
     }
 
     // The value under a pointer at `x`, with the knob centred on it.
@@ -138,6 +158,18 @@ export component Slider inherits Rectangle {
                 return EventResult.reject;
             }
             return EventResult.accept;
+        }
+
+        key-released(event) => {
+            root.report();
+            return EventResult.reject;
+        }
+
+        // Tab away while the key is still down: the value is settled.
+        changed has-focus => {
+            if !self.has-focus {
+                root.report();
+            }
         }
 
         touch := TouchArea {

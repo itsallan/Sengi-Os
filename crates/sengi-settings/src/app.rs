@@ -2,14 +2,17 @@
 //! dialog and the one chooser, and the way back to the UI thread.
 
 use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use slint::{ComponentHandle, ModelRc, VecModel};
 
 use crate::cli::Page;
 use crate::derive;
-use crate::settings::Settings;
-use crate::store::{Dirs, Value};
+use crate::settings::{self, Settings};
+use crate::store::{self, Dirs, Document, Value};
 use crate::ui::{ChooserState, DialogSpec, DialogState, Item, PageEntry, SettingsWindow};
 
 /// A chooser never lays out more rows than this. A longer list says so
@@ -51,10 +54,163 @@ struct OpenChooser {
     choose: Chosen,
 }
 
+/// How long closing the window waits for the last change to be written
+/// and applied.
+const LAST_APPLY: Duration = Duration::from_secs(5);
+
+struct Slot<T> {
+    waiting: Option<T>,
+    closed: bool,
+    over: bool,
+}
+
+/// One thread that does the newest thing it was asked and skips what was
+/// overtaken. A request made while one is being carried out waits; one
+/// made while another waits is merged into it. So there are never two at
+/// once, and the last one asked for is always the last one done.
+pub struct Latest<T> {
+    shared: Arc<(Mutex<Slot<T>>, Condvar)>,
+    merge: fn(&mut T, T),
+}
+
+impl<T> Clone for Latest<T> {
+    fn clone(&self) -> Latest<T> {
+        Latest {
+            shared: self.shared.clone(),
+            merge: self.merge,
+        }
+    }
+}
+
+impl<T: Send + 'static> Latest<T> {
+    /// `merge` folds a newer request into one still waiting.
+    pub fn spawn(
+        name: &str,
+        merge: fn(&mut T, T),
+        mut run: impl FnMut(T) + Send + 'static,
+    ) -> Latest<T> {
+        let shared = Arc::new((
+            Mutex::new(Slot {
+                waiting: None,
+                closed: false,
+                over: false,
+            }),
+            Condvar::new(),
+        ));
+        let theirs = shared.clone();
+        let spawned = std::thread::Builder::new()
+            .name(format!("settings-{name}"))
+            .spawn(move || {
+                let (slot, told) = &*theirs;
+                loop {
+                    let mut guard = slot.lock().unwrap_or_else(|p| p.into_inner());
+                    while guard.waiting.is_none() && !guard.closed {
+                        guard = told.wait(guard).unwrap_or_else(|p| p.into_inner());
+                    }
+                    let Some(job) = guard.waiting.take() else {
+                        guard.over = true;
+                        told.notify_all();
+                        return;
+                    };
+                    drop(guard);
+                    run(job);
+                }
+            });
+        if let Err(error) = spawned {
+            eprintln!("sengi-settings: could not start the {name} worker: {error}");
+            shared.0.lock().unwrap_or_else(|p| p.into_inner()).over = true;
+        }
+        Latest { shared, merge }
+    }
+
+    pub fn request(&self, job: T) {
+        let (slot, told) = &*self.shared;
+        let mut guard = slot.lock().unwrap_or_else(|p| p.into_inner());
+        if guard.closed {
+            return;
+        }
+        match guard.waiting.as_mut() {
+            Some(waiting) => (self.merge)(waiting, job),
+            None => guard.waiting = Some(job),
+        }
+        told.notify_all();
+    }
+
+    /// Take no more requests, and wait for at most `limit` until what
+    /// was asked for has been done. False if it had not by then.
+    pub fn finish(&self, limit: Duration) -> bool {
+        let (slot, told) = &*self.shared;
+        let mut guard = slot.lock().unwrap_or_else(|p| p.into_inner());
+        guard.closed = true;
+        told.notify_all();
+        let (guard, _) = told
+            .wait_timeout_while(guard, limit, |slot| !slot.over)
+            .unwrap_or_else(|p| p.into_inner());
+        guard.over
+    }
+}
+
+/// What is owed to the disk and to the session.
+#[derive(Default)]
+struct Job {
+    /// The settings file as it should now read.
+    file: Option<(PathBuf, String)>,
+    /// The settings labwc's files should be written from.
+    session: Option<Settings>,
+    /// Things to do once both are done, such as restarting a program
+    /// that reads the settings file as it starts.
+    after: Vec<Box<dyn FnOnce() + Send>>,
+}
+
+fn merge_jobs(waiting: &mut Job, newer: Job) {
+    if newer.file.is_some() {
+        waiting.file = newer.file;
+    }
+    if newer.session.is_some() {
+        waiting.session = newer.session;
+    }
+    waiting.after.extend(newer.after);
+}
+
+fn carry_out(dirs: &Dirs, job: Job) {
+    if let Some((path, text)) = job.file {
+        if let Err(error) = store::write_atomic(&path, &text) {
+            let problem = format!("could not write {}: {error}", path.display());
+            eprintln!("sengi-settings: {problem}");
+            post(move |app| {
+                // What is shown should be what is stored.
+                app.reload();
+                app.tell("The setting could not be saved", &problem);
+            });
+        }
+    }
+    if let Some(settings) = job.session {
+        let applied = derive::apply(dirs, &settings);
+        if applied.changed() {
+            derive::reconfigure();
+        }
+        let problems = applied.problems();
+        if !problems.is_empty() {
+            post(move |app| {
+                app.tell("The setting could not be applied", &problems.join("\n\n"));
+            });
+        }
+    }
+    for task in job.after {
+        task();
+    }
+}
+
 pub struct App {
     pub window: SettingsWindow,
     pub dirs: Dirs,
     pub settings: RefCell<Settings>,
+    /// The two files `settings` is made of. They are kept here as well
+    /// so that a change can be made in memory and written by the worker.
+    system: RefCell<Document>,
+    user: RefCell<Document>,
+    user_path: Option<PathBuf>,
+    applier: Latest<Job>,
     pages: RefCell<Vec<(Page, Rc<dyn Controller>)>>,
     current: Cell<Option<Page>>,
     dialog: RefCell<Option<OpenDialog>>,
@@ -108,8 +264,18 @@ pub fn narrow<'a>(choices: &'a [Choice], typed: &str) -> Vec<&'a Choice> {
 
 impl App {
     pub fn new(window: SettingsWindow, dirs: Dirs, settings: Settings) -> Rc<App> {
+        let read = |path: Option<PathBuf>| path.map(|path| store::load(&path).0);
+        let user_path = dirs.user(store::FILE);
+        let applier = Latest::spawn("apply", merge_jobs, {
+            let dirs = dirs.clone();
+            move |job| carry_out(&dirs, job)
+        });
         let app = Rc::new(App {
             window,
+            system: RefCell::new(read(dirs.system(store::FILE)).unwrap_or_default()),
+            user: RefCell::new(read(user_path.clone()).unwrap_or_default()),
+            user_path,
+            applier,
             dirs,
             settings: RefCell::new(settings),
             pages: RefCell::default(),
@@ -233,11 +399,15 @@ impl App {
         self.current.get()
     }
 
-    /// Tell every page the window is closing.
+    /// Tell every page the window is closing, and see the last change
+    /// written and applied.
     pub fn shutdown(&self) {
         let pages: Vec<_> = self.pages.borrow().iter().map(|(_, c)| c.clone()).collect();
         for page in pages {
             page.shutdown();
+        }
+        if !self.applier.finish(LAST_APPLY) {
+            eprintln!("sengi-settings: the last change was still being applied at exit");
         }
         APP.with(|slot| slot.borrow_mut().take());
     }
@@ -379,17 +549,60 @@ impl App {
         state.set_items(model(rows));
     }
 
-    /// Store one setting. A failure is shown in a dialog and returned.
+    /// Store one setting. It is in effect in memory at once and written
+    /// to the file by the worker. False, and a dialog, if it cannot be.
     pub fn set(self: &Rc<App>, section: &str, key: &str, value: Value) -> bool {
-        let result = self.settings.borrow_mut().set(section, key, value);
-        match result {
-            Ok(()) => true,
-            Err(problem) => {
-                eprintln!("sengi-settings: {problem}");
-                self.tell("The setting could not be saved", &problem);
-                false
-            }
+        let stored = self.store(section, key, value);
+        if let Err(problem) = &stored {
+            eprintln!("sengi-settings: {problem}");
+            self.tell("The setting could not be saved", problem);
         }
+        stored.is_ok()
+    }
+
+    fn store(&self, section: &str, key: &str, value: Value) -> Result<(), String> {
+        let value = settings::check(section, key, &value)
+            .map_err(|why| format!("{section}.{key} {why}"))?;
+        if self.settings.borrow().get(section, key).as_ref() == Some(&value) {
+            return Ok(());
+        }
+        let path = self
+            .user_path
+            .clone()
+            .ok_or("there is no home directory to keep settings in")?;
+        let mut user = self.user.borrow_mut();
+        user.set(section, key, value);
+        *self.settings.borrow_mut() = Settings::from_documents(
+            self.system.borrow().clone(),
+            user.clone(),
+            Some(path.clone()),
+        );
+        self.applier.request(Job {
+            file: Some((path, user.render())),
+            ..Job::default()
+        });
+        Ok(())
+    }
+
+    /// Read the settings files again, after a write that failed.
+    fn reload(&self) {
+        let read = |path: Option<PathBuf>| path.map(|path| store::load(&path).0);
+        *self.system.borrow_mut() = read(self.dirs.system(store::FILE)).unwrap_or_default();
+        *self.user.borrow_mut() = read(self.user_path.clone()).unwrap_or_default();
+        *self.settings.borrow_mut() = Settings::from_documents(
+            self.system.borrow().clone(),
+            self.user.borrow().clone(),
+            self.user_path.clone(),
+        );
+    }
+
+    /// Run `task` on the worker once every change made so far has been
+    /// written and applied.
+    pub fn after_saved(&self, task: impl FnOnce() + Send + 'static) {
+        self.applier.request(Job {
+            after: vec![Box::new(task)],
+            ..Job::default()
+        });
     }
 
     /// Say something that needs no answer.
@@ -406,22 +619,12 @@ impl App {
         );
     }
 
-    /// Write labwc's files from the settings and have it read them, off
-    /// the UI thread. Problems come back in a dialog.
+    /// Write labwc's files from the settings and have it read them, on
+    /// the worker. Problems come back in a dialog.
     pub fn apply_to_session(&self) {
-        let dirs = self.dirs.clone();
-        let settings = self.settings.borrow().clone();
-        std::thread::spawn(move || {
-            let applied = derive::apply(&dirs, &settings);
-            if applied.changed() {
-                derive::reconfigure();
-            }
-            let problems = applied.problems();
-            if !problems.is_empty() {
-                post(move |app| {
-                    app.tell("The setting could not be applied", &problems.join("\n\n"));
-                });
-            }
+        self.applier.request(Job {
+            session: Some(self.settings.borrow().clone()),
+            ..Job::default()
         });
     }
 }
@@ -480,6 +683,66 @@ mod tests {
         assert_eq!(ids("america").len(), 2);
         assert_eq!(ids("buenos aires"), ["America/Argentina/Buenos_Aires"]);
         assert!(ids("atlantis").is_empty());
+    }
+
+    #[test]
+    fn a_burst_of_requests_is_a_few_applies_and_ends_on_the_last() {
+        use std::sync::mpsc;
+        let (started, has_started) = mpsc::channel();
+        let (go, gate) = mpsc::channel::<()>();
+        let done = Arc::new(Mutex::new(Vec::new()));
+        let latest = Latest::spawn("test", |waiting: &mut u32, newer| *waiting = newer, {
+            let done = done.clone();
+            move |value| {
+                let _ = started.send(());
+                // The first apply is held up until the burst is over.
+                let _ = gate.recv();
+                done.lock().unwrap().push(value);
+            }
+        });
+        latest.request(0);
+        has_started.recv_timeout(Duration::from_secs(5)).unwrap();
+        for value in 1..100 {
+            latest.request(value);
+        }
+        drop(go);
+        assert!(latest.finish(Duration::from_secs(5)));
+        // One was under way; the other 99 became one.
+        assert_eq!(*done.lock().unwrap(), [0, 99]);
+        // Nothing is taken after the end.
+        latest.request(100);
+        assert!(latest.finish(Duration::from_millis(10)));
+        assert_eq!(done.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_waiting_job_takes_the_newest_file_and_keeps_every_errand() {
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let errand = |name: &'static str| -> Box<dyn FnOnce() + Send> {
+            let ran = ran.clone();
+            Box::new(move || ran.lock().unwrap().push(name))
+        };
+        let mut waiting = Job {
+            file: Some((PathBuf::from("/a"), "old".to_string())),
+            after: vec![errand("first")],
+            ..Job::default()
+        };
+        merge_jobs(
+            &mut waiting,
+            Job {
+                file: Some((PathBuf::from("/a"), "new".to_string())),
+                session: Some(Settings::default()),
+                after: vec![errand("second")],
+            },
+        );
+        // An errand alone does not undo what is owed.
+        merge_jobs(&mut waiting, Job::default());
+        assert_eq!(waiting.file.as_ref().unwrap().1, "new");
+        assert!(waiting.session.is_some());
+        for task in waiting.after {
+            task();
+        }
+        assert_eq!(*ran.lock().unwrap(), ["first", "second"]);
     }
 
     #[test]

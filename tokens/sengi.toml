@@ -83,4 +83,7 @@ notification-timeout = 5000
 # How long a card that just appeared, changed or moved ignores clicks, so
 # it cannot be slipped under a click that was meant for something else.
 click-guard = 400
+# How long a control moved by a held key stays quiet before it reports
+# where it ended up, so key repeat is one change and not twenty a second.
+input-settle = 300
 idle-lock = 300

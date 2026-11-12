@@ -354,7 +354,9 @@ impl PowerPage {
 
     fn settings_changed(app: &Rc<App>) {
         PowerPage::render_settings(app, None);
-        std::thread::spawn(|| {
+        // The session's swayidle reads the settings file as it starts,
+        // so it is ended only after the file has been written.
+        app.after_saved(|| {
             let restarted = restart_idler();
             app::post(move |app| PowerPage::render_settings(app, Some(restarted)));
         });
