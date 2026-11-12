@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/sengi-apps", "crates/sengi-bar", "crates/sengi-dock", "crates/sengi-focus", "crates/sengi-launcher", "crates/sengi-layer", "crates/sengi-notify", "crates/sengi-quick", "crates/sengi-settings", "crates/sengi-system", "crates/sengi-text", "crates/sengi-tokens", "crates/sengi-ui"]
+members = ["crates/sengi-apps", "crates/sengi-bar", "crates/sengi-config", "crates/sengi-dock", "crates/sengi-focus", "crates/sengi-launcher", "crates/sengi-layer", "crates/sengi-notify", "crates/sengi-quick", "crates/sengi-settings", "crates/sengi-system", "crates/sengi-text", "crates/sengi-tokens", "crates/sengi-ui"]
 
 [workspace.package]
 version = "0.5.0"

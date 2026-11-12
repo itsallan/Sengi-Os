@@ -3532,13 +3532,19 @@ dependencies = [
  "futures-lite",
  "libc",
  "sengi-apps",
+ "sengi-config",
  "sengi-layer",
  "sengi-system",
  "sengi-text",
  "slint",
  "slint-build",
+ "tz-rs",
  "zbus",
 ]
+
+[[package]]
+name = "sengi-config"
+version = "0.5.0"
 
 [[package]]
 name = "sengi-dock"
@@ -3612,6 +3618,7 @@ name = "sengi-settings"
 version = "0.5.0"
 dependencies = [
  "libc",
+ "sengi-config",
  "sengi-system",
  "sengi-text",
  "slint",
@@ -4380,6 +4387,12 @@ dependencies = [
  "bincode",
  "serde",
 ]
+
+[[package]]
+name = "tz-rs"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fc6c929ffa10fb34f4a3c7e9a73620a83ef2e85e47f9ec3381b8289e6762f42"
 
 [[package]]
 name = "udev"
