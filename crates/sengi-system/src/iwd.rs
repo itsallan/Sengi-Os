@@ -228,9 +228,12 @@ impl Desk {
         self.unanswered.take_if(|asked| asked == network).is_some()
     }
 
-    /// iwd has given up on the request, or is done with the agent.
-    fn cancel(&mut self) {
-        self.waiting = None;
+    /// iwd has given up on the request, or is done with the agent. Only
+    /// the iwd the passphrase is waiting for can say so: anyone else on
+    /// the bus could otherwise make a join fail by calling this.
+    fn cancel(&mut self, sender: Option<&str>) {
+        self.waiting
+            .take_if(|waiting| Some(waiting.asker.as_str()) == sender);
     }
 }
 
@@ -310,12 +313,14 @@ impl Agent {
         declined()
     }
 
-    fn cancel(&self, _reason: &str) {
-        slot(&self.slot).cancel();
+    fn cancel(&self, _reason: &str, #[zbus(header)] header: zbus::message::Header<'_>) {
+        let sender = header.sender().map(|name| name.as_str());
+        slot(&self.slot).cancel(sender);
     }
 
-    fn release(&self) {
-        slot(&self.slot).cancel();
+    fn release(&self, #[zbus(header)] header: zbus::message::Header<'_>) {
+        let sender = header.sender().map(|name| name.as_str());
+        slot(&self.slot).cancel(sender);
     }
 }
 
@@ -663,8 +668,24 @@ mod tests {
         let mut desk = Desk::default();
         assert!(desk.answer("/net/a_psk", IWD).is_none());
         desk.put("/net/a_psk", ":1.7", secret("correct horse"));
-        desk.cancel();
+        desk.cancel(IWD);
         assert!(desk.answer("/net/a_psk", IWD).is_none());
+    }
+
+    #[test]
+    fn nobody_but_iwd_can_call_a_request_off() {
+        let mut desk = Desk::default();
+        desk.put("/net/a_psk", ":1.7", secret("correct horse"));
+        desk.cancel(Some(":1.99"));
+        desk.cancel(None);
+        // Still there for the iwd it was meant for.
+        assert_eq!(
+            desk.answer("/net/a_psk", IWD).unwrap().expose(),
+            "correct horse"
+        );
+        // With nothing waiting there is nothing to call off.
+        desk.cancel(IWD);
+        desk.cancel(Some(":1.99"));
     }
 
     #[test]
