@@ -15,15 +15,16 @@ preview() {
 		sengi-compositor --backend drm --locker '/usr/bin/swaylock -f' \
 		-s 'LABWC_PID=$SENGI_COMPOSITOR_PID sh /etc/xdg/labwc/autostart' &
 	pid=$!
-	# greetd ends the session by signalling this shell.
-	trap 'kill -TERM "$pid" 2>/dev/null' TERM HUP INT
+	# greetd ends the session by signalling this shell. The signal cuts the
+	# wait short, so wait once more for the compositor to shut down.
+	stopping=0
+	trap 'stopping=1; kill -TERM "$pid" 2>/dev/null' TERM HUP INT
 	status=0
 	wait "$pid" || status=$?
-	# A trapped signal cuts the wait short while the compositor shuts down.
-	while kill -0 "$pid" 2>/dev/null; do
+	if [ "$stopping" = 1 ]; then
 		status=0
 		wait "$pid" || status=$?
-	done
+	fi
 	trap - TERM HUP INT
 	read -r up _ </proc/uptime
 	lasted=$((${up%.*} - started))
