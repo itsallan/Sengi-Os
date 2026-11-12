@@ -113,7 +113,7 @@ kernel (`getifaddrs`), whoever configured them.
 - A new open network asks first, saying that it is not encrypted.
 - Forgetting a network asks first.
 - The passphrase is never logged, put on a command line or written to
-  disk by Settings; iwd stores it. `src/secret.rs` says which copies in
+  disk by Settings; iwd stores it. sengi-system's `secret.rs` says which copies in
   memory are overwritten and which are only freed. The process cannot be
   core-dumped. The agent hands the passphrase only to the iwd it was
   typed for, for the network it was typed for, once.

@@ -10,7 +10,7 @@
 //! this connection. Even so every call is checked: it must come from the
 //! bus name that owned `org.bluez` when the agent was registered, or it is
 //! refused without the user ever seeing it. A PIN typed by the user goes
-//! straight into the reply; see `secret.rs` for what happens to the copies
+//! straight into the reply; see sengi-system's `secret.rs` for what happens to the copies
 //! in memory.
 
 use std::path::PathBuf;

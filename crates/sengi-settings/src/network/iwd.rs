@@ -5,7 +5,7 @@
 //! The passphrase typed into the dialog waits in a slot for that one call
 //! and is handed over once, to the iwd it was meant for and to nobody
 //! else. iwd keeps what it needs to rejoin the network; this program
-//! stores nothing. See iwd's `doc/agent-api.txt`, and `secret.rs` for what
+//! stores nothing. See iwd's `doc/agent-api.txt`, and sengi-system's `secret.rs` for what
 //! happens to the copies in memory.
 //!
 //! Reading the device and the networks, switching the radio, scanning and
