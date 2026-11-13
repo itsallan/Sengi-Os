@@ -68,6 +68,10 @@ struct Owned {
     lock: PathBuf,
     /// Device and inode of the socket file, to tell ours from a successor's.
     identity: (u64, u64),
+    /// Holds the socket file's inode for as long as we live. Without it a
+    /// successor that removes our file and binds its own can be handed the
+    /// same inode number, and we would take its socket for ours.
+    _pin: File,
 }
 
 #[derive(Default)]
@@ -94,6 +98,18 @@ fn lock(path: &Path) -> Option<File> {
 fn identity(path: &Path) -> Option<(u64, u64)> {
     let meta = std::fs::symlink_metadata(path).ok()?;
     Some((meta.dev(), meta.ino()))
+}
+
+/// Open the socket file itself, without following a link and without
+/// connecting to it, and say which file that is.
+fn pin(path: &Path) -> Option<(File, (u64, u64))> {
+    let file = File::options()
+        .read(true)
+        .custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .ok()?;
+    let meta = file.metadata().ok()?;
+    Some((file, (meta.dev(), meta.ino())))
 }
 
 fn slot(slot: &Mutex<Slot>) -> MutexGuard<'_, Slot> {
@@ -143,7 +159,7 @@ pub fn claim(runtime_dir: Option<&Path>, wire: &Wire) -> Claim {
     let Ok(listener) = UnixListener::bind(&socket) else {
         return unowned();
     };
-    let Some(identity) = identity(&socket) else {
+    let Some((pin, identity)) = pin(&socket) else {
         return unowned();
     };
     let slot: Arc<Mutex<Slot>> = Arc::default();
@@ -159,6 +175,7 @@ pub fn claim(runtime_dir: Option<&Path>, wire: &Wire) -> Claim {
             socket,
             lock: lock_path,
             identity,
+            _pin: pin,
         }),
         slot,
     })
@@ -329,7 +346,7 @@ pub fn deliver(runtime_dir: Option<&Path>, post: &Post, message: &[u8]) -> Deliv
     let Ok(listener) = UnixListener::bind(&socket) else {
         return unowned();
     };
-    let Some(identity) = identity(&socket) else {
+    let Some((pin, identity)) = pin(&socket) else {
         return unowned();
     };
     let letters: Arc<Mutex<Letters>> = Arc::default();
@@ -345,6 +362,7 @@ pub fn deliver(runtime_dir: Option<&Path>, post: &Post, message: &[u8]) -> Deliv
             socket,
             lock: lock_path,
             identity,
+            _pin: pin,
         }),
         letters,
     })

@@ -10,7 +10,7 @@ repository.workspace = true
 bus = ["dep:zbus"]
 # iwd, BlueZ, logind brightness, audio, battery, link state and rfkill, and
 # the worker threads that run them.
-services = ["bus", "dep:libc", "dep:sengi-text"]
+services = ["bus", "dep:sengi-text"]
 # What a settings application manages and the panel does not. The image
 # builds Settings apart from the other programs, so the panel there is
 # compiled without this. A build of the whole workspace unifies features
@@ -25,4 +25,4 @@ sengi-text = { path = "../sengi-text", optional = true }
 # The blocking API on zbus's own small executor. No tokio.
 zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"], optional = true }
 # For prctl: a process that holds a passphrase is kept out of core dumps.
-libc = { version = "0.2", optional = true }
+libc = "0.2"
