@@ -20,16 +20,15 @@ use std::time::Duration;
 
 use slint::{ComponentHandle, Timer, TimerMode};
 
+use sengi_system::battery::{self, Charge, Pack};
+
 use crate::app::{self, App, Choice, Controller};
 use crate::bus::{self, Bus};
 use crate::store::Value;
-use crate::text;
 use crate::ui::{InfoRow, PowerData};
 
 /// The battery is read again this often, and only while the page shows.
 const BATTERY_PERIOD: Duration = Duration::from_secs(30);
-/// More batteries than any laptop has.
-pub const MAX_BATTERIES: usize = 8;
 
 /// The idle times offered, in seconds. Zero is never.
 pub const IDLE_CHOICES: [i64; 8] = [60, 120, 300, 600, 900, 1800, 3600, 0];
@@ -49,199 +48,23 @@ pub fn idle_words(seconds: i64) -> String {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Charge {
-    Charging,
-    Discharging,
-    Full,
-    /// Plugged in and holding, as at a charge limit.
-    Holding,
-    Unknown,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Battery {
-    /// What the kernel calls it, such as `BAT0`. Empty for several
-    /// taken together.
-    pub name: String,
-    pub percent: u32,
-    pub charge: Charge,
-    /// Watt-hours it holds now when full, and held when new.
-    pub full_wh: Option<f64>,
-    pub design_wh: Option<f64>,
-    pub now_wh: Option<f64>,
-    /// The rate it is charging or discharging at.
-    pub watts: Option<f64>,
-    pub cycles: Option<u32>,
-    /// Cleaned for display.
-    pub kind: String,
-}
-
-impl Battery {
-    /// What is left of the capacity it had when new, in percent.
-    pub fn health(&self) -> Option<u32> {
-        let (full, design) = (self.full_wh?, self.design_wh?);
-        (design > 0.0).then(|| ((full / design) * 100.0).round().clamp(0.0, 100.0) as u32)
-    }
-
-    /// Minutes until empty, or until full.
-    pub fn minutes_left(&self) -> Option<u32> {
-        let (now, watts) = (self.now_wh?, self.watts.filter(|w| *w > 0.5)?);
-        let hours = match self.charge {
-            Charge::Discharging => now / watts,
-            Charge::Charging => (self.full_wh? - now).max(0.0) / watts,
-            _ => return None,
-        };
-        (hours.is_finite() && hours < 100.0).then(|| (hours * 60.0).round() as u32)
-    }
-
-    pub fn summary(&self) -> String {
-        let state = match self.charge {
-            Charge::Charging => "charging",
-            Charge::Discharging => "on battery",
-            Charge::Full => "full",
-            Charge::Holding => "plugged in, not charging",
-            Charge::Unknown => "state unknown",
-        };
-        let left = self.minutes_left().map(|minutes| {
-            let (h, m) = (minutes / 60, minutes % 60);
-            let time = if h == 0 {
-                format!("{m} min")
-            } else {
-                format!("{h} h {m:02} min")
-            };
-            match self.charge {
-                Charge::Charging => format!(", about {time} until full"),
-                _ => format!(", about {time} left"),
-            }
-        });
-        format!("{}%, {state}{}", self.percent, left.unwrap_or_default())
-    }
-}
-
-/// Reads one battery's directory. Energy is in µWh; where the battery
-/// counts charge instead (µAh), the design voltage turns it into energy.
-fn read_battery(dir: &Path) -> Option<Battery> {
-    let file = |name: &str| fs::read_to_string(dir.join(name)).ok();
-    let number = |name: &str| -> Option<f64> {
-        let value: f64 = file(name)?.trim().parse().ok()?;
-        (value.is_finite() && (0.0..1e12).contains(&value)).then_some(value)
+/// The line that says how the battery stands.
+pub fn summary(battery: &Pack) -> String {
+    let state = match battery.charge {
+        Charge::Charging => "charging",
+        Charge::Discharging => "on battery",
+        Charge::Full => "full",
+        Charge::NotCharging => "plugged in, not charging",
+        Charge::Unknown => "state unknown",
     };
-    if file("type")?.trim() != "Battery" || file("present").is_some_and(|p| p.trim() == "0") {
-        return None;
-    }
-    // A mouse's or a headset's battery also shows up here.
-    if file("scope").is_some_and(|scope| scope.trim() == "Device") {
-        return None;
-    }
-    let volts = number("voltage_min_design")
-        .or(number("voltage_now"))
-        .map(|microvolts| microvolts / 1e6);
-    let energy = |energy: &str, charge: &str| -> Option<f64> {
-        number(energy)
-            .map(|microwatt_hours| microwatt_hours / 1e6)
-            .or_else(|| Some(number(charge)? / 1e6 * volts?))
-    };
-    let watts = number("power_now")
-        .map(|microwatts| microwatts / 1e6)
-        .or_else(|| Some(number("current_now")? / 1e6 * volts?));
-    let (now_wh, full_wh) = (
-        energy("energy_now", "charge_now"),
-        energy("energy_full", "charge_full"),
-    );
-    let percent = number("capacity").or_else(|| {
-        let (now, full) = (now_wh?, full_wh?);
-        (full > 0.0).then(|| now / full * 100.0)
-    })?;
-    let words: Vec<String> = ["technology", "manufacturer", "model_name"]
-        .iter()
-        .filter_map(|name| file(name))
-        .map(|raw| text::clean(&raw, 24))
-        .filter(|word| !word.is_empty() && word != "Unknown")
-        .collect();
-    let name = dir.file_name().map(|name| name.to_string_lossy());
-    Some(Battery {
-        name: text::clean(&name.unwrap_or_default(), 24),
-        percent: percent.round().clamp(0.0, 100.0) as u32,
-        charge: match file("status").unwrap_or_default().trim() {
-            "Charging" => Charge::Charging,
-            "Discharging" => Charge::Discharging,
-            "Full" => Charge::Full,
-            "Not charging" => Charge::Holding,
-            _ => Charge::Unknown,
-        },
-        full_wh,
-        design_wh: energy("energy_full_design", "charge_full_design"),
-        now_wh,
-        watts,
-        cycles: number("cycle_count")
-            .filter(|cycles| *cycles > 0.0)
-            .map(|cycles| cycles as u32),
-        kind: words.join(", "),
-    })
-}
-
-/// The system's batteries, by name. Some laptops have two.
-pub fn batteries(power_supply: &Path) -> Vec<Battery> {
-    let mut entries: Vec<_> = fs::read_dir(power_supply)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .take(32)
-        .collect();
-    entries.sort_by_key(|entry| entry.file_name());
-    entries
-        .iter()
-        .filter_map(|entry| read_battery(&entry.path()))
-        .take(MAX_BATTERIES)
-        .collect()
-}
-
-/// Several batteries as the one supply they are to the user: energies
-/// and power added up, and the charge worked out from the energy, so
-/// that a large battery counts for more than a small one.
-pub fn combined(batteries: &[Battery]) -> Option<Battery> {
-    let (first, rest) = batteries.split_first()?;
-    if rest.is_empty() {
-        return Some(first.clone());
-    }
-    // A sum only means something if every battery gave its part.
-    let total =
-        |part: fn(&Battery) -> Option<f64>| -> Option<f64> { batteries.iter().map(part).sum() };
-    let (now_wh, full_wh) = (total(|b| b.now_wh), total(|b| b.full_wh));
-    let percent = match (now_wh, full_wh) {
-        (Some(now), Some(full)) if full > 0.0 => now / full * 100.0,
-        _ => batteries.iter().map(|b| f64::from(b.percent)).sum::<f64>() / batteries.len() as f64,
-    };
-    let any = |charge: Charge| batteries.iter().any(|b| b.charge == charge);
-    let charge = if any(Charge::Charging) {
-        Charge::Charging
-    } else if any(Charge::Discharging) {
-        Charge::Discharging
-    } else if batteries.iter().all(|b| b.charge == Charge::Full) {
-        Charge::Full
-    } else if any(Charge::Holding) || any(Charge::Full) {
-        Charge::Holding
-    } else {
-        Charge::Unknown
-    };
-    let rates: Vec<f64> = batteries.iter().filter_map(|b| b.watts).collect();
-    Some(Battery {
-        name: String::new(),
-        percent: percent.round().clamp(0.0, 100.0) as u32,
-        charge,
-        full_wh,
-        design_wh: total(|b| b.design_wh),
-        now_wh,
-        watts: (!rates.is_empty()).then(|| rates.iter().sum()),
-        cycles: None,
-        kind: String::new(),
-    })
-}
-
-/// The system's battery, or all of them taken together.
-pub fn battery(power_supply: &Path) -> Option<Battery> {
-    combined(&batteries(power_supply))
+    let left = battery.minutes_left().map(|minutes| {
+        let time = battery::duration(minutes);
+        match battery.charge {
+            Charge::Charging => format!(", about {time} until full"),
+            _ => format!(", about {time} left"),
+        }
+    });
+    format!("{}%, {state}{}", battery.percent, left.unwrap_or_default())
 }
 
 /// What logind does for a key or the lid, in words.
@@ -362,7 +185,7 @@ fn restart_idler() -> bool {
 }
 
 struct Facts {
-    batteries: Vec<Battery>,
+    batteries: Vec<Pack>,
     actions: Option<(String, String)>,
 }
 
@@ -379,7 +202,7 @@ fn row(title: &str, value: &str) -> InfoRow {
     }
 }
 
-fn health_words(battery: &Battery) -> Option<String> {
+fn health_words(battery: &Pack) -> Option<String> {
     let (health, full, design) = (battery.health()?, battery.full_wh?, battery.design_wh?);
     Some(format!(
         "{health}% of its original capacity ({full:.1} of {design:.1} Wh)"
@@ -389,11 +212,11 @@ fn health_words(battery: &Battery) -> Option<String> {
 /// The card's rows. One battery is described in full. Several are added
 /// up for the charge and the power, and then each has a row for what is
 /// its own: how full it is and how worn.
-fn battery_rows(batteries: &[Battery]) -> Vec<InfoRow> {
-    let Some(whole) = combined(batteries) else {
+fn battery_rows(batteries: &[Pack]) -> Vec<InfoRow> {
+    let Some(whole) = battery::combined(batteries) else {
         return Vec::new();
     };
-    let mut rows = vec![row("Charge", &whole.summary())];
+    let mut rows = vec![row("Charge", &summary(&whole))];
     if let [battery] = batteries {
         if let Some(health) = health_words(battery) {
             rows.push(row("Health", &health));
@@ -518,7 +341,7 @@ impl PowerPage {
             .name("settings-power".to_string())
             .spawn(move || {
                 let facts = Facts {
-                    batteries: batteries(&class.join("power_supply")),
+                    batteries: battery::packs(&class.join("power_supply")),
                     actions: logind_actions(&bus),
                 };
                 app::post(move |app| {
@@ -572,92 +395,60 @@ mod tests {
     use super::*;
     use crate::testutil::TempDir;
 
-    fn laptop(tmp: &TempDir, status: &str) {
-        for (file, value) in [
-            ("type", "Battery"),
-            ("present", "1"),
-            ("status", status),
-            ("capacity", "58"),
-            ("energy_now", "24070000"),
-            ("energy_full", "41500000"),
-            ("energy_full_design", "48000000"),
-            ("power_now", "9500000"),
-            ("cycle_count", "312"),
-            ("technology", "Li-ion"),
-            ("manufacturer", "ASUSTeK"),
-            ("model_name", "ASUS Battery\u{202e}\n"),
-        ] {
-            tmp.write(&format!("BAT0/{file}"), &format!("{value}\n"));
+    fn pack(name: &str, percent: u32, charge: Charge, now: f64, full: f64, design: f64) -> Pack {
+        Pack {
+            name: name.to_string(),
+            percent,
+            charge,
+            full_wh: Some(full),
+            design_wh: Some(design),
+            now_wh: Some(now),
+            watts: Some(0.0),
+            cycles: None,
+            kind: String::new(),
         }
-        tmp.write("AC0/type", "Mains\n");
-        tmp.write("hidpp_battery_0/type", "Battery\n");
-        tmp.write("hidpp_battery_0/scope", "Device\n");
-        tmp.write("hidpp_battery_0/capacity", "90\n");
     }
 
     #[test]
-    fn a_laptop_battery_is_read_with_its_health() {
-        let tmp = TempDir::new();
-        laptop(&tmp, "Discharging");
-        let battery = battery(tmp.path()).unwrap();
-        assert_eq!(battery.percent, 58);
-        assert_eq!(battery.charge, Charge::Discharging);
-        assert_eq!(battery.health(), Some(86));
-        assert_eq!(battery.cycles, Some(312));
-        assert_eq!(battery.kind, "Li-ion, ASUSTeK, ASUS Battery");
-        // 24.07 Wh at 9.5 W.
-        assert_eq!(battery.minutes_left(), Some(152));
-        assert_eq!(battery.summary(), "58%, on battery, about 2 h 32 min left");
-        assert_eq!(battery.name, "BAT0");
+    fn one_battery_is_described_in_full() {
+        let battery = Pack {
+            watts: Some(9.5),
+            cycles: Some(312),
+            kind: "Li-ion, ASUSTeK, ASUS Battery".to_string(),
+            ..pack("BAT0", 58, Charge::Discharging, 24.07, 41.5, 48.0)
+        };
+        assert_eq!(summary(&battery), "58%, on battery, about 2 h 32 min left");
         let rows = battery_rows(&[battery]);
-        assert_eq!(rows.len(), 5);
+        let shown: Vec<(String, String)> = rows
+            .iter()
+            .map(|row| (row.title.to_string(), row.value.to_string()))
+            .collect();
+        let expected = [
+            ("Charge", "58%, on battery, about 2 h 32 min left"),
+            ("Health", "86% of its original capacity (41.5 of 48.0 Wh)"),
+            ("Power", "9.5 W"),
+            ("Charge cycles", "312"),
+            ("Type", "Li-ion, ASUSTeK, ASUS Battery"),
+        ];
         assert_eq!(
-            rows[1].value,
-            "86% of its original capacity (41.5 of 48.0 Wh)"
+            shown,
+            expected.map(|(title, value)| (title.to_string(), value.to_string()))
         );
+        assert!(battery_rows(&[]).is_empty());
     }
 
     #[test]
-    fn two_batteries_are_one_charge_weighted_by_what_each_holds() {
-        let tmp = TempDir::new();
-        // A small one nearly full and a large one nearly empty.
-        for (name, status, now, full, design, power, cycles) in [
-            (
-                "BAT0", "Unknown", "18000000", "20000000", "24000000", "0", "410",
-            ),
-            (
-                "BAT1",
-                "Discharging",
-                "12000000",
-                "60000000",
-                "72000000",
-                "12000000",
-                "95",
-            ),
-        ] {
-            for (file, value) in [
-                ("type", "Battery"),
-                ("status", status),
-                ("energy_now", now),
-                ("energy_full", full),
-                ("energy_full_design", design),
-                ("power_now", power),
-                ("cycle_count", cycles),
-            ] {
-                tmp.write(&format!("{name}/{file}"), value);
-            }
-        }
-        let both = batteries(tmp.path());
-        assert_eq!(both.len(), 2);
-        assert_eq!((both[0].percent, both[1].percent), (90, 20));
-        let whole = battery(tmp.path()).unwrap();
-        // 30 of 80 Wh, not the 55% that averaging the two would give.
-        assert_eq!(whole.percent, 38);
-        assert_eq!(whole.charge, Charge::Discharging);
-        assert_eq!(whole.now_wh, Some(30.0));
-        assert_eq!(whole.watts, Some(12.0));
-        assert_eq!(whole.minutes_left(), Some(150));
-        let rows = battery_rows(&both);
+    fn two_batteries_are_added_up_and_then_each_has_a_row() {
+        let small = Pack {
+            cycles: Some(410),
+            ..pack("BAT0", 90, Charge::Unknown, 18.0, 20.0, 24.0)
+        };
+        let large = Pack {
+            watts: Some(12.0),
+            cycles: Some(95),
+            ..pack("BAT1", 20, Charge::Discharging, 12.0, 60.0, 72.0)
+        };
+        let rows = battery_rows(&[small, large]);
         let shown: Vec<(String, String)> = rows
             .iter()
             .map(|row| (row.title.to_string(), row.value.to_string()))
@@ -685,39 +476,18 @@ mod tests {
     }
 
     #[test]
-    fn batteries_that_do_not_give_their_energy_are_averaged() {
-        let full = Battery {
-            name: "BAT0".to_string(),
-            percent: 100,
-            charge: Charge::Full,
-            full_wh: None,
-            design_wh: None,
-            now_wh: None,
-            watts: None,
-            cycles: None,
-            kind: String::new(),
+    fn the_charge_in_words() {
+        let battery = |charge| Pack {
+            watts: Some(9.5),
+            ..pack("BAT0", 58, charge, 24.07, 41.5, 48.0)
         };
-        let half = Battery {
-            name: "BAT1".to_string(),
-            percent: 50,
-            charge: Charge::Charging,
-            now_wh: Some(10.0),
-            full_wh: Some(20.0),
-            ..full.clone()
-        };
-        let whole = combined(&[full.clone(), half]).unwrap();
-        assert_eq!(whole.percent, 75);
-        assert_eq!(whole.charge, Charge::Charging);
+        assert!(summary(&battery(Charge::Charging)).ends_with("about 1 h 50 min until full"));
+        assert_eq!(summary(&battery(Charge::Full)), "58%, full");
         assert_eq!(
-            (whole.now_wh, whole.full_wh, whole.watts),
-            (None, None, None)
+            summary(&battery(Charge::NotCharging)),
+            "58%, plugged in, not charging"
         );
-        assert_eq!(
-            combined(&[full.clone(), full.clone()]).unwrap().charge,
-            Charge::Full
-        );
-        assert_eq!(combined(&[]), None);
-        assert_eq!(combined(std::slice::from_ref(&full)), Some(full));
+        assert_eq!(summary(&battery(Charge::Unknown)), "58%, state unknown");
     }
 
     #[test]
@@ -742,66 +512,6 @@ mod tests {
         let mut ended = sleeper();
         assert!(end_if(ended.id() as i32, || true));
         assert_eq!(ended.wait().unwrap().signal(), Some(libc::SIGTERM));
-    }
-
-    #[test]
-    fn charging_counts_up_to_full_and_full_counts_nothing() {
-        let tmp = TempDir::new();
-        laptop(&tmp, "Charging");
-        let charging = battery(tmp.path()).unwrap();
-        assert_eq!(charging.minutes_left(), Some(110));
-        assert!(charging.summary().ends_with("about 1 h 50 min until full"));
-        laptop(&tmp, "Full");
-        assert_eq!(battery(tmp.path()).unwrap().summary(), "58%, full");
-        laptop(&tmp, "Not charging");
-        assert_eq!(battery(tmp.path()).unwrap().charge, Charge::Holding);
-    }
-
-    #[test]
-    fn a_battery_that_counts_charge_is_converted_with_its_voltage() {
-        let tmp = TempDir::new();
-        for (file, value) in [
-            ("type", "Battery"),
-            ("status", "Discharging"),
-            ("charge_now", "2000000"),
-            ("charge_full", "4000000"),
-            ("charge_full_design", "5000000"),
-            ("current_now", "1000000"),
-            ("voltage_min_design", "11000000"),
-        ] {
-            tmp.write(&format!("BAT1/{file}"), value);
-        }
-        let battery = battery(tmp.path()).unwrap();
-        assert_eq!(battery.percent, 50);
-        assert_eq!(battery.health(), Some(80));
-        assert_eq!(battery.full_wh, Some(44.0));
-        assert_eq!(battery.minutes_left(), Some(120));
-        assert_eq!(battery.cycles, None);
-    }
-
-    #[test]
-    fn no_battery_and_nonsense_are_handled() {
-        let tmp = TempDir::new();
-        assert_eq!(battery(tmp.path()), None);
-        assert_eq!(battery(&tmp.path().join("missing")), None);
-        tmp.write("AC0/type", "Mains\n");
-        tmp.write("BAT0/type", "Battery\n");
-        tmp.write("BAT0/present", "0\n");
-        assert_eq!(battery(tmp.path()), None);
-        tmp.write("BAT0/present", "1\n");
-        // Present but says nothing usable.
-        assert_eq!(battery(tmp.path()), None);
-        tmp.write("BAT0/capacity", "250\n");
-        tmp.write("BAT0/energy_full", "-5\n");
-        tmp.write("BAT0/energy_full_design", "0\n");
-        tmp.write("BAT0/power_now", "NaN\n");
-        tmp.write("BAT0/status", "\u{0}\u{1b}[31m\n");
-        let odd = battery(tmp.path()).unwrap();
-        assert_eq!(odd.percent, 100);
-        assert_eq!(odd.charge, Charge::Unknown);
-        assert_eq!(odd.health(), None);
-        assert_eq!(odd.minutes_left(), None);
-        assert_eq!(odd.summary(), "100%, state unknown");
     }
 
     #[test]
