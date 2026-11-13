@@ -40,21 +40,21 @@ now() { date +%s.%N; }
 # the hidden boot menu. GRUB looks for a key once, and a key pressed before
 # GRUB runs does not count, so the firmware's own log is watched and the key
 # is pressed many times a second from the moment SeaBIOS hands over to the
-# disk. The guest says which compositor it was asked for, and that is checked
-# at the end. Under UEFI there is no such line to wait for; the key is
-# pressed from the start and for longer.
+# disk. It has to stop before Linux looks for the keyboard, or the guest can
+# end up without one; the kernel is known to have started when the CPU is in
+# long mode. The guest says which compositor it was asked for, and that is
+# checked at the end. None of this has a counterpart under UEFI yet.
 preview=${SENGI_PREVIEW:-0}
 want=labwc
 handover=
-presses=100
 if [ "$preview" = 1 ]; then
-	want=sengi-compositor
-	if [ -z "${SENGI_UEFI:-}" ]; then
-		handover='Booting from 0000:7c00'
-		: >"$out/firmware.log"
-	else
-		presses=400
+	if [ -n "${SENGI_UEFI:-}" ]; then
+		echo "the preview entry can only be picked under BIOS so far" >&2
+		exit 2
 	fi
+	want=sengi-compositor
+	handover='Booting from 0000:7c00'
+	: >"$out/firmware.log"
 fi
 
 # Read the ISO once so the host's disk cache does not count against the guest.
@@ -106,16 +106,17 @@ wait_for() {
 
 if [ "$preview" = 1 ]; then
 	i=0
-	if [ -n "$handover" ]; then
-		until grep -q "$handover" "$out/firmware.log" || [ $i -ge 1500 ]; do
-			sleep 0.02
-			i=$((i + 1))
-		done
-	fi
+	until grep -q "$handover" "$out/firmware.log" || [ $i -ge 1500 ]; do
+		sleep 0.02
+		i=$((i + 1))
+	done
 	i=0
-	while [ $i -lt $presses ]; do
+	while [ $i -lt 300 ]; do
 		echo "sendkey p" >&3
+		echo "info registers" >&3
 		sleep 0.03
+		# EFER is zero in GRUB and never again once the kernel runs.
+		if grep -q 'EFER=0*[1-9a-f]' "$out/monitor.log"; then break; fi
 		i=$((i + 1))
 	done
 fi
