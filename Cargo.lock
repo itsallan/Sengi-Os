@@ -3618,7 +3618,6 @@ dependencies = [
  "slint-build",
  "wayland-client",
  "wayland-protocols-wlr",
- "zbus",
 ]
 
 [[package]]

@@ -18,16 +18,13 @@ slint = { workspace = true, features = ["software-renderer-systemfonts", "softwa
 sengi-system = { path = "../sengi-system", features = ["services", "settings"] }
 sengi-text = { path = "../sengi-text" }
 
-# The blocking API on zbus's own small executor. No tokio.
-zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
-
 # The window's own Wayland connection belongs to the toolkit. The Display
 # page has a second one for the output management protocol.
 wayland-client = "0.31"
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 
-# For prctl: the process is kept out of core dumps. See secret.rs. And
-# getifaddrs, for the addresses on the Network page, and poll.
+# The signal handlers, poll on the Wayland and bus descriptors, the pidfd
+# that ends the idle daemon, and statvfs for the disk on the About page.
 libc = "0.2"
 
 [dev-dependencies]
