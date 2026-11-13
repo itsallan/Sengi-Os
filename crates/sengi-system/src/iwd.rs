@@ -27,7 +27,9 @@ const NETWORK: &str = "net.connman.iwd.Network";
 const KNOWN: &str = "net.connman.iwd.KnownNetwork";
 const AGENT_MANAGER: &str = "net.connman.iwd.AgentManager";
 const MANAGER_PATH: &str = "/net/connman/iwd";
-const AGENT_PATH: &str = "/org/sengios/quick/agent";
+// One name for whichever program of the shell is asking: the panel and
+// Settings both register here, each on its own connection.
+const AGENT_PATH: &str = "/org/sengios/wifi/agent";
 /// Every object of iwd's lives under this.
 const PREFIX: &str = "/net/connman/iwd/";
 
