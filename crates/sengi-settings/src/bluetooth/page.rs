@@ -10,6 +10,7 @@ use super::{
     Answer, Bluetooth, BluetoothService, Command, Device, Event, Model, Pairing, Prompt, Question,
 };
 use crate::app::{self, item, App, Controller};
+use crate::cli::Page;
 use crate::held::Row;
 use crate::network::{Block, Refusal, Words};
 use crate::secret::Secret;
@@ -212,6 +213,11 @@ impl BluetoothPage {
             }
         }
         self.render(app);
+        // What was under way was all that kept the worker of a hidden
+        // page.
+        if app.current() != Some(Page::Bluetooth) && !self.model.borrow().busy() {
+            self.shutdown();
+        }
     }
 
     /// Put on screen whatever pairing now calls for.

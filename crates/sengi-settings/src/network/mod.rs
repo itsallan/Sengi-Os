@@ -102,6 +102,8 @@ pub trait NetworkService: Send + Sync + 'static {
     /// Have the service drop what it stored about a network.
     fn forget(&self, id: &str) -> Result<(), Refusal>;
     fn watch(&self, changed: Notify);
+    /// Stop the watches started with `watch`.
+    fn unwatch(&self);
 }
 
 #[derive(Debug)]
@@ -130,6 +132,9 @@ pub enum Event {
 /// The worker's loop: carry out commands, read after each and whenever
 /// the service says something changed. A join runs on a thread of its own
 /// so that the list keeps updating, and can be called off, while it waits.
+/// The loop starts the watch for changes and does not end it: the page
+/// does, when it stops the worker, so that a worker on its way out cannot
+/// take the next one's watch with it.
 pub fn run(
     service: Arc<dyn NetworkService>,
     handle: Handle<Command>,
@@ -522,6 +527,12 @@ pub mod testing {
 
         fn watch(&self, changed: Notify) {
             self.state.lock().unwrap().notify = Some(changed);
+        }
+
+        fn unwatch(&self) {
+            let mut state = self.state.lock().unwrap();
+            state.notify = None;
+            state.log.push("unwatch".to_string());
         }
     }
 }

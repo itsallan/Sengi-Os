@@ -12,6 +12,7 @@ use super::{
     Step, Wifi, Words,
 };
 use crate::app::{self, item, App, Controller};
+use crate::cli::Page;
 use crate::secret::Secret;
 use crate::text;
 use crate::ui::{DialogSpec, Item, NetworkData};
@@ -124,6 +125,21 @@ impl NetworkPage {
             }
         }
         self.render(app);
+        self.rest(app);
+    }
+
+    /// The join was all that kept the worker of a hidden page: with it
+    /// over, the worker goes.
+    fn rest(&self, app: &Rc<App>) {
+        if app.current() != Some(Page::Network) && !self.joining() {
+            self.shutdown();
+        }
+    }
+
+    /// Whether a join is somewhere between picked and done. It is owed
+    /// its end, and its question, wherever the user has gone meanwhile.
+    fn joining(&self) -> bool {
+        self.model.borrow().join != Join::Idle
     }
 
     /// A row was activated.
@@ -261,6 +277,7 @@ impl NetworkPage {
             self.model.borrow_mut().join.cancel();
         }
         self.render(app);
+        self.rest(app);
     }
 
     fn forget(self: &Rc<Self>, app: &Rc<App>, id: &str) {
@@ -437,6 +454,23 @@ impl Controller for NetworkPage {
                 }));
             }
         }
+    }
+
+    /// Nobody is looking at the list: the worker and its watch on the
+    /// bus go, and coming back starts them again. Unless a network is
+    /// being joined.
+    fn hide(&self, _app: &Rc<App>) {
+        if !self.joining() {
+            self.shutdown();
+        }
+    }
+
+    fn shutdown(&self) {
+        if let Some(worker) = self.worker.borrow_mut().take() {
+            worker.stop();
+        }
+        // Here and not by the worker: see `network::run`.
+        self.service.unwatch();
     }
 
     fn as_any(self: Rc<Self>) -> Rc<dyn std::any::Any> {

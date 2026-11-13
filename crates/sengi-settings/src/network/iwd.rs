@@ -77,4 +77,8 @@ impl NetworkService for Iwd {
     fn watch(&self, changed: Notify) {
         self.wifi.watch(changed);
     }
+
+    fn unwatch(&self) {
+        self.wifi.unwatch();
+    }
 }
