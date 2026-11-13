@@ -51,8 +51,9 @@ type Chosen = Box<dyn FnOnce(&Rc<App>, String)>;
 /// The part of the program a dialog belongs to: see [`owner_of`].
 type Owner = &'static str;
 
-/// Notices kept waiting for the dialog. More than this and the oldest
-/// news is the news that matters.
+/// Notices kept waiting for the dialog. A ninth is dropped, not the
+/// first: when that many pile up, what came first is the cause and the
+/// rest mostly its echo.
 const MAX_NOTICES: usize = 8;
 
 /// Something said that needs no answer.
