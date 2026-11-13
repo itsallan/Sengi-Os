@@ -985,7 +985,10 @@ mod tests {
         // It took effect after all, and was undone on the way out.
         let log = fake.log();
         assert_eq!(log.len(), 2, "{log:?}");
-        assert!(log[0].contains("1600") && log[1].contains("1920"), "{log:?}");
+        assert!(
+            log[0].contains("1600") && log[1].contains("1920"),
+            "{log:?}"
+        );
 
         // And it can be kept.
         *fake.slow.lock().unwrap() = 1;
