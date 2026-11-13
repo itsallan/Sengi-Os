@@ -22,7 +22,7 @@ export global SoundData {
     in property <SoundSide> input;
     in-out property <int> output-volume;
     in-out property <int> input-volume;
-    // A slider is being dragged; what PipeWire reports must not move it.
+    // A slider is being moved; what PipeWire reports must not move it.
     in-out property <bool> output-held: false;
     in-out property <bool> input-held: false;
 
@@ -36,7 +36,7 @@ component VolumeRow inherits SettingRow {
     in property <bool> output;
     in property <SoundSide> side;
     in-out property <int> value;
-    out property <bool> held: slider.pressed;
+    out property <bool> held: slider.moving;
 
     title: root.output ? "Volume" : "Input volume";
     detail: root.side.muted ? "Muted" : "";

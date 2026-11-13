@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use slint::ComponentHandle;
 
-use super::{Audio, AudioDevices, Command, Latest, Node, Side, MAX_PERCENT};
+use super::{Audio, AudioDevices, Command, Event, Latest, Node, Side, Stamp, MAX_PERCENT};
 use crate::app::{self, App, Choice, Controller};
 use crate::ui::{SoundData, SoundSide};
 use crate::worker::Handle;
@@ -114,7 +114,19 @@ impl SoundPage {
         }
     }
 
-    pub fn on_reading(&self, app: &Rc<App>, audio: Option<Audio>) {
+    /// `stamp` is how far the worker had got with the sliders' positions
+    /// when it sent this.
+    pub fn on_event(&self, app: &Rc<App>, event: Event, stamp: Stamp) {
+        match event {
+            Event::Reading(audio) => self.on_reading(app, audio, stamp),
+            Event::Refused(what) => app.tell(
+                "That did not work",
+                &format!("Could not {what}. The sound service (PipeWire) did not take the change."),
+            ),
+        }
+    }
+
+    fn on_reading(&self, app: &Rc<App>, audio: Option<Audio>, stamp: Stamp) {
         let data = app.window.global::<SoundData>();
         data.set_note(
             if audio.is_some() {
@@ -128,12 +140,14 @@ impl SoundPage {
         let now = audio.as_ref().unwrap_or(&empty);
         data.set_output(shown(&now.outputs));
         data.set_input(shown(&now.inputs));
-        // A slider under the finger is the user's, not PipeWire's.
+        // A slider under the finger is the user's, not PipeWire's. And
+        // one the keys are moving is ahead of the worker: a reading made
+        // before its newest position was carried out would pull it back.
         let percent = |node: Option<&Node>| node.map_or(0, |n| n.percent.min(MAX_PERCENT) as i32);
-        if !data.get_output_held() {
+        if !data.get_output_held() && self.latest.is_current(Side::Output, stamp) {
             data.set_output_volume(percent(now.output()));
         }
-        if !data.get_input_held() {
+        if !data.get_input_held() && self.latest.is_current(Side::Input, stamp) {
             data.set_input_volume(percent(now.input()));
         }
         *self.audio.borrow_mut() = audio;
@@ -146,13 +160,20 @@ impl Controller for SoundPage {
         match worker.as_ref() {
             Some(worker) => worker.refresh(),
             None => {
+                // Whatever the last worker was sent and did not get to.
+                self.latest.settle();
+                let latest = self.latest.clone();
                 *worker = Some(super::start(
                     self.service.clone(),
                     self.latest.clone(),
-                    |audio| {
+                    move |event| {
+                        // Taken here, on the worker, as the event is
+                        // made: by the time the window sees it the
+                        // worker may have gone on.
+                        let stamp = latest.stamp();
                         app::post(move |app| {
                             if let Some(page) = app.page::<SoundPage>() {
-                                page.on_reading(app, audio);
+                                page.on_event(app, event, stamp);
                             }
                         });
                     },

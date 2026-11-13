@@ -77,7 +77,7 @@ export component DisplayPage inherits Page {
                             width: Metrics.control;
                             value <=> DisplayData.brightness-value;
                             changed(to) => { DisplayData.brightness(to); }
-                            changed pressed => { DisplayData.brightness-held = self.pressed; }
+                            changed moving => { DisplayData.brightness-held = self.moving; }
                         }
                     }
 

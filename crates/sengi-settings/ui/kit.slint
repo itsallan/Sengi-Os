@@ -79,6 +79,9 @@ export component Slider inherits Rectangle {
     // as with the volume while muted.
     in property <bool> dim: false;
     out property <bool> pressed: touch.pressed;
+    // The user is moving it, by pointer or by keys, and has not let go.
+    // Whoever sets `value` from outside should leave it alone meanwhile.
+    out property <bool> moving: touch.pressed || root.owed;
     out property <bool> has-focus: scope.has-focus;
     callback changed(int);
     callback released(int);

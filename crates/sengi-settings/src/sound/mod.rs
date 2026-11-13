@@ -28,38 +28,74 @@ pub enum Command {
     Mute(u32, bool),
 }
 
-/// The newest slider position asked for, per side. A drag sends a
-/// position for every step; the worker runs one `wpctl` at a time and
-/// skips the positions the slider has already moved on from.
+/// What the worker tells the page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    /// The devices as they are now, or nothing without PipeWire.
+    Reading(Option<Audio>),
+    /// `what` could not be done. The reading that follows shows what is
+    /// still true.
+    Refused(&'static str),
+}
+
+/// The slider positions asked for and carried out, per side. A drag
+/// sends a position for every step; the worker runs one `wpctl` at a
+/// time and skips the positions the slider has already moved on from,
+/// and the page takes no volume from a reading made before the newest
+/// position was carried out, which would pull the knob back.
 #[derive(Default)]
 pub struct Latest {
-    output: AtomicU64,
-    input: AtomicU64,
+    asked: [AtomicU64; 2],
+    done: [AtomicU64; 2],
+}
+
+/// How far the worker had got when a reading was made: the number of the
+/// last position it carried out, for the output and for the input.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Stamp([u64; 2]);
+
+fn slot(side: Side) -> usize {
+    match side {
+        Side::Output => 0,
+        Side::Input => 1,
+    }
 }
 
 impl Latest {
-    fn slot(&self, side: Side) -> &AtomicU64 {
-        match side {
-            Side::Output => &self.output,
-            Side::Input => &self.input,
-        }
-    }
-
     /// Number the next position of `side`.
     pub fn next(&self, side: Side) -> u64 {
-        self.slot(side).fetch_add(1, Ordering::SeqCst) + 1
+        self.asked[slot(side)].fetch_add(1, Ordering::SeqCst) + 1
     }
 
     pub fn is_newest(&self, side: Side, sequence: u64) -> bool {
-        self.slot(side).load(Ordering::SeqCst) == sequence
+        self.asked[slot(side)].load(Ordering::SeqCst) == sequence
     }
-}
 
-/// A change PipeWire did not take is said on standard error; the reading
-/// that follows shows the page what is still true.
-fn report(what: &str, result: Result<(), Refusal>) {
-    if result.is_err() {
-        eprintln!("sengi-settings: could not {what}");
+    /// The worker has carried out position `sequence` of `side`.
+    fn carried_out(&self, side: Side, sequence: u64) {
+        self.done[slot(side)].store(sequence, Ordering::SeqCst);
+    }
+
+    /// For the worker, as it makes a reading.
+    pub fn stamp(&self) -> Stamp {
+        Stamp([
+            self.done[0].load(Ordering::SeqCst),
+            self.done[1].load(Ordering::SeqCst),
+        ])
+    }
+
+    /// Whether a reading stamped `stamp` shows the volume of `side` as
+    /// the slider last asked for it, or as someone else has set it since.
+    pub fn is_current(&self, side: Side, stamp: Stamp) -> bool {
+        self.is_newest(side, stamp.0[slot(side)])
+    }
+
+    /// Positions sent to a worker that has been stopped are never carried
+    /// out. The next worker starts level, or no reading would count.
+    pub fn settle(&self) {
+        for side in [0, 1] {
+            self.done[side].store(self.asked[side].load(Ordering::SeqCst), Ordering::SeqCst);
+        }
     }
 }
 
@@ -71,10 +107,16 @@ pub fn run(
     latest: Arc<Latest>,
     handle: Handle<Command>,
     mut inbox: Inbox<Command>,
-    emit: impl Fn(Option<Audio>) + Send + Sync + 'static,
+    emit: impl Fn(Event) + Send + Sync + 'static,
 ) {
+    let report = |what: &'static str, result: Result<(), Refusal>| {
+        if result.is_err() {
+            eprintln!("sengi-settings: could not {what}");
+            emit(Event::Refused(what));
+        }
+    };
     service.watch(handle.notifier());
-    emit(service.read());
+    emit(Event::Reading(service.read()));
     while let Some(next) = inbox.wait() {
         match next {
             Next::Refresh => {}
@@ -82,7 +124,14 @@ pub fn run(
                 report("choose the sound device", service.set_default(id));
             }
             Next::Command(Command::Mute(id, muted)) => {
-                report("mute the sound device", service.set_muted(id, muted));
+                report(
+                    if muted {
+                        "mute the sound device"
+                    } else {
+                        "unmute the sound device"
+                    },
+                    service.set_muted(id, muted),
+                );
             }
             Next::Command(Command::Volume {
                 side,
@@ -95,20 +144,21 @@ pub fn run(
                     // show a position the slider has left.
                     continue;
                 }
-                report(
-                    "set the volume",
-                    service.set_volume(id, percent.min(MAX_PERCENT)),
-                );
+                let result = service.set_volume(id, percent.min(MAX_PERCENT));
+                // Taken or not: what is read next is where the volume
+                // stands after this position.
+                latest.carried_out(side, sequence);
+                report("set the volume", result);
             }
         }
-        emit(service.read());
+        emit(Event::Reading(service.read()));
     }
 }
 
 pub fn start(
     service: Arc<dyn AudioDevices>,
     latest: Arc<Latest>,
-    emit: impl Fn(Option<Audio>) + Send + Sync + 'static,
+    emit: impl Fn(Event) + Send + Sync + 'static,
 ) -> Handle<Command> {
     worker::spawn("sound", move |handle, inbox| {
         run(service, latest, handle, inbox, emit)
@@ -121,6 +171,7 @@ pub fn start(
 pub mod testing {
     use super::*;
     use crate::worker::Notify;
+    use std::sync::atomic::AtomicBool;
     use std::sync::Mutex;
 
     pub fn node(id: u32, name: &str, percent: u32, default: bool) -> Node {
@@ -137,21 +188,30 @@ pub mod testing {
     pub struct Fake {
         pub audio: Mutex<Option<Audio>>,
         pub log: Mutex<Vec<String>>,
+        /// Take no change, as PipeWire does when it has gone.
+        pub refuse: AtomicBool,
     }
 
     impl Fake {
         pub fn with(audio: Audio) -> Arc<Fake> {
             Arc::new(Fake {
                 audio: Mutex::new(Some(audio)),
-                log: Mutex::default(),
+                ..Fake::default()
             })
         }
 
-        fn change(&self, entry: String, change: impl Fn(&mut Vec<Node>)) {
+        fn change(
+            &self,
+            entry: String,
+            change: impl Fn(&mut Vec<Node>),
+        ) -> Result<(), Refusal> {
             self.log
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .push(entry);
+            if self.refuse.load(Ordering::SeqCst) {
+                return Err(Refusal::Failed);
+            }
             if let Some(audio) = self
                 .audio
                 .lock()
@@ -161,6 +221,7 @@ pub mod testing {
                 change(&mut audio.outputs);
                 change(&mut audio.inputs);
             }
+            Ok(())
         }
     }
 
@@ -176,8 +237,7 @@ pub mod testing {
                         node.default = node.id == id;
                     }
                 }
-            });
-            Ok(())
+            })
         }
 
         fn set_volume(&self, id: u32, percent: u32) -> Result<(), Refusal> {
@@ -185,8 +245,7 @@ pub mod testing {
                 for node in nodes.iter_mut().filter(|node| node.id == id) {
                     node.percent = percent;
                 }
-            });
-            Ok(())
+            })
         }
 
         fn set_muted(&self, id: u32, muted: bool) -> Result<(), Refusal> {
@@ -194,8 +253,7 @@ pub mod testing {
                 for node in nodes.iter_mut().filter(|node| node.id == id) {
                     node.muted = muted;
                 }
-            });
-            Ok(())
+            })
         }
 
         fn watch(&self, _changed: Notify) {}
@@ -225,7 +283,22 @@ mod tests {
     }
 
     fn worked(commands: Vec<Command>, latest: Arc<Latest>) -> (Vec<String>, Vec<Option<Audio>>) {
-        let fake = Fake::with(sample());
+        let (log, events) = worked_with(&Fake::with(sample()), commands, latest);
+        let readings = events
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::Reading(audio) => Some(audio),
+                Event::Refused(_) => None,
+            })
+            .collect();
+        (log, readings)
+    }
+
+    fn worked_with(
+        fake: &Arc<Fake>,
+        commands: Vec<Command>,
+        latest: Arc<Latest>,
+    ) -> (Vec<String>, Vec<Event>) {
         let (tx, rx) = mpsc::channel();
         let tx = Mutex::new(tx);
         let (handle, inbox) = worker::channel();
@@ -233,11 +306,74 @@ mod tests {
             handle.send(command);
         }
         handle.stop();
-        run(fake.clone(), latest, handle, inbox, move |audio| {
-            let _ = tx.lock().unwrap().send(audio);
+        run(fake.clone(), latest, handle, inbox, move |event| {
+            let _ = tx.lock().unwrap().send(event);
         });
         let log = fake.log.lock().unwrap().clone();
         (log, rx.try_iter().collect())
+    }
+
+    #[test]
+    fn a_change_pipewire_does_not_take_is_told_and_then_read() {
+        let fake = Fake::with(sample());
+        fake.refuse.store(true, Ordering::SeqCst);
+        let latest = Arc::new(Latest::default());
+        let sequence = latest.next(Side::Output);
+        let (log, events) = worked_with(
+            &fake,
+            vec![
+                Command::Mute(35, true),
+                Command::Volume {
+                    side: Side::Output,
+                    id: 35,
+                    percent: 70,
+                    sequence,
+                },
+            ],
+            latest.clone(),
+        );
+        assert_eq!(log, ["mute 35 true", "volume 35 70"]);
+        let still = Event::Reading(Some(sample()));
+        assert_eq!(
+            events,
+            [
+                still.clone(),
+                Event::Refused("mute the sound device"),
+                still.clone(),
+                Event::Refused("set the volume"),
+                still,
+            ]
+        );
+        // The slider goes back to what is true: the position was dealt
+        // with, though not taken.
+        assert!(latest.is_current(Side::Output, latest.stamp()));
+    }
+
+    #[test]
+    fn a_reading_made_before_the_newest_position_does_not_move_the_slider() {
+        let latest = Latest::default();
+        let nothing_yet = latest.stamp();
+        assert!(latest.is_current(Side::Output, nothing_yet));
+        let first = latest.next(Side::Output);
+        // Asked for and not carried out yet.
+        assert!(!latest.is_current(Side::Output, latest.stamp()));
+        // The other slider is not held up by this one.
+        assert!(latest.is_current(Side::Input, latest.stamp()));
+        latest.carried_out(Side::Output, first);
+        let after_first = latest.stamp();
+        assert!(latest.is_current(Side::Output, after_first));
+        // The slider moves on while that reading is on its way.
+        let second = latest.next(Side::Output);
+        assert!(!latest.is_current(Side::Output, after_first));
+        assert!(!latest.is_current(Side::Output, nothing_yet));
+        latest.carried_out(Side::Output, second);
+        assert!(latest.is_current(Side::Output, latest.stamp()));
+        // A reading from before is still from before.
+        assert!(!latest.is_current(Side::Output, after_first));
+        // A worker stopped with positions unsent leaves nothing owed.
+        latest.next(Side::Input);
+        latest.settle();
+        assert!(latest.is_current(Side::Input, latest.stamp()));
     }
 
     #[test]
@@ -400,9 +536,12 @@ mod tests {
         let tx = Mutex::new(tx);
         let (handle, inbox) = worker::channel();
         handle.stop();
-        run(fake, Arc::default(), handle, inbox, move |audio| {
-            let _ = tx.lock().unwrap().send(audio);
+        run(fake, Arc::default(), handle, inbox, move |event| {
+            let _ = tx.lock().unwrap().send(event);
         });
-        assert_eq!(rx.recv_timeout(Duration::from_secs(1)), Ok(None));
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(1)),
+            Ok(Event::Reading(None))
+        );
     }
 }
