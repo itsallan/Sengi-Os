@@ -16,6 +16,9 @@ pub use sengi_config::settings::{
 
 use crate::store::{self, Dirs, Document, Value};
 
+/// One key and what it should become: section, key, value.
+pub type Change = (String, String, Value);
+
 /// What tells one version of a file from the next without reading it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Stamp {
@@ -75,33 +78,57 @@ impl Settings {
     /// The file belongs to its owner, who may have edited it since it was
     /// read here. Writing back the copy from then would undo that edit
     /// without a word, so a file that is no longer the one that was read
-    /// is read again first.
-    fn catch_up(&mut self) {
+    /// is read again first. True if it was read again.
+    pub fn catch_up(&mut self) -> bool {
         let Some(path) = self.user_path().map(PathBuf::from) else {
-            return;
+            return false;
         };
         let now = stamp(Some(&path));
-        if now != self.seen {
-            *self.read.user_mut() = store::load(&path).0;
-            self.seen = now;
+        if now == self.seen {
+            return false;
         }
+        *self.read.user_mut() = store::load(&path).0;
+        self.seen = now;
+        true
     }
 
-    /// Change one key in the user's file and write the file: the file as
-    /// it is now, with that one key changed. On failure the value in
-    /// memory is put back, so what is shown stays what is stored.
+    /// Change one key here and not in the file: for a copy that shows
+    /// what is on its way to the file through [`Settings::change`].
+    pub fn hold(&mut self, change: &Change) {
+        let (section, key, value) = change;
+        self.read.user_mut().set(section, key, value.clone());
+    }
+
+    /// Change one key in the user's file: see [`Settings::change`].
     pub fn set(&mut self, section: &str, key: &str, value: Value) -> Result<(), String> {
-        let value = check(section, key, &value).map_err(|why| format!("{section}.{key} {why}"))?;
+        self.change(&[(section.to_string(), key.to_string(), value)])
+    }
+
+    /// Change keys in the user's file and write the file: the file as
+    /// it is now, with those keys changed. This is the only place the
+    /// file is written. On failure the values in memory are put back,
+    /// so what is held stays what is stored.
+    pub fn change(&mut self, changes: &[Change]) -> Result<(), String> {
+        let mut checked = Vec::with_capacity(changes.len());
+        for (section, key, value) in changes {
+            let value =
+                check(section, key, value).map_err(|why| format!("{section}.{key} {why}"))?;
+            checked.push((section, key, value));
+        }
         self.catch_up();
-        if self.get(section, key).as_ref() == Some(&value) {
+        let before = self.user().clone();
+        for (section, key, value) in checked {
+            if self.get(section, key).as_ref() != Some(&value) {
+                self.read.user_mut().set(section, key, value);
+            }
+        }
+        if *self.user() == before {
             return Ok(());
         }
-        let path = self
-            .user_path()
-            .map(PathBuf::from)
-            .ok_or("there is no home directory to keep settings in")?;
-        let before = self.user().clone();
-        self.read.user_mut().set(section, key, value);
+        let Some(path) = self.user_path().map(PathBuf::from) else {
+            *self.read.user_mut() = before;
+            return Err("there is no home directory to keep settings in".to_string());
+        };
         match store::write_atomic(&path, &self.user().render()) {
             Ok(()) => {
                 self.seen = stamp(Some(&path));
@@ -247,5 +274,49 @@ mod tests {
             .set("power", "lock-after", Value::Number(60))
             .is_err());
         assert_eq!(homeless.number("power", "lock-after"), 300);
+    }
+
+    #[test]
+    fn several_changes_are_one_write_on_top_of_the_file_as_it_is() {
+        let tmp = TempDir::new();
+        let file = "home/sengi-os/settings.toml";
+        let path = tmp.path().join(file);
+        tmp.write(file, "[power]\nlock-after = 600\n");
+        let dirs = Dirs::from(
+            None,
+            Some(&tmp.path().join("home").display().to_string()),
+            Some("/nonexistent"),
+        );
+        let (mut s, _) = Settings::load(&dirs);
+        tmp.write(file, "# by hand\n[power]\nlock-after = 600\n");
+        let change =
+            |section: &str, key: &str, value| (section.to_string(), key.to_string(), value);
+        s.change(&[
+            change("power", "lock-after", Value::Number(60)),
+            change("power", "lock-after", Value::Number(120)),
+            change("clock", "format", Value::text("12h")),
+        ])
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "# by hand\n[power]\nlock-after = 120\n\n[clock]\nformat = \"12h\"\n"
+        );
+        // One bad change and none of them is made.
+        let refused = s.change(&[
+            change("power", "blank-after", Value::Number(60)),
+            change("power", "lock-after", Value::Number(-1)),
+        ]);
+        assert!(refused.is_err());
+        assert_eq!(s.number("power", "blank-after"), 300);
+        assert!(!fs::read_to_string(&path).unwrap().contains("blank-after"));
+
+        // A copy that only holds a change shows it and writes nothing.
+        let (mut shown, _) = Settings::load(&dirs);
+        shown.hold(&change("power", "lock-after", Value::Number(30)));
+        assert_eq!(shown.number("power", "lock-after"), 30);
+        assert!(!shown.catch_up());
+        assert!(fs::read_to_string(&path)
+            .unwrap()
+            .contains("lock-after = 120"));
     }
 }

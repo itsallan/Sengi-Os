@@ -14,7 +14,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::panic::Location;
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -24,8 +23,8 @@ use slint::{ComponentHandle, ModelRc, VecModel};
 
 use crate::cli::Page;
 use crate::derive;
-use crate::settings::{self, Settings};
-use crate::store::{self, Dirs, Document, Value};
+use crate::settings::{self, Change, Settings};
+use crate::store::{Dirs, Value};
 use crate::ui::{ChooserState, DialogSpec, DialogState, Item, PageEntry, SettingsWindow};
 
 /// A chooser never lays out more rows than this. A longer list says so
@@ -245,39 +244,46 @@ impl<T: Send + 'static> Latest<T> {
 /// What is owed to the disk and to the session.
 #[derive(Default)]
 struct Job {
-    /// The settings file as it should now read.
-    file: Option<(PathBuf, String)>,
-    /// The settings labwc's files should be written from.
-    session: Option<Settings>,
+    /// The keys to change in the settings file, oldest first, each with
+    /// the number the window knows it by.
+    changes: Vec<(u64, Change)>,
+    /// Whether labwc's files should be written from the settings.
+    session: bool,
     /// Things to do once both are done, such as restarting a program
     /// that reads the settings file as it starts.
     after: Vec<Box<dyn FnOnce() + Send>>,
 }
 
 fn merge_jobs(waiting: &mut Job, newer: Job) {
-    if newer.file.is_some() {
-        waiting.file = newer.file;
-    }
-    if newer.session.is_some() {
-        waiting.session = newer.session;
-    }
+    waiting.changes.extend(newer.changes);
+    waiting.session |= newer.session;
     waiting.after.extend(newer.after);
 }
 
-fn carry_out(dirs: &Dirs, job: Job) {
-    if let Some((path, text)) = job.file {
-        if let Err(error) = store::write_atomic(&path, &text) {
-            let problem = format!("could not write {}: {error}", path.display());
-            eprintln!("sengi-settings: {problem}");
-            post(move |app| {
-                // What is shown should be what is stored.
-                app.reload();
-                app.tell("The setting could not be saved", &problem);
-            });
+/// `written` is the worker's own reading of the settings: the one copy
+/// that is written from, by way of [`Settings::change`], which looks at
+/// the file as it is now before it changes a key in it.
+fn carry_out(dirs: &Dirs, written: &mut Settings, job: Job) {
+    if let Some((upto, _)) = job.changes.last() {
+        let upto = *upto;
+        let changes: Vec<Change> = job.changes.into_iter().map(|(_, change)| change).collect();
+        match written.change(&changes) {
+            Ok(()) => post(move |app| app.landed(upto)),
+            Err(problem) => {
+                eprintln!("sengi-settings: {problem}");
+                post(move |app| {
+                    // What is shown should be what is stored.
+                    app.landed(upto);
+                    app.reload();
+                    app.tell("The setting could not be saved", &problem);
+                });
+            }
         }
     }
-    if let Some(settings) = job.session {
-        let applied = derive::apply(dirs, &settings);
+    if job.session {
+        // From the file, as the next login will do it.
+        written.catch_up();
+        let applied = derive::apply(dirs, written);
         if applied.changed() {
             derive::reconfigure();
         }
@@ -297,11 +303,11 @@ pub struct App {
     pub window: SettingsWindow,
     pub dirs: Dirs,
     pub settings: RefCell<Settings>,
-    /// The two files `settings` is made of. They are kept here as well
-    /// so that a change can be made in memory and written by the worker.
-    system: RefCell<Document>,
-    user: RefCell<Document>,
-    user_path: Option<PathBuf>,
+    /// Changes shown in `settings` that the worker has yet to write,
+    /// oldest first. They are put back on top of the file whenever it
+    /// has to be read again before they are in it.
+    unwritten: RefCell<Vec<(u64, Change)>>,
+    changes_made: Cell<u64>,
     applier: Latest<Job>,
     pages: RefCell<Vec<(Page, Rc<dyn Controller>)>>,
     current: Cell<Option<Page>>,
@@ -407,17 +413,15 @@ pub fn narrow<'a>(choices: &'a [Choice], typed: &str) -> Vec<&'a Choice> {
 
 impl App {
     pub fn new(window: SettingsWindow, dirs: Dirs, settings: Settings) -> Rc<App> {
-        let read = |path: Option<PathBuf>| path.map(|path| store::load(&path).0);
-        let user_path = dirs.user(store::FILE);
         let applier = Latest::spawn("apply", merge_jobs, {
             let dirs = dirs.clone();
-            move |job| carry_out(&dirs, job)
+            let mut written = settings.clone();
+            move |job| carry_out(&dirs, &mut written, job)
         });
         let app = Rc::new(App {
             window,
-            system: RefCell::new(read(dirs.system(store::FILE)).unwrap_or_default()),
-            user: RefCell::new(read(user_path.clone()).unwrap_or_default()),
-            user_path,
+            unwritten: RefCell::default(),
+            changes_made: Cell::new(0),
             applier,
             dirs,
             settings: RefCell::new(settings),
@@ -865,37 +869,50 @@ impl App {
     fn store(&self, section: &str, key: &str, value: Value) -> Result<(), String> {
         let value = settings::check(section, key, &value)
             .map_err(|why| format!("{section}.{key} {why}"))?;
+        self.catch_up();
         if self.settings.borrow().get(section, key).as_ref() == Some(&value) {
             return Ok(());
         }
-        let path = self
-            .user_path
-            .clone()
-            .ok_or("there is no home directory to keep settings in")?;
-        let mut user = self.user.borrow_mut();
-        user.set(section, key, value);
-        *self.settings.borrow_mut() = Settings::from_documents(
-            self.system.borrow().clone(),
-            user.clone(),
-            Some(path.clone()),
-        );
+        if self.settings.borrow().user_path().is_none() {
+            return Err("there is no home directory to keep settings in".to_string());
+        }
+        let change = (section.to_string(), key.to_string(), value);
+        self.settings.borrow_mut().hold(&change);
+        let number = self.changes_made.get() + 1;
+        self.changes_made.set(number);
+        self.unwritten.borrow_mut().push((number, change.clone()));
         self.applier.request(Job {
-            file: Some((path, user.render())),
+            changes: vec![(number, change)],
             ..Job::default()
         });
         Ok(())
     }
 
+    /// Show the file as it is now, if it is no longer the one that was
+    /// read: its owner may have edited it, and the worker writes it.
+    fn catch_up(&self) {
+        let mut settings = self.settings.borrow_mut();
+        if settings.catch_up() {
+            for (_, change) in self.unwritten.borrow().iter() {
+                settings.hold(change);
+            }
+        }
+    }
+
+    /// The worker has dealt with every change up to this one.
+    fn landed(&self, upto: u64) {
+        self.unwritten
+            .borrow_mut()
+            .retain(|(number, _)| *number > upto);
+    }
+
     /// Read the settings files again, after a write that failed.
     fn reload(&self) {
-        let read = |path: Option<PathBuf>| path.map(|path| store::load(&path).0);
-        *self.system.borrow_mut() = read(self.dirs.system(store::FILE)).unwrap_or_default();
-        *self.user.borrow_mut() = read(self.user_path.clone()).unwrap_or_default();
-        *self.settings.borrow_mut() = Settings::from_documents(
-            self.system.borrow().clone(),
-            self.user.borrow().clone(),
-            self.user_path.clone(),
-        );
+        let mut settings = Settings::load(&self.dirs).0;
+        for (_, change) in self.unwritten.borrow().iter() {
+            settings.hold(change);
+        }
+        *self.settings.borrow_mut() = settings;
     }
 
     /// Run `task` on the worker once every change made so far has been
@@ -930,7 +947,7 @@ impl App {
     /// the worker. Problems come back in a dialog.
     pub fn apply_to_session(&self) {
         self.applier.request(Job {
-            session: Some(self.settings.borrow().clone()),
+            session: true,
             ..Job::default()
         });
     }
@@ -954,6 +971,7 @@ fn icon(page: Page) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn choice(id: &str, title: &str, detail: &str) -> Choice {
         Choice {
@@ -1023,29 +1041,36 @@ mod tests {
     }
 
     #[test]
-    fn a_waiting_job_takes_the_newest_file_and_keeps_every_errand() {
+    fn a_waiting_job_keeps_every_change_in_order_and_every_errand() {
         let ran = Arc::new(Mutex::new(Vec::new()));
         let errand = |name: &'static str| -> Box<dyn FnOnce() + Send> {
             let ran = ran.clone();
             Box::new(move || ran.lock().unwrap().push(name))
         };
+        let change = |number: u64, seconds| {
+            let change = ("power".to_string(), "lock-after".to_string(), seconds);
+            (number, change)
+        };
         let mut waiting = Job {
-            file: Some((PathBuf::from("/a"), "old".to_string())),
+            changes: vec![change(1, Value::Number(60))],
             after: vec![errand("first")],
             ..Job::default()
         };
         merge_jobs(
             &mut waiting,
             Job {
-                file: Some((PathBuf::from("/a"), "new".to_string())),
-                session: Some(Settings::default()),
+                changes: vec![change(2, Value::Number(120))],
+                session: true,
                 after: vec![errand("second")],
             },
         );
         // An errand alone does not undo what is owed.
         merge_jobs(&mut waiting, Job::default());
-        assert_eq!(waiting.file.as_ref().unwrap().1, "new");
-        assert!(waiting.session.is_some());
+        assert_eq!(
+            waiting.changes,
+            [change(1, Value::Number(60)), change(2, Value::Number(120))]
+        );
+        assert!(waiting.session);
         for task in waiting.after {
             task();
         }
