@@ -200,11 +200,7 @@ pub mod testing {
             })
         }
 
-        fn change(
-            &self,
-            entry: String,
-            change: impl Fn(&mut Vec<Node>),
-        ) -> Result<(), Refusal> {
+        fn change(&self, entry: String, change: impl Fn(&mut Vec<Node>)) -> Result<(), Refusal> {
             self.log
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())

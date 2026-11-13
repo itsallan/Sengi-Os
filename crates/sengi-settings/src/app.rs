@@ -1092,10 +1092,7 @@ mod tests {
         let question = Some(("network", false));
         assert_eq!(reach(question, "network"), Reach::Mine);
         assert_eq!(reach(Some(("network", true)), "network"), Reach::Mine);
-        assert_eq!(
-            reach(question, "bluetooth"),
-            Reach::Missed(Some("network"))
-        );
+        assert_eq!(reach(question, "bluetooth"), Reach::Missed(Some("network")));
         assert_eq!(reach(None, "network"), Reach::Missed(None));
         assert_eq!(
             missed_words("close", "bluetooth", Some("network")),

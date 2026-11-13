@@ -8,7 +8,7 @@ use crate::bluetooth::{self, BluetoothService};
 use crate::bus::Bus;
 use crate::display::{self, DisplayService};
 use crate::network::{self, NetworkService};
-use crate::sound::{self, AudioDevices};
+use crate::sound::AudioDevices;
 
 pub struct Services {
     pub network: Arc<dyn NetworkService>,
@@ -51,6 +51,7 @@ pub const DEMOS: &[&str] = &[
 #[cfg(debug_assertions)]
 pub fn demo(name: &str) -> Option<(crate::cli::Page, Services)> {
     use crate::cli::Page;
+    use crate::sound;
     use network::testing::{network as net, Fake};
     use network::{Security, Wired};
     use std::time::Duration;
