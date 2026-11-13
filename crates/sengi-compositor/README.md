@@ -8,8 +8,11 @@ and it drives screens through DRM/KMS: with GLES where there is a GPU, with
 pixman on the CPU where there is none. It has not run on real hardware yet;
 everything below was seen in virtual machines.
 
-It is not part of the ISO. The crate is its own Cargo workspace, excluded from
-the main one, so the normal build does not compile Smithay.
+The ISO carries it as a preview beside labwc: the boot menu entry "Sengi OS
+(sengi-compositor preview)" starts the session on it, the default entry is
+labwc as before. See "In the Sengi OS image" below. The crate is its own
+Cargo workspace, excluded from the main one, so the normal build does not
+compile Smithay.
 
 ## Build and run
 
@@ -184,8 +187,11 @@ swaylock, swayidle, sengi-focus, wlrctl and gtk3-widget-factory:
 - Key bindings as labwc has them in the image: Super+Space runs
   sengi-launcher (fuzzel where that is missing),
   Super+Return a terminal (`sengi-run foot`, or `foot`), Super+L
-  `swaylock -f`, Super+Q closes the window that has the keyboard, Alt+Tab
-  and Alt+Shift+Tab step through windows by recent use.
+  `swaylock -f`, Super+Q and Alt+F4 close the window that has the keyboard,
+  Alt+Tab and Alt+Shift+Tab step through windows by recent use.
+- With Super held, the left button moves a window from anywhere on it and
+  the right button resizes it by the nearest corner. A double click on the
+  title bar maximises and restores.
 - wlr-layer-shell on all the layers the session uses: sengi-bar and the
   waybar dock with exclusive zones, swaybg behind, mako on the overlay
   layer. Windows are kept out from under bars, also ones that appear later,
@@ -301,8 +307,9 @@ swaylock, swayidle, sengi-focus, wlrctl and gtk3-widget-factory:
   unmapping a window by detaching its buffer, on-demand layer focus by
   click, client maximum sizes, scroll events, winit window resize, animated
   cursors.
-- No key binding configuration, no double-click on the title bar, no edge
-  snapping. Alt+Tab has no on-screen switcher.
+- No key binding configuration, no edge snapping, no window menu on
+  Alt+Space. Alt+Tab has no on-screen switcher. A maximised window cannot
+  be dragged off its place; restore it first.
 - Maximising moves the window at once but the client redraws a moment later.
 - Title text is unkerned (Inter keeps kerning in GPOS), has no fallback
   fonts, and long titles are cut off without an ellipsis.
@@ -358,148 +365,99 @@ and so counts as dirty.
 4. screencopy (grim, and the CI screenshot), output management, primary
    selection, xdg-activation, fractional scale, idle-inhibit, pointer
    constraints and relative pointer.
-5. Fullscreen, popup constraining, double-click to maximise, edge snapping,
-   an Alt+Tab switcher, drag-and-drop icons.
+5. Fullscreen, popup constraining, edge snapping, an Alt+Tab switcher,
+   drag-and-drop icons.
 6. Rounded bottom corners and shadows.
 7. Keyboard layout, key bindings and input settings from configuration.
 8. XWayland, started on demand.
 9. Measure idle RAM and time to first frame against labwc on the target
    machine.
 
-## Running it in the Sengi OS image
+## In the Sengi OS image
 
-What it takes to offer the compositor as a second session beside labwc.
-Nothing here has been wired in; the session below was run by hand in a
-guest booted from the 0.4.0 ISO, with this start-up script and the
-programs of that image: swaybg, sengi-bar, sengi-dock, sengi-focus and
-swayidle came up, the bar's bell opened the notification centre, a
-notification sent over D-Bus started sengi-notify and showed its card,
-Super+Space opened sengi-launcher, Super+L locked with swaylock, and the
-idle compositor used no CPU time in five seconds. The bar's network item
-opens a terminal with iwctl there, not a quick settings panel; sengi-quick
-was not reached from the bar in that image.
+The image offers the compositor as a second choice beside labwc, to try it
+on real hardware without touching the default session.
 
-### The ISO builder
+`image/build.sh` builds it from this workspace with `--release --locked
+--no-default-features --features drm` and installs `/usr/bin/sengi-compositor`
+(3.5 MB). The builder needs `libseat-dev libinput-dev libudev-dev libgbm-dev
+libpixman-1-dev libxkbcommon-dev`; EGL and GLES are loaded at run time and
+need no headers. Every library it links against is already in the image
+because labwc needs it too, and the build stops if that ever changes.
 
-The crate is its own workspace, so it is built on its own, next to the
-main one:
+The boot menu has an entry "Sengi OS (sengi-compositor preview)" that adds
+`sengi.compositor=own` to the kernel command line. The menu is hidden;
+press P while the machine starts to pick the entry, or Esc for the menu.
+`/usr/bin/sengi-session` looks for that word and then runs
 
-    cargo build --release --locked \
-        --manifest-path crates/sengi-compositor/Cargo.toml \
-        --no-default-features --features drm
-
-That gives `sengi-compositor` (3.5 MB) under the crate's target directory,
-or under `CARGO_TARGET_DIR` if that is set as `image/build.sh` does;
-install it as `/usr/bin/sengi-compositor`. Build-time Debian packages
-beyond what the main workspace needs: `libseat-dev libinput-dev
-libudev-dev libgbm-dev libpixman-1-dev libxkbcommon-dev` (and `pkg-config`,
-a C compiler). EGL and GLES are loaded at run time and need no headers;
-that has only been built on a machine that happened to have them, so if
-the build asks for `libegl-dev`, add it.
-
-### The image
-
-Run-time packages: `libseat1 libinput10 libudev1 libgbm1 libdrm2
-libpixman-1-0 libxkbcommon0 libegl1 libgles2`, most of which labwc
-already pulls in, besides `libgl1-mesa-dri`, `fonts-inter`, `swaylock`
-and `swayidle`, which the image has. A cursor theme (`adwaita-icon-theme`
-or any XCursor theme named `default`) is wanted; without one the pointer
-is a plain drawn arrow.
-
-The session script, a variant of `/usr/bin/sengi-session`, for instance
-`/usr/bin/sengi-session-compositor`:
-
-    #!/bin/sh
-    # Start the Sengi OS desktop session on sengi-compositor.
-    export XDG_CURRENT_DESKTOP=sengi:wlroots
-    export XDG_SESSION_DESKTOP=sengi
-    export XDG_SESSION_TYPE=wayland
-    export MOZ_ENABLE_WAYLAND=1
-
-    exec sengi-compositor --backend drm --locker '/usr/bin/swaylock -f' \
+    sengi-compositor --backend drm --locker '/usr/bin/swaylock -f' \
         -s 'LABWC_PID=$SENGI_COMPOSITOR_PID sh /etc/xdg/labwc/autostart'
 
-There is no renderer test in it as labwc's script has for `WLR_RENDERER`:
-the compositor chooses pixman on displays without a GPU by itself, and
-says which in its first lines on stderr. Programs it starts get
-`WAYLAND_DISPLAY` and `SENGI_COMPOSITOR_PID`, its own pid.
+with its output in the journal (`journalctl -t sengi-compositor`). If the
+compositor exits with an error within ten seconds, the session writes a
+line to the journal (`-t sengi-session`) and starts labwc instead, once.
+Without the word nothing of this runs.
 
-`/etc/xdg/labwc/autostart` works as it is with the `LABWC_PID=` prefix
-above, which is how it was run. To make it work under either compositor
-without that prefix, let it take whichever pid it was given, and use that
-in the restart loop:
+The start-up script is labwc's, unchanged. Its restart loops watch
+`LABWC_PID`, hence the assignment. It picks the wallpaper by `WLR_RENDERER`,
+which nothing sets here, so swaybg gets its one-colour buffer, which both
+of our renderers draw correctly. `swayidle` runs `swaylock -f`, which has
+to be the same file `--locker` names: only that file may lock, compared by
+device and inode. With `/usr/bin` first in `PATH` they agree. The session
+menu's "Log out" runs `labwc --exit`, which signals `LABWC_PID` and so ends
+this session too.
 
-    session_pid=${LABWC_PID:-${SENGI_COMPOSITOR_PID:-}}
-    ...
-    while kill -0 "$session_pid" 2>/dev/null; do
+Seen in a QEMU guest booted from the image's preview entry (no GPU there,
+so pixman on dumb buffers, and no LLVM mapped): swaybg, sengi-bar,
+sengi-dock, sengi-focus and swayidle come up; the bar's power icon opens
+the session menu and its network item the quick settings panel; a
+notification sent over D-Bus starts sengi-notify and shows its card;
+Super+Return opens foot and the dock marks it running; the dock brings a
+minimised window back; Super+Space opens the launcher; Super+L locks with
+swaylock; Alt+F4, Super and the mouse buttons, and the double click on the
+title bar work as on labwc. Idle, the compositor used no CPU time in thirty
+seconds and flipped no page. It is 11 MB Pss against labwc's 25.
 
-One more line of it matters. It picks the wallpaper by `WLR_RENDERER`,
-which nothing sets here, so swaybg always gets the one-colour buffer.
-That is drawn correctly on both of our renderers; the tiled image is not
-needed.
-
-The idle line stays the same, with one condition: `swayidle ... 'swaylock
--f'` must start the same file that `--locker` names. The compositor lets
-only that file ask for the lock, compared by device and inode, so a
-swaylock found elsewhere on `PATH`, or a wrapper script around it, is
-refused; the log then says so once, and the session does not lock on
-idle. With `/usr/bin` first in `PATH` and `--locker '/usr/bin/swaylock
--f'` they agree.
-
-Key bindings. The four in `rc.xml.in` are built in with the same keys:
-Super+Space runs `sengi-launcher`, Super+Return `sengi-run foot`, Super+L
-the locker, Super+Q closes the focused window. They cannot be changed
-without rebuilding. Also built in: Alt+Tab and Alt+Shift+Tab (no on-screen
-switcher) and Ctrl+Alt+F1 to F12. What labwc adds by default and this does
-not have: Alt+F4, the window menu on Alt+Space, moving and resizing by
-Super and a mouse button, snapping with Super and the arrow keys,
-double-click on the title bar to maximise. The rest of `rc.xml.in` (theme,
-focus, placement) has its counterpart in the tokens and is not read.
-
-A second greetd entry or boot menu entry then only has to run the other
-session script. Under greetd the session user cannot switch virtual
-terminals (logind refuses it, the same as under labwc).
+Not seen: anything on real hardware, the lock after the idle timeout in
+this image, and logging out through the session menu.
 
 ### The boot test
 
-`sengi-boot-report` looks for `labwc` by name in two places: the "labwc
-llvm maps" line and the list of programs that must be running. For this
-session both should name `sengi-compositor`. It also waits for the socket
-`/run/user/1000/wayland-0`. The compositor takes the first free name, so
-that is what it gets when it is the first session after boot; in the
-tests here it came second, after labwc, and was `wayland-1`. That first-
-boot case has not been run.
+`scripts/boot-test.sh` boots the default entry and expects labwc.
+`SENGI_PREVIEW=1 scripts/boot-test.sh ISO OUT` presses the preview entry's
+hotkey between SeaBIOS handing over and the kernel starting (BIOS only so
+far) and expects sengi-compositor; the guest
+reports which one the command line asked for, and the test fails if that
+is not the one meant or if it is not running. Smithay numbers its sockets
+from `wayland-1`, which is what the boot report waits for on this entry.
+The screenshots are QEMU's own and the same seven as for labwc.
 
-What to check, from the guest, as the session user or root:
+From inside the guest, SIGUSR1 makes the compositor print two lines to the
+journal: `N page flips, N with the cursor on its own plane, N dmabufs
+imported, pointer at X,Y` and `session unlocked` or `session locked, locker
+alive, N lock surface(s), locker told yes`. Equal flip counts ten seconds
+apart are the idle check.
 
-    pid=$(pgrep -o sengi-composito)
-    # The compositor is up and says what it renders with.
-    grep 'renderer:' /path/to/its/stderr
-    # No LLVM in a guest without a GPU.
-    grep -c -i llvm /proc/$pid/maps            # 0 on pixman
-    # Idle means idle: no page flips over ten seconds.
-    kill -USR1 $pid; sleep 10; kill -USR1 $pid
-    grep 'page flips' /path/to/its/stderr | tail -2
+### A client that commits without damage
 
-Each SIGUSR1 prints two lines on stderr, so the session script has to
-send stderr to a file for this (`2>/run/user/$UID/sengi-compositor.log`):
-`N page flips, N with the cursor on its own plane, N dmabufs imported,
-pointer at X,Y` and `session unlocked` or `session locked, locker alive,
-N lock surface(s), locker told yes`. Equal flip counts ten seconds apart
-are the idle check; "session locked ... locker told yes" after `swaylock
--f` is the lock check.
+`misbehave spin` commits with a frame callback and no damage as fast as
+callbacks come; `misbehave flood` commits a hundred times between round
+trips with no callback. Release build in the image, QEMU guest with two
+CPUs, pixman, CPU time of the compositor per run of 3.5 seconds:
 
-For a picture from inside, start the compositor with `--screenshot
-/run/user/$UID/shot.png` and send SIGUSR2; the file (mode 0600) is
-written within a second and shows every screen. On the boot test's
-display without a GPU the compositor uses dumb buffers, and QEMU's own
-`screendump` works as it does for labwc; it is only with a GL scanout
-(virtio-vga-gl) that `screendump` has no picture. Keys through `sendkey`
-and the absolute pointer through QMP reach it as they reach labwc.
+| compositor       | spin: callbacks a second | spin: CPU      | flood: commits in 3 s  | flood: CPU     |
+|------------------|--------------------------|----------------|------------------------|----------------|
+| sengi-compositor | 73 to 74                 | 0.18 to 0.24 s | 619,000 to 627,000     | 2.49 to 2.53 s |
+| labwc            | 1611 to 1651             | 0.63 to 0.66 s | 1,443,000 to 1,625,000 | 2.07 to 2.12 s |
 
-The RAM and boot time lines need no change. Expect the compositor itself
-at about 11 MB Pss on pixman against labwc's, and the same Mesa cost as
-labwc on a GPU (see "Memory").
+We hold frame callbacks to the refresh rate where nothing was shown, so
+the spinning client costs a third of what it costs labwc, which answers
+every commit. One empty commit, though, costs us about three times what it
+costs labwc (4.0 against 1.4 microseconds). System calls are not it (a few
+thousand for 290,000 commits); the time goes in protocol handling in user
+space, which has not been profiled. An empty frame on the DRM backend
+costs about 1 ms of CPU where the headless backend needs 0.3 ms, also not
+looked into.
 
 ## Who may do what
 
