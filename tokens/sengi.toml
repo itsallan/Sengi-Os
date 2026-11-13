@@ -24,6 +24,9 @@ bar = "#16171be6"
 dock = "#1f2126e6"
 scrim = "#00000080"
 focus-ring = "#d9773a"
+# The line around a control that cannot be used. It has to show on every
+# surface a control can sit on, which a fill in a surface colour does not.
+outline-disabled = "#4a4e56"
 
 [radius]
 base = 6
@@ -71,6 +74,29 @@ button = 26
 launcher-lines = 8
 lock-indicator = 64
 lock-ring = 4
+# A row of a list or of a card of settings.
+list-row-height = 42
+# A dialog, and a list to choose from, over a window.
+dialog-width = 360
+chooser-width = 480
+chooser-lines = 8
+# A value shown beside its control: "100%", "+100", "1000 ms".
+value-column-sm = 40
+value-column-md = 60
+value-column-lg = 80
+# How far Page Up and Page Down move, in percent of what is in view.
+scroll-page-percent = 80
+# The Settings window: its size when it opens, the smallest it goes, the
+# list of pages at the left, the widest a page's column grows, and the
+# control at the right of a row (wide for the ones that show a name).
+settings-window-width = 888
+settings-window-height = 600
+settings-window-min-width = 720
+settings-window-min-height = 480
+settings-sidebar-width = 200
+settings-page-width = 640
+settings-control-width = 200
+settings-control-wide = 240
 
 [motion]
 fast = 120
@@ -83,4 +109,7 @@ notification-timeout = 5000
 # How long a card that just appeared, changed or moved ignores clicks, so
 # it cannot be slipped under a click that was meant for something else.
 click-guard = 400
+# How long a control moved by a held key stays quiet before it reports
+# where it ended up, so key repeat is one change and not twenty a second.
+input-settle = 300
 idle-lock = 300

@@ -29,7 +29,7 @@ export component DateTimePage inherits Page {
                 VerticalLayout {
                     alignment: center;
                     ChoiceButton {
-                        width: Metrics.control + Tokens.dock-icon;
+                        width: Metrics.control-wide;
                         text: DateTimeData.zone;
                         clicked => { DateTimeData.choose-zone(); }
                     }

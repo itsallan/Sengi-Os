@@ -7,12 +7,14 @@
 //! `XKB_DEFAULT_OPTIONS` in its environment file, and as `repeatRate` and
 //! `repeatDelay` in `rc.xml`; see `derive.rs`.
 
+use std::cell::{Cell, RefCell};
 use std::fs;
 use std::rc::Rc;
 
 use slint::ComponentHandle;
 
 use crate::app::{self, item, App, Choice, Controller};
+use crate::cli::Page;
 use crate::settings::{xkb_word, Layout, MAX_LAYOUTS};
 use crate::store::Value;
 use crate::text;
@@ -160,19 +162,55 @@ pub fn switch_words(option: &str) -> &str {
 }
 
 pub struct KeyboardPage {
-    database: std::cell::OnceCell<Database>,
+    /// Not there until a worker has read it.
+    database: RefCell<Option<Rc<Database>>>,
+    loading: Cell<bool>,
+    /// "Add" was pressed before the database had been read.
+    adding: Cell<bool>,
 }
 
 impl KeyboardPage {
-    fn database(&self) -> &Database {
-        // Read the first time the page is shown: it is a few hundred
-        // kilobytes that most runs of Settings never need.
-        self.database.get_or_init(Database::load)
+    fn database(&self) -> Option<Rc<Database>> {
+        self.database.borrow().clone()
+    }
+
+    /// Have the database read, the first time the page is shown: it is
+    /// a few hundred kilobytes that most runs of Settings never need,
+    /// and reading and sorting them is not for the UI thread.
+    fn load(&self) {
+        if self.database.borrow().is_some() || self.loading.replace(true) {
+            return;
+        }
+        let spawned = std::thread::Builder::new()
+            .name("settings-xkb".to_string())
+            .spawn(|| {
+                let database = Database::load();
+                app::post(move |app| {
+                    let Some(page) = app.page::<KeyboardPage>() else {
+                        return;
+                    };
+                    *page.database.borrow_mut() = Some(Rc::new(database));
+                    page.loading.set(false);
+                    let showing = app.current() == Some(Page::Keyboard);
+                    if showing {
+                        page.render(app);
+                    }
+                    if page.adding.take() && showing {
+                        page.add(app);
+                    }
+                });
+            });
+        if let Err(error) = spawned {
+            eprintln!("sengi-settings: could not start a thread to read the layouts: {error}");
+            self.loading.set(false);
+        }
     }
 
     pub fn attach(app: &Rc<App>) -> Rc<KeyboardPage> {
         let page = Rc::new(KeyboardPage {
-            database: std::cell::OnceCell::new(),
+            database: RefCell::new(None),
+            loading: Cell::new(false),
+            adding: Cell::new(false),
         });
         let data = app.window.global::<KeyboardData>();
         let with = |handler: fn(&Rc<KeyboardPage>, &Rc<App>)| {
@@ -245,8 +283,13 @@ impl KeyboardPage {
 
     /// Pick a layout, then one of its variants, and add it.
     fn add(self: &Rc<Self>, app: &Rc<App>) {
-        let choices = self
-            .database()
+        let Some(database) = self.database() else {
+            // Still being read: the list opens when it is there.
+            self.adding.set(true);
+            self.load();
+            return;
+        };
+        let choices = database
             .layouts
             .iter()
             .map(|layout| Choice {
@@ -278,7 +321,10 @@ impl KeyboardPage {
                         }
                     }
                 };
-                let variants = page.database().variants_of(&layout);
+                let Some(database) = page.database() else {
+                    return;
+                };
+                let variants = database.variants_of(&layout);
                 if variants.is_empty() {
                     add(app, layout, String::new());
                     return;
@@ -306,6 +352,8 @@ impl KeyboardPage {
         let data = app.window.global::<KeyboardData>();
         let settings = app.settings.borrow();
         let layouts = settings.layouts();
+        // Until the database is there a layout goes by its bare name.
+        let database = self.database();
         let rows: Vec<Item> = layouts
             .iter()
             .enumerate()
@@ -314,7 +362,9 @@ impl KeyboardPage {
                 remove: if layouts.len() > 1 { "Remove" } else { "" }.into(),
                 ..item(
                     &index.to_string(),
-                    &self.database().describe(layout),
+                    &database
+                        .as_ref()
+                        .map_or_else(|| layout.render(), |database| database.describe(layout)),
                     &layout.render(),
                 )
             })
@@ -330,7 +380,12 @@ impl KeyboardPage {
 
 impl Controller for KeyboardPage {
     fn show(&self, app: &Rc<App>) {
+        self.load();
         self.render(app);
+    }
+
+    fn hide(&self, _app: &Rc<App>) {
+        self.adding.set(false);
     }
 
     fn as_any(self: Rc<Self>) -> Rc<dyn std::any::Any> {

@@ -15,10 +15,13 @@
 //! The same guard is on `SetNTP`, so network time is shown, not switched.
 
 use std::fs;
+use std::io::Read;
+use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use slint::ComponentHandle;
 
@@ -34,6 +37,13 @@ const ZONEINFO: &str = "/usr/share/zoneinfo";
 const ZONE_TABLE: &str = "/usr/share/zoneinfo/zone1970.tab";
 pub const MAX_ZONES: usize = 1024;
 
+/// Where `date` is, on a merged `/usr` or not. Never looked for in PATH.
+const DATE: [&str; 2] = ["/usr/bin/date", "/bin/date"];
+/// How long `date` has to say what time it is.
+const DATE_LIMIT: Duration = Duration::from_secs(2);
+/// And the most it may say.
+const DATE_BYTES: usize = 256;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Zone {
     /// The name that goes into `TZ`, such as `America/Argentina/Ushuaia`.
@@ -44,12 +54,24 @@ pub struct Zone {
     pub region: String,
 }
 
-fn zone_from(name: &str, comment: &str) -> Option<Zone> {
+/// A zone from one line of the table. `countries` is the line's first
+/// field, the codes of the countries that keep this zone's time.
+///
+/// The table's comment tells the zones of one country apart ("Eastern
+/// (most areas)"), and is shown. On a line with several countries it
+/// names the odd corners of the *other* countries that share the zone:
+/// Asia/Tokyo's is "Eyre Bird Observatory", which is in Australia.
+/// Beside Tokyo that reads as a mistake, so there it is left out.
+fn zone_from(countries: &str, name: &str, comment: &str) -> Option<Zone> {
     if !zone_is_plain(name) {
         return None;
     }
     let (area, city) = name.rsplit_once('/').unwrap_or(("", name));
-    let comment = text::clean(comment, 48);
+    let comment = if countries.contains(',') {
+        String::new()
+    } else {
+        text::clean(comment, 48)
+    };
     let region = match (area.is_empty(), comment.is_empty()) {
         (_, true) => area.replace('_', " "),
         (true, false) => comment,
@@ -70,8 +92,9 @@ pub fn parse_zones(table: &str) -> Vec<Zone> {
         .filter(|line| !line.starts_with('#'))
         .filter_map(|line| {
             let mut fields = line.split('\t');
-            let name = fields.nth(2)?;
-            zone_from(name.trim(), fields.next().unwrap_or_default())
+            let countries = fields.next()?;
+            let name = fields.nth(1)?;
+            zone_from(countries, name.trim(), fields.next().unwrap_or_default())
         })
         .take(MAX_ZONES)
         .collect();
@@ -113,14 +136,85 @@ pub fn now_format(twelve_hour: bool) -> &'static str {
     }
 }
 
+/// What `command` prints, if it ends well within `limit` having printed
+/// no more than `cap` bytes. One that does not is killed, and either way
+/// it is reaped before this returns.
+fn output_within(command: &mut Command, limit: Duration, cap: usize) -> Option<Vec<u8>> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + limit;
+    let mut printed = Vec::new();
+    let mut ended = false;
+    if let Some(mut stdout) = child.stdout.take() {
+        let mut buffer = [0u8; 512];
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() || printed.len() > cap {
+                break;
+            }
+            let mut fds = [libc::pollfd {
+                fd: stdout.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            }];
+            let wait = left.as_millis().min(60_000) as libc::c_int;
+            // SAFETY: poll is given one valid pollfd and a time to wait.
+            let ready = unsafe { libc::poll(fds.as_mut_ptr(), 1, wait) };
+            if ready == 0 {
+                continue;
+            }
+            if ready < 0 {
+                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                break;
+            }
+            match stdout.read(&mut buffer) {
+                Ok(0) => {
+                    ended = true;
+                    break;
+                }
+                Ok(count) => printed.extend_from_slice(&buffer[..count]),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+    }
+    // It has closed its output, so it is exiting or has; give it until
+    // the deadline to be gone.
+    let mut status = None;
+    while ended && status.is_none() {
+        match child.try_wait() {
+            Ok(Some(exited)) => status = Some(exited),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            _ => break,
+        }
+    }
+    match status {
+        Some(status) if status.success() && printed.len() <= cap => Some(printed),
+        Some(_) => None,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            None
+        }
+    }
+}
+
 /// The time now in `zone`, or in the system's when it is empty, as
 /// `date` writes it.
 fn time_now(zone: &str, twelve_hour: bool) -> String {
-    let mut command = Command::new("date");
-    command
-        .arg(now_format(twelve_hour))
-        .stdin(Stdio::null())
-        .stderr(Stdio::null());
+    let Some(date) = DATE.iter().find(|path| Path::new(path).is_file()) else {
+        return String::new();
+    };
+    let mut command = Command::new(date);
+    command.arg(now_format(twelve_hour));
     if zone.is_empty() {
         command.env_remove("TZ");
     } else if zone_exists(Path::new(ZONEINFO), zone) {
@@ -128,11 +222,8 @@ fn time_now(zone: &str, twelve_hour: bool) -> String {
     } else {
         return "Unknown time zone".to_string();
     }
-    command
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| text::clean(&String::from_utf8_lossy(&output.stdout), 64))
+    output_within(&mut command, DATE_LIMIT, DATE_BYTES)
+        .map(|printed| text::clean(&String::from_utf8_lossy(&printed), 64))
         .unwrap_or_default()
 }
 
@@ -224,37 +315,42 @@ impl DateTimePage {
         data.set_twelve_hour(twelve);
         data.set_own_zone(!zone.is_empty());
         let bus = self.bus.clone();
-        std::thread::spawn(move || {
-            let system = system(&bus);
-            let now = time_now(&zone, twelve);
-            app::post(move |app| {
-                let data = app.window.global::<DateTimeData>();
-                let system_zone = if system.zone.is_empty() {
-                    "unknown"
-                } else {
-                    &system.zone
-                };
-                data.set_zone(
-                    if zone.is_empty() {
-                        format!("System ({system_zone})")
+        let spawned = std::thread::Builder::new()
+            .name("settings-time".to_string())
+            .spawn(move || {
+                let system = system(&bus);
+                let now = time_now(&zone, twelve);
+                app::post(move |app| {
+                    let data = app.window.global::<DateTimeData>();
+                    let system_zone = if system.zone.is_empty() {
+                        "unknown"
                     } else {
-                        zone.replace('_', " ")
-                    }
-                    .into(),
-                );
-                data.set_now(now.into());
-                data.set_system(app::model(vec![
-                    InfoRow {
-                        title: "System time zone".into(),
-                        value: system_zone.replace('_', " ").into(),
-                    },
-                    InfoRow {
-                        title: "Set the time from the network".into(),
-                        value: ntp_words(&system).into(),
-                    },
-                ]));
+                        &system.zone
+                    };
+                    data.set_zone(
+                        if zone.is_empty() {
+                            format!("System ({system_zone})")
+                        } else {
+                            zone.replace('_', " ")
+                        }
+                        .into(),
+                    );
+                    data.set_now(now.into());
+                    data.set_system(app::model(vec![
+                        InfoRow {
+                            title: "System time zone".into(),
+                            value: system_zone.replace('_', " ").into(),
+                        },
+                        InfoRow {
+                            title: "Set the time from the network".into(),
+                            value: ntp_words(&system).into(),
+                        },
+                    ]));
+                });
             });
-        });
+        if let Err(error) = spawned {
+            eprintln!("sengi-settings: could not start a thread to read the time: {error}");
+        }
     }
 }
 
@@ -280,6 +376,7 @@ AD\t+4230+00131\tEurope/Andorra
 AQ\t-6617+11031\tAntarctica/Casey\tCasey
 AR\t-5448-06818\tAmerica/Argentina/Ushuaia\tTierra del Fuego
 FR,MC\t+4852+00220\tEurope/Paris
+JP,AU\t+353916+1394441\tAsia/Tokyo\tEyre Bird Observatory
 US\t+404251-0740023\tAmerica/New_York\tEastern (most areas)
 XX\t+0000+0000\t../../etc/passwd\tnot a zone
 XX\t+0000+0000
@@ -299,14 +396,58 @@ XX\t+0\tEurope/Paris\tlisted twice
                 "Antarctica/Casey",
                 "America/New_York",
                 "Europe/Paris",
+                "Asia/Tokyo",
                 "America/Argentina/Ushuaia"
             ]
         );
         let york = &zones[2];
         assert_eq!(york.city, "New York");
         assert_eq!(york.region, "America · Eastern (most areas)");
-        assert_eq!(zones[4].region, "America/Argentina · Tierra del Fuego");
+        assert_eq!(zones[5].region, "America/Argentina · Tierra del Fuego");
         assert_eq!(zones[0].region, "Europe");
+    }
+
+    #[test]
+    fn a_comment_about_some_other_country_is_not_shown_beside_the_city() {
+        let zones = parse_zones(TABLE);
+        let tokyo = zones.iter().find(|zone| zone.city == "Tokyo").unwrap();
+        // The observatory is in Australia and keeps Tokyo's time.
+        assert_eq!(tokyo.region, "Asia");
+        // One country, several zones: the comment says which part.
+        let casey = zones.iter().find(|zone| zone.city == "Casey").unwrap();
+        assert_eq!(casey.region, "Antarctica · Casey");
+    }
+
+    #[test]
+    fn a_child_is_given_a_deadline_and_a_limit() {
+        let sh = |script: &str| {
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", script]);
+            command
+        };
+        let limit = Duration::from_secs(5);
+        assert_eq!(
+            output_within(&mut sh("printf hello"), limit, 16).as_deref(),
+            Some(&b"hello"[..])
+        );
+        // Failing, saying too much, and never finishing all come to nothing.
+        assert_eq!(output_within(&mut sh("printf no; exit 3"), limit, 16), None);
+        assert_eq!(
+            output_within(&mut sh("while :; do echo more; done"), limit, 4096),
+            None
+        );
+        let started = Instant::now();
+        let short = Duration::from_millis(100);
+        assert_eq!(
+            output_within(&mut sh("printf a; exec sleep 30"), short, 16),
+            None
+        );
+        // Killed and reaped at the deadline, not thirty seconds later.
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(
+            output_within(&mut Command::new("/no/such/program"), limit, 16),
+            None
+        );
     }
 
     #[test]

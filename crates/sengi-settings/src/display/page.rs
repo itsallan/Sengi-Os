@@ -2,19 +2,41 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, Timer, TimerMode};
 
 use super::{scale_words, Change, Command, DisplayService, Event, Output, Reading, SCALES, TRIAL};
 use crate::app::{self, App, Choice, Controller};
+use crate::cli::Page;
 use crate::ui::{DialogSpec, DisplayData, DisplayOutput};
 use crate::worker::Handle;
 
+/// How long leaving waits for the worker to put a change on trial back.
+/// It may have to ask the compositor more than once.
+const LAST_REVERT: Duration = Duration::from_secs(8);
+
+type Worker = Arc<Mutex<Option<Handle<Command>>>>;
+
+/// Stop the worker, which undoes a change still on trial as it goes,
+/// and wait for that. From any thread.
+fn stop_and_wait(worker: &Worker) {
+    let worker = worker.lock().unwrap_or_else(|p| p.into_inner()).take();
+    if let Some(worker) = worker {
+        if !worker.stop_and_wait(LAST_REVERT) {
+            eprintln!("sengi-settings: the display worker had not finished at exit");
+        }
+    }
+}
+
 pub struct DisplayPage {
     service: Arc<dyn DisplayService>,
-    worker: RefCell<Option<Handle<Command>>>,
+    /// Running while the page shows or a change is on trial.
+    worker: Worker,
+    /// Which worker this is, counting from the first. What an earlier
+    /// one still has to say is not listened to.
+    generation: Cell<u64>,
     reading: RefCell<Reading>,
     /// When the change on trial is undone, while one is.
     deadline: Cell<Option<Instant>>,
@@ -55,10 +77,16 @@ impl DisplayPage {
     pub fn attach(app: &Rc<App>, service: Arc<dyn DisplayService>) -> Rc<DisplayPage> {
         let page = Rc::new(DisplayPage {
             service,
-            worker: RefCell::default(),
+            worker: Worker::default(),
+            generation: Cell::new(0),
             reading: RefCell::default(),
             deadline: Cell::new(None),
             clock: Timer::default(),
+        });
+        // Told to go while a change is on trial: it is undone first.
+        app::on_terminate({
+            let worker = page.worker.clone();
+            move || stop_and_wait(&worker)
         });
         let data = app.window.global::<DisplayData>();
         let (weak, weak_app) = (Rc::downgrade(&page), Rc::downgrade(app));
@@ -77,8 +105,18 @@ impl DisplayPage {
     }
 
     fn send(&self, command: Command) {
-        if let Some(worker) = self.worker.borrow().as_ref() {
+        let worker = self.worker.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(worker) = worker.as_ref() {
             worker.send(command);
+        }
+    }
+
+    /// End the worker without waiting for it. If it had just put a
+    /// change on trial that this side has not heard of, it undoes it.
+    fn stop_worker(&self) {
+        let worker = self.worker.lock().unwrap_or_else(|p| p.into_inner()).take();
+        if let Some(worker) = worker {
+            worker.stop();
         }
     }
 
@@ -176,7 +214,10 @@ impl DisplayPage {
         }
     }
 
-    pub fn on_event(self: &Rc<Self>, app: &Rc<App>, event: Event) {
+    pub fn on_event(self: &Rc<Self>, app: &Rc<App>, generation: u64, event: Event) {
+        if generation != self.generation.get() {
+            return;
+        }
         match event {
             Event::Reading(reading) => {
                 *self.reading.borrow_mut() = reading;
@@ -193,6 +234,16 @@ impl DisplayPage {
                     );
                 }
             }
+            Event::RevertFailed(error) => {
+                self.end_trial(app);
+                app.tell(
+                    "The previous display settings could not be restored",
+                    &format!(
+                        "{} The display may still be using the settings that were being tried.",
+                        error.words()
+                    ),
+                );
+            }
             Event::Failed(error) => {
                 app.tell("The display setting was not applied", error.words());
             }
@@ -203,6 +254,10 @@ impl DisplayPage {
         self.clock.stop();
         if self.deadline.take().is_some() {
             app.close_dialog();
+        }
+        // The trial was all that kept the worker of a hidden page.
+        if app.current() != Some(Page::Display) {
+            self.stop_worker();
         }
     }
 
@@ -274,14 +329,16 @@ impl DisplayPage {
 
 impl Controller for DisplayPage {
     fn show(&self, _app: &Rc<App>) {
-        let mut worker = self.worker.borrow_mut();
+        let mut worker = self.worker.lock().unwrap_or_else(|p| p.into_inner());
         match worker.as_ref() {
             Some(worker) => worker.refresh(),
             None => {
-                *worker = Some(super::start(self.service.clone(), |event| {
+                let generation = self.generation.get() + 1;
+                self.generation.set(generation);
+                *worker = Some(super::start(self.service.clone(), move |event| {
                     app::post(move |app| {
                         if let Some(page) = app.page::<DisplayPage>() {
-                            page.on_event(app, event);
+                            page.on_event(app, generation, event);
                         }
                     });
                 }));
@@ -289,14 +346,19 @@ impl Controller for DisplayPage {
         }
     }
 
+    /// Nobody is looking, so nothing needs reading: the worker goes,
+    /// unless a change is on trial, which only it can undo in time.
+    fn hide(&self, _app: &Rc<App>) {
+        if self.deadline.get().is_none() {
+            self.stop_worker();
+        }
+    }
+
     fn shutdown(&self) {
         self.clock.stop();
         // The worker undoes a change still on trial as it stops. Wait for
-        // that, briefly: the process must not exit with it half done.
-        let worker = self.worker.borrow_mut().take();
-        if let Some(worker) = worker {
-            worker.stop_and_wait(Duration::from_secs(2));
-        }
+        // that: the process must not exit with it half done.
+        stop_and_wait(&self.worker);
     }
 
     fn as_any(self: Rc<Self>) -> Rc<dyn std::any::Any> {

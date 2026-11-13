@@ -42,7 +42,7 @@ component SpeedRow inherits SettingRow {
     }
 
     RowValue {
-        width: Tokens.dock-icon * 1.5;
+        width: Tokens.value-column-md;
         text: root.value == 0 ? "Normal" : root.value > 0 ? "+" + root.value : "" + root.value;
     }
 }

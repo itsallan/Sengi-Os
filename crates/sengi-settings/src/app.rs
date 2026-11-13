@@ -1,15 +1,30 @@
 //! The window and what is shared between its pages: the settings, the one
 //! dialog and the one chooser, and the way back to the UI thread.
+//!
+//! There is one dialog and several pages that may want it, some of them
+//! with news that arrives seconds after it was asked for. So the dialog
+//! has an owner: the part of the program (a page's module) that opened
+//! it. An owner may change or close its own dialog as it likes. Anyone
+//! else's notice waits until the dialog is free, and anyone else's
+//! question first backs the open one out as Escape would, so that its
+//! owner hears of it. Nobody can close or write into a dialog that is
+//! not theirs.
 
 use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
+use std::panic::Location;
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use slint::{ComponentHandle, ModelRc, VecModel};
 
 use crate::cli::Page;
 use crate::derive;
-use crate::settings::Settings;
-use crate::store::{Dirs, Value};
+use crate::settings::{self, Settings};
+use crate::store::{self, Dirs, Document, Value};
 use crate::ui::{ChooserState, DialogSpec, DialogState, Item, PageEntry, SettingsWindow};
 
 /// A chooser never lays out more rows than this. A longer list says so
@@ -32,9 +47,59 @@ type Confirm = Box<dyn FnMut(&Rc<App>, String)>;
 type Cancel = Box<dyn FnOnce(&Rc<App>)>;
 type Chosen = Box<dyn FnOnce(&Rc<App>, String)>;
 
+/// The part of the program a dialog belongs to: see [`owner_of`].
+type Owner = &'static str;
+
+/// Notices kept waiting for the dialog. More than this and the oldest
+/// news is the news that matters.
+const MAX_NOTICES: usize = 8;
+
+/// Something said that needs no answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Notice {
+    owner: Owner,
+    title: String,
+    body: String,
+}
+
 struct OpenDialog {
     confirm: Confirm,
     cancel: Option<Cancel>,
+    /// What it says, if it is only a notice, so it can wait its turn
+    /// again when a question takes its place.
+    notice: Option<Notice>,
+}
+
+/// Who is asking for the dialog: the module the call was written in.
+/// `src/network/page.rs` and `src/network/mod.rs` are both `network`;
+/// `src/power.rs` is `power.rs`.
+fn owner_of(file: &'static str) -> Owner {
+    let inside = file.rsplit_once("src/").map_or(file, |(_, inside)| inside);
+    inside.split('/').next().unwrap_or(inside)
+}
+
+/// What to do about a dialog that wants to open.
+#[derive(Debug, PartialEq, Eq)]
+enum Admit {
+    /// The dialog is free, or its owner is changing it: show it.
+    Show,
+    /// A notice of someone else's is up: put it back in the queue first.
+    AfterRequeue,
+    /// A question of someone else's is up: back it out first.
+    AfterCancel,
+    /// Someone else has the dialog and this is only a notice: it waits.
+    Wait,
+}
+
+/// `open` is who has the dialog now and whether theirs is a notice.
+fn admit(open: Option<(Owner, bool)>, owner: Owner, is_notice: bool) -> Admit {
+    match open {
+        None => Admit::Show,
+        Some((holder, _)) if holder == owner => Admit::Show,
+        Some(_) if is_notice => Admit::Wait,
+        Some((_, true)) => Admit::AfterRequeue,
+        Some((_, false)) => Admit::AfterCancel,
+    }
 }
 
 /// One row of a chooser.
@@ -51,18 +116,206 @@ struct OpenChooser {
     choose: Chosen,
 }
 
+/// How long closing the window waits for the last change to be written
+/// and applied.
+const LAST_APPLY: Duration = Duration::from_secs(5);
+
+struct Slot<T> {
+    waiting: Option<T>,
+    closed: bool,
+    over: bool,
+}
+
+/// One thread that does the newest thing it was asked and skips what was
+/// overtaken. A request made while one is being carried out waits; one
+/// made while another waits is merged into it. So there are never two at
+/// once, and the last one asked for is always the last one done.
+pub struct Latest<T> {
+    shared: Arc<(Mutex<Slot<T>>, Condvar)>,
+    merge: fn(&mut T, T),
+}
+
+impl<T> Clone for Latest<T> {
+    fn clone(&self) -> Latest<T> {
+        Latest {
+            shared: self.shared.clone(),
+            merge: self.merge,
+        }
+    }
+}
+
+impl<T: Send + 'static> Latest<T> {
+    /// `merge` folds a newer request into one still waiting.
+    pub fn spawn(
+        name: &str,
+        merge: fn(&mut T, T),
+        mut run: impl FnMut(T) + Send + 'static,
+    ) -> Latest<T> {
+        let shared = Arc::new((
+            Mutex::new(Slot {
+                waiting: None,
+                closed: false,
+                over: false,
+            }),
+            Condvar::new(),
+        ));
+        let theirs = shared.clone();
+        let spawned = std::thread::Builder::new()
+            .name(format!("settings-{name}"))
+            .spawn(move || {
+                let (slot, told) = &*theirs;
+                loop {
+                    let mut guard = slot.lock().unwrap_or_else(|p| p.into_inner());
+                    while guard.waiting.is_none() && !guard.closed {
+                        guard = told.wait(guard).unwrap_or_else(|p| p.into_inner());
+                    }
+                    let Some(job) = guard.waiting.take() else {
+                        guard.over = true;
+                        told.notify_all();
+                        return;
+                    };
+                    drop(guard);
+                    run(job);
+                }
+            });
+        if let Err(error) = spawned {
+            eprintln!("sengi-settings: could not start the {name} worker: {error}");
+            shared.0.lock().unwrap_or_else(|p| p.into_inner()).over = true;
+        }
+        Latest { shared, merge }
+    }
+
+    pub fn request(&self, job: T) {
+        let (slot, told) = &*self.shared;
+        let mut guard = slot.lock().unwrap_or_else(|p| p.into_inner());
+        if guard.closed {
+            return;
+        }
+        match guard.waiting.as_mut() {
+            Some(waiting) => (self.merge)(waiting, job),
+            None => guard.waiting = Some(job),
+        }
+        told.notify_all();
+    }
+
+    /// Take no more requests, and wait for at most `limit` until what
+    /// was asked for has been done. False if it had not by then.
+    pub fn finish(&self, limit: Duration) -> bool {
+        let (slot, told) = &*self.shared;
+        let mut guard = slot.lock().unwrap_or_else(|p| p.into_inner());
+        guard.closed = true;
+        told.notify_all();
+        let (guard, _) = told
+            .wait_timeout_while(guard, limit, |slot| !slot.over)
+            .unwrap_or_else(|p| p.into_inner());
+        guard.over
+    }
+}
+
+/// What is owed to the disk and to the session.
+#[derive(Default)]
+struct Job {
+    /// The settings file as it should now read.
+    file: Option<(PathBuf, String)>,
+    /// The settings labwc's files should be written from.
+    session: Option<Settings>,
+    /// Things to do once both are done, such as restarting a program
+    /// that reads the settings file as it starts.
+    after: Vec<Box<dyn FnOnce() + Send>>,
+}
+
+fn merge_jobs(waiting: &mut Job, newer: Job) {
+    if newer.file.is_some() {
+        waiting.file = newer.file;
+    }
+    if newer.session.is_some() {
+        waiting.session = newer.session;
+    }
+    waiting.after.extend(newer.after);
+}
+
+fn carry_out(dirs: &Dirs, job: Job) {
+    if let Some((path, text)) = job.file {
+        if let Err(error) = store::write_atomic(&path, &text) {
+            let problem = format!("could not write {}: {error}", path.display());
+            eprintln!("sengi-settings: {problem}");
+            post(move |app| {
+                // What is shown should be what is stored.
+                app.reload();
+                app.tell("The setting could not be saved", &problem);
+            });
+        }
+    }
+    if let Some(settings) = job.session {
+        let applied = derive::apply(dirs, &settings);
+        if applied.changed() {
+            derive::reconfigure();
+        }
+        let problems = applied.problems();
+        if !problems.is_empty() {
+            post(move |app| {
+                app.tell("The setting could not be applied", &problems.join("\n\n"));
+            });
+        }
+    }
+    for task in job.after {
+        task();
+    }
+}
+
 pub struct App {
     pub window: SettingsWindow,
     pub dirs: Dirs,
     pub settings: RefCell<Settings>,
+    /// The two files `settings` is made of. They are kept here as well
+    /// so that a change can be made in memory and written by the worker.
+    system: RefCell<Document>,
+    user: RefCell<Document>,
+    user_path: Option<PathBuf>,
+    applier: Latest<Job>,
     pages: RefCell<Vec<(Page, Rc<dyn Controller>)>>,
     current: Cell<Option<Page>>,
     dialog: RefCell<Option<OpenDialog>>,
+    /// Whose the open dialog is, also while its confirm handler runs.
+    dialog_owner: Cell<Option<Owner>>,
+    dialog_is_notice: Cell<bool>,
+    notices: RefCell<VecDeque<Notice>>,
     chooser: RefCell<Option<OpenChooser>>,
 }
 
 thread_local! {
     static APP: RefCell<Option<Rc<App>>> = const { RefCell::new(None) };
+}
+
+type LastWords = Box<dyn Fn() + Send>;
+
+static LAST_WORDS: Mutex<Vec<LastWords>> = Mutex::new(Vec::new());
+static TERMINATING: AtomicBool = AtomicBool::new(false);
+
+/// Something that must be done before the process ends when it is told
+/// to end by a signal: undoing a display change still on trial, landing
+/// the last setting. It is run on the thread that hears of the signal,
+/// not the UI thread, which may be the reason the signal was sent; so it
+/// may only touch what any thread may.
+pub fn on_terminate(hook: impl Fn() + Send + 'static) {
+    LAST_WORDS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .push(Box::new(hook));
+}
+
+/// The process has been told to end: do what was registered with
+/// [`on_terminate`], in order. Returns when all of it is done.
+pub fn terminate() {
+    TERMINATING.store(true, Ordering::SeqCst);
+    let hooks = LAST_WORDS.lock().unwrap_or_else(|p| p.into_inner());
+    for hook in hooks.iter() {
+        hook();
+    }
+}
+
+pub fn terminating() -> bool {
+    TERMINATING.load(Ordering::SeqCst)
 }
 
 /// Run `task` on the UI thread with the application, from any thread. If
@@ -108,16 +361,35 @@ pub fn narrow<'a>(choices: &'a [Choice], typed: &str) -> Vec<&'a Choice> {
 
 impl App {
     pub fn new(window: SettingsWindow, dirs: Dirs, settings: Settings) -> Rc<App> {
+        let read = |path: Option<PathBuf>| path.map(|path| store::load(&path).0);
+        let user_path = dirs.user(store::FILE);
+        let applier = Latest::spawn("apply", merge_jobs, {
+            let dirs = dirs.clone();
+            move |job| carry_out(&dirs, job)
+        });
         let app = Rc::new(App {
             window,
+            system: RefCell::new(read(dirs.system(store::FILE)).unwrap_or_default()),
+            user: RefCell::new(read(user_path.clone()).unwrap_or_default()),
+            user_path,
+            applier,
             dirs,
             settings: RefCell::new(settings),
             pages: RefCell::default(),
             current: Cell::new(None),
             dialog: RefCell::default(),
+            dialog_owner: Cell::new(None),
+            dialog_is_notice: Cell::new(false),
+            notices: RefCell::default(),
             chooser: RefCell::default(),
         });
         APP.with(|slot| *slot.borrow_mut() = Some(app.clone()));
+        on_terminate({
+            let applier = app.applier.clone();
+            move || {
+                applier.finish(LAST_APPLY);
+            }
+        });
 
         let weak = Rc::downgrade(&app);
         app.window.on_page_selected(move |name| {
@@ -133,10 +405,14 @@ impl App {
             // Taken out while it runs, so the handler may open another
             // dialog; put back if it left this one open.
             let open = app.dialog.borrow_mut().take();
+            let owner = app.dialog_owner.get();
             if let Some(mut open) = open {
                 (open.confirm)(&app, text.into());
                 let mut slot = app.dialog.borrow_mut();
-                if slot.is_none() && app.window.global::<DialogState>().get_open() {
+                if slot.is_none()
+                    && app.window.global::<DialogState>().get_open()
+                    && app.dialog_owner.get() == owner
+                {
                     *slot = Some(open);
                 }
             }
@@ -233,96 +509,222 @@ impl App {
         self.current.get()
     }
 
-    /// Tell every page the window is closing.
+    /// Tell every page the window is closing, and see the last change
+    /// written and applied.
     pub fn shutdown(&self) {
         let pages: Vec<_> = self.pages.borrow().iter().map(|(_, c)| c.clone()).collect();
         for page in pages {
             page.shutdown();
         }
+        if !self.applier.finish(LAST_APPLY) {
+            eprintln!("sengi-settings: the last change was still being applied at exit");
+        }
         APP.with(|slot| slot.borrow_mut().take());
+    }
+
+    fn here() -> Option<Rc<App>> {
+        APP.with(|app| app.borrow().clone())
+    }
+
+    /// Who has the dialog, and whether theirs is a notice.
+    fn holder(&self) -> Option<(Owner, bool)> {
+        let open = self.window.global::<DialogState>().get_open();
+        self.dialog_owner
+            .get()
+            .filter(|_| open)
+            .map(|owner| (owner, self.dialog_is_notice.get()))
+    }
+
+    fn owns(&self, owner: Owner) -> bool {
+        self.holder().is_some_and(|(holder, _)| holder == owner)
+    }
+
+    /// Each change empties the dialog's field. Whatever was typed into
+    /// one dialog must never be found in the next.
+    fn wipe(&self) {
+        let state = self.window.global::<DialogState>();
+        state.set_wipe(state.get_wipe().wrapping_add(1));
+    }
+
+    fn put(&self, owner: Owner, spec: DialogSpec, dialog: OpenDialog) {
+        let state = self.window.global::<DialogState>();
+        state.set_spec(spec);
+        state.set_countdown("".into());
+        state.set_busy(false);
+        self.wipe();
+        state.set_open(true);
+        self.dialog_owner.set(Some(owner));
+        self.dialog_is_notice.set(dialog.notice.is_some());
+        *self.dialog.borrow_mut() = Some(dialog);
+    }
+
+    /// Close the dialog without telling anyone, and show what waited.
+    fn dismiss(&self) {
+        self.dialog.borrow_mut().take();
+        self.dialog_owner.set(None);
+        self.window.global::<DialogState>().set_open(false);
+        self.wipe();
+        self.window.invoke_focus_sidebar();
+        self.next_notice();
+    }
+
+    fn next_notice(&self) {
+        if self.window.global::<DialogState>().get_open() {
+            return;
+        }
+        let next = self.notices.borrow_mut().pop_front();
+        if let Some(notice) = next {
+            self.show_notice(notice);
+        }
+    }
+
+    fn show_notice(&self, notice: Notice) {
+        self.put(
+            notice.owner,
+            DialogSpec {
+                title: notice.title.as_str().into(),
+                body: notice.body.as_str().into(),
+                cancel: "Close".into(),
+                ..DialogSpec::default()
+            },
+            OpenDialog {
+                confirm: Box::new(|_, _| {}),
+                cancel: None,
+                notice: Some(notice),
+            },
+        );
+    }
+
+    fn open_as(&self, owner: Owner, spec: DialogSpec, confirm: Confirm, cancel: Cancel) {
+        // Backing a question out runs its owner's code, which may put up
+        // something of its own; that is dealt with the same way, a few
+        // times at most.
+        for _ in 0..4 {
+            match admit(self.holder(), owner, false) {
+                Admit::Show | Admit::Wait => break,
+                Admit::AfterRequeue => {
+                    let open = self.dialog.borrow_mut().take();
+                    self.dialog_owner.set(None);
+                    if let Some(notice) = open.and_then(|open| open.notice) {
+                        self.notices.borrow_mut().push_front(notice);
+                    }
+                }
+                Admit::AfterCancel => {
+                    let open = self.dialog.borrow_mut().take();
+                    self.dialog_owner.set(None);
+                    let cancel = open.and_then(|mut open| open.cancel.take());
+                    if let (Some(cancel), Some(app)) = (cancel, App::here()) {
+                        cancel(&app);
+                    }
+                }
+            }
+        }
+        self.put(
+            owner,
+            spec,
+            OpenDialog {
+                confirm,
+                cancel: Some(cancel),
+                notice: None,
+            },
+        );
     }
 
     /// Ask a question. `confirm` is called with what was typed, if the
     /// dialog has a field, each time the confirm button is pressed; the
-    /// dialog stays open until someone calls [`App::close_dialog`].
-    /// `cancel` is called if the user backs out.
+    /// dialog stays open until its owner calls [`App::close_dialog`].
+    /// `cancel` is called if the user backs out, or if another part of
+    /// the program needs the dialog for a question of its own.
+    #[track_caller]
     pub fn open_dialog(
         &self,
         spec: DialogSpec,
         confirm: impl FnMut(&Rc<App>, String) + 'static,
         cancel: impl FnOnce(&Rc<App>) + 'static,
     ) {
-        let state = self.window.global::<DialogState>();
-        state.set_spec(spec);
-        state.set_countdown("".into());
-        state.set_busy(false);
-        state.set_open(true);
-        *self.dialog.borrow_mut() = Some(OpenDialog {
-            confirm: Box::new(confirm),
-            cancel: Some(Box::new(cancel)),
-        });
+        let owner = owner_of(Location::caller().file());
+        self.open_as(owner, spec, Box::new(confirm), Box::new(cancel));
     }
 
     /// A question with one answer that matters: closes on either button
     /// and calls `confirmed` only for the confirming one.
+    #[track_caller]
     pub fn ask(&self, spec: DialogSpec, confirmed: impl FnOnce(&Rc<App>) + 'static) {
+        let owner = owner_of(Location::caller().file());
         let mut confirmed = Some(confirmed);
-        self.open_dialog(
+        self.open_as(
+            owner,
             spec,
-            move |app, _| {
-                app.close_dialog();
+            Box::new(move |app, _| {
+                app.dismiss();
                 if let Some(confirmed) = confirmed.take() {
                     confirmed(app);
                 }
-            },
-            |_| {},
+            }),
+            Box::new(|_| {}),
         );
     }
 
     /// Change what the open dialog says without closing it.
+    #[track_caller]
     pub fn update_dialog(&self, change: impl FnOnce(&mut DialogSpec)) {
-        let state = self.window.global::<DialogState>();
-        if state.get_open() {
+        if self.owns(owner_of(Location::caller().file())) {
+            let state = self.window.global::<DialogState>();
             let mut spec = state.get_spec();
             change(&mut spec);
             state.set_spec(spec);
         }
     }
 
+    #[track_caller]
     pub fn set_dialog_busy(&self, busy: bool) {
-        self.window.global::<DialogState>().set_busy(busy);
+        if self.owns(owner_of(Location::caller().file())) {
+            self.window.global::<DialogState>().set_busy(busy);
+        }
     }
 
     /// Empty the dialog's field and put the caret back in it.
+    #[track_caller]
     pub fn wipe_dialog_field(&self) {
-        let state = self.window.global::<DialogState>();
-        state.set_wipe(state.get_wipe().wrapping_add(1));
+        if self.owns(owner_of(Location::caller().file())) {
+            self.wipe();
+        }
     }
 
+    #[track_caller]
     pub fn set_dialog_countdown(&self, text: &str) {
-        self.window
-            .global::<DialogState>()
-            .set_countdown(text.into());
+        if self.owns(owner_of(Location::caller().file())) {
+            self.window
+                .global::<DialogState>()
+                .set_countdown(text.into());
+        }
     }
 
+    /// Whether the caller's own dialog is open.
+    #[track_caller]
     pub fn dialog_open(&self) -> bool {
-        self.window.global::<DialogState>().get_open()
+        self.owns(owner_of(Location::caller().file()))
     }
 
+    /// Close the caller's own dialog. Someone else's is left alone.
+    #[track_caller]
     pub fn close_dialog(&self) {
-        self.dialog.borrow_mut().take();
-        self.window.global::<DialogState>().set_open(false);
-        self.window.invoke_focus_sidebar();
+        if self.owns(owner_of(Location::caller().file())) {
+            self.dismiss();
+        }
     }
 
     /// Close the dialog as Escape does, running its cancel handler.
     pub fn cancel_dialog(self: &Rc<App>) {
         let open = self.dialog.borrow_mut().take();
+        self.dialog_owner.set(None);
         self.window.global::<DialogState>().set_open(false);
+        self.wipe();
         self.window.invoke_focus_sidebar();
         if let Some(cancel) = open.and_then(|mut open| open.cancel.take()) {
             cancel(self);
         }
+        self.next_notice();
     }
 
     /// Offer `choices` to pick one from.
@@ -379,49 +781,87 @@ impl App {
         state.set_items(model(rows));
     }
 
-    /// Store one setting. A failure is shown in a dialog and returned.
+    /// Store one setting. It is in effect in memory at once and written
+    /// to the file by the worker. False, and a dialog, if it cannot be.
     pub fn set(self: &Rc<App>, section: &str, key: &str, value: Value) -> bool {
-        let result = self.settings.borrow_mut().set(section, key, value);
-        match result {
-            Ok(()) => true,
-            Err(problem) => {
-                eprintln!("sengi-settings: {problem}");
-                self.tell("The setting could not be saved", &problem);
-                false
-            }
+        let stored = self.store(section, key, value);
+        if let Err(problem) = &stored {
+            eprintln!("sengi-settings: {problem}");
+            self.tell("The setting could not be saved", problem);
         }
+        stored.is_ok()
     }
 
-    /// Say something that needs no answer.
-    pub fn tell(&self, title: &str, body: &str) {
-        self.open_dialog(
-            DialogSpec {
-                title: title.into(),
-                body: body.into(),
-                cancel: "Close".into(),
-                ..DialogSpec::default()
-            },
-            |_, _| {},
-            |_| {},
+    fn store(&self, section: &str, key: &str, value: Value) -> Result<(), String> {
+        let value = settings::check(section, key, &value)
+            .map_err(|why| format!("{section}.{key} {why}"))?;
+        if self.settings.borrow().get(section, key).as_ref() == Some(&value) {
+            return Ok(());
+        }
+        let path = self
+            .user_path
+            .clone()
+            .ok_or("there is no home directory to keep settings in")?;
+        let mut user = self.user.borrow_mut();
+        user.set(section, key, value);
+        *self.settings.borrow_mut() = Settings::from_documents(
+            self.system.borrow().clone(),
+            user.clone(),
+            Some(path.clone()),
+        );
+        self.applier.request(Job {
+            file: Some((path, user.render())),
+            ..Job::default()
+        });
+        Ok(())
+    }
+
+    /// Read the settings files again, after a write that failed.
+    fn reload(&self) {
+        let read = |path: Option<PathBuf>| path.map(|path| store::load(&path).0);
+        *self.system.borrow_mut() = read(self.dirs.system(store::FILE)).unwrap_or_default();
+        *self.user.borrow_mut() = read(self.user_path.clone()).unwrap_or_default();
+        *self.settings.borrow_mut() = Settings::from_documents(
+            self.system.borrow().clone(),
+            self.user.borrow().clone(),
+            self.user_path.clone(),
         );
     }
 
-    /// Write labwc's files from the settings and have it read them, off
-    /// the UI thread. Problems come back in a dialog.
+    /// Run `task` on the worker once every change made so far has been
+    /// written and applied.
+    pub fn after_saved(&self, task: impl FnOnce() + Send + 'static) {
+        self.applier.request(Job {
+            after: vec![Box::new(task)],
+            ..Job::default()
+        });
+    }
+
+    /// Say something that needs no answer. If another part of the
+    /// program has the dialog, it is said when that is done with.
+    #[track_caller]
+    pub fn tell(&self, title: &str, body: &str) {
+        let notice = Notice {
+            owner: owner_of(Location::caller().file()),
+            title: title.to_string(),
+            body: body.to_string(),
+        };
+        if admit(self.holder(), notice.owner, true) == Admit::Wait {
+            let mut waiting = self.notices.borrow_mut();
+            if waiting.len() < MAX_NOTICES && !waiting.contains(&notice) {
+                waiting.push_back(notice);
+            }
+        } else {
+            self.show_notice(notice);
+        }
+    }
+
+    /// Write labwc's files from the settings and have it read them, on
+    /// the worker. Problems come back in a dialog.
     pub fn apply_to_session(&self) {
-        let dirs = self.dirs.clone();
-        let settings = self.settings.borrow().clone();
-        std::thread::spawn(move || {
-            let applied = derive::apply(&dirs, &settings);
-            if applied.changed() {
-                derive::reconfigure();
-            }
-            let problems = applied.problems();
-            if !problems.is_empty() {
-                post(move |app| {
-                    app.tell("The setting could not be applied", &problems.join("\n\n"));
-                });
-            }
+        self.applier.request(Job {
+            session: Some(self.settings.borrow().clone()),
+            ..Job::default()
         });
     }
 }
@@ -480,6 +920,123 @@ mod tests {
         assert_eq!(ids("america").len(), 2);
         assert_eq!(ids("buenos aires"), ["America/Argentina/Buenos_Aires"]);
         assert!(ids("atlantis").is_empty());
+    }
+
+    #[test]
+    fn a_burst_of_requests_is_a_few_applies_and_ends_on_the_last() {
+        use std::sync::mpsc;
+        let (started, has_started) = mpsc::channel();
+        let (go, gate) = mpsc::channel::<()>();
+        let done = Arc::new(Mutex::new(Vec::new()));
+        let latest = Latest::spawn("test", |waiting: &mut u32, newer| *waiting = newer, {
+            let done = done.clone();
+            move |value| {
+                let _ = started.send(());
+                // The first apply is held up until the burst is over.
+                let _ = gate.recv();
+                done.lock().unwrap().push(value);
+            }
+        });
+        latest.request(0);
+        has_started.recv_timeout(Duration::from_secs(5)).unwrap();
+        for value in 1..100 {
+            latest.request(value);
+        }
+        drop(go);
+        assert!(latest.finish(Duration::from_secs(5)));
+        // One was under way; the other 99 became one.
+        assert_eq!(*done.lock().unwrap(), [0, 99]);
+        // Nothing is taken after the end.
+        latest.request(100);
+        assert!(latest.finish(Duration::from_millis(10)));
+        assert_eq!(done.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_waiting_job_takes_the_newest_file_and_keeps_every_errand() {
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let errand = |name: &'static str| -> Box<dyn FnOnce() + Send> {
+            let ran = ran.clone();
+            Box::new(move || ran.lock().unwrap().push(name))
+        };
+        let mut waiting = Job {
+            file: Some((PathBuf::from("/a"), "old".to_string())),
+            after: vec![errand("first")],
+            ..Job::default()
+        };
+        merge_jobs(
+            &mut waiting,
+            Job {
+                file: Some((PathBuf::from("/a"), "new".to_string())),
+                session: Some(Settings::default()),
+                after: vec![errand("second")],
+            },
+        );
+        // An errand alone does not undo what is owed.
+        merge_jobs(&mut waiting, Job::default());
+        assert_eq!(waiting.file.as_ref().unwrap().1, "new");
+        assert!(waiting.session.is_some());
+        for task in waiting.after {
+            task();
+        }
+        assert_eq!(*ran.lock().unwrap(), ["first", "second"]);
+    }
+
+    #[test]
+    fn what_was_registered_runs_when_the_process_is_told_to_end() {
+        let ran = Arc::new(Mutex::new(0));
+        on_terminate({
+            let ran = ran.clone();
+            move || *ran.lock().unwrap() += 1
+        });
+        terminate();
+        assert!(terminating());
+        assert_eq!(*ran.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn a_dialog_belongs_to_the_module_that_opened_it() {
+        assert_eq!(
+            owner_of("crates/sengi-settings/src/network/page.rs"),
+            "network"
+        );
+        assert_eq!(
+            owner_of("crates/sengi-settings/src/network/mod.rs"),
+            "network"
+        );
+        assert_eq!(
+            owner_of("crates/sengi-settings/src/display/page.rs"),
+            "display"
+        );
+        assert_eq!(owner_of("crates/sengi-settings/src/power.rs"), "power.rs");
+        assert_eq!(owner_of("src/app.rs"), "app.rs");
+        assert_eq!(owner_of("elsewhere.rs"), "elsewhere.rs");
+        // Where this very call is written.
+        assert_eq!(owner_of(Location::caller().file()), "app.rs");
+    }
+
+    #[test]
+    fn the_one_dialog_is_not_taken_from_under_its_owner() {
+        let question = Some(("network", false));
+        let notice = Some(("network", true));
+        // Free: anything shows.
+        assert_eq!(admit(None, "display", false), Admit::Show);
+        assert_eq!(admit(None, "display", true), Admit::Show);
+        // The owner goes on to its next question, or reports how its
+        // own question ended.
+        assert_eq!(admit(question, "network", false), Admit::Show);
+        assert_eq!(admit(question, "network", true), Admit::Show);
+        // Someone else's news waits, behind a question or a notice.
+        assert_eq!(admit(question, "bluetooth", true), Admit::Wait);
+        assert_eq!(admit(notice, "app.rs", true), Admit::Wait);
+        // Someone else's question cannot wait, but the one it displaces
+        // is backed out, never answered: a keep-or-revert dialog that
+        // loses its place goes back, it does not keep.
+        assert_eq!(
+            admit(Some(("display", false)), "bluetooth", false),
+            Admit::AfterCancel
+        );
+        assert_eq!(admit(notice, "bluetooth", false), Admit::AfterRequeue);
     }
 
     #[test]

@@ -9,21 +9,24 @@
 import { Tokens, SengiText, SengiLabel, SengiSurface, SengiButton } from "components.slint";
 import { Icon, NamedIcon } from "icons.slint";
 
-// Sizes the tokens do not name, derived from the ones they do.
+// The tokens this window is laid out with, under the names the kit and
+// the pages use.
 export global Metrics {
     // A row of a card or list: two lines of text, or one control.
-    out property <length> row: Tokens.button + Tokens.space-lg;
+    out property <length> row: Tokens.list-row-height;
     out property <length> slider-knob: Tokens.space-lg;
     out property <length> slider-track: Tokens.space-xs;
-    out property <length> sidebar: Tokens.dock-icon * 5;
+    out property <length> sidebar: Tokens.settings-sidebar-width;
     out property <length> sidebar-row: Tokens.button + Tokens.space-sm;
     // The widest a page's column of cards grows.
-    out property <length> page: Tokens.launcher-width;
-    out property <length> dialog: Tokens.notification-width;
-    out property <length> chooser: Tokens.menu-width * 1.5;
+    out property <length> page: Tokens.settings-page-width;
+    out property <length> dialog: Tokens.dialog-width;
+    out property <length> chooser: Tokens.chooser-width;
     out property <length> scrollbar: Tokens.space-xs;
-    // A slider or field at the right of a row.
-    out property <length> control: Tokens.dock-icon * 5;
+    // A slider, field or chooser at the right of a row, and the wider
+    // chooser for the names of devices and places.
+    out property <length> control: Tokens.settings-control-width;
+    out property <length> control-wide: Tokens.settings-control-wide;
 }
 
 // A square button around an icon, which is its child.
@@ -61,8 +64,10 @@ export component IconButton inherits Rectangle {
 }
 
 // A horizontal slider over whole numbers. `changed` is called for every
-// position the user moves it through, `released` once when a drag or a
-// key press ends on a value; whoever listens picks the one that suits.
+// position the user moves it through, `released` once when a drag ends
+// on a value, or when a key that moved it is let go or has been quiet
+// for a moment: a held key repeats, and each repeat is not an ending.
+// Whoever listens picks the one that suits.
 export component Slider inherits Rectangle {
     in-out property <int> value: 0;
     in property <int> minimum: 0;
@@ -89,9 +94,27 @@ export component Slider inherits Rectangle {
         }
     }
 
+    // The keyboard has moved it and `released` has not been called yet.
+    private property <bool> owed: false;
+
     function key(to: int) {
         root.move(to);
-        root.released(root.value);
+        root.owed = true;
+        settle.restart();
+    }
+
+    function report() {
+        settle.stop();
+        if root.owed {
+            root.owed = false;
+            root.released(root.value);
+        }
+    }
+
+    settle := Timer {
+        interval: Tokens.input-settle;
+        running: false;
+        triggered => { root.report(); }
     }
 
     // The value under a pointer at `x`, with the knob centred on it.
@@ -138,6 +161,18 @@ export component Slider inherits Rectangle {
                 return EventResult.reject;
             }
             return EventResult.accept;
+        }
+
+        key-released(event) => {
+            root.report();
+            return EventResult.reject;
+        }
+
+        // Tab away while the key is still down: the value is settled.
+        changed has-focus => {
+            if !self.has-focus {
+                root.report();
+            }
         }
 
         touch := TouchArea {
@@ -281,7 +316,9 @@ export component Scroll inherits Rectangle {
     }
 
     function page(direction: int) {
-        flick.content-y = -Math.clamp(root.offset + direction * root.height * 0.8, 0, root.overflow);
+        flick.content-y = -Math.clamp(
+            root.offset + direction * root.height * Tokens.scroll-page-percent / 100,
+            0, root.overflow);
     }
 
     clip: true;
@@ -348,7 +385,9 @@ export component Divider inherits Rectangle {
 }
 
 // A row of a card: a title with an optional second line at the left, and
-// whatever its children are at the right.
+// whatever its children are at the right. Every row is the same height,
+// with one line of words or two; a second line too long for the width
+// wraps, and the row grows by what that takes.
 export component SettingRow inherits Rectangle {
     in property <string> title;
     in property <string> detail;
@@ -361,22 +400,37 @@ export component SettingRow inherits Rectangle {
     HorizontalLayout {
         padding-left: Tokens.space-md;
         padding-right: Tokens.space-md;
-        padding-top: Tokens.space-sm;
-        padding-bottom: Tokens.space-sm;
+        padding-top: Tokens.space-xs;
+        padding-bottom: Tokens.space-xs;
         spacing: Tokens.space-md;
 
-        VerticalLayout {
-            horizontal-stretch: 1;
-            alignment: center;
-            spacing: Tokens.space-xxs;
+        // Placed by hand. A layout asks wrapped text how tall it is
+        // before it has said how wide it will be, and then lets the
+        // text run out of the bottom of the row; here the height is
+        // read off the text at the width it really has.
+        words := Rectangle {
+            private property <length> stack: head.preferred-height
+                + (root.detail != "" ? Tokens.space-xxs + more.preferred-height : 0);
 
-            SengiText {
+            horizontal-stretch: 1;
+            min-height: self.stack;
+
+            head := SengiText {
+                x: 0;
+                y: (parent.height - words.stack) / 2;
+                width: parent.width;
+                height: self.preferred-height;
                 text: root.title;
                 color: root.enabled ? Tokens.color-text : Tokens.color-text-disabled;
                 overflow: elide;
             }
 
-            if root.detail != "": SengiLabel {
+            more := SengiLabel {
+                x: 0;
+                y: head.y + head.height + Tokens.space-xxs;
+                width: parent.width;
+                height: self.preferred-height;
+                visible: root.detail != "";
                 text: root.detail;
                 color: !root.enabled ? Tokens.color-text-disabled
                     : root.alert ? Tokens.color-danger : Tokens.color-text-muted;
@@ -525,11 +579,14 @@ export component ChoiceButton inherits Rectangle {
     callback clicked();
 
     height: Tokens.button;
-    min-width: Tokens.dock-icon * 2;
+    min-width: Tokens.value-column-lg;
     border-radius: Tokens.radius;
     border-width: scope.has-focus ? Tokens.focus-ring-width : Tokens.border-width;
-    border-color: scope.has-focus ? Tokens.color-focus-ring : Tokens.color-border;
-    background: touch.has-hover && root.enabled ? Tokens.color-surface-hover : Tokens.color-surface-raised;
+    border-color: scope.has-focus ? Tokens.color-focus-ring
+        : root.enabled ? Tokens.color-border : Tokens.color-outline-disabled;
+    // Off, it is an outline, as a button is.
+    background: !root.enabled ? transparent
+        : touch.has-hover ? Tokens.color-surface-hover : Tokens.color-surface-raised;
     animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
 
     HorizontalLayout {
@@ -594,31 +651,12 @@ export struct Item {
     enabled: bool,
 }
 
-// A small button inside a list row.
-component RowButton inherits Rectangle {
-    in property <string> text;
-    in property <bool> danger: false;
-    callback clicked();
-
-    height: Tokens.button;
-    width: label.preferred-width + Tokens.space-md * 2;
-    border-radius: Tokens.radius;
-    border-width: Tokens.border-width;
-    border-color: Tokens.color-border;
-    background: touch.has-hover ? Tokens.color-surface-raised : Tokens.color-surface;
-    animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
-
-    label := SengiText {
-        text: root.text;
-        color: root.danger ? Tokens.color-danger : Tokens.color-text;
-        font-weight: Tokens.font-weight-medium;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-
-    touch := TouchArea {
-        clicked => { root.clicked(); }
-    }
+// A button inside a list row. The row may be lit in the very colour of
+// a button under the pointer, so it has a line around it; and it is for
+// the pointer only, the keys of the list doing the same.
+component RowButton inherits SengiButton {
+    outlined: true;
+    focusable: false;
 }
 
 // A list the keyboard can walk. It is one stop for Tab; inside it the
@@ -1050,7 +1088,8 @@ export component ChooserLayer inherits Rectangle {
             // A list that is searched keeps its size while it is narrowed.
             height: Math.min(root.height - Tokens.space-xl * 2,
                 head.preferred-height + Tokens.space-lg * 3
-                    + (root.searchable ? 8 : Math.max(root.items.length, 2)) * list.row-height);
+                    + (root.searchable ? Tokens.chooser-lines : Math.max(root.items.length, 2))
+                        * list.row-height);
 
             // Clicks on the surface are not clicks outside it.
             TouchArea { }

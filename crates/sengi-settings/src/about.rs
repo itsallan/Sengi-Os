@@ -223,25 +223,30 @@ impl AboutPage {
     }
 
     fn refresh() {
-        std::thread::spawn(|| {
-            let (name, version) = system_name(&read(Path::new("/etc/os-release")));
-            let kernel = text::clean(&read(Path::new("/proc/sys/kernel/osrelease")), 48);
-            let (installed, used) = memory(&read(Path::new("/proc/meminfo")));
-            let hardware = vec![
-                row("Processor", processor(&read(Path::new("/proc/cpuinfo")))),
-                row("Memory", installed),
-                row("Graphics", graphics(Path::new("/sys/class/drm"))),
-                row("Disk", disk("/")),
-            ];
-            app::post(move |app| {
-                let data = app.window.global::<AboutData>();
-                data.set_name(name.into());
-                data.set_version(version.into());
-                data.set_system(app::model(vec![row("Kernel", kernel)]));
-                data.set_hardware(app::model(hardware));
-                data.set_memory_used(used.into());
+        let spawned = std::thread::Builder::new()
+            .name("settings-about".to_string())
+            .spawn(|| {
+                let (name, version) = system_name(&read(Path::new("/etc/os-release")));
+                let kernel = text::clean(&read(Path::new("/proc/sys/kernel/osrelease")), 48);
+                let (installed, used) = memory(&read(Path::new("/proc/meminfo")));
+                let hardware = vec![
+                    row("Processor", processor(&read(Path::new("/proc/cpuinfo")))),
+                    row("Memory", installed),
+                    row("Graphics", graphics(Path::new("/sys/class/drm"))),
+                    row("Disk", disk("/")),
+                ];
+                app::post(move |app| {
+                    let data = app.window.global::<AboutData>();
+                    data.set_name(name.into());
+                    data.set_version(version.into());
+                    data.set_system(app::model(vec![row("Kernel", kernel)]));
+                    data.set_hardware(app::model(hardware));
+                    data.set_memory_used(used.into());
+                });
             });
-        });
+        if let Err(error) = spawned {
+            eprintln!("sengi-settings: could not start a thread to read the system: {error}");
+        }
     }
 }
 

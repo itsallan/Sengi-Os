@@ -9,13 +9,17 @@
 //! This has a Wayland connection of its own, apart from the window's. A
 //! small thread sleeps in `poll` on its socket and wakes the page's worker
 //! when the compositor has said something, such as a monitor being plugged
-//! in; nothing here wakes up on a timer.
+//! in; nothing here wakes up on a timer. Waiting for the compositor's
+//! answer to a configuration is the one wait with an end: a compositor
+//! that never answers must not hold the page, or the way back, for ever.
 
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, Once, OnceLock};
+use std::time::{Duration, Instant};
 
 use wayland_client::backend::{ObjectId, WaylandError};
+use wayland_client::protocol::wl_callback::{self, WlCallback};
 use wayland_client::protocol::wl_output::{self, WlOutput};
 use wayland_client::protocol::wl_registry::{self, WlRegistry};
 use wayland_client::{event_created_child, Connection, Dispatch, EventQueue, Proxy, QueueHandle};
@@ -42,6 +46,15 @@ use crate::worker::Notify;
 
 /// The newest version of the protocol this was written against.
 const VERSION: u32 = 4;
+
+/// How long the compositor has to answer a configuration or a sync.
+const ANSWER: Duration = Duration::from_secs(5);
+/// The watcher reads the same socket and may take the answer off it, so
+/// a wait looks at what has been read this often.
+const GLANCE: Duration = Duration::from_millis(50);
+/// Modes kept for one head. More than are ever offered, so that the one
+/// in use can be found among them however long the list.
+const MAX_KEPT_MODES: usize = MAX_MODES * 16;
 
 struct ModeEntry {
     proxy: ZwlrOutputModeV1,
@@ -76,6 +89,23 @@ struct State {
     serial: Option<u32>,
     /// How the configuration being applied ended.
     outcome: Option<Result<(), ApplyError>>,
+    /// The compositor has answered the last sync.
+    synced: bool,
+}
+
+impl Dispatch<WlCallback, ()> for State {
+    fn event(
+        state: &mut State,
+        _: &WlCallback,
+        event: wl_callback::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<State>,
+    ) {
+        if let wl_callback::Event::Done { .. } = event {
+            state.synced = true;
+        }
+    }
 }
 
 impl Dispatch<WlRegistry, ()> for State {
@@ -203,7 +233,7 @@ impl Dispatch<ZwlrOutputHeadV1, ()> for State {
                 head.description = description;
             }
             zwlr_output_head_v1::Event::Mode { mode } => {
-                if head.modes.len() < MAX_MODES {
+                if head.modes.len() < MAX_KEPT_MODES {
                     head.modes.push(ModeEntry {
                         proxy: mode,
                         mode: Mode {
@@ -308,6 +338,65 @@ pub fn scale_thousandths(scale: f64) -> u32 {
     }
 }
 
+/// The modes to offer: no more than `MAX_MODES`, and the one in use
+/// among them.
+fn offered(mut modes: Vec<Mode>, current: Option<Mode>) -> Vec<Mode> {
+    if modes.len() > MAX_MODES {
+        modes.truncate(MAX_MODES);
+        if let Some(current) = current.filter(|current| !modes.contains(current)) {
+            modes[MAX_MODES - 1] = current;
+        }
+    }
+    modes
+}
+
+/// Dispatch what the compositor sends until `done` says the wait is
+/// over, for at most `limit`.
+fn wait_for(
+    queue: &mut EventQueue<State>,
+    state: &mut State,
+    limit: Duration,
+    done: impl Fn(&State) -> bool,
+) -> Result<(), ApplyError> {
+    let deadline = Instant::now() + limit;
+    loop {
+        queue
+            .dispatch_pending(state)
+            .map_err(|_| ApplyError::Unavailable)?;
+        if done(state) {
+            return Ok(());
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(ApplyError::Silent);
+        }
+        queue.flush().map_err(|_| ApplyError::Unavailable)?;
+        let Some(guard) = queue.prepare_read() else {
+            continue;
+        };
+        let mut fds = [libc::pollfd {
+            fd: guard.connection_fd().as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        }];
+        let wait = left.min(GLANCE).as_millis() as libc::c_int;
+        // SAFETY: poll is given one valid pollfd and a time to wait; it
+        // touches nothing else.
+        let ready = unsafe { libc::poll(fds.as_mut_ptr(), 1, wait) };
+        if ready > 0 {
+            match guard.read() {
+                Ok(_) => {}
+                Err(WaylandError::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(_) => return Err(ApplyError::Unavailable),
+            }
+        } else if ready < 0
+            && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+        {
+            return Err(ApplyError::Unavailable);
+        }
+    }
+}
+
 fn outputs(state: &State) -> Vec<Output> {
     let mut outputs: Vec<Output> = state
         .heads
@@ -353,7 +442,9 @@ fn outputs(state: &State) -> Vec<Output> {
                 });
                 (Vec::new(), given.or(as_given))
             } else {
-                (modes, listed)
+                // A mode in use that the head does not list is still the
+                // one to go back to, by its size and rate.
+                (offered(modes, listed), listed.or(given))
             };
             let title = text::clean(&head.description, 48);
             Output {
@@ -384,6 +475,10 @@ pub struct Wlr {
     /// times Settings is opened the Display page is never looked at.
     connection: OnceLock<Option<Connection>>,
     inner: Mutex<Option<Inner>>,
+    /// Whom the watcher tells. The page's worker comes and goes; the
+    /// watcher is started once.
+    changed: Arc<Mutex<Option<Notify>>>,
+    watching: Once,
     bus: Arc<Bus>,
     /// `/sys/class`, or in a debug build a directory laid out like it.
     class: PathBuf,
@@ -394,6 +489,8 @@ impl Wlr {
         Wlr {
             connection: OnceLock::new(),
             inner: Mutex::new(None),
+            changed: Arc::default(),
+            watching: Once::new(),
             bus,
             class,
         }
@@ -458,6 +555,7 @@ impl DisplayService for Wlr {
         }
         let handle = queue.handle();
         let configuration = manager.create_configuration(serial, &handle, ());
+        let mut missing = false;
         // Every head has to be spoken for, changed or not.
         for head in &state.heads {
             if !head.enabled {
@@ -468,7 +566,7 @@ impl DisplayService for Wlr {
             if head.name != change.output {
                 continue;
             }
-            if let Some(mode) = change.mode.filter(Mode::sane) {
+            if let Some(mode) = change.mode {
                 let listed = head.modes.iter().find(|entry| {
                     !mode.custom
                         && entry.mode.size() == mode.size()
@@ -476,31 +574,44 @@ impl DisplayService for Wlr {
                 });
                 match listed {
                     Some(entry) => settings.set_mode(&entry.proxy),
-                    None if mode.custom => {
+                    None if mode.custom && mode.sane() => {
                         settings.set_custom_mode(mode.width, mode.height, mode.refresh);
                     }
-                    // A mode the head does not have: leave it as it is,
-                    // and let the compositor's answer stand for the rest.
-                    None => {}
+                    // A mode the head does not have, or no longer has.
+                    None => missing = true,
                 }
             }
             if let Some(scale) = change.scale {
                 settings.set_scale(f64::from(scale.clamp(250, 8000)) / 1000.0);
             }
         }
-        state.outcome = None;
-        configuration.apply();
-        let outcome = loop {
-            if let Some(outcome) = state.outcome.take() {
-                break outcome;
-            }
-            if queue.blocking_dispatch(state).is_err() {
-                break Err(ApplyError::Unavailable);
-            }
+        // Applying it would change nothing and still look like success.
+        let outcome = if missing {
+            Err(ApplyError::NoSuchMode)
+        } else {
+            state.outcome = None;
+            configuration.apply();
+            wait_for(queue, state, ANSWER, |state| state.outcome.is_some())
+                .and_then(|()| state.outcome.take().unwrap_or(Err(ApplyError::Silent)))
         };
         configuration.destroy();
         let _ = queue.flush();
         outcome
+    }
+
+    fn settle(&self) {
+        let Some(connection) = self.connection().cloned() else {
+            return;
+        };
+        let mut guard = self.inner();
+        let Some(Inner { queue, state }) = guard.as_mut() else {
+            return;
+        };
+        // The compositor answers a sync after everything it had to say
+        // before it, the new serial included.
+        state.synced = false;
+        connection.display().sync(&queue.handle(), ());
+        let _ = wait_for(queue, state, ANSWER, |state| state.synced);
     }
 
     fn set_brightness(&self, name: &str, raw: u32) {
@@ -511,44 +622,54 @@ impl DisplayService for Wlr {
     }
 
     fn watch(&self, changed: Notify) {
+        *self.changed.lock().unwrap_or_else(|p| p.into_inner()) = Some(changed);
         let Some(connection) = self.connection().cloned() else {
             return;
         };
-        let spawned = std::thread::Builder::new()
-            .name("settings-display-watch".to_string())
-            .spawn(move || loop {
-                let Some(guard) = connection.prepare_read() else {
-                    // Events are waiting to be dispatched: say so, and
-                    // give the worker a moment to do it.
+        let told = self.changed.clone();
+        self.watching.call_once(move || {
+            let changed = move || {
+                if let Some(changed) = told.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
                     changed();
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    continue;
-                };
-                let mut fds = [libc::pollfd {
-                    fd: guard.connection_fd().as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                }];
-                // SAFETY: poll is given one valid pollfd and waits; it
-                // touches nothing else.
-                let ready = unsafe { libc::poll(fds.as_mut_ptr(), 1, -1) };
-                if ready < 0 {
-                    if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                }
+            };
+            let spawned = std::thread::Builder::new()
+                .name("settings-display-watch".to_string())
+                .spawn(move || loop {
+                    let Some(guard) = connection.prepare_read() else {
+                        // Events are waiting to be dispatched: say so, and
+                        // give the worker a moment to do it.
+                        changed();
+                        std::thread::sleep(std::time::Duration::from_millis(100));
                         continue;
+                    };
+                    let mut fds = [libc::pollfd {
+                        fd: guard.connection_fd().as_raw_fd(),
+                        events: libc::POLLIN,
+                        revents: 0,
+                    }];
+                    // SAFETY: poll is given one valid pollfd and waits; it
+                    // touches nothing else.
+                    let ready = unsafe { libc::poll(fds.as_mut_ptr(), 1, -1) };
+                    if ready < 0 {
+                        if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+                        {
+                            continue;
+                        }
+                        break;
                     }
-                    break;
-                }
-                match guard.read() {
-                    Ok(_) => changed(),
-                    Err(WaylandError::Io(error))
-                        if error.kind() == std::io::ErrorKind::WouldBlock => {}
-                    // The compositor has gone.
-                    Err(_) => break,
-                }
-            });
-        if spawned.is_err() {
-            eprintln!("sengi-settings: could not start a thread to watch the displays");
-        }
+                    match guard.read() {
+                        Ok(_) => changed(),
+                        Err(WaylandError::Io(error))
+                            if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                        // The compositor has gone.
+                        Err(_) => break,
+                    }
+                });
+            if spawned.is_err() {
+                eprintln!("sengi-settings: could not start a thread to watch the displays");
+            }
+        });
     }
 }
 
@@ -571,6 +692,28 @@ mod tests {
         for bad in ["", "a b", "x/y", "é", "new\nline", &"n".repeat(65)] {
             assert!(!plain_name(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_long_list_of_modes_is_cut_short_around_the_one_in_use() {
+        let mode = |width: i32| Mode {
+            width,
+            height: 1080,
+            refresh: 60_000,
+            custom: false,
+        };
+        let all: Vec<Mode> = (1..=MAX_MODES as i32 + 40).map(mode).collect();
+        let short: Vec<Mode> = all[..10].to_vec();
+        assert_eq!(offered(short.clone(), Some(mode(3))), short);
+        // The one in use is past the cut: it is offered all the same.
+        let last = *all.last().unwrap();
+        let cut = offered(all.clone(), Some(last));
+        assert_eq!(cut.len(), MAX_MODES);
+        assert!(cut.contains(&last));
+        assert_eq!(cut[..MAX_MODES - 1], all[..MAX_MODES - 1]);
+        // One already among them is not listed twice.
+        assert_eq!(offered(all.clone(), Some(mode(5))), all[..MAX_MODES]);
+        assert_eq!(offered(all.clone(), None).len(), MAX_MODES);
     }
 
     #[test]
@@ -608,6 +751,8 @@ mod tests {
             scale: Some(2000),
         };
         assert_eq!(wlr.apply(&change), Err(ApplyError::Unavailable));
+        wlr.settle();
+        wlr.watch(Box::new(|| {}));
         wlr.watch(Box::new(|| {}));
     }
 }
