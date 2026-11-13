@@ -172,6 +172,39 @@ export component SettingsWindow inherits Window {
     default-font-family: Tokens.font-family;
     default-font-size: Tokens.font-size-md;
 
+    // The window is drawn into two buffers taken in turn. When its size
+    // in pixels changes, as when the output's scale does, each buffer is
+    // made anew only as its turn comes, and the second is not said to be
+    // new: only what changed since is drawn into it, over whatever the
+    // old size left there. So for a few frames after such a change the
+    // whole window is drawn, by a sheet under everything that changes
+    // without looking any different.
+    private property <float> pixel: 1phx / 1px;
+    private property <int> sheet: 0;
+    private property <int> sheets-owed: 0;
+
+    function draw-everything() {
+        root.sheet += 1;
+        root.sheets-owed = 3;
+    }
+
+    changed pixel => { root.draw-everything(); }
+    changed width => { root.draw-everything(); }
+    changed height => { root.draw-everything(); }
+
+    Timer {
+        interval: Tokens.motion-fast;
+        running: root.sheets-owed > 0;
+        triggered => {
+            root.sheet += 1;
+            root.sheets-owed -= 1;
+        }
+    }
+
+    Rectangle {
+        background: Math.mod(root.sheet, 2) == 0 ? transparent : Tokens.color-bg.transparentize(1);
+    }
+
     sidebar := Sidebar {
         x: 0;
         y: 0;
