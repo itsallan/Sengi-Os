@@ -387,8 +387,12 @@ fn run_with(
                     Some(output) if change.mode.is_some() && output.current.is_none() => {
                         emit(Event::Failed(ApplyError::Unavailable));
                     }
+                    // No answer in time is not a no: the compositor may
+                    // yet do as it was asked. So that is a trial too, to
+                    // be kept or undone like any other, and never a
+                    // change that arrives later with nobody to undo it.
                     Some(output) => match service.apply(&change) {
-                        Ok(()) => {
+                        Ok(()) | Err(ApplyError::Silent) => {
                             trial.begin(output.restore(), Instant::now());
                             emit(Event::Trying);
                         }
@@ -479,6 +483,9 @@ pub mod testing {
         pub stale: Mutex<u32>,
         /// How often it was asked to catch up.
         pub settled: Mutex<u32>,
+        /// This many of the next changes are made, but the answer comes
+        /// too late to be heard.
+        pub slow: Mutex<u32>,
     }
 
     impl Fake {
@@ -542,6 +549,11 @@ pub mod testing {
                     output.name,
                     scale_words(output.scale)
                 ));
+            let mut slow = self.slow.lock().unwrap_or_else(|p| p.into_inner());
+            if *slow > 0 {
+                *slow -= 1;
+                return Err(ApplyError::Silent);
+            }
             Ok(())
         }
 
@@ -961,6 +973,28 @@ mod tests {
         let events = worked(&fake, vec![Command::Apply(missing)]);
         assert_eq!(events, [Event::Failed(ApplyError::Unavailable)]);
         assert!(fake.log().is_empty());
+    }
+
+    #[test]
+    fn a_change_the_compositor_was_slow_to_answer_is_on_trial_all_the_same() {
+        let fake = Fake::with(vec![laptop()]);
+        *fake.slow.lock().unwrap() = 1;
+        // The worker is stopped with the trial still running.
+        let events = worked(&fake, vec![Command::Apply(change(1600, 900))]);
+        assert_eq!(events, [Event::Trying]);
+        // It took effect after all, and was undone on the way out.
+        let log = fake.log();
+        assert_eq!(log.len(), 2, "{log:?}");
+        assert!(log[0].contains("1600") && log[1].contains("1920"), "{log:?}");
+
+        // And it can be kept.
+        *fake.slow.lock().unwrap() = 1;
+        let events = worked(
+            &fake,
+            vec![Command::Apply(change(1600, 900)), Command::Keep],
+        );
+        assert_eq!(events, [Event::Trying, Event::Kept]);
+        assert_eq!(fake.log().len(), 3);
     }
 
     #[test]
