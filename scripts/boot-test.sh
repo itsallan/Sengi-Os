@@ -24,7 +24,7 @@ screen_h=800
 
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
-rm -f "$out/serial.log" "$out"/*.png "$out/metrics.txt" \
+rm -f "$out/serial.log" "$out"/*.png "$out"/*.ppm "$out/metrics.txt" \
 	"$out/mon.in" "$out/qmp.in" "$out/qmp.out"
 : >"$out/serial.log"
 mkfifo "$out/mon.in" "$out/qmp.in" "$out/qmp.out"
@@ -76,6 +76,16 @@ wait_for() {
 		kill -0 "$qemu" 2>/dev/null || { echo "qemu exited early" >&2; return 1; }
 		elapsed=$(echo "$(now) $start" | awk '{printf "%d", $1 - $2}')
 		[ "$elapsed" -lt "$timeout_s" ] || { echo "timed out waiting for $1" >&2; return 1; }
+		sleep 0.1
+	done
+}
+
+# The same for something that should take seconds: wait at most $2 of them.
+wait_serial() {
+	tries=$(($2 * 10))
+	while ! grep -q "$1" "$out/serial.log"; do
+		tries=$((tries - 1))
+		[ "$tries" -gt 0 ] || return 1
 		sleep 0.1
 	done
 }
@@ -136,6 +146,39 @@ key esc 1
 # Park the pointer on empty desktop so the hover does not follow us around.
 pointer $((screen_w / 8)) $((screen_h / 2))
 
+# Settings, found and started the way a person would, through the launcher,
+# then closed again. The guest says when the process is there and when it
+# has gone (see sengi-boot-report). A process is not a window, so the screen
+# also has to have changed over an area that only a window accounts for:
+# raw dumps of it before and after are compared byte by byte.
+settings_fail=
+window_bytes=300000
+echo "screendump $out/before.ppm" >&3
+sleep 1
+key meta_l-spc 2
+for letter in s e t t i n g s; do
+	key "$letter" 0.3
+done
+key ret 1
+if wait_serial 'SENGI-SETTINGS running' 20; then
+	sleep 3
+	shot settings
+	echo "screendump $out/with.ppm" >&3
+	sleep 1
+	changed=$(cmp -l "$out/before.ppm" "$out/with.ppm" 2>/dev/null | wc -l)
+	if [ "$changed" -lt "$window_bytes" ]; then
+		settings_fail="sengi-settings started but no window appeared ($changed bytes of the screen changed)"
+	fi
+	key meta_l-q 1
+	wait_serial 'SENGI-SETTINGS gone' 10 ||
+		settings_fail="sengi-settings was still running 10 s after its window was closed"
+else
+	shot settings
+	settings_fail="sengi-settings did not start from the launcher"
+	key esc 1
+fi
+rm -f "$out/before.ppm" "$out/with.ppm"
+
 key meta_l-ret 3
 shot terminal
 key meta_l-spc
@@ -162,6 +205,10 @@ grep SENGI-INFO "$out/serial.log" | sed 's/.*SENGI-INFO //' >"$out/guest-info.tx
 fail=0
 if grep -q SENGI-FAIL "$out/serial.log"; then
 	sed -n 's/.*SENGI-FAIL /FAIL: /p' "$out/serial.log" >&2
+	fail=1
+fi
+if [ -n "$settings_fail" ]; then
+	echo "FAIL: $settings_fail" >&2
 	fail=1
 fi
 if [ "$ram_mb" -ge "$budget_ram_mb" ]; then

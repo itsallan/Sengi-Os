@@ -35,4 +35,30 @@ fi
 for prog in labwc sengi-bar sengi-dock swayidle swaybg sengi-focus; do
 	pidof "$prog" >/dev/null || echo "SENGI-FAIL $prog is not running" >$port
 done
+# Settings is a program that is started and goes away again. One that is
+# here now, with nobody having opened it, was left behind by the session.
+if pidof sengi-settings >/dev/null; then
+	echo "SENGI-FAIL sengi-settings is running with nothing open" >$port
+fi
+# The session's start-up script asks it for the idle times.
+lock_after=$(sengi-settings --get power.lock-after 2>/dev/null)
+case $lock_after in
+'' | *[!0-9]*) echo "SENGI-FAIL sengi-settings --get power.lock-after gave '$lock_after', not a number" >$port ;;
+esac
 echo "SENGI-DONE" >$port
+
+# The boot test goes on to open Settings and close it. Say when its process
+# is there and when it has gone again, then stop watching.
+seen=0
+n=0
+while [ $n -lt 900 ]; do
+	if pidof sengi-settings >/dev/null; then
+		[ $seen = 1 ] || echo "SENGI-SETTINGS running" >$port
+		seen=1
+	elif [ $seen = 1 ]; then
+		echo "SENGI-SETTINGS gone" >$port
+		break
+	fi
+	sleep 0.2
+	n=$((n + 1))
+done
