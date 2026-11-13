@@ -90,7 +90,16 @@ No page ever starts a service: a call on the bus that would start iwd or
 BlueZ on a machine without the hardware is made with the no-auto-start
 flag, and the page says the service is not running. A page is drawn at
 once and fills in as its service answers, from a worker thread that
-sleeps until the service signals a change.
+sleeps until the service signals a change. The Network, Bluetooth and
+Sound pages let that thread and its watch go when another page is shown,
+unless a join, a pairing or a connection is under way, and then when
+that ends.
+
+There is one dialog. It belongs to the page that opened it, which is
+the only one that can change or close it. A notice waits until no
+question is open; another page's question backs the open one out as
+Escape would. A close that finds no dialog of the caller's own is said
+on standard error, and stops a debug build.
 
 ### Network
 
@@ -158,7 +167,10 @@ inputs, `set-default`, `set-volume -l 1` and `set-mute` to change them.
 
 - Each direction has its device, a volume slider and a mute button. The
   slider stops at 100%; a drag runs one `wpctl` at a time and skips the
-  positions it has already moved on from.
+  positions it has already moved on from. While the pointer or an arrow
+  key is moving it, the slider is the user's: a reading of the volume
+  made before its newest position was carried out does not move it.
+- A change PipeWire does not take is said in a dialog.
 - Changes made elsewhere (the volume keys, headphones plugged in) show at
   once. `wpctl` cannot wait for a change, so a `pw-dump --monitor` child
   is kept while the page is showing and read for which object changed:
@@ -201,7 +213,9 @@ given only until it exits; a kept mode is not written to a file yet).
 - The battery from `/sys/class/power_supply`: charge, state and time
   left, health (what it holds now against what it held new), draw, cycle
   count and type. Two batteries are one charge, worked out from the
-  energy in both, and each has a row for its own charge and health. Read
+  energy in both, and each has a row for its own charge and health. The
+  reading and the adding up are sengi-system's, so the quick settings
+  panel shows the same charge. Read
   when the page opens and every 30 seconds while it is showing, not
   otherwise.
 - When to switch the screen off and when to lock it, and whether to lock

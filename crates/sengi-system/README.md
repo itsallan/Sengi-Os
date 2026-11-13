@@ -53,7 +53,7 @@ through `Event`s; `Command`s go the other way.
 | Wi-Fi | `iwd`, `wifi` | iwd on the system bus, with a passphrase agent |
 | Bluetooth | `bluez`, `bluetooth` | BlueZ on the system bus |
 | Brightness | `machine`, `backlight` | `/sys/class/backlight`, set through logind |
-| Battery, links, rfkill | `machine`, `battery` | `/sys/class` |
+| Battery, links, rfkill | `machine`, `battery` | `/sys/class`; `battery::packs` is each battery in full, and several are read as one |
 | Volume | `programs`, `volume` | `wpctl` on `@DEFAULT_AUDIO_SINK@` |
 | Audio devices | `audio` | `wpctl status`, `wpctl` on a node, `pw-dump --monitor` |
 | Bluetooth devices | `pairing` | BlueZ on the system bus, with a pairing agent |
