@@ -280,7 +280,8 @@ that the shipped program can only ever show the real machine:
 
 - `sengi-settings --demo NAME` runs over made-up services, for looking at
   states the machine at hand cannot produce. An unknown name lists them.
-- `SENGI_SETTINGS_SYS_CLASS=DIR` reads `DIR` in place of `/sys/class`.
+- `SENGI_SYS_CLASS=DIR` reads `DIR` in place of `/sys/class`, the same
+  variable sengi-quick reads.
   With `DBUS_SYSTEM_BUS_ADDRESS` pointing at a private bus this lets the
   real bus code be run against stand-ins for iwd, BlueZ and logind.
 

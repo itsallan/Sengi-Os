@@ -107,4 +107,5 @@ a wildcard arm, so a new kind of news does not break the program reading it.
 
 In debug builds only, `SENGI_SYS_CLASS=DIR` reads `DIR` in place of
 `/sys/class`, for trying the battery and backlight code on a machine that
-has neither. A release build ignores it.
+has neither. A release build ignores it. `sys_class()` is where to read,
+for a program that reads more of `/sys/class` than this crate does.

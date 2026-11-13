@@ -98,7 +98,9 @@ mod real {
     #[cfg(debug_assertions)]
     const SYS_CLASS_VARIABLE: &str = "SENGI_SYS_CLASS";
 
-    fn sys_class() -> PathBuf {
+    /// `/sys/class`, or in a debug build the directory `SENGI_SYS_CLASS`
+    /// names in its place. The one answer for every program of the shell.
+    pub fn sys_class() -> PathBuf {
         #[cfg(debug_assertions)]
         if let Some(path) = std::env::var_os(SYS_CLASS_VARIABLE)
             .map(PathBuf::from)
@@ -126,4 +128,4 @@ mod real {
 }
 
 #[cfg(feature = "services")]
-pub use real::{program_name, real_services, set_program_name};
+pub use real::{program_name, real_services, set_program_name, sys_class};

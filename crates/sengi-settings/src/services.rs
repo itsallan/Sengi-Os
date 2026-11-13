@@ -20,27 +20,11 @@ pub struct Services {
     pub class: PathBuf,
 }
 
-/// Names a directory to read in place of `/sys/class`, in debug builds
-/// only, for trying the pages on a machine without the hardware. The bus
-/// that is talked to can be changed the usual way, with
-/// `DBUS_SYSTEM_BUS_ADDRESS`. A release build reads the real `/sys` and
-/// nothing else, so Settings cannot be made to show an invented machine.
-#[cfg(debug_assertions)]
-const SYS_CLASS_VARIABLE: &str = "SENGI_SETTINGS_SYS_CLASS";
-
-pub fn sys_class() -> PathBuf {
-    #[cfg(debug_assertions)]
-    if let Some(path) = std::env::var_os(SYS_CLASS_VARIABLE)
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-    {
-        return path;
-    }
-    PathBuf::from("/sys/class")
-}
-
+/// The real services. `/sys/class` is where sengi-system says it is: in
+/// a debug build `SENGI_SYS_CLASS` can name a directory to read in its
+/// place, for trying the pages on a machine without the hardware.
 pub fn real() -> Services {
-    let class = sys_class();
+    let class = sengi_system::sys_class();
     let bus = Arc::new(Bus::default());
     Services {
         network: Arc::new(network::iwd::Iwd::new(bus.clone(), class.clone())),
