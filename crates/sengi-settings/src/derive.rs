@@ -11,8 +11,10 @@
 //!   so. It is only written when a setting differs from labwc's default,
 //!   and removed again when none does, so most machines never have one.
 //!   A `rc.xml` without that comment is somebody's own and is left alone.
-//! * `~/.config/labwc/environment` keeps whatever the user wrote in it;
-//!   our lines live between two marker comments.
+//! * `~/.config/labwc/environment` keeps whatever the user wrote in it.
+//!   What we add lives between marker comments: the system file's lines
+//!   above the user's, which therefore win over them, and the settings
+//!   below.
 //!
 //! The copy goes stale when an update changes the system file. Running
 //! `sengi-settings --apply` at the start of the session, before labwc,
@@ -22,8 +24,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::settings::{Settings, KEYS};
+use sengi_config::settings::{zone_file, ZONE_DIR};
+
+use crate::keyboard::parse_database;
+use crate::settings::{Layout, Settings, KEYS};
 use crate::store::{self, Dirs};
+
+/// XKB's list of the layouts it has. The Keyboard page offers from it.
+const XKB_LIST: &str = "/usr/share/X11/xkb/rules/evdev.lst";
 
 const RC: &str = "labwc/rc.xml";
 const ENVIRONMENT: &str = "labwc/environment";
@@ -89,6 +97,52 @@ fn rc_block(settings: &Settings) -> String {
     )
 }
 
+/// `text` as it may stand inside an XML comment. Two hyphens in a row are
+/// not allowed there, and `-->` would end the comment early; a directory
+/// in `XDG_CONFIG_DIRS` can be called anything.
+fn in_comment(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c == '-' && out.ends_with('-') {
+            out.push(' ');
+        }
+        out.push(if c.is_control() { ' ' } else { c });
+    }
+    out
+}
+
+/// Where the tag that closes the document starts: the last
+/// `</labwc_config>` that is a tag, not the same letters inside a comment
+/// or a CDATA section.
+fn closing_tag(xml: &str) -> Option<usize> {
+    const CLOSE: &str = "</labwc_config";
+    let mut found = None;
+    let mut at = 0;
+    while let Some(next) = xml[at..].find('<') {
+        at += next;
+        let rest = &xml[at..];
+        let skip = |open: &str, close: &str| {
+            rest.strip_prefix(open)
+                .map(|inside| inside.find(close).map(|end| open.len() + end + close.len()))
+        };
+        at += match skip("<!--", "-->").or_else(|| skip("<![CDATA[", "]]>")) {
+            Some(Some(length)) => length,
+            // Never closed: the rest of the file is inside it.
+            Some(None) => break,
+            None => {
+                let closes = rest
+                    .strip_prefix(CLOSE)
+                    .is_some_and(|after| after.trim_start().starts_with('>'));
+                if closes {
+                    found = Some(at);
+                }
+                1
+            }
+        };
+    }
+    found
+}
+
 /// The user's `rc.xml`: the system's with our settings added at the end,
 /// where they override anything said earlier. `None` when no file is
 /// needed.
@@ -105,7 +159,8 @@ pub fn rc_text(system: Option<(&Path, &str)>, settings: &Settings) -> Option<Str
         ),
     };
     let mark = format!(
-        "{RC_MARK} from {source}.\n     Change sengi-os/settings.toml or use Settings; this file is rewritten. -->\n"
+        "{RC_MARK} from {}.\n     Change sengi-os/settings.toml or use Settings; this file is rewritten. -->\n",
+        in_comment(&source)
     );
     // The mark goes after the XML declaration, which must stay first.
     let (declaration, rest) = match body.find("?>") {
@@ -115,7 +170,7 @@ pub fn rc_text(system: Option<(&Path, &str)>, settings: &Settings) -> Option<Str
         }
         _ => ("", body),
     };
-    let close = rest.rfind("</labwc_config>")?;
+    let close = closing_tag(rest)?;
     let mut out = String::with_capacity(body.len() + mark.len() + block.len() + 2);
     if !declaration.is_empty() {
         out.push_str(declaration);
@@ -134,83 +189,233 @@ pub fn rc_text(system: Option<(&Path, &str)>, settings: &Settings) -> Option<Str
     Some(out)
 }
 
-/// The lines of ours that go into labwc's environment.
-fn environment_lines(settings: &Settings) -> Vec<String> {
-    let mut lines = Vec::new();
-    let zone = settings.text("clock", "time-zone");
-    if !zone.is_empty() {
-        lines.push(format!("TZ={zone}"));
-    }
-    let layouts = settings.layouts();
-    let switch = settings.text("keyboard", "switch");
-    let plain = layouts.len() == 1 && layouts[0].layout == "us" && layouts[0].variant.is_empty();
-    if !layouts.is_empty() && !(plain && switch.is_empty()) {
-        let join = |pick: fn(&crate::settings::Layout) -> &str| {
-            layouts.iter().map(pick).collect::<Vec<_>>().join(",")
-        };
-        lines.push(format!("XKB_DEFAULT_LAYOUT={}", join(|l| &l.layout)));
-        lines.push(format!("XKB_DEFAULT_VARIANT={}", join(|l| &l.variant)));
-        lines.push(format!("XKB_DEFAULT_OPTIONS={switch}"));
-    }
-    lines
+/// Where the names that are about to be handed to labwc are looked up.
+#[derive(Debug, Clone)]
+pub struct Known {
+    /// tzdata's directory of zones.
+    pub zones: PathBuf,
+    /// XKB's list of layouts and their variants, `evdev.lst`.
+    pub layouts: PathBuf,
 }
 
-/// The user's `environment`: their own lines as they were, and between the
-/// markers the system file's lines followed by ours. `None` when the file
-/// would hold nothing.
-pub fn environment_text(
-    system: Option<&str>,
-    existing: Option<&str>,
-    settings: &Settings,
-) -> Option<String> {
-    let ours = environment_lines(settings);
-    // The user's lines: everything outside the markers.
-    let mut theirs: Vec<&str> = Vec::new();
-    let mut inside = false;
-    for line in existing.unwrap_or_default().lines() {
-        if line.trim() == BEGIN {
-            inside = true;
-        } else if line.trim() == END {
-            inside = false;
-        } else if !inside {
-            theirs.push(line);
+impl Default for Known {
+    fn default() -> Known {
+        Known {
+            zones: PathBuf::from(ZONE_DIR),
+            layouts: PathBuf::from(XKB_LIST),
         }
     }
-    while theirs.last().is_some_and(|line| line.trim().is_empty()) {
-        theirs.pop();
+}
+
+/// What Settings hands to labwc through its environment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Exports {
+    zone: String,
+    layouts: Vec<Layout>,
+    switch: String,
+    /// What the settings ask for that cannot be passed on, in words for
+    /// the user.
+    pub left_out: Vec<String>,
+}
+
+impl Exports {
+    /// The settings as they stand.
+    fn unchecked(settings: &Settings) -> Exports {
+        Exports {
+            zone: settings.text("clock", "time-zone"),
+            layouts: settings.layouts(),
+            switch: settings.text("keyboard", "switch"),
+            left_out: Vec::new(),
+        }
     }
-    let user_has_lines = theirs.iter().any(|line| !line.trim().is_empty());
-    if ours.is_empty() && !user_has_lines {
-        return None;
+
+    /// The settings, less the names the system does not have.
+    ///
+    /// A name in the settings file has only been checked for its letters:
+    /// the file can be edited by hand, or brought from another machine.
+    /// labwc 0.8 given a layout XKB does not know logs an error and goes
+    /// on with `us` alone, losing the other layouts; given a variant XKB
+    /// does not know it tries `us` with that same variant, fails again
+    /// and is left with no keymap at all, which is a session without a
+    /// keyboard. A `TZ` that names no zone silently means UTC. So nothing
+    /// is exported that was not found first.
+    pub fn checked(settings: &Settings, known: &Known) -> Exports {
+        let mut exports = Exports::unchecked(settings);
+        if !exports.zone.is_empty() && zone_file(&known.zones, &exports.zone).is_none() {
+            exports.left_out.push(format!(
+                "There is no time zone called {} on this system, so the system's zone is used.",
+                exports.zone
+            ));
+            exports.zone.clear();
+        }
+        // Without the list nothing can be told from anything, and then
+        // labwc has no keyboard data to go wrong with either.
+        let list = read(&known.layouts)
+            .map(|text| parse_database(&text))
+            .filter(|list| !list.layouts.is_empty());
+        if let Some(list) = list {
+            for layout in std::mem::take(&mut exports.layouts) {
+                let found = list.layouts.iter().any(|l| l.name == layout.layout)
+                    && (layout.variant.is_empty()
+                        || list
+                            .variants
+                            .iter()
+                            .any(|v| v.layout == layout.layout && v.name == layout.variant));
+                if found {
+                    exports.layouts.push(layout);
+                } else {
+                    exports.left_out.push(format!(
+                        "There is no keyboard layout called {} on this system, so it is not used.",
+                        layout.render()
+                    ));
+                }
+            }
+            if exports.layouts.is_empty() {
+                exports.layouts.push(Layout {
+                    layout: "us".to_string(),
+                    variant: String::new(),
+                });
+            }
+        }
+        exports
     }
-    let mut out = String::new();
-    for line in &theirs {
-        out.push_str(line);
-        out.push('\n');
+
+    /// The lines of ours that go into labwc's environment.
+    fn lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        if !self.zone.is_empty() {
+            lines.push(format!("TZ={}", self.zone));
+        }
+        let layouts = &self.layouts;
+        let plain =
+            layouts.len() == 1 && layouts[0].layout == "us" && layouts[0].variant.is_empty();
+        if !layouts.is_empty() && !(plain && self.switch.is_empty()) {
+            let join =
+                |pick: fn(&Layout) -> &str| layouts.iter().map(pick).collect::<Vec<_>>().join(",");
+            lines.push(format!("XKB_DEFAULT_LAYOUT={}", join(|l| &l.layout)));
+            lines.push(format!("XKB_DEFAULT_VARIANT={}", join(|l| &l.variant)));
+            lines.push(format!("XKB_DEFAULT_OPTIONS={}", self.switch));
+        }
+        lines
     }
-    if ours.is_empty() && system.is_none() {
-        return Some(out);
+}
+
+/// The variables Settings writes into the environment.
+const OUR_VARIABLES: [&str; 4] = [
+    "TZ",
+    "XKB_DEFAULT_LAYOUT",
+    "XKB_DEFAULT_VARIANT",
+    "XKB_DEFAULT_OPTIONS",
+];
+
+/// The user's own lines of an environment file: all that is not a marker
+/// and not between a pair of them.
+///
+/// A file edited by hand can have a block that is opened and never
+/// closed, and then nothing says where our lines end and the user's go
+/// on. Taking the rest of the file for ours would delete whatever they
+/// wrote below it. So out of an unclosed block only the lines that
+/// `written_by_us` knows are dropped, and every other line is kept as
+/// the user's.
+fn their_lines(existing: &str, written_by_us: impl Fn(&str) -> bool) -> Vec<&str> {
+    let mut theirs = Vec::new();
+    // The lines since a marker that opened a block, until one closes it.
+    let mut open: Option<Vec<&str>> = None;
+    let keep_unclosed = |theirs: &mut Vec<_>, mut block: Vec<_>| {
+        block.retain(|line: &&str| !written_by_us(line.trim()));
+        theirs.append(&mut block);
+    };
+    for line in existing.lines() {
+        match line.trim() {
+            BEGIN => {
+                if let Some(unclosed) = open.replace(Vec::new()) {
+                    keep_unclosed(&mut theirs, unclosed);
+                }
+            }
+            // Closes a block, whose lines go; or closes nothing, and then
+            // only the stray marker goes.
+            END => open = None,
+            _ => match &mut open {
+                Some(block) => block.push(line),
+                None => theirs.push(line),
+            },
+        }
     }
-    if !out.is_empty() {
-        out.push('\n');
+    if let Some(unclosed) = open {
+        keep_unclosed(&mut theirs, unclosed);
     }
-    out.push_str(BEGIN);
-    out.push('\n');
+    theirs
+}
+
+/// The user's `environment`: the system file's lines between markers,
+/// then the user's own lines as they were, then between markers again
+/// what Settings adds. `None` when the file would hold nothing.
+pub fn environment_file(
+    system: Option<&str>,
+    existing: Option<&str>,
+    exports: &Exports,
+) -> Option<String> {
+    let ours = exports.lines();
     // labwc stops at the user's file, so what the system's says has to be
     // said again here.
-    for line in system.unwrap_or_default().lines() {
-        let line = line.trim();
-        if !line.is_empty() && !line.starts_with('#') {
+    let inherited: Vec<&str> = system
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+    let theirs = their_lines(existing.unwrap_or_default(), |line| {
+        inherited.contains(&line)
+            || OUR_VARIABLES.iter().any(|name| {
+                line.strip_prefix(name)
+                    .is_some_and(|rest| rest.starts_with('='))
+            })
+    });
+    // The blank lines that set their lines apart from ours are ours too.
+    let blank = |line: &&str| line.trim().is_empty();
+    let first = theirs.iter().position(|line| !blank(line));
+    let last = theirs.iter().rposition(|line| !blank(line));
+    let theirs = match (first, last) {
+        (Some(first), Some(last)) => &theirs[first..=last],
+        _ => &[],
+    };
+    if ours.is_empty() && theirs.is_empty() {
+        return None;
+    }
+    let block = |out: &mut String, lines: &mut dyn Iterator<Item = &str>| {
+        out.push_str(BEGIN);
+        out.push('\n');
+        for line in lines {
             out.push_str(line);
             out.push('\n');
         }
+        out.push_str(END);
+        out.push('\n');
+    };
+    let ours = || ours.iter().map(String::as_str);
+    let mut out = String::new();
+    if theirs.is_empty() {
+        block(&mut out, &mut inherited.iter().copied().chain(ours()));
+        return Some(out);
     }
-    for line in &ours {
+    // labwc sets each variable as it comes to its line, so of two lines
+    // for one variable the later wins. The system's lines go first, where
+    // the user's own can override them as they did when their file was the
+    // only one read. What was chosen in Settings goes last: it is there
+    // only when it is not the default, and then it was chosen after
+    // whatever the file says.
+    if !inherited.is_empty() {
+        block(&mut out, &mut inherited.iter().copied());
+        out.push('\n');
+    }
+    for line in theirs {
         out.push_str(line);
         out.push('\n');
     }
-    out.push_str(END);
-    out.push('\n');
+    if ours().next().is_some() {
+        out.push('\n');
+        block(&mut out, &mut ours());
+    }
     Some(out)
 }
 
@@ -239,6 +444,9 @@ fn settle(path: &Path, existing: Option<&str>, wanted: Option<String>) -> Result
 pub struct Applied {
     pub rc: Result<Wrote, String>,
     pub environment: Result<Wrote, String>,
+    /// Settings that name something this system does not have, and were
+    /// therefore not passed on.
+    pub left_out: Vec<String>,
 }
 
 impl Applied {
@@ -263,17 +471,24 @@ impl Applied {
                     .to_string(),
             );
         }
+        found.extend(self.left_out.iter().cloned());
         found
     }
 }
 
 /// Bring both files in line with `settings`.
 pub fn apply(dirs: &Dirs, settings: &Settings) -> Applied {
+    apply_with(dirs, settings, &Known::default())
+}
+
+/// The same, with the zones and layouts looked up where `known` says.
+pub fn apply_with(dirs: &Dirs, settings: &Settings, known: &Known) -> Applied {
     let Some(user_rc) = dirs.user(RC) else {
         let nowhere = Err("there is no home directory to write labwc's files in".to_string());
         return Applied {
             rc: nowhere.clone(),
             environment: nowhere,
+            left_out: Vec::new(),
         };
     };
     let user_environment: PathBuf = dirs.user(ENVIRONMENT).unwrap_or_default();
@@ -297,15 +512,20 @@ pub fn apply(dirs: &Dirs, settings: &Settings) -> Applied {
         }
     };
 
+    let exports = Exports::checked(settings, known);
     let existing = read(&user_environment);
     let environment = if user_environment.exists() && existing.is_none() {
         Err(format!("cannot read {}", user_environment.display()))
     } else {
         let system = dirs.system(ENVIRONMENT).as_deref().and_then(read);
-        let wanted = environment_text(system.as_deref(), existing.as_deref(), settings);
+        let wanted = environment_file(system.as_deref(), existing.as_deref(), &exports);
         settle(&user_environment, existing.as_deref(), wanted)
     };
-    Applied { rc, environment }
+    Applied {
+        rc,
+        environment,
+        left_out: exports.left_out,
+    }
 }
 
 /// Have the running labwc read its files again. Blocks until the command
@@ -331,6 +551,109 @@ mod tests {
     use crate::testutil::TempDir;
 
     const SYSTEM_RC: &str = "<?xml version=\"1.0\"?>\n<labwc_config>\n  <theme>\n    <name>Sengi</name>\n  </theme>\n  <keyboard>\n    <default />\n  </keyboard>\n</labwc_config>\n";
+
+    /// A corner of `evdev.lst`.
+    const XKB: &str = "! model\n  pc105           Generic 105-key PC\n\n! layout\n  us              English (US)\n  fr              French\n  de              German\n\n! variant\n  azerty          fr: French (AZERTY)\n  nodeadkeys      de: German (no dead keys)\n  intl            us: English (US, intl., with dead keys)\n\n! option\n  grp:alt_shift_toggle Alt+Shift\n";
+
+    /// A system that has two zones and the layouts above.
+    fn known(tmp: &TempDir) -> Known {
+        tmp.write("zoneinfo/Europe/Paris", "TZif");
+        tmp.write("zoneinfo/Asia/Tokyo", "TZif");
+        tmp.write("xkb/evdev.lst", XKB);
+        Known {
+            zones: tmp.path().join("zoneinfo"),
+            layouts: tmp.path().join("xkb/evdev.lst"),
+        }
+    }
+
+    /// The file for these settings, taken at their word.
+    fn environment_text(
+        system: Option<&str>,
+        existing: Option<&str>,
+        settings: &Settings,
+    ) -> Option<String> {
+        environment_file(system, existing, &Exports::unchecked(settings))
+    }
+
+    /// Applies on the system `known` describes, not the one the tests
+    /// happen to run on.
+    fn apply(dirs: &Dirs, settings: &Settings) -> Applied {
+        let tmp = TempDir::new();
+        apply_with(dirs, settings, &known(&tmp))
+    }
+
+    #[test]
+    fn names_the_system_does_not_have_are_not_exported() {
+        let tmp = TempDir::new();
+        let known = known(&tmp);
+        let checked = |user: &str| Exports::checked(&settings(user), &known);
+
+        let fine = checked(
+            "[clock]\ntime-zone = \"Europe/Paris\"\n[keyboard]\nlayouts = [\"us\", \"fr(azerty)\", \"de\"]\n",
+        );
+        assert!(fine.left_out.is_empty());
+        assert_eq!(
+            fine.lines(),
+            [
+                "TZ=Europe/Paris",
+                "XKB_DEFAULT_LAYOUT=us,fr,de",
+                "XKB_DEFAULT_VARIANT=,azerty,",
+                "XKB_DEFAULT_OPTIONS="
+            ]
+        );
+
+        // A layout that does not exist, a variant that does not, and a
+        // variant that is another layout's.
+        let some =
+            checked("[keyboard]\nlayouts = [\"uss\", \"fr\", \"de(azertyy)\", \"us(azerty)\"]\n");
+        assert_eq!(some.left_out.len(), 3, "{:?}", some.left_out);
+        assert!(some.left_out[0].contains("uss"));
+        assert!(some.left_out[1].contains("de(azertyy)"));
+        assert_eq!(some.lines()[0], "XKB_DEFAULT_LAYOUT=fr");
+        assert_eq!(some.lines()[1], "XKB_DEFAULT_VARIANT=");
+
+        // None left: the default layout, which needs no line at all.
+        let none = checked("[keyboard]\nlayouts = [\"uss\"]\n");
+        assert_eq!(none.left_out.len(), 1);
+        assert!(none.lines().is_empty());
+        // Unless there is a shortcut to keep.
+        let shortcut =
+            checked("[keyboard]\nlayouts = [\"zz\"]\nswitch = \"grp:alt_shift_toggle\"\n");
+        assert_eq!(shortcut.lines()[0], "XKB_DEFAULT_LAYOUT=us");
+
+        // A zone that is not there.
+        let zone = checked("[clock]\ntime-zone = \"Europe/Atlantis\"\n");
+        assert_eq!(zone.left_out.len(), 1);
+        assert!(zone.lines().is_empty());
+        // A directory is not a zone.
+        assert!(checked("[clock]\ntime-zone = \"Europe\"\n")
+            .lines()
+            .is_empty());
+
+        // With no list to look in, the layouts are passed on as they are.
+        let blind = Known {
+            layouts: tmp.path().join("nowhere"),
+            ..known.clone()
+        };
+        let passed = Exports::checked(&settings("[keyboard]\nlayouts = [\"uss\"]\n"), &blind);
+        assert!(passed.left_out.is_empty());
+        assert_eq!(passed.lines()[0], "XKB_DEFAULT_LAYOUT=uss");
+    }
+
+    #[test]
+    fn applying_says_what_it_left_out_and_writes_the_rest() {
+        let tmp = TempDir::new();
+        let dirs = dirs(&tmp);
+        let s = settings(
+            "[clock]\ntime-zone = \"Mars/Olympus\"\n[keyboard]\nlayouts = [\"uss\", \"de\"]\n",
+        );
+        let applied = apply(&dirs, &s);
+        assert_eq!(applied.environment, Ok(Wrote::Written));
+        assert_eq!(applied.problems().len(), 2, "{:?}", applied.problems());
+        let written = fs::read_to_string(tmp.path().join("home/labwc/environment")).unwrap();
+        assert!(written.contains("XKB_DEFAULT_LAYOUT=de\n"));
+        assert!(!written.contains("TZ=") && !written.contains("uss"));
+    }
 
     fn settings(user: &str) -> Settings {
         Settings::from_documents(Document::default(), Document::parse(user).0, None)
@@ -386,6 +709,55 @@ mod tests {
     }
 
     #[test]
+    fn settings_go_before_the_tag_that_really_closes_the_file() {
+        let s = settings("[mouse]\nnatural-scroll = true\n");
+        let rc = |body: &str| rc_text(Some((Path::new("/etc/rc.xml"), body)), &s);
+        // The same letters in a comment after the end, in one before it,
+        // and in a CDATA section.
+        let trailing =
+            "<labwc_config>\n  <core/>\n</labwc_config>\n<!-- ends with </labwc_config> -->\n";
+        let text = rc(trailing).unwrap();
+        assert!(
+            text.ends_with("  </libinput>\n</labwc_config>\n<!-- ends with </labwc_config> -->\n"),
+            "{text}"
+        );
+        let inside = "<labwc_config>\n<!-- </labwc_config> -->\n<![CDATA[</labwc_config>]]>\n</labwc_config >\n";
+        let text = rc(inside).unwrap();
+        assert!(text.contains("]]>\n  <keyboard>\n"), "{text}");
+        assert!(
+            text.ends_with("  </libinput>\n</labwc_config >\n"),
+            "{text}"
+        );
+        // Only ever in a comment, or in one that never ends: no place.
+        assert_eq!(rc("<labwc_config>\n<!-- </labwc_config> -->\n"), None);
+        assert_eq!(rc("<labwc_config>\n<!-- \n</labwc_config>\n"), None);
+        assert_eq!(rc("<labwc_config>\n</labwc_configuration>\n"), None);
+    }
+
+    #[test]
+    fn the_path_of_the_system_file_cannot_end_the_comment_it_is_named_in() {
+        let s = settings("[mouse]\nnatural-scroll = true\n");
+        for path in [
+            "/etc/x--y/labwc/rc.xml",
+            "/etc/-->/labwc/rc.xml",
+            "/etc/a---b/--/rc.xml",
+            "/etc/line\nbreak/rc.xml",
+        ] {
+            let text = rc_text(Some((Path::new(path), SYSTEM_RC)), &s).unwrap();
+            let comment = text
+                .split_once("<!--")
+                .and_then(|(_, rest)| rest.split_once("-->"))
+                .unwrap()
+                .0;
+            assert!(!comment.contains("--"), "{comment}");
+            assert!(comment.ends_with("this file is rewritten. "), "{comment}");
+            // And the file is still taken for ours the next time.
+            assert!(text.contains(RC_MARK));
+        }
+        assert_eq!(in_comment("/etc/xdg/labwc/rc.xml"), "/etc/xdg/labwc/rc.xml");
+    }
+
+    #[test]
     fn an_rc_without_a_system_file_still_stands_alone() {
         let s = settings("[mouse]\nnatural-scroll = true\n");
         let text = rc_text(None, &s).unwrap();
@@ -437,7 +809,152 @@ mod tests {
         // be repeated even when we have none of our own.
         let kept =
             environment_text(Some("XCURSOR_SIZE=24\n"), Some("A=1\n"), &settings("")).unwrap();
-        assert_eq!(kept, format!("A=1\n\n{BEGIN}\nXCURSOR_SIZE=24\n{END}\n"));
+        assert_eq!(kept, format!("{BEGIN}\nXCURSOR_SIZE=24\n{END}\n\nA=1\n"));
+    }
+
+    /// The environment labwc 0.8 ends up with after reading `text`: a
+    /// line that starts with `#` is a comment, a line without `=` is
+    /// skipped, name and value are trimmed, and each line is a `setenv`
+    /// that replaces what an earlier one set (`process_line` in its
+    /// `src/config/session.c`).
+    fn as_labwc_reads(text: &str) -> std::collections::BTreeMap<&str, &str> {
+        text.lines()
+            .filter(|line| !line.starts_with('#'))
+            .filter_map(|line| line.split_once('='))
+            .map(|(name, value)| (name.trim(), value.trim()))
+            .filter(|(name, _)| !name.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn the_users_lines_win_over_the_systems_and_settings_over_both() {
+        let system = "XCURSOR_SIZE=24\nXCURSOR_THEME=Sengi\n";
+        let theirs = "XCURSOR_SIZE=48\nTZ=Asia/Tokyo\n";
+        // Nothing set in Settings: the file says what it would have said
+        // had labwc read the system's file and then the user's.
+        let plain = environment_text(Some(system), Some(theirs), &settings("")).unwrap();
+        let read = as_labwc_reads(&plain);
+        assert_eq!(read["XCURSOR_SIZE"], "48");
+        assert_eq!(read["XCURSOR_THEME"], "Sengi");
+        assert_eq!(read["TZ"], "Asia/Tokyo");
+        // A zone chosen in Settings is the later word on the zone, and
+        // changes nothing else.
+        let paris = settings("[clock]\ntime-zone = \"Europe/Paris\"\n");
+        let chosen = environment_text(Some(system), Some(&plain), &paris).unwrap();
+        assert_eq!(
+            chosen,
+            format!(
+                "{BEGIN}\nXCURSOR_SIZE=24\nXCURSOR_THEME=Sengi\n{END}\n\n\
+                 XCURSOR_SIZE=48\nTZ=Asia/Tokyo\n\n{BEGIN}\nTZ=Europe/Paris\n{END}\n"
+            )
+        );
+        let read = as_labwc_reads(&chosen);
+        assert_eq!(read["XCURSOR_SIZE"], "48");
+        assert_eq!(read["TZ"], "Europe/Paris");
+        assert_eq!(
+            environment_text(Some(system), Some(&chosen), &paris).unwrap(),
+            chosen
+        );
+        // Back to the default: theirs counts again.
+        let back = environment_text(Some(system), Some(&chosen), &settings("")).unwrap();
+        assert_eq!(back, plain);
+    }
+
+    #[test]
+    fn a_file_in_the_old_order_is_put_in_the_new_one() {
+        // As written before: the user's lines, then one block holding the
+        // system's lines and ours, where the system's 24 beat the user's 48.
+        let old = format!("XCURSOR_SIZE=48\n\n{BEGIN}\nXCURSOR_SIZE=24\nTZ=Europe/Paris\n{END}\n");
+        assert_eq!(as_labwc_reads(&old)["XCURSOR_SIZE"], "24");
+        let paris = settings("[clock]\ntime-zone = \"Europe/Paris\"\n");
+        let new = environment_text(Some("XCURSOR_SIZE=24\n"), Some(&old), &paris).unwrap();
+        assert_eq!(
+            new,
+            format!(
+                "{BEGIN}\nXCURSOR_SIZE=24\n{END}\n\nXCURSOR_SIZE=48\n\n{BEGIN}\nTZ=Europe/Paris\n{END}\n"
+            )
+        );
+        assert_eq!(as_labwc_reads(&new)["XCURSOR_SIZE"], "48");
+    }
+
+    #[test]
+    fn a_block_that_is_never_closed_costs_the_user_no_line() {
+        let system = "XCURSOR_SIZE=24\n";
+        let paris = settings("[clock]\ntime-zone = \"Europe/Paris\"\n");
+        let good =
+            format!("{BEGIN}\nXCURSOR_SIZE=24\n{END}\n\nA=1\n\n{BEGIN}\nTZ=Europe/Paris\n{END}\n");
+        let rewrite = |existing: &str| environment_text(Some(system), Some(existing), &paris);
+        assert_eq!(rewrite(&good).unwrap(), good);
+
+        // The last marker was deleted and lines were added below.
+        let cut = format!(
+            "{BEGIN}\nXCURSOR_SIZE=24\n{END}\n\nA=1\n\n{BEGIN}\nTZ=Europe/Paris\nB=2\n# mine\n"
+        );
+        assert_eq!(
+            rewrite(&cut).unwrap(),
+            format!(
+                "{BEGIN}\nXCURSOR_SIZE=24\n{END}\n\nA=1\n\nB=2\n# mine\n\n{BEGIN}\nTZ=Europe/Paris\n{END}\n"
+            )
+        );
+        // The first block lost its end: the user's lines run into it.
+        let run_on =
+            format!("{BEGIN}\nXCURSOR_SIZE=24\n\nA=1\n\n{BEGIN}\nTZ=Europe/Paris\n{END}\n");
+        assert_eq!(rewrite(&run_on).unwrap(), good);
+        // An end with nothing to end, before everything.
+        let stray = format!("{END}\nA=1\n{BEGIN}\nTZ=Asia/Tokyo\n{END}\n");
+        assert_eq!(rewrite(&stray).unwrap(), good);
+        // Markers with spaces after them, as an editor may leave them.
+        let spaced = format!(
+            "{BEGIN}  \nXCURSOR_SIZE=24\n{END}\t\nA=1\n {BEGIN}\nTZ=Europe/Paris\n{END} \n"
+        );
+        assert_eq!(rewrite(&spaced).unwrap(), good);
+        // Nothing but openings.
+        let openings = format!("{BEGIN}\nA=1\n{BEGIN}\n{BEGIN}\nXCURSOR_SIZE=24\nC=3\n");
+        assert_eq!(
+            rewrite(&openings).unwrap(),
+            format!(
+                "{BEGIN}\nXCURSOR_SIZE=24\n{END}\n\nA=1\nC=3\n\n{BEGIN}\nTZ=Europe/Paris\n{END}\n"
+            )
+        );
+        // An end, an opening, an end, an end, an opening: every line that
+        // is not ours comes through, in order.
+        let mess = format!("{END}\nA=1\n{BEGIN}\nold=gone\n{END}\n{END}\nB=2\n{BEGIN}\nXKB_DEFAULT_LAYOUT=de\nTZX=kept\nC=3\n");
+        let kept = rewrite(&mess).unwrap();
+        let theirs: Vec<&str> = kept
+            .lines()
+            .filter(|line| ["A=1", "B=2", "TZX=kept", "C=3", "old=gone"].contains(line))
+            .collect();
+        assert_eq!(theirs, ["A=1", "B=2", "TZX=kept", "C=3"]);
+        assert!(!kept.contains("XKB_DEFAULT_LAYOUT"));
+        // And whatever came in, what goes out is stable.
+        for text in [&cut, &run_on, &stray, &spaced, &openings, &mess] {
+            let once = rewrite(text).unwrap();
+            assert_eq!(rewrite(&once).unwrap(), once);
+        }
+    }
+
+    #[test]
+    fn applying_keeps_the_mode_and_writes_through_a_link() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new();
+        tmp.write("etc/labwc/environment", "XCURSOR_SIZE=24\n");
+        tmp.write("dotfiles/environment", "XCURSOR_SIZE=48\n");
+        let target = tmp.path().join("dotfiles/environment");
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::create_dir_all(tmp.path().join("home/labwc")).unwrap();
+        let link = tmp.path().join("home/labwc/environment");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let paris = settings("[clock]\ntime-zone = \"Europe/Paris\"\n");
+        assert_eq!(apply(&dirs(&tmp), &paris).environment, Ok(Wrote::Written));
+        assert!(fs::symlink_metadata(&link).unwrap().is_symlink());
+        let written = fs::read_to_string(&target).unwrap();
+        assert_eq!(as_labwc_reads(&written)["XCURSOR_SIZE"], "48");
+        assert_eq!(as_labwc_reads(&written)["TZ"], "Europe/Paris");
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
+            0o600
+        );
     }
 
     fn dirs(tmp: &TempDir) -> Dirs {

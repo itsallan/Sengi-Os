@@ -4,6 +4,7 @@
 //! top of the screen. sengi-layer does the Wayland work; this file fills
 //! the bar in and keeps it up to date.
 
+mod clock;
 mod status;
 mod tray;
 mod tray_ui;
@@ -16,6 +17,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+use clock::Clock;
 use sengi_layer::{Anchor, App, Config, Instances, Layer, Outputs};
 use slint::{Timer, TimerMode};
 
@@ -49,9 +51,8 @@ fn spawn(command: &str) {
     }
 }
 
-fn refresh_clock(bar: &Bar) {
-    let now = chrono::Local::now();
-    bar.set_clock(now.format("%a %-e %b  %H:%M").to_string().into());
+fn refresh_clock(bar: &Bar, clock: &Clock) {
+    bar.set_clock(clock.text(chrono::Utc::now()).into());
 }
 
 /// Seconds from `second` of the current minute to the start of the next.
@@ -61,14 +62,16 @@ fn seconds_until_next_minute(second: u32) -> u64 {
 }
 
 /// Shows the time now and again at the start of each minute, so the bar
-/// wakes once a minute for the clock instead of once a second.
-fn run_clock(timer: Rc<Timer>, bars: Instances<Bar>) {
-    bars.for_each(refresh_clock);
-    let second = chrono::Timelike::second(&chrono::Local::now());
+/// wakes once a minute for the clock instead of once a second. That
+/// minute is also when it looks whether the clock's settings changed.
+fn run_clock(timer: Rc<Timer>, bars: Instances<Bar>, clock: Rc<RefCell<Clock>>) {
+    clock.borrow_mut().follow_settings();
+    bars.for_each(|bar| refresh_clock(bar, &clock.borrow()));
+    let second = chrono::Timelike::second(&chrono::Utc::now());
     let until_next = Duration::from_secs(seconds_until_next_minute(second));
     let again = timer.clone();
     timer.start(TimerMode::SingleShot, until_next, move || {
-        run_clock(again.clone(), bars.clone())
+        run_clock(again.clone(), bars.clone(), clock.clone())
     });
 }
 
@@ -169,17 +172,19 @@ fn run() -> Result<(), sengi_layer::Error> {
     });
 
     let clock_timer = Rc::new(Timer::default());
-    run_clock(clock_timer.clone(), bars.clone());
+    let clock = Rc::new(RefCell::new(Clock::new()));
+    run_clock(clock_timer.clone(), bars.clone(), clock.clone());
     let sys_timer = Timer::default();
     {
         let bars = bars.clone();
+        let clock = clock.clone();
         sys_timer.start(TimerMode::Repeated, SYS_INTERVAL, move || {
             let sys = read_sys();
             bars.for_each(|bar| {
                 apply_sys(bar, &sys);
                 // The minute timer does not run while the machine is
                 // suspended, so this catches the clock up after a resume.
-                refresh_clock(bar);
+                refresh_clock(bar, &clock.borrow());
             });
         });
     }
@@ -222,7 +227,7 @@ fn run() -> Result<(), sengi_layer::Error> {
         }
 
         apply_sys(&bar, &read_sys());
-        refresh_clock(&bar);
+        refresh_clock(&bar, &clock.borrow());
         if let Some(slow) = latest.borrow().as_ref() {
             apply_slow(&bar, slow);
         }

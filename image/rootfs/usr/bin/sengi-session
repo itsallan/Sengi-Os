@@ -19,4 +19,9 @@ if [ -z "${WLR_RENDERER:-}" ]; then
 	[ $hw = 1 ] || export WLR_RENDERER=pixman
 fi
 
+# labwc reads the user's rc.xml and environment in place of the system's.
+# Settings writes those from the system's files plus what the user chose,
+# so they are written again here in case an update changed the system's.
+sengi-settings --apply 2>/dev/null || true
+
 exec labwc

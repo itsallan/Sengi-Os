@@ -5,6 +5,47 @@ and the measured idle RAM and boot time.
 
 ## Unreleased
 
+## 0.5.0
+
+A settings application of our own.
+
+### Added
+
+- sengi-settings, the settings application, in the dock, the launcher and the
+  session menu. Its ten pages are network, Bluetooth, sound, display, power,
+  date and time, keyboard, mouse and touchpad, notifications, and about. It
+  is an ordinary window that runs only while it is open: nothing of it is
+  left running, and it costs nothing at idle.
+- Settings that Sengi OS keeps itself live in one plain-text file,
+  ~/.config/sengi-os/settings.toml, with system-wide defaults in
+  /etc/xdg/sengi-os/settings.toml.
+
+### Changed
+
+- When the screen switches off and when it locks follow Settings, as does
+  locking on sleep. A change takes effect at once.
+- The clock in the bar follows the 12 or 24 hour setting and the time zone
+  chosen in Settings, within a minute of the change.
+
+### Known limits
+
+- The time zone chosen in Settings is the user's own. The system-wide zone
+  cannot be changed from Settings, and programs that were already running
+  keep the old zone until the next login.
+- Switching keyboard layouts and the mouse and touchpad settings have not
+  been verified on real hardware.
+- The network, Bluetooth, brightness and battery parts of Settings and of
+  quick settings have only been tested against stand-in services, not real
+  hardware.
+- Wi-Fi: no hidden or enterprise networks. Display: no arranging of several
+  monitors, and a chosen mode is not kept across sessions.
+- Tray menus do not draw icons in their rows, and only the hicolor icon theme
+  is searched.
+- Clicking a notification does not raise the app's window.
+- The dock is on one monitor.
+- Wi-Fi cards that need non-free firmware (most Intel cards) do not work yet.
+- Secure Boot has to be turned off to boot the ISO.
+
 ## 0.4.0
 
 Notifications, quick settings and a system tray, all our own.

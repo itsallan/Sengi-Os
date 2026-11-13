@@ -23,6 +23,11 @@ sengi-text = { path = "../sengi-text" }
 # is the backend here and turns on the software renderer.
 slint = { version = "1.18", default-features = false, features = ["compat-1-2", "std"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# The clock's two settings, read from the settings file.
+sengi-config = { path = "../sengi-config" }
+# Reads a zone file, for a time zone chosen in Settings. chrono only knows
+# the zone the process started in. No dependencies of its own.
+tz-rs = "0.7"
 # The tray speaks D-Bus. The notification service and quick settings use the
 # same crate with the same features, so the image carries one D-Bus stack.
 zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }

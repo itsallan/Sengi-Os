@@ -74,10 +74,20 @@ settings added:
   It exists only while one of those settings differs from the default. A
   `rc.xml` without that comment is taken to be the user's own and is never
   touched; Settings says so when a setting cannot be applied because of it.
-- `~/.config/labwc/environment` keeps the user's own lines. Between two
-  marker comments it carries the system file's lines, `TZ` for the time
-  zone, and `XKB_DEFAULT_LAYOUT`, `XKB_DEFAULT_VARIANT` and
-  `XKB_DEFAULT_OPTIONS` for the keyboard.
+- `~/.config/labwc/environment` keeps the user's own lines. Above them,
+  between two marker comments, it carries the system file's lines; below
+  them, between two more, `TZ` for the time zone and `XKB_DEFAULT_LAYOUT`,
+  `XKB_DEFAULT_VARIANT` and `XKB_DEFAULT_OPTIONS` for the keyboard. labwc
+  lets a later line replace an earlier one, so the user's lines win over
+  the system's, and a setting that was changed from its default wins over
+  both. A layout or variant that XKB's `evdev.lst` does not list, or a
+  zone that is not under `/usr/share/zoneinfo`, is left out and reported.
+
+Both are written whole and renamed into place. A file that is replaced
+keeps its permissions, and a symbolic link is written through to the file
+it leads to. The same goes for `settings.toml`, which is also read again
+before a key in it is changed, so an edit made by hand while Settings is
+open is kept.
 
 After writing them Settings runs `labwc --reconfigure`. The generated
 `rc.xml` is a copy, so it goes stale when an update changes the system

@@ -7,6 +7,9 @@
     <item label="Terminal">
       <action name="Execute" command="sengi-run foot" />
     </item>
+    <item label="Settings">
+      <action name="Execute" command="sengi-run sengi-settings" />
+    </item>
     <separator />
     <item label="Lock">
       <action name="Execute" command="swaylock -f" />

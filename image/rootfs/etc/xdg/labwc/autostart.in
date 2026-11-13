@@ -1,8 +1,9 @@
 # Started by labwc once the compositor is up.
 # Services the user manager starts on demand, such as notifications, need to
 # know where the compositor is. This has to finish before anything can ask
-# for them, so it is not run in the background.
-dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP >/dev/null 2>&1
+# for them, so it is not run in the background. TZ is there when a time
+# zone was chosen in Settings, so that those services tell the same time.
+dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP TZ >/dev/null 2>&1
 # The software renderer smears swaybg's one-pixel colour buffer into a
 # gradient, so give it a real image there.
 if [ "${WLR_RENDERER:-}" = pixman ]; then
@@ -33,4 +34,40 @@ for program in sengi-bar sengi-dock; do
 	) >/dev/null 2>&1 &
 done
 sengi-focus >/dev/null 2>&1 &
-swayidle -w timeout @{timing.idle-lock} 'swaylock -f' before-sleep 'swaylock -f' >/dev/null 2>&1 &
+# When the screen goes off and when it locks are the user's to set, in
+# Settings. swayidle cannot be given new times while it runs, so Settings
+# ends the one that carries the mark below and this loop starts another
+# with the times as they are now. Anything that is not a number, such as
+# no answer at all, gets the default.
+(
+	wait=1
+	while kill -0 "$LABWC_PID" 2>/dev/null; do
+		blank=$(sengi-settings --get power.blank-after 2>/dev/null)
+		lock=$(sengi-settings --get power.lock-after 2>/dev/null)
+		on_sleep=$(sengi-settings --get power.lock-on-sleep 2>/dev/null)
+		case $blank in '' | *[!0-9]* | ??????*) blank=300 ;; esac
+		case $lock in '' | *[!0-9]* | ??????*) lock=@{timing.idle-lock} ;; esac
+		set --
+		if [ "$blank" -gt 0 ]; then
+			set -- "$@" timeout "$blank" 'sengi-settings --screen off' \
+				resume 'sengi-settings --screen on'
+		fi
+		if [ "$lock" -gt 0 ]; then
+			set -- "$@" timeout "$lock" 'swaylock -f'
+		fi
+		if [ "$on_sleep" != false ]; then
+			set -- "$@" before-sleep 'swaylock -f'
+		fi
+		started=$(date +%s)
+		if SENGI_IDLE_SUPERVISED=1 systemd-cat -t swayidle swayidle -w "$@"; then
+			# Ended on purpose, by Settings: no reason to slow down.
+			wait=1
+		elif [ $(($(date +%s) - started)) -gt 60 ]; then
+			wait=1
+		fi
+		sleep "$wait"
+		if [ "$wait" -lt 30 ]; then
+			wait=$((wait * 2))
+		fi
+	done
+) >/dev/null 2>&1 &

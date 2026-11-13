@@ -17,6 +17,9 @@ slint = { workspace = true, features = ["software-renderer-systemfonts", "softwa
 # of names that strangers chose.
 sengi-system = { path = "../sengi-system", features = ["services", "settings"] }
 sengi-text = { path = "../sengi-text" }
+# The settings file: its parser, its keys and which file wins. The bar
+# reads the same file through the same crate.
+sengi-config = { path = "../sengi-config" }
 
 # The window's own Wayland connection belongs to the toolkit. The Display
 # page has a second one for the output management protocol.
