@@ -15,7 +15,10 @@ permissions:
 # GitHub's package mirror stalls now and then. Give up on a stuck download
 # quickly and try again instead of hanging the job.
 env:
-  APT_OPTS: -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::ForceIPv4=true
+  APT_OPTS: -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::ForceIPv4=true -o DPkg::Lock::Timeout=180
+  # Never stop to ask a question nobody is there to answer.
+  DEBIAN_FRONTEND: noninteractive
+  NEEDRESTART_MODE: a
 
 jobs:
   lint:
@@ -37,9 +40,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Toolchain
+        timeout-minutes: 10
         run: |
-          sudo apt-get $APT_OPTS update -q
-          sudo apt-get $APT_OPTS install -y -q --no-install-recommends pkg-config libfontconfig1-dev libxkbcommon-dev
+          sudo -E apt-get $APT_OPTS update -q
+          sudo -E apt-get $APT_OPTS install -y -q --no-install-recommends pkg-config libfontconfig1-dev libxkbcommon-dev
           rustup show active-toolchain || rustup toolchain install
       - uses: actions/cache@v4
         with:
@@ -73,9 +77,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Toolchain and tools
+        timeout-minutes: 10
         run: |
-          sudo apt-get $APT_OPTS update -q
-          sudo apt-get $APT_OPTS install -y -q --no-install-recommends \
+          sudo -E apt-get $APT_OPTS update -q
+          sudo -E apt-get $APT_OPTS install -y -q --no-install-recommends \
             pkg-config libfontconfig1-dev libxkbcommon-dev labwc wtype libx11-data fonts-inter
           rustup show active-toolchain || rustup toolchain install
       - uses: actions/cache@v4
@@ -99,13 +104,14 @@ jobs:
       - name: Build the ISO
         run: scripts/build-iso.sh
       - name: Install QEMU and allow KVM
+        timeout-minutes: 10
         run: |
-          sudo apt-get $APT_OPTS update -q
-          sudo apt-get $APT_OPTS install -y -q --no-install-recommends qemu-system-x86 qemu-utils
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
-            sudo tee /etc/udev/rules.d/99-kvm.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
+          sudo -E apt-get $APT_OPTS update -q
+          sudo -E apt-get $APT_OPTS install -y -q --no-install-recommends qemu-system-x86 qemu-utils
+          # Let the runner's user open KVM. Setting the mode directly cannot
+          # hang the way waiting on udev can.
+          sudo chmod 666 /dev/kvm || true
+          ls -l /dev/kvm || true
       - name: Boot test
         run: scripts/boot-test.sh out/sengi-os-$(cat VERSION)-amd64.iso test-output
       - name: Summary
