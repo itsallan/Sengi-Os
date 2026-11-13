@@ -225,7 +225,11 @@ impl NetworkPage {
                 );
             }
             Join::Failed { name, error } => {
-                self.asking.set(false);
+                // The question is over; the news of how it ended would
+                // otherwise wait behind it.
+                if self.asking.replace(false) {
+                    app.close_dialog();
+                }
                 self.model.borrow_mut().join.cancel();
                 app.tell(&format!("Could not join {}", quoted(&name)), error.words());
             }

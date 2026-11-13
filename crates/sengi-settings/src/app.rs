@@ -4,11 +4,12 @@
 //! There is one dialog and several pages that may want it, some of them
 //! with news that arrives seconds after it was asked for. So the dialog
 //! has an owner: the part of the program (a page's module) that opened
-//! it. An owner may change or close its own dialog as it likes. Anyone
-//! else's notice waits until the dialog is free, and anyone else's
-//! question first backs the open one out as Escape would, so that its
-//! owner hears of it. Nobody can close or write into a dialog that is
-//! not theirs.
+//! it. An owner may change or close its own dialog as it likes. A
+//! notice waits until no question is open, the owner's own included, and
+//! anyone else's question first backs the open one out as Escape would,
+//! so that its owner hears of it. Nobody can close or write into a dialog
+//! that is not theirs; a page that tries has lost track of its dialog,
+//! which is said on standard error and stops a debug build.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -95,10 +96,38 @@ enum Admit {
 fn admit(open: Option<(Owner, bool)>, owner: Owner, is_notice: bool) -> Admit {
     match open {
         None => Admit::Show,
+        // News does not take the place of a question, not even its
+        // owner's: an owner whose question is over closes it first.
+        Some((_, false)) if is_notice => Admit::Wait,
         Some((holder, _)) if holder == owner => Admit::Show,
         Some(_) if is_notice => Admit::Wait,
         Some((_, true)) => Admit::AfterRequeue,
         Some((_, false)) => Admit::AfterCancel,
+    }
+}
+
+/// What became of a call that changes or closes the caller's dialog.
+#[derive(Debug, PartialEq, Eq)]
+enum Reach {
+    /// The open dialog is the caller's.
+    Mine,
+    /// No dialog is open, or the open one is someone else's, named here.
+    Missed(Option<Owner>),
+}
+
+fn reach(open: Option<(Owner, bool)>, owner: Owner) -> Reach {
+    match open {
+        Some((holder, _)) if holder == owner => Reach::Mine,
+        Some((holder, _)) => Reach::Missed(Some(holder)),
+        None => Reach::Missed(None),
+    }
+}
+
+/// The words for a call that did not reach a dialog.
+fn missed_words(what: &str, owner: Owner, holder: Option<Owner>) -> String {
+    match holder {
+        Some(holder) => format!("{owner} tried to {what} the dialog, which is {holder}'s"),
+        None => format!("{owner} tried to {what} a dialog that is not open"),
     }
 }
 
@@ -536,7 +565,22 @@ impl App {
     }
 
     fn owns(&self, owner: Owner) -> bool {
-        self.holder().is_some_and(|(holder, _)| holder == owner)
+        reach(self.holder(), owner) == Reach::Mine
+    }
+
+    /// As [`App::owns`], for a caller that believes the dialog is its
+    /// own. If it is not, the call does nothing, and that is never what
+    /// its author meant: a dialog is left open, or its words unchanged.
+    fn mine(&self, owner: Owner, what: &str) -> bool {
+        match reach(self.holder(), owner) {
+            Reach::Mine => true,
+            Reach::Missed(holder) => {
+                let words = missed_words(what, owner, holder);
+                eprintln!("sengi-settings: {words}");
+                debug_assert!(false, "{words}");
+                false
+            }
+        }
     }
 
     /// Each change empties the dialog's field. Whatever was typed into
@@ -668,7 +712,7 @@ impl App {
     /// Change what the open dialog says without closing it.
     #[track_caller]
     pub fn update_dialog(&self, change: impl FnOnce(&mut DialogSpec)) {
-        if self.owns(owner_of(Location::caller().file())) {
+        if self.mine(owner_of(Location::caller().file()), "change") {
             let state = self.window.global::<DialogState>();
             let mut spec = state.get_spec();
             change(&mut spec);
@@ -678,7 +722,7 @@ impl App {
 
     #[track_caller]
     pub fn set_dialog_busy(&self, busy: bool) {
-        if self.owns(owner_of(Location::caller().file())) {
+        if self.mine(owner_of(Location::caller().file()), "change") {
             self.window.global::<DialogState>().set_busy(busy);
         }
     }
@@ -686,7 +730,7 @@ impl App {
     /// Empty the dialog's field and put the caret back in it.
     #[track_caller]
     pub fn wipe_dialog_field(&self) {
-        if self.owns(owner_of(Location::caller().file())) {
+        if self.mine(owner_of(Location::caller().file()), "empty") {
             self.wipe();
         }
     }
@@ -706,10 +750,11 @@ impl App {
         self.owns(owner_of(Location::caller().file()))
     }
 
-    /// Close the caller's own dialog. Someone else's is left alone.
+    /// Close the caller's own dialog. Someone else's is left alone, and
+    /// so the caller should know its own is open: see [`App::mine`].
     #[track_caller]
     pub fn close_dialog(&self) {
-        if self.owns(owner_of(Location::caller().file())) {
+        if self.mine(owner_of(Location::caller().file()), "close") {
             self.dismiss();
         }
     }
@@ -1022,10 +1067,13 @@ mod tests {
         // Free: anything shows.
         assert_eq!(admit(None, "display", false), Admit::Show);
         assert_eq!(admit(None, "display", true), Admit::Show);
-        // The owner goes on to its next question, or reports how its
-        // own question ended.
+        // The owner goes on to its next question, or to its next news.
         assert_eq!(admit(question, "network", false), Admit::Show);
-        assert_eq!(admit(question, "network", true), Admit::Show);
+        assert_eq!(admit(notice, "network", true), Admit::Show);
+        assert_eq!(admit(notice, "network", false), Admit::Show);
+        // Its news does not take the place of its own question: a late
+        // refusal must not close a passphrase half typed.
+        assert_eq!(admit(question, "network", true), Admit::Wait);
         // Someone else's news waits, behind a question or a notice.
         assert_eq!(admit(question, "bluetooth", true), Admit::Wait);
         assert_eq!(admit(notice, "app.rs", true), Admit::Wait);
@@ -1037,6 +1085,85 @@ mod tests {
             Admit::AfterCancel
         );
         assert_eq!(admit(notice, "bluetooth", false), Admit::AfterRequeue);
+    }
+
+    #[test]
+    fn a_close_that_reaches_no_dialog_is_told_apart() {
+        let question = Some(("network", false));
+        assert_eq!(reach(question, "network"), Reach::Mine);
+        assert_eq!(reach(Some(("network", true)), "network"), Reach::Mine);
+        assert_eq!(
+            reach(question, "bluetooth"),
+            Reach::Missed(Some("network"))
+        );
+        assert_eq!(reach(None, "network"), Reach::Missed(None));
+        assert_eq!(
+            missed_words("close", "bluetooth", Some("network")),
+            "bluetooth tried to close the dialog, which is network's"
+        );
+        assert_eq!(
+            missed_words("close", "network", None),
+            "network tried to close a dialog that is not open"
+        );
+    }
+
+    /// The names of the functions that only work on the caller's own
+    /// dialog, and of the two that make a dialog the caller's.
+    const TOUCHES: [&str; 6] = [
+        ".close_dialog(",
+        ".update_dialog(",
+        ".set_dialog_busy(",
+        ".wipe_dialog_field(",
+        ".set_dialog_countdown(",
+        ".dialog_open(",
+    ];
+    const OPENS: [&str; 2] = [".open_dialog(", ".ask("];
+
+    fn sources(dir: &std::path::Path, found: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                sources(&path, found);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                found.push(path);
+            }
+        }
+    }
+
+    /// A dialog is owned by the module its call is written in. A page
+    /// that opened its dialog in one module and closed it from another,
+    /// say from a helper moved elsewhere, would have every close ignored.
+    #[test]
+    fn whoever_changes_or_closes_a_dialog_is_a_module_that_opens_one() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        sources(&src, &mut files);
+        assert!(files.len() > 10);
+        let (mut openers, mut touchers) = (Vec::new(), Vec::new());
+        for file in &files {
+            let text = std::fs::read_to_string(file).unwrap();
+            let inside = file.strip_prefix(&src).unwrap().to_str().unwrap();
+            let owner = inside.split('/').next().unwrap().to_string();
+            if owner == "app.rs" {
+                continue;
+            }
+            if OPENS.iter().any(|call| text.contains(call)) {
+                openers.push(owner.clone());
+            }
+            if TOUCHES.iter().any(|call| text.contains(call)) {
+                touchers.push((owner, inside.to_string()));
+            }
+        }
+        // The pages that ask questions are found at all.
+        for page in ["network", "bluetooth", "display"] {
+            assert!(openers.iter().any(|owner| owner == page), "{page}");
+        }
+        for (owner, file) in touchers {
+            assert!(
+                openers.contains(&owner),
+                "{file} changes or closes a dialog, but nothing in {owner} opens one"
+            );
+        }
     }
 
     #[test]
