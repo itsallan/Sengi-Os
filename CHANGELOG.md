@@ -32,6 +32,9 @@ A settings application of our own.
 - The time zone chosen in Settings is the user's own. The system-wide zone
   cannot be changed from Settings, and programs that were already running
   keep the old zone until the next login.
+- Until a time zone is chosen in Settings the clock shows UTC.
+- Starting Settings while it is open shows the page asked for in the open
+  window but does not raise that window.
 - Switching keyboard layouts and the mouse and touchpad settings have not
   been verified on real hardware.
 - The network, Bluetooth, brightness and battery parts of Settings and of
