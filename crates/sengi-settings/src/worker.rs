@@ -308,6 +308,28 @@ mod tests {
     }
 
     #[test]
+    fn two_who_stop_a_worker_both_wait_for_its_end() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let ended = Arc::new(AtomicBool::new(false));
+        let handle = spawn("test", {
+            let ended = ended.clone();
+            move |_, mut inbox: Inbox<u8>| {
+                while inbox.wait().is_some() {}
+                thread::sleep(Duration::from_millis(150));
+                ended.store(true, Ordering::SeqCst);
+            }
+        });
+        // As a signal and the closing window both stop the display
+        // worker: whichever comes second must not return early.
+        let waits = |handle: Handle<u8>, ended: Arc<AtomicBool>| {
+            move || handle.stop_and_wait(Duration::from_secs(5)) && ended.load(Ordering::SeqCst)
+        };
+        let other = thread::spawn(waits(handle.clone(), ended.clone()));
+        assert!(waits(handle, ended)());
+        assert!(other.join().unwrap());
+    }
+
+    #[test]
     fn a_spawned_worker_runs_and_answers() {
         let (done, was_done) = mpsc::channel();
         let handle = spawn("test", move |_, mut inbox: Inbox<u32>| {

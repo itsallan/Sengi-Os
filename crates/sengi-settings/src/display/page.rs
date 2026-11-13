@@ -20,11 +20,16 @@ const LAST_REVERT: Duration = Duration::from_secs(8);
 type Worker = Arc<Mutex<Option<Handle<Command>>>>;
 
 /// Stop the worker, which undoes a change still on trial as it goes,
-/// and wait for that. From any thread.
+/// and wait for that. From any thread, and from two at once: a signal
+/// and the window closing can both come here, and neither may go on,
+/// the one to end the process, while the other still waits. So the
+/// handle is left where it is, for the second to wait on as well, and
+/// the lock is not held over the wait. The process is ending: nothing
+/// will want a new worker.
 fn stop_and_wait(worker: &Worker) {
-    let worker = worker.lock().unwrap_or_else(|p| p.into_inner()).take();
-    if let Some(worker) = worker {
-        if !worker.stop_and_wait(LAST_REVERT) {
+    let handle = worker.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    if let Some(handle) = handle {
+        if !handle.stop_and_wait(LAST_REVERT) {
             eprintln!("sengi-settings: the display worker had not finished at exit");
         }
     }
