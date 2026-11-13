@@ -85,7 +85,8 @@ pub struct Pack {
     pub design_wh: Option<f64>,
     /// What it holds now.
     pub now_wh: Option<f64>,
-    /// The rate it is charging or discharging at.
+    /// The rate it is charging or discharging at, never negative: which
+    /// of the two is `charge`.
     pub watts: Option<f64>,
     /// Charge cycles so far, if it counts them.
     pub cycles: Option<u32>,
@@ -145,9 +146,16 @@ fn read_pack(dir: &Path) -> Option<Pack> {
             .map(|microwatt_hours| microwatt_hours / 1e6)
             .or_else(|| Some(number(charge)? / 1e6 * volts?))
     };
-    let watts = number("power_now")
+    // Some drivers report the rate as negative while discharging. Its
+    // size is taken from the number and its direction from `status`, as
+    // `parse` does for the panel.
+    let rate = |name: &str| -> Option<f64> {
+        let value: f64 = file(name)?.trim().parse().ok()?;
+        (value.is_finite() && value.abs() < 1e12).then_some(value.abs())
+    };
+    let watts = rate("power_now")
         .map(|microwatts| microwatts / 1e6)
-        .or_else(|| Some(number("current_now")? / 1e6 * volts?));
+        .or_else(|| Some(rate("current_now")? / 1e6 * volts?));
     let (now_wh, full_wh) = (
         energy("energy_now", "charge_now"),
         energy("energy_full", "charge_full"),
@@ -196,8 +204,10 @@ pub fn packs(root: &Path) -> Vec<Pack> {
 
 /// Several batteries as the one supply they are to the user: energies
 /// and power added up, and the charge worked out from the energy, so
-/// that a large battery counts for more than a small one. One battery is
-/// itself.
+/// that a large battery counts for more than a small one. One battery
+/// may be charging while another runs the machine: the power is what
+/// leaves the batteries less what enters them, and the whole is doing
+/// whichever is the greater. One battery is itself.
 pub fn combined(packs: &[Pack]) -> Option<Pack> {
     let (first, rest) = packs.split_first()?;
     if rest.is_empty() {
@@ -211,7 +221,26 @@ pub fn combined(packs: &[Pack]) -> Option<Pack> {
         _ => packs.iter().map(|b| f64::from(b.percent)).sum::<f64>() / packs.len() as f64,
     };
     let any = |charge: Charge| packs.iter().any(|b| b.charge == charge);
-    let charge = if any(Charge::Charging) {
+    let flow = |charge: Charge| -> Option<f64> {
+        let rates: Vec<f64> = packs
+            .iter()
+            .filter(|b| b.charge == charge)
+            .filter_map(|b| b.watts)
+            .collect();
+        (!rates.is_empty()).then(|| rates.iter().sum())
+    };
+    let (out, into) = (flow(Charge::Discharging), flow(Charge::Charging));
+    // Positive when the batteries are, between them, being drained.
+    let net = (out.is_some() || into.is_some()).then(|| out.unwrap_or(0.0) - into.unwrap_or(0.0));
+    let charge = if any(Charge::Charging) && any(Charge::Discharging) {
+        match net {
+            Some(net) if net > 0.0 => Charge::Discharging,
+            Some(net) if net < 0.0 => Charge::Charging,
+            // Level, as far as can be told.
+            Some(_) => Charge::NotCharging,
+            None => Charge::Charging,
+        }
+    } else if any(Charge::Charging) {
         Charge::Charging
     } else if any(Charge::Discharging) {
         Charge::Discharging
@@ -222,7 +251,6 @@ pub fn combined(packs: &[Pack]) -> Option<Pack> {
     } else {
         Charge::Unknown
     };
-    let rates: Vec<f64> = packs.iter().filter_map(|b| b.watts).collect();
     Some(Pack {
         name: String::new(),
         percent: percent.round().clamp(0.0, 100.0) as u32,
@@ -230,7 +258,7 @@ pub fn combined(packs: &[Pack]) -> Option<Pack> {
         full_wh,
         design_wh: total(|b| b.design_wh),
         now_wh,
-        watts: (!rates.is_empty()).then(|| rates.iter().sum()),
+        watts: net.map(f64::abs),
         cycles: None,
         kind: String::new(),
     })
@@ -656,6 +684,90 @@ mod tests {
         );
         assert_eq!(combined(&[]), None);
         assert_eq!(combined(std::slice::from_ref(&full)), Some(full));
+    }
+
+    fn part(charge: Charge, now: f64, full: f64, watts: Option<f64>) -> Pack {
+        Pack {
+            name: String::new(),
+            percent: (now / full * 100.0).round() as u32,
+            charge,
+            full_wh: Some(full),
+            design_wh: Some(full),
+            now_wh: Some(now),
+            watts,
+            cycles: None,
+            kind: String::new(),
+        }
+    }
+
+    #[test]
+    fn one_battery_charging_and_one_draining_is_the_difference() {
+        // 5 W into the first, 15 W out of the second: 10 W drained.
+        let filling = part(Charge::Charging, 10.0, 20.0, Some(5.0));
+        let draining = part(Charge::Discharging, 30.0, 60.0, Some(15.0));
+        let whole = combined(&[filling.clone(), draining.clone()]).unwrap();
+        assert_eq!(whole.charge, Charge::Discharging);
+        assert_eq!(whole.watts, Some(10.0));
+        // 40 Wh at 10 W, not at the 20 W the two rates add up to.
+        assert_eq!(whole.minutes_left(), Some(240));
+
+        // The other way round: 15 W in, 5 W out, 40 of 80 Wh to go.
+        let filling = part(Charge::Charging, 10.0, 20.0, Some(15.0));
+        let draining = part(Charge::Discharging, 30.0, 60.0, Some(5.0));
+        let whole = combined(&[filling, draining.clone()]).unwrap();
+        assert_eq!(whole.charge, Charge::Charging);
+        assert_eq!(whole.watts, Some(10.0));
+        assert_eq!(whole.minutes_left(), Some(240));
+
+        // As much in as out: holding, and no time to give.
+        let level = part(Charge::Charging, 10.0, 20.0, Some(5.0));
+        let whole = combined(&[level, draining]).unwrap();
+        assert_eq!(whole.charge, Charge::NotCharging);
+        assert_eq!(whole.minutes_left(), None);
+
+        // A battery that is full adds nothing to the flow.
+        let full = part(Charge::Full, 20.0, 20.0, Some(3.0));
+        let draining = part(Charge::Discharging, 30.0, 60.0, Some(15.0));
+        let whole = combined(&[full, draining]).unwrap();
+        assert_eq!(whole.charge, Charge::Discharging);
+        assert_eq!(whole.watts, Some(15.0));
+    }
+
+    #[test]
+    fn a_rate_reported_as_negative_reads_the_same_in_full_as_for_the_panel() {
+        let tmp = TempDir::new();
+        for (file, value) in [
+            ("type", "Battery"),
+            ("status", "Discharging"),
+            ("capacity", "50"),
+            ("energy_now", "20000000"),
+            ("energy_full", "40000000"),
+            ("power_now", "-10000000"),
+        ] {
+            tmp.write(&format!("BAT0/{file}"), value);
+        }
+        let pack = whole(tmp.path()).unwrap();
+        assert_eq!(pack.watts, Some(10.0));
+        assert_eq!(pack.minutes_left(), Some(120));
+        assert_eq!(read(tmp.path()).unwrap().minutes, Some(120));
+
+        // And by current, with a second battery beside it.
+        for (file, value) in [
+            ("type", "Battery"),
+            ("status", "Discharging"),
+            ("charge_now", "2000000"),
+            ("charge_full", "4000000"),
+            ("current_now", "-1000000"),
+            ("voltage_min_design", "10000000"),
+        ] {
+            tmp.write(&format!("BAT1/{file}"), value);
+        }
+        let both = packs(tmp.path());
+        assert_eq!(both[1].watts, Some(10.0));
+        let whole = whole(tmp.path()).unwrap();
+        // 40 Wh at 20 W.
+        assert_eq!(whole.watts, Some(20.0));
+        assert_eq!(read(tmp.path()).unwrap().minutes, Some(120));
     }
 
     #[test]
