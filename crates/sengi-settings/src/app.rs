@@ -305,6 +305,10 @@ pub struct App {
     pages: RefCell<Vec<(Page, Rc<dyn Controller>)>>,
     current: Cell<Option<Page>>,
     dialog: RefCell<Option<OpenDialog>>,
+    /// The open dialog's cancel handler while its confirm handler runs
+    /// and the dialog itself is out of `dialog`. A question that takes
+    /// the dialog's place from inside that handler finds it here.
+    confirming: RefCell<Option<Cancel>>,
     /// Whose the open dialog is, also while its confirm handler runs.
     dialog_owner: Cell<Option<Owner>>,
     dialog_is_notice: Cell<bool>,
@@ -419,6 +423,7 @@ impl App {
             pages: RefCell::default(),
             current: Cell::new(None),
             dialog: RefCell::default(),
+            confirming: RefCell::default(),
             dialog_owner: Cell::new(None),
             dialog_is_notice: Cell::new(false),
             notices: RefCell::default(),
@@ -448,7 +453,10 @@ impl App {
             let open = app.dialog.borrow_mut().take();
             let owner = app.dialog_owner.get();
             if let Some(mut open) = open {
+                *app.confirming.borrow_mut() = open.cancel.take();
                 (open.confirm)(&app, text.into());
+                // Gone if someone else's question backed this one out.
+                open.cancel = app.confirming.borrow_mut().take();
                 let mut slot = app.dialog.borrow_mut();
                 if slot.is_none()
                     && app.window.global::<DialogState>().get_open()
@@ -668,7 +676,11 @@ impl App {
                 Admit::AfterCancel => {
                     let open = self.dialog.borrow_mut().take();
                     self.dialog_owner.set(None);
-                    let cancel = open.and_then(|mut open| open.cancel.take());
+                    // Out of its slot if this is its own confirm handler
+                    // asking, by way of another part of the program.
+                    let cancel = open
+                        .and_then(|mut open| open.cancel.take())
+                        .or_else(|| self.confirming.borrow_mut().take());
                     if let (Some(cancel), Some(app)) = (cancel, App::here()) {
                         cancel(&app);
                     }
