@@ -734,7 +734,7 @@ export component ItemList inherits Rectangle {
         }
     }
 
-    for item[index] in root.items: Rectangle {
+    for item[index] in root.items: row := Rectangle {
         private property <bool> lit: root.hovered == index
             || ((scope.has-focus || root.show-current) && root.current == index);
 
@@ -746,6 +746,9 @@ export component ItemList inherits Rectangle {
         background: self.lit && item.enabled ? Tokens.color-surface-hover : transparent;
         animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
 
+        // The row's words and buttons are inside its touch area, not
+        // beside it: a pointer on a button is then still on the row, and
+        // the button does not vanish from under the click.
         touch := TouchArea {
             changed has-hover => {
                 if self.has-hover {
@@ -759,70 +762,70 @@ export component ItemList inherits Rectangle {
                 root.current = index;
                 root.act(index);
             }
-        }
 
-        HorizontalLayout {
-            padding-left: Tokens.space-md;
-            padding-right: Tokens.space-md;
-            spacing: Tokens.space-md;
+            HorizontalLayout {
+                padding-left: Tokens.space-md;
+                padding-right: Tokens.space-md;
+                spacing: Tokens.space-md;
 
-            if item.icon != "": VerticalLayout {
-                alignment: center;
-                NamedIcon {
-                    name: item.icon;
-                    level: item.level;
-                    ink: item.enabled ? Tokens.color-text : Tokens.color-text-disabled;
-                }
-            }
-
-            VerticalLayout {
-                horizontal-stretch: 1;
-                alignment: center;
-                spacing: Tokens.space-xxs;
-
-                SengiText {
-                    text: item.title;
-                    color: item.enabled ? Tokens.color-text : Tokens.color-text-disabled;
-                    font-weight: item.checked ? Tokens.font-weight-medium : Tokens.font-weight-regular;
-                    overflow: elide;
+                if item.icon != "": VerticalLayout {
+                    alignment: center;
+                    NamedIcon {
+                        name: item.icon;
+                        level: item.level;
+                        ink: item.enabled ? Tokens.color-text : Tokens.color-text-disabled;
+                    }
                 }
 
-                if item.detail != "": SengiLabel {
-                    text: item.detail;
-                    color: item.enabled ? Tokens.color-text-muted : Tokens.color-text-disabled;
-                    font-weight: Tokens.font-weight-regular;
-                    overflow: elide;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    spacing: Tokens.space-xxs;
+
+                    SengiText {
+                        text: item.title;
+                        color: item.enabled ? Tokens.color-text : Tokens.color-text-disabled;
+                        font-weight: item.checked ? Tokens.font-weight-medium : Tokens.font-weight-regular;
+                        overflow: elide;
+                    }
+
+                    if item.detail != "": SengiLabel {
+                        text: item.detail;
+                        color: item.enabled ? Tokens.color-text-muted : Tokens.color-text-disabled;
+                        font-weight: Tokens.font-weight-regular;
+                        overflow: elide;
+                    }
                 }
-            }
 
-            if item.status != "": SengiText {
-                text: item.status;
-                color: Tokens.color-text-muted;
-                vertical-alignment: center;
-            }
-
-            if parent.lit && item.enabled && item.remove != "": VerticalLayout {
-                alignment: center;
-                RowButton {
-                    text: item.remove;
-                    danger: true;
-                    clicked => { root.drop(index); }
+                if item.status != "": SengiText {
+                    text: item.status;
+                    color: Tokens.color-text-muted;
+                    vertical-alignment: center;
                 }
-            }
 
-            if parent.lit && item.enabled && item.action != "": VerticalLayout {
-                alignment: center;
-                RowButton {
-                    text: item.action;
-                    clicked => { root.act(index); }
+                if row.lit && item.enabled && item.remove != "": VerticalLayout {
+                    alignment: center;
+                    RowButton {
+                        text: item.remove;
+                        danger: true;
+                        clicked => { root.drop(index); }
+                    }
                 }
-            }
 
-            if item.checked: VerticalLayout {
-                alignment: center;
-                NamedIcon {
-                    name: "check";
-                    ink: Tokens.color-accent;
+                if row.lit && item.enabled && item.action != "": VerticalLayout {
+                    alignment: center;
+                    RowButton {
+                        text: item.action;
+                        clicked => { root.act(index); }
+                    }
+                }
+
+                if item.checked: VerticalLayout {
+                    alignment: center;
+                    NamedIcon {
+                        name: "check";
+                        ink: Tokens.color-accent;
+                    }
                 }
             }
         }
