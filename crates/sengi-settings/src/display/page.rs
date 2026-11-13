@@ -88,8 +88,9 @@ impl DisplayPage {
             deadline: Cell::new(None),
             clock: Timer::default(),
         });
-        // Told to go while a change is on trial: it is undone first.
-        app::on_terminate({
+        // Told to go while a change is on trial: it is undone first,
+        // before the last setting is seen written, which can take a while.
+        app::on_terminate_first({
             let worker = page.worker.clone();
             move || stop_and_wait(&worker)
         });

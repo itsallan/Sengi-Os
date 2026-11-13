@@ -333,8 +333,20 @@ pub fn on_terminate(hook: impl Fn() + Send + 'static) {
         .push(Box::new(hook));
 }
 
+/// As [`on_terminate`], for what cannot wait behind the rest: it is done
+/// before everything registered so far. Whoever sent the signal may send
+/// a harder one soon, and a display left in a mode nobody agreed to is
+/// worse than a setting applied a moment late.
+pub fn on_terminate_first(hook: impl Fn() + Send + 'static) {
+    LAST_WORDS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(0, Box::new(hook));
+}
+
 /// The process has been told to end: do what was registered with
-/// [`on_terminate`], in order. Returns when all of it is done.
+/// [`on_terminate_first`] and then with [`on_terminate`], in order.
+/// Returns when all of it is done.
 pub fn terminate() {
     TERMINATING.store(true, Ordering::SeqCst);
     let hooks = LAST_WORDS.lock().unwrap_or_else(|p| p.into_inner());
@@ -1029,14 +1041,18 @@ mod tests {
 
     #[test]
     fn what_was_registered_runs_when_the_process_is_told_to_end() {
-        let ran = Arc::new(Mutex::new(0));
-        on_terminate({
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let says = |word: &'static str| {
             let ran = ran.clone();
-            move || *ran.lock().unwrap() += 1
-        });
+            move || ran.lock().unwrap().push(word)
+        };
+        on_terminate(says("settings"));
+        on_terminate(says("later"));
+        // Registered last and done first, as the display's undoing is.
+        on_terminate_first(says("display"));
         terminate();
         assert!(terminating());
-        assert_eq!(*ran.lock().unwrap(), 1);
+        assert_eq!(*ran.lock().unwrap(), ["display", "settings", "later"]);
     }
 
     #[test]
