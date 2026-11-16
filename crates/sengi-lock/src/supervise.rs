@@ -57,6 +57,8 @@ enum Ended {
     Exited(u8),
     /// Killed by a signal, an abort after a panic included.
     Killed,
+    /// The kernel would not say how it ended.
+    Unknown,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,6 +75,11 @@ fn decide(ended: Ended, locked: bool, tries: u32) -> Decision {
         // The three ends that leave nothing to do: unlocked by its owner,
         // in another locker's hands, or no compositor left to lock.
         Ended::Exited(code @ (UNLOCKED | REFUSED | NO_COMPOSITOR)) => Decision::Exit(code),
+        // It may have unlocked, and a new worker would lock the session
+        // again under the user's hands. If it died instead, the session
+        // is still locked, by the compositor; what is lost is only the
+        // restart. So no new worker without knowing that one is needed.
+        Ended::Unknown => Decision::Exit(FAILED),
         // The session is locked and nothing is there to unlock it.
         _ if locked => Decision::Restart,
         // It may have died between locking and saying so, and locking is
@@ -121,7 +128,9 @@ fn wait_for(child: libc::pid_t) -> Ended {
             break;
         }
         if waited < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
-            return Ended::Killed;
+            // ECHILD: the child was reaped by someone else, or was never
+            // ours to wait for. Not the same as knowing that it died.
+            return Ended::Unknown;
         }
     }
     if libc::WIFEXITED(status) {
@@ -196,6 +205,12 @@ fn supervise(work: fn(Ready) -> u8, mut locked: Option<File>) -> u8 {
 ///
 /// Must be called before the process has started any thread.
 pub fn run(detach: bool, work: fn(Ready) -> u8) -> u8 {
+    // Whoever started this may have set SIGCHLD to be ignored, and that
+    // is inherited. The kernel then reaps children itself and waitpid
+    // has nothing to report, so the supervisor could not tell an unlock
+    // from a crash.
+    // SAFETY: setting a signal's disposition to its default.
+    unsafe { libc::signal(libc::SIGCHLD, libc::SIG_DFL) };
     if !detach {
         return supervise(work, None);
     }
@@ -228,7 +243,7 @@ pub fn run(detach: bool, work: fn(Ready) -> u8) -> u8 {
     }
     // It ended without ever locking, and its exit code says why.
     match wait_for(supervisor) {
-        Ended::Exited(UNLOCKED) | Ended::Killed => FAILED,
+        Ended::Exited(UNLOCKED) | Ended::Killed | Ended::Unknown => FAILED,
         Ended::Exited(code) => code,
     }
 }
@@ -271,8 +286,48 @@ mod tests {
         assert_eq!(restart_delay(u32::MAX).as_millis(), 5000);
     }
 
+    #[test]
+    fn a_worker_whose_end_is_unknown_is_not_replaced() {
+        // Not even after a lock: it may have been unlocked.
+        for locked in [false, true] {
+            for tries in [0, 3] {
+                assert_eq!(
+                    decide(Ended::Unknown, locked, tries),
+                    Decision::Exit(FAILED)
+                );
+            }
+        }
+    }
+
     // The tests below fork. The children do nothing but exit, which is
-    // safe in a test binary with other threads running.
+    // safe in a test binary with other threads running. They take turns,
+    // because one of them changes what SIGCHLD does for the whole process.
+    static FORKING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn turn() -> std::sync::MutexGuard<'static, ()> {
+        FORKING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn an_ignored_sigchld_does_not_hide_an_unlock() {
+        let _turn = turn();
+        // SAFETY: as a shell or a session manager may leave it for us.
+        unsafe { libc::signal(libc::SIGCHLD, libc::SIG_IGN) };
+        // Without the reset in `run`, waitpid fails with ECHILD here.
+        assert_eq!(run(false, unlocks), UNLOCKED);
+        assert_eq!(run(true, unlocks), 0);
+        // And it is the reset that does it.
+        unsafe { libc::signal(libc::SIGCHLD, libc::SIG_IGN) };
+        // SAFETY: the child exits at once.
+        let child = unsafe { libc::fork() };
+        if child == 0 {
+            leave(UNLOCKED);
+        }
+        assert_eq!(wait_for(child), Ended::Unknown);
+        unsafe { libc::signal(libc::SIGCHLD, libc::SIG_DFL) };
+    }
 
     fn unlocks(ready: Ready) -> u8 {
         ready.locked();
@@ -289,18 +344,21 @@ mod tests {
 
     #[test]
     fn the_exit_code_is_the_workers() {
+        let _turn = turn();
         assert_eq!(run(false, unlocks), UNLOCKED);
         assert_eq!(run(false, refused), REFUSED);
     }
 
     #[test]
     fn detached_it_returns_once_locked_or_with_the_reason_it_never_was() {
+        let _turn = turn();
         assert_eq!(run(true, unlocks), 0);
         assert_eq!(run(true, refused), REFUSED);
     }
 
     #[test]
     fn a_worker_that_keeps_dying_before_locking_ends_it() {
+        let _turn = turn();
         let started = Instant::now();
         assert_eq!(run(false, always_dies), FAILED);
         // Three tries with two waits between them.

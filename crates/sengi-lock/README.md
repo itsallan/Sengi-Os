@@ -122,6 +122,16 @@ When the worker exits, the supervisor looks at how:
 | was killed, aborted, or failed, after the session was locked | starts a new worker, always |
 | the same, before any worker reported the session locked | tries three times, then gives up |
 
+One more case: the supervisor cannot find out how the worker ended
+(`waitpid` fails). It then exits with status 1 and starts nothing. A
+worker that unlocked and a worker that died look the same from there, and
+starting another after an unlock would lock the session again under the
+user's hands. If the worker did die, the session is still locked, because
+the compositor keeps it so; all that is lost is the automatic restart,
+and the ways back are the ones listed below for when both processes are
+killed. The usual cause of this, a SIGCHLD that was set to be ignored by
+whoever started sengi-lock, is undone at start, so it should not happen.
+
 A new worker takes over the abandoned lock and asks for the password
 again. Between the two the screen is black: 0.25 s after the first death,
 doubling up to 5 s if workers keep dying quickly. What had been typed is
