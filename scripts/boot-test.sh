@@ -339,7 +339,8 @@ if wait_serial 'SENGI-GREETER ready' 60; then
 		sleep 1
 		shot logged-in
 		dump back
-		after=$(sed -n 's/.*SENGI-GREETER after //p' "$out/serial.log" | head -1)
+		# The serial line ends in a carriage return.
+		after=$(tr -d '\r' <"$out/serial.log" | sed -n 's/.*SENGI-GREETER after //p' | head -1)
 		if [ -z "$greeter_fail" ] && [ "$after" != "desktop=up session=live left=nothing" ]; then
 			greeter_fail="after logging in as live: $after"
 		elif [ -z "$greeter_fail" ] && [ "$(differs greeter back)" -lt "$covered_bytes" ]; then

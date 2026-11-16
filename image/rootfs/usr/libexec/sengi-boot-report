@@ -12,12 +12,24 @@ echo "SENGI-BOOT desktop_s=$up" >$port
 sleep "${SENGI_IDLE_WAIT:-30}"
 awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2}
 	END {printf "SENGI-IDLE ram_mb=%d\n", (t - a) / 1024}' /proc/meminfo >$port
-# polkit answers logind when someone asks to restart or shut down, and is
-# started by that question. Nobody has asked yet.
-if pidof polkitd >/dev/null; then
-	echo "SENGI-FAIL polkitd is running at idle, before anything has asked it anything" >$port
+# polkit answers logind's questions and is started by the first of them,
+# which comes when the session starts: swayidle asks logind to hold off
+# sleep until the screen is locked. So it is running by now, and what it
+# costs is reported further down. What it must not be is started at boot
+# by anything but a question.
+polkit_state=$(systemctl is-enabled polkit.service 2>&1)
+polkit_wanted=$(systemctl show polkit.service -p WantedBy -p RequiredBy --value | tr -d '\n')
+if [ "$polkit_state" != static ] || [ -n "$polkit_wanted" ]; then
+	echo "SENGI-FAIL polkit.service is started at boot ($polkit_state, wanted by '$polkit_wanted'), not on demand" >$port
 fi
 {
+	# When each piece of the desktop was started, in seconds since boot,
+	# beside the desktop marker above, and when polkit was called for.
+	for prog in labwc sengi-bar sengi-dock swayidle polkitd; do
+		pid=$(pidof -s "$prog") &&
+			awk -v prog="$prog" '{printf "started at %.2f s: %s\n", $22 / 100, prog}' "/proc/$pid/stat"
+	done
+	journalctl -b --no-pager -o short-monotonic 2>&1 | grep -m4 -E 'PolicyKit1|polkit\.service'
 	systemd-analyze time 2>&1
 	systemd-analyze blame 2>&1 | head -15
 	systemd-analyze critical-chain greetd.service 2>&1 | head -12
