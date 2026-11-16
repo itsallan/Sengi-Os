@@ -53,6 +53,8 @@ size-sm = 11
 size-md = 13
 size-lg = 16
 size-xl = 22
+# The time on the lock screen and the login screen.
+size-display = 96
 # Point sizes for programs that do not take px (labwc, foot).
 pt-sm = 8
 pt-md = 10
@@ -74,6 +76,11 @@ button = 26
 launcher-lines = 8
 lock-indicator = 64
 lock-ring = 4
+# The password field of the lock screen and the login screen, and one of
+# the dots it shows for each character typed.
+password-field-width = 280
+password-field-height = 36
+password-dot = 8
 # A row of a list or of a card of settings.
 list-row-height = 42
 # A dialog, and a list to choose from, over a window.
@@ -113,3 +120,6 @@ click-guard = 400
 # where it ended up, so key repeat is one change and not twenty a second.
 input-settle = 300
 idle-lock = 300
+# How long the lock screen keeps its password field up with nothing typed
+# and the pointer still, before only the clock is left.
+lock-prompt-hide = 30000

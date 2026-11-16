@@ -41,6 +41,7 @@ export global Tokens {
     out property <length> font-size-md: @{type.size-md}px;
     out property <length> font-size-lg: @{type.size-lg}px;
     out property <length> font-size-xl: @{type.size-xl}px;
+    out property <length> font-size-display: @{type.size-display}px;
     out property <int> font-weight-regular: @{type.weight-regular};
     out property <int> font-weight-medium: @{type.weight-medium};
     out property <int> font-weight-bold: @{type.weight-bold};
@@ -55,6 +56,9 @@ export global Tokens {
     out property <length> notification-width: @{size.notification-width}px;
     out property <length> bar-icon: @{size.bar-icon}px;
     out property <length> button: @{size.button}px;
+    out property <length> password-field-width: @{size.password-field-width}px;
+    out property <length> password-field-height: @{size.password-field-height}px;
+    out property <length> password-dot: @{size.password-dot}px;
     out property <length> list-row-height: @{size.list-row-height}px;
     out property <length> dialog-width: @{size.dialog-width}px;
     out property <length> chooser-width: @{size.chooser-width}px;
@@ -79,4 +83,5 @@ export global Tokens {
     out property <duration> click-guard: @{timing.click-guard}ms;
     out property <duration> input-settle: @{timing.input-settle}ms;
     out property <duration> notification-timeout: @{timing.notification-timeout}ms;
+    out property <duration> lock-prompt-hide: @{timing.lock-prompt-hide}ms;
 }

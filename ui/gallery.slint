@@ -1,6 +1,6 @@
 // Every shared component on one window, for visual review.
 
-import { Tokens, SengiText, SengiLabel, SengiSurface, SengiButton, SengiToggle } from "components.slint";
+import { Tokens, SengiText, SengiLabel, SengiSurface, SengiButton, SengiToggle, SengiClockBlock, SengiPasswordField } from "components.slint";
 
 export component Gallery inherits Window {
     title: "Sengi OS components";
@@ -29,6 +29,19 @@ export component Gallery inherits Window {
             alignment: start;
             SengiToggle { checked: true; }
         }
+
+        SengiLabel { text: "Password field"; }
+        HorizontalLayout {
+            spacing: Tokens.space-sm;
+            alignment: start;
+            SengiPasswordField { placeholder: "Password"; }
+            SengiPasswordField { length: 9; active: true; badge: "FR"; }
+            SengiPasswordField { rejected: true; }
+            SengiPasswordField { length: 4; enabled: false; }
+        }
+
+        SengiLabel { text: "Clock"; }
+        SengiClockBlock { time: "13:07"; date: "Thursday 12 November"; }
 
         SengiLabel { text: "Surface"; }
         SengiSurface {

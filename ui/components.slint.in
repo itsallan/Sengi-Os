@@ -142,3 +142,150 @@ export component SengiToggle inherits Rectangle {
         clicked => { root.flip(); }
     }
 }
+
+// The time, large, with the date under it. The lock screen and the login
+// screen are built around this. Both strings come from the program: see
+// the sengi-clock crate.
+export component SengiClockBlock inherits VerticalLayout {
+    in property <string> time;
+    in property <string> date;
+
+    alignment: center;
+    spacing: Tokens.space-xs;
+
+    Text {
+        text: root.time;
+        color: Tokens.color-text;
+        font-family: Tokens.font-family;
+        font-size: Tokens.font-size-display;
+        font-weight: Tokens.font-weight-regular;
+        horizontal-alignment: center;
+    }
+
+    Text {
+        text: root.date;
+        color: Tokens.color-text-muted;
+        font-family: Tokens.font-family;
+        font-size: Tokens.font-size-xl;
+        font-weight: Tokens.font-weight-regular;
+        horizontal-alignment: center;
+    }
+}
+
+// A field for a password. It never holds what is typed. The program
+// collects the key presses, where it can wipe them, and tells the field
+// only how many characters there are; the field draws that many dots.
+// There is nothing to select, copy or reveal.
+//
+// Return, Escape and Backspace are reported through the callbacks. Every
+// other key is reported through `typed`, unless the program has taken it
+// before it got here, as a program on sengi-layer does with
+// `Handle::on_text`.
+export component SengiPasswordField inherits Rectangle {
+    // How many characters have been typed.
+    in property <int> length;
+    // Shown while nothing has been typed.
+    in property <string> placeholder;
+    in property <bool> enabled: true;
+    // Drawn with the focus ring. On by default while the field has the
+    // keyboard; a lock screen that shows the same field on every output
+    // sets it everywhere, because the keyboard belongs to all of them.
+    in property <bool> active: scope.has-focus;
+    // The last attempt was turned down.
+    in property <bool> rejected: false;
+    // A short word at the right end, such as the keyboard layout.
+    in property <string> badge;
+    out property <bool> has-focus: scope.has-focus;
+    callback typed(string);
+    callback erased();
+    callback accepted();
+    callback cleared();
+    // Any key at all was pressed, the ones above included.
+    callback touched();
+
+    // How many dots fit beside the badge.
+    property <length> room: self.width - Tokens.space-md * 2
+        - (root.badge == "" ? 0px : badge-text.preferred-width + Tokens.space-sm);
+    property <int> capacity: Math.max(1,
+        Math.floor((root.room + Tokens.space-xs) / (Tokens.password-dot + Tokens.space-xs)));
+
+    forward-focus: scope;
+    width: Tokens.password-field-width;
+    height: Tokens.password-field-height;
+    border-radius: Tokens.radius;
+    border-width: root.active && root.enabled ? Tokens.focus-ring-width : Tokens.border-width;
+    border-color: root.rejected ? Tokens.color-danger
+        : root.active && root.enabled ? Tokens.color-focus-ring
+        : root.enabled ? Tokens.color-border : Tokens.color-outline-disabled;
+    background: root.enabled ? Tokens.color-surface : transparent;
+    animate border-color { duration: Tokens.motion-fast; easing: @{motion.easing}; }
+
+    if root.length == 0: Text {
+        x: Tokens.space-md;
+        width: root.room;
+        height: parent.height;
+        text: root.placeholder;
+        color: Tokens.color-text-disabled;
+        font-family: Tokens.font-family;
+        font-size: Tokens.font-size-md;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    HorizontalLayout {
+        x: Tokens.space-md;
+        width: root.room;
+        height: parent.height;
+        alignment: start;
+        spacing: Tokens.space-xs;
+
+        for index in Math.min(root.length, root.capacity): VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: Tokens.password-dot;
+                height: Tokens.password-dot;
+                border-radius: self.height / 2;
+                background: root.enabled ? Tokens.color-text : Tokens.color-text-disabled;
+            }
+        }
+    }
+
+    badge-text := Text {
+        x: parent.width - self.width - Tokens.space-md;
+        height: parent.height;
+        text: root.badge;
+        color: Tokens.color-text-muted;
+        font-family: Tokens.font-family;
+        font-size: Tokens.font-size-sm;
+        font-weight: Tokens.font-weight-medium;
+        vertical-alignment: center;
+    }
+
+    scope := FocusScope {
+        key-pressed(event) => {
+            root.touched();
+            if !root.enabled {
+                return accept;
+            }
+            if event.text == Key.Return {
+                root.accepted();
+                return accept;
+            }
+            if event.text == Key.Escape {
+                root.cleared();
+                return accept;
+            }
+            if event.text == Key.Backspace {
+                root.erased();
+                return accept;
+            }
+            if event.modifiers.control || event.modifiers.alt || event.modifiers.meta {
+                return reject;
+            }
+            // Keys that type nothing arrive too, as Slint's own codes:
+            // control and private-use characters, for the program to drop.
+            root.typed(event.text);
+            return accept;
+        }
+    }
+}
