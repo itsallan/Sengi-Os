@@ -147,19 +147,42 @@ export component SengiToggle inherits Rectangle {
 // screen are built around this. Both strings come from the program: see
 // the sengi-clock crate.
 export component SengiClockBlock inherits VerticalLayout {
+    // The digits: "13:07", or "1:07" with `period` beside it.
     in property <string> time;
+    // "AM" or "PM" on a 12-hour clock, empty on a 24-hour one. Set small
+    // on the digits' baseline, so the line is not much wider for it.
+    in property <string> period;
     in property <string> date;
 
     alignment: center;
     spacing: Tokens.space-xs;
 
-    Text {
-        text: root.time;
-        color: Tokens.color-text;
-        font-family: Tokens.font-family;
-        font-size: Tokens.font-size-display;
-        font-weight: Tokens.font-weight-regular;
-        horizontal-alignment: center;
+    HorizontalLayout {
+        alignment: center;
+        spacing: Tokens.space-sm;
+
+        Text {
+            text: root.time;
+            color: Tokens.color-text;
+            font-family: Tokens.font-family;
+            font-size: Tokens.font-size-display;
+            font-weight: Tokens.font-weight-regular;
+        }
+
+        if root.period != "": VerticalLayout {
+            alignment: end;
+            // Both boxes end one descent below their baselines, and the
+            // large one's descent is the longer by this much.
+            padding-bottom: (Tokens.font-size-display - Tokens.font-size-xl) * Tokens.font-descent;
+
+            Text {
+                text: root.period;
+                color: Tokens.color-text-muted;
+                font-family: Tokens.font-family;
+                font-size: Tokens.font-size-xl;
+                font-weight: Tokens.font-weight-medium;
+            }
+        }
     }
 
     Text {
@@ -187,6 +210,9 @@ export component SengiPasswordField inherits Rectangle {
     // Shown while nothing has been typed.
     in property <string> placeholder;
     in property <bool> enabled: true;
+    // Not taking input because what was typed is being checked. Looks
+    // alive, where a field that is merely not enabled looks switched off.
+    in property <bool> busy: false;
     // Drawn with the focus ring. On by default while the field has the
     // keyboard; a lock screen that shows the same field on every output
     // sets it everywhere, because the keyboard belongs to all of them.
@@ -216,8 +242,8 @@ export component SengiPasswordField inherits Rectangle {
     border-width: root.active && root.enabled ? Tokens.focus-ring-width : Tokens.border-width;
     border-color: root.rejected ? Tokens.color-danger
         : root.active && root.enabled ? Tokens.color-focus-ring
-        : root.enabled ? Tokens.color-border : Tokens.color-outline-disabled;
-    background: root.enabled ? Tokens.color-surface : transparent;
+        : root.enabled || root.busy ? Tokens.color-border : Tokens.color-outline-disabled;
+    background: root.enabled || root.busy ? Tokens.color-surface : transparent;
     animate border-color { duration: Tokens.motion-fast; easing: @{motion.easing}; }
 
     if root.length == 0: Text {
@@ -225,7 +251,7 @@ export component SengiPasswordField inherits Rectangle {
         width: root.room;
         height: parent.height;
         text: root.placeholder;
-        color: Tokens.color-text-disabled;
+        color: root.busy ? Tokens.color-text-muted : Tokens.color-text-disabled;
         font-family: Tokens.font-family;
         font-size: Tokens.font-size-md;
         vertical-alignment: center;

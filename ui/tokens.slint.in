@@ -34,6 +34,7 @@ export global Tokens {
     out property <length> space-md: @{space.md}px;
     out property <length> space-lg: @{space.lg}px;
     out property <length> space-xl: @{space.xl}px;
+    out property <length> space-xxl: @{space.xxl}px;
 
     out property <string> font-family: "@{type.family}";
     out property <string> font-mono: "@{type.mono}";
@@ -42,6 +43,7 @@ export global Tokens {
     out property <length> font-size-lg: @{type.size-lg}px;
     out property <length> font-size-xl: @{type.size-xl}px;
     out property <length> font-size-display: @{type.size-display}px;
+    out property <float> font-descent: @{type.descent-percent} / 100;
     out property <int> font-weight-regular: @{type.weight-regular};
     out property <int> font-weight-medium: @{type.weight-medium};
     out property <int> font-weight-bold: @{type.weight-bold};
@@ -59,6 +61,7 @@ export global Tokens {
     out property <length> password-field-width: @{size.password-field-width}px;
     out property <length> password-field-height: @{size.password-field-height}px;
     out property <length> password-dot: @{size.password-dot}px;
+    out property <length> password-note-height: @{size.password-note-height}px;
     out property <length> list-row-height: @{size.list-row-height}px;
     out property <length> dialog-width: @{size.dialog-width}px;
     out property <length> chooser-width: @{size.chooser-width}px;

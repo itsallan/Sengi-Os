@@ -62,6 +62,8 @@ pub struct View {
     pub prompt: bool,
     /// Whether the field takes input.
     pub enabled: bool,
+    /// The password is being checked.
+    pub busy: bool,
     /// The field is marked as having turned a password down.
     pub rejected: bool,
     pub placeholder: String,
@@ -247,6 +249,7 @@ impl Screen {
             length: self.entry.chars(),
             prompt: self.prompt,
             enabled: self.phase == Phase::Asking,
+            busy: self.phase == Phase::Checking,
             rejected: matches!(self.phase, Phase::Held(_))
                 || (self.phase == Phase::Asking && matches!(self.note, Note::Wrong(_))),
             placeholder: match self.phase {
@@ -296,7 +299,7 @@ mod tests {
         let password = submit(&mut screen, "live");
         assert_eq!(password.expose(), "live");
         let view = screen.view();
-        assert!(!view.enabled);
+        assert!(!view.enabled && view.busy);
         assert_eq!(view.placeholder, "Checking\u{2026}");
         assert_eq!(view.length, 0);
         assert_eq!(screen.judged(Verdict::Right), Next::Unlock);

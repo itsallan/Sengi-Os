@@ -38,6 +38,7 @@ sm = 8
 md = 12
 lg = 16
 xl = 24
+xxl = 48
 
 [border]
 width = 1
@@ -55,6 +56,9 @@ size-lg = 16
 size-xl = 22
 # The time on the lock screen and the login screen.
 size-display = 96
+# How far below its baseline the typeface reaches, in percent of the type
+# size. For setting two sizes of text on one baseline.
+descent-percent = 24
 # Point sizes for programs that do not take px (labwc, foot).
 pt-sm = 8
 pt-md = 10
@@ -79,6 +83,8 @@ launcher-lines = 8
 password-field-width = 280
 password-field-height = 36
 password-dot = 8
+# The line under the field, kept free when it has nothing to say.
+password-note-height = 20
 # A row of a list or of a card of settings.
 list-row-height = 42
 # A dialog, and a list to choose from, over a window.

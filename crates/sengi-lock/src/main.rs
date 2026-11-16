@@ -135,6 +135,7 @@ fn apply(window: &LockWindow, view: &View) {
     window.set_length(view.length as i32);
     window.set_prompt(view.prompt);
     window.set_enabled(view.enabled);
+    window.set_busy(view.busy);
     window.set_rejected(view.rejected);
     window.set_placeholder(view.placeholder.as_str().into());
     window.set_note(view.note.as_str().into());
@@ -176,9 +177,10 @@ impl Lock {
         let mut clock = self.clock.borrow_mut();
         clock.follow_settings();
         let now = chrono::Utc::now();
-        let (time, date) = (clock.time(now), clock.date(now));
+        let ((time, period), date) = (clock.time_parts(now), clock.date(now));
         self.windows.for_each(|window| {
             window.set_time(time.as_str().into());
+            window.set_period(period.as_str().into());
             window.set_date(date.as_str().into());
         });
     }

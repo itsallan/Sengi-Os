@@ -38,10 +38,16 @@ export component Gallery inherits Window {
             SengiPasswordField { length: 9; active: true; badge: "FR"; }
             SengiPasswordField { rejected: true; }
             SengiPasswordField { length: 4; enabled: false; }
+            SengiPasswordField { placeholder: "Checking\u{2026}"; enabled: false; busy: true; }
         }
 
         SengiLabel { text: "Clock"; }
-        SengiClockBlock { time: "13:07"; date: "Thursday 12 November"; }
+        HorizontalLayout {
+            spacing: Tokens.space-xl;
+            alignment: start;
+            SengiClockBlock { time: "13:07"; date: "Thursday 12 November"; }
+            SengiClockBlock { time: "1:07"; period: "PM"; date: "Thursday 12 November"; }
+        }
 
         SengiLabel { text: "Surface"; }
         SengiSurface {

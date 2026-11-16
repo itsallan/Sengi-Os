@@ -5,6 +5,8 @@ import { Tokens, SengiText, SengiLabel, SengiClockBlock, SengiPasswordField } fr
 
 export component LockWindow inherits Window {
     in property <string> time;
+    // "AM" or "PM", or empty on a 24-hour clock.
+    in property <string> period;
     in property <string> date;
     in property <string> user;
     // How many characters of the password have been typed.
@@ -14,6 +16,8 @@ export component LockWindow inherits Window {
     // False while the password is being checked and while a wrong one is
     // being paid for.
     in property <bool> enabled: true;
+    // The password is with PAM.
+    in property <bool> busy: false;
     in property <bool> rejected: false;
     in property <string> placeholder;
     // The line under the field.
@@ -36,10 +40,11 @@ export component LockWindow inherits Window {
 
     VerticalLayout {
         alignment: center;
-        spacing: Tokens.space-xl * 2;
+        spacing: Tokens.space-xxl;
 
         SengiClockBlock {
             time: root.time;
+            period: root.period;
             date: root.date;
         }
 
@@ -65,6 +70,7 @@ export component LockWindow inherits Window {
                     length: root.length;
                     placeholder: root.placeholder;
                     enabled: root.enabled;
+                    busy: root.busy;
                     // The keyboard is the lock's, whichever output the
                     // compositor says has it.
                     active: true;
@@ -80,7 +86,8 @@ export component LockWindow inherits Window {
 
             SengiLabel {
                 // Keeps its line when it has nothing to say.
-                min-height: Tokens.font-size-sm * 1.5;
+                min-height: Tokens.password-note-height;
+                font-size: Tokens.font-size-md;
                 text: root.note;
                 color: root.note-is-problem ? Tokens.color-danger
                     : root.note-is-warning ? Tokens.color-warning : Tokens.color-text-muted;

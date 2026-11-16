@@ -197,6 +197,19 @@ impl Clock {
         format_as(now, &self.zone, pattern)
     }
 
+    /// The time in two parts, for a clock that sets them apart: the
+    /// digits, and `AM` or `PM`, which is empty on a 24-hour clock.
+    pub fn time_parts(&self, now: DateTime<Utc>) -> (String, String) {
+        if self.twelve {
+            (
+                format_as(now, &self.zone, "%-I:%M"),
+                format_as(now, &self.zone, "%p"),
+            )
+        } else {
+            (self.time(now), String::new())
+        }
+    }
+
     /// The date in full: `Thursday 12 November`.
     pub fn date(&self, now: DateTime<Utc>) -> String {
         format_as(now, &self.zone, DATE)
@@ -381,6 +394,10 @@ mod tests {
             b"[clock]\ntime-zone = \"Test/Zero\"\n",
         );
         let mut clock = tmp.clock();
+        assert_eq!(
+            clock.time_parts(at(13, 7)),
+            ("13:07".to_string(), String::new())
+        );
         assert_eq!(clock.time(at(13, 7)), "13:07");
         assert_eq!(clock.date(at(13, 7)), "Thursday 12 November");
         tmp.write(
@@ -390,6 +407,14 @@ mod tests {
         assert!(clock.follow_settings());
         assert_eq!(clock.time(at(13, 7)), "1:07 PM");
         assert_eq!(clock.time(at(0, 5)), "12:05 AM");
+        assert_eq!(
+            clock.time_parts(at(13, 7)),
+            ("1:07".to_string(), "PM".to_string())
+        );
+        assert_eq!(
+            clock.time_parts(at(0, 5)),
+            ("12:05".to_string(), "AM".to_string())
+        );
     }
 
     #[test]
