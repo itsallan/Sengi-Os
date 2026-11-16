@@ -108,6 +108,8 @@ struct Greeter {
 fn apply(window: &GreeterWindow, view: &View) {
     let field = &view.field;
     window.set_user(view.user.as_str().into());
+    window.set_caption(view.caption.as_str().into());
+    window.set_naming(view.naming);
     window.set_choice(view.choice);
     window.set_power(view.power);
     window.set_plain(view.plain.as_str().into());

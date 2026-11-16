@@ -56,9 +56,10 @@ not come from `/etc/passwd` are found as well.
   the next, and stepping does not buy fresh tries: wrong passwords are
   counted across all of them. Two accounts with one full name are shown
   with their login names after it.
-- **None**: the field asks for "User name" first and shows what is typed.
-  Return goes on to the password, with the name above the field; Escape
-  on an empty password field goes back to the name.
+- **None**: the field asks for "User name" first and shows what is typed,
+  with "User name" in small print above it once the typing has covered
+  those words. Return or Tab goes on to the password, with the name above
+  the field; Escape on an empty password field goes back to the name.
 
 Accounts outside that range, root among them, are not offered and cannot
 be typed in when any account is offered. They can log in on a text

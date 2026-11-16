@@ -51,6 +51,12 @@ pub struct View {
     pub plain: String,
     /// Who is logging in. Empty until that is known.
     pub user: String,
+    /// What the field holds, said above it in small print when the field
+    /// can no longer say so itself: a name that is being typed has taken
+    /// the place of the words "User name".
+    pub caption: String,
+    /// A name is being typed, and Tab takes it as Return does.
+    pub naming: bool,
     /// There is more than one account to choose from.
     pub choice: bool,
     /// Restart and Shut down can be pressed.
@@ -122,6 +128,14 @@ impl Login {
         }
     }
 
+    /// Whether the field takes input at all. It is shown as shut while
+    /// greetd is busy, while a wrong password is being paid for and once
+    /// the machine is on its way down, and what is typed then goes
+    /// nowhere, whichever kind of field it is.
+    fn open(&self) -> bool {
+        self.leaving.is_none() && self.stage != Stage::Starting && self.screen.view().enabled
+    }
+
     fn field_is_empty(&self) -> bool {
         self.plain.is_empty() && self.screen.view().length == 0
     }
@@ -129,6 +143,10 @@ impl Login {
     /// A key that types text was pressed.
     pub fn typed(&mut self, text: &str) {
         self.refused = None;
+        if !self.open() {
+            self.screen.stirred();
+            return;
+        }
         match self.typing_in_sight() {
             Some(most) => {
                 self.screen.stirred();
@@ -143,6 +161,10 @@ impl Login {
     /// Backspace.
     pub fn erased(&mut self) {
         self.refused = None;
+        if !self.open() {
+            self.screen.stirred();
+            return;
+        }
         if self.typing_in_sight().is_some() {
             self.screen.stirred();
             self.plain.pop();
@@ -155,6 +177,10 @@ impl Login {
     /// back: out of a question greetd has put, or back to the name.
     pub fn cleared(&mut self) -> Option<Command> {
         self.refused = None;
+        if !self.open() {
+            self.screen.stirred();
+            return None;
+        }
         if !self.field_is_empty() {
             self.plain.clear();
             self.screen.cleared();
@@ -181,11 +207,15 @@ impl Login {
         Command::Cancel
     }
 
-    /// Return. Gives what is to be sent to greetd, if anything; an
-    /// [`Login::asked`] or a [`Login::judged`] is owed for a `Begin` and
-    /// for an `Answer`.
+    /// Return, and Tab while a name is being typed. Gives what is to be
+    /// sent to greetd, if anything; an [`Login::asked`] or a
+    /// [`Login::judged`] is owed for a `Begin` and for an `Answer`.
     pub fn submitted(&mut self) -> Option<Command> {
         self.refused = None;
+        if !self.open() {
+            self.screen.stirred();
+            return None;
+        }
         match self.stage {
             Stage::Name => {
                 self.screen.stirred();
@@ -358,8 +388,15 @@ impl Login {
         if self.leaving.is_some() {
             field.enabled = false;
         }
+        let naming = self.stage == Stage::Name && !self.plain.is_empty();
         View {
             field,
+            caption: if naming {
+                "User name".to_string()
+            } else {
+                String::new()
+            },
+            naming,
             plain: self.plain.clone(),
             user: match self.stage {
                 Stage::Name => String::new(),
@@ -579,6 +616,75 @@ mod tests {
             (view.user.as_str(), view.field.placeholder.as_str()),
             ("", "User name")
         );
+    }
+
+    #[test]
+    fn a_name_being_typed_is_labelled_and_tab_would_take_it() {
+        let mut login = Login::new(Vec::new(), &[]);
+        let view = login.view();
+        // The field says what it wants itself, until something is in it.
+        assert_eq!((view.caption.as_str(), view.naming), ("", false));
+        type_in(&mut login, "al");
+        let view = login.view();
+        assert_eq!((view.caption.as_str(), view.naming), ("User name", true));
+        login.erased();
+        login.erased();
+        assert_eq!(login.view().caption, "");
+        type_in(&mut login, "allan");
+        // Tab arrives as Return does.
+        assert!(login.submitted().is_none());
+        let view = login.view();
+        assert_eq!(
+            (view.user.as_str(), view.caption.as_str(), view.naming),
+            ("allan", "", false)
+        );
+    }
+
+    #[test]
+    fn nothing_typed_lands_in_a_field_that_is_shut() {
+        // A name, while the wait after wrong passwords is on.
+        let mut login = Login::new(Vec::new(), &[]);
+        for _ in 0..3 {
+            type_in(&mut login, "allan");
+            login.submitted();
+            type_in(&mut login, "nope");
+            login.submitted();
+            login.judged(Verdict::Wrong(None));
+            login.cleared();
+            login.cleared();
+        }
+        // The third one shut the field before Escape could go back.
+        assert!(!login.view().field.enabled);
+        type_in(&mut login, "typed blind");
+        login.erased();
+        assert!(login.submitted().is_none());
+        assert!(login.cleared().is_none());
+        let view = login.view();
+        assert_eq!((view.plain.as_str(), view.field.length), ("", 0));
+        assert_eq!(view.user, "allan");
+        login.released();
+        login.cleared();
+        type_in(&mut login, "al");
+        assert_eq!(login.view().plain, "al");
+
+        // An answer in sight, and a password, once the machine is going
+        // down.
+        let mut login = one();
+        login.submitted();
+        login.asked("Code: ", true, None);
+        assert!(login.leave(Power::Restart));
+        type_in(&mut login, "12");
+        assert_eq!(login.view().plain, "");
+        assert!(login.submitted().is_none());
+        login.stayed();
+        type_in(&mut login, "12");
+        assert_eq!(login.view().plain, "12");
+
+        let mut login = one();
+        assert!(login.leave(Power::ShutDown));
+        type_in(&mut login, "live");
+        assert_eq!(login.view().field.length, 0);
+        assert!(login.submitted().is_none());
     }
 
     #[test]

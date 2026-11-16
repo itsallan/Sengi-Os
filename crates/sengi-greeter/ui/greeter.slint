@@ -12,6 +12,11 @@ export component GreeterWindow inherits Window {
     in property <string> period;
     in property <string> date;
     in property <string> user;
+    // Said in small print where the name goes while there is no name:
+    // what the field holds, once what is typed has covered its own words.
+    in property <string> caption;
+    // A name is being typed. Tab then takes it, as Return does.
+    in property <bool> naming: false;
     // There is more than one user to choose from.
     in property <bool> choice: false;
     // How many characters of the password have been typed.
@@ -101,10 +106,18 @@ export component GreeterWindow inherits Window {
                         clicked => { root.stepped(-1); }
                     }
 
-                    SengiText {
+                    if root.user != "": SengiText {
                         text: root.user;
                         font-size: Tokens.font-size-lg;
                         font-weight: Tokens.font-weight-medium;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    if root.user == "": SengiLabel {
+                        text: root.caption;
+                        font-size: Tokens.font-size-md;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                         overflow: elide;
@@ -122,6 +135,21 @@ export component GreeterWindow inherits Window {
 
             HorizontalLayout {
                 alignment: center;
+
+                // Sees the keys before the field does, for the one case
+                // where Tab is not for moving on to the buttons.
+                FocusScope {
+                    width: field.width;
+                    height: field.height;
+                    focus-on-click: false;
+                    focus-on-tab-navigation: false;
+                    capture-key-pressed(event) => {
+                        if root.naming && event.text == Key.Tab {
+                            root.accepted();
+                            return accept;
+                        }
+                        return reject;
+                    }
 
                 field := SengiPasswordField {
                     length: root.length;
@@ -147,6 +175,7 @@ export component GreeterWindow inherits Window {
                         }
                     }
                     touched => { root.stirred(); }
+                }
                 }
             }
 
