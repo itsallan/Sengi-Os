@@ -42,7 +42,7 @@ use wayland_client::{Connection, Dispatch, QueueHandle};
 
 use crate::config::{Anchor, Config, KeyboardMode, Layer, Outputs};
 use crate::convert::{
-    is_modifier, is_special, key_repeats, key_text, modifier_fixes, pointer_button, repeats_due,
+    is_modifier, is_special, is_typed_text, key_repeats, key_text, modifier_fixes, pointer_button, repeats_due,
     scroll_delta, ModifierState, RepeatTiming,
 };
 use crate::frames::{Area, Frames, Painted};
@@ -274,6 +274,8 @@ pub(crate) struct State {
     locking: Option<Locking>,
     /// Caps Lock and the layout, as last heard.
     keyboard_state: Keyboard,
+    /// Alt or the logo key is held: what is typed is a shortcut, not text.
+    chord: bool,
 }
 
 impl From<Layer> for WlrLayer {
@@ -382,6 +384,7 @@ impl State {
             failure: None,
             locking: None,
             keyboard_state: Keyboard::default(),
+            chord: false,
         }
     }
 
@@ -1181,13 +1184,11 @@ impl State {
     /// it, nothing is remembered for repeats, and the copy that came with
     /// the event is overwritten.
     fn offer_text(&mut self, event: &mut KeyEvent) -> bool {
-        if is_special(event.keysym) {
-            return false;
-        }
+        let special = is_special(event.keysym);
         let Some(text) = event.utf8.as_mut() else {
             return false;
         };
-        if text.is_empty() || text.chars().any(char::is_control) {
+        if !is_typed_text(text, special, self.chord) {
             return false;
         }
         let Some(mut hook) = self.shared.borrow_mut().text_hook.take() else {
@@ -1424,6 +1425,9 @@ impl KeyboardHandler for State {
         modifiers: Modifiers,
         layout: u32,
     ) {
+        // AltGr is neither: it is how many layouts reach ordinary
+        // characters, and what it types is text.
+        self.chord = modifiers.alt || modifiers.logo;
         let keyboard = Keyboard {
             caps_lock: modifiers.caps_lock,
             layout,

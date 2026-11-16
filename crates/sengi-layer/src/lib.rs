@@ -609,8 +609,9 @@ impl Handle {
     /// Hands typed text to `take` before Slint sees it. The text is what
     /// one key press produced in the active layout, after dead keys and
     /// compose sequences; keys Slint knows by a code of its own, such as
-    /// Return, Backspace and Escape, and presses made with Control held
-    /// are not offered and arrive in the component as usual.
+    /// Return, Backspace and Escape, and presses made with Control, Alt or
+    /// the logo key held are not offered and arrive in the component as
+    /// usual. What AltGr types is text and is offered.
     ///
     /// When `take` returns true the press goes no further. It never
     /// reaches the component, it does not repeat while held, and the

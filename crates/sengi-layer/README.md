@@ -211,8 +211,9 @@ public. `config.validate()` reports combinations the compositor would reject.
 - `Handle::on_text(take)` shows `take` the text of each key press before
   Slint. If it returns true the press is dropped: no key event, no repeat,
   and the string it came in is overwritten. Keys that Slint knows by a code
-  (Return, Backspace, Escape, arrows, modifiers) and presses with Control
-  held are not offered. It works on layer surfaces too.
+  (Return, Backspace, Escape, arrows, modifiers) and presses with Control,
+  Alt or the logo key held are not offered; AltGr is, since it types
+  ordinary characters. It works on layer surfaces too.
 - `Handle::on_keyboard_changed(changed)` reports `Keyboard { caps_lock,
   layout }` when either changes; `layout` is the index of the active XKB
   group.
