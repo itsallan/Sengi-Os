@@ -82,6 +82,9 @@ pub struct Screen {
     failures: u32,
     note: Note,
     prompt: bool,
+    /// What the field asks for when it is not the password: a further
+    /// question put by [`Screen::asked`].
+    question: Option<String>,
     caps_lock: bool,
     /// The configured layouts, as short labels. Fewer than two: no label.
     layouts: Vec<String>,
@@ -98,6 +101,7 @@ impl Screen {
             failures: 0,
             note: Note::None,
             prompt: true,
+            question: None,
             caps_lock: false,
             layouts: layouts.iter().map(|name| name.to_uppercase()).collect(),
             layout: 0,
@@ -147,6 +151,43 @@ impl Screen {
         Some(password)
     }
 
+    /// Return, where an empty answer is an answer too. The login screen
+    /// uses this: an account may have no password, and what is asked
+    /// after [`Screen::asked`] may be answered with nothing.
+    pub fn submitted_anyway(&mut self) -> Option<Secret> {
+        self.prompt = true;
+        if self.phase != Phase::Asking {
+            return None;
+        }
+        let answer = self.entry.take().unwrap_or_else(|| Secret::new(String::new()));
+        self.phase = Phase::Checking;
+        self.note = Note::None;
+        Some(answer)
+    }
+
+    /// The check that is under way cannot end before something more has
+    /// been typed: PAM has a further question. The field opens again with
+    /// `question` in place of "Password", and the next Return goes on
+    /// with the same check. The lock screen never gets here; it answers
+    /// every question with the one password.
+    pub fn asked(&mut self, question: &str) {
+        if self.phase == Phase::Checking {
+            self.phase = Phase::Asking;
+            self.question = Some(question.to_string());
+            self.note = Note::None;
+            self.prompt = true;
+        }
+    }
+
+    /// The question put by [`Screen::asked`] no longer stands, because
+    /// the check it belonged to was given up. Back to asking for the
+    /// password, with nothing typed.
+    pub fn withdrawn(&mut self) {
+        if self.question.take().is_some() {
+            self.entry.clear();
+        }
+    }
+
     /// The check that [`Screen::submitted`] started has ended.
     pub fn judged(&mut self, verdict: Verdict) -> Next {
         if self.phase != Phase::Checking {
@@ -155,6 +196,7 @@ impl Screen {
         }
         self.prompt = true;
         self.phase = Phase::Asking;
+        self.question = None;
         match verdict {
             Verdict::Right => return Next::Unlock,
             Verdict::Wrong(said) => {
@@ -193,6 +235,7 @@ impl Screen {
         }
         self.prompt = false;
         self.entry.clear();
+        self.question = None;
         self.note = Note::None;
         true
     }
@@ -252,9 +295,10 @@ impl Screen {
             busy: self.phase == Phase::Checking,
             rejected: matches!(self.phase, Phase::Held(_))
                 || (self.phase == Phase::Asking && matches!(self.note, Note::Wrong(_))),
-            placeholder: match self.phase {
-                Phase::Checking => "Checking\u{2026}".to_string(),
-                _ => "Password".to_string(),
+            placeholder: match (&self.phase, &self.question) {
+                (Phase::Checking, _) => "Checking\u{2026}".to_string(),
+                (_, Some(question)) => question.clone(),
+                (_, None) => "Password".to_string(),
             },
             note,
             note_is_problem: problem,
@@ -497,6 +541,54 @@ mod tests {
             screen.submitted().unwrap().len(),
             crate::entry::MAX_BYTES - 1
         );
+    }
+
+    #[test]
+    fn an_empty_answer_is_taken_only_where_it_is_asked_for() {
+        let mut screen = screen();
+        assert!(screen.submitted().is_none());
+        let nothing = screen.submitted_anyway().expect("an answer, though empty");
+        assert!(nothing.is_empty());
+        assert!(screen.view().busy);
+        // One Return, one check.
+        assert!(screen.submitted_anyway().is_none());
+        assert_eq!(screen.judged(Verdict::Wrong(None)), Next::Ask);
+        type_in(&mut screen, "live");
+        assert_eq!(screen.submitted_anyway().unwrap().expose(), "live");
+    }
+
+    #[test]
+    fn a_further_question_opens_the_field_again_within_the_same_check() {
+        let mut screen = screen();
+        // Nothing is being checked, so nothing can be asked.
+        screen.asked("Code");
+        assert_eq!(screen.view().placeholder, "Password");
+
+        submit(&mut screen, "live");
+        screen.asked("Verification code");
+        let view = screen.view();
+        assert!(view.enabled && !view.busy && !view.rejected);
+        assert_eq!(view.placeholder, "Verification code");
+        assert_eq!(view.note, "");
+        assert_eq!(submit(&mut screen, "123456").expose(), "123456");
+        assert_eq!(screen.view().placeholder, "Checking\u{2026}");
+        // The verdict is on the whole check, and ends the question.
+        assert_eq!(screen.judged(Verdict::Wrong(None)), Next::Ask);
+        assert_eq!(screen.view().placeholder, "Password");
+
+        // A question that is given up takes what was typed for it along.
+        submit(&mut screen, "live");
+        screen.asked("Verification code");
+        type_in(&mut screen, "12");
+        screen.withdrawn();
+        let view = screen.view();
+        assert_eq!((view.placeholder.as_str(), view.length), ("Password", 0));
+        // So does a field that is put away.
+        submit(&mut screen, "live");
+        screen.asked("Verification code");
+        assert!(screen.rested());
+        screen.stirred();
+        assert_eq!(screen.view().placeholder, "Password");
     }
 
     #[test]

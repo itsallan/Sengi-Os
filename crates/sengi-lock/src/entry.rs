@@ -30,7 +30,7 @@ pub struct PasswordEntry {
 /// True for what a key press can add to a password. Slint reports keys
 /// that type nothing as control characters and as characters from the
 /// private use area.
-fn is_text(text: &str) -> bool {
+pub fn is_text(text: &str) -> bool {
     !text.is_empty()
         && text
             .chars()

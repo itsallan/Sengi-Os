@@ -200,6 +200,10 @@ export component SengiClockBlock inherits VerticalLayout {
 // only how many characters there are; the field draws that many dots.
 // There is nothing to select, copy or reveal.
 //
+// The same field takes an answer that is no secret, such as a user name
+// on the login screen: the program then hands back what was typed as
+// `plain`, and it is shown as it is.
+//
 // Return, Escape and Backspace are reported through the callbacks. Every
 // other key is reported through `typed`, unless the program has taken it
 // before it got here, as a program on sengi-layer does with
@@ -207,6 +211,8 @@ export component SengiClockBlock inherits VerticalLayout {
 export component SengiPasswordField inherits Rectangle {
     // How many characters have been typed.
     in property <int> length;
+    // What was typed, where it may be seen. Drawn in place of the dots.
+    in property <string> plain;
     // Shown while nothing has been typed.
     in property <string> placeholder;
     in property <bool> enabled: true;
@@ -250,8 +256,9 @@ export component SengiPasswordField inherits Rectangle {
         x: Tokens.space-md;
         width: root.room;
         height: parent.height;
-        text: root.placeholder;
-        color: root.busy ? Tokens.color-text-muted : Tokens.color-text-disabled;
+        text: root.plain != "" ? root.plain : root.placeholder;
+        color: root.plain != "" ? (root.enabled ? Tokens.color-text : Tokens.color-text-disabled)
+            : root.busy ? Tokens.color-text-muted : Tokens.color-text-disabled;
         font-family: Tokens.font-family;
         font-size: Tokens.font-size-md;
         vertical-alignment: center;
@@ -290,6 +297,10 @@ export component SengiPasswordField inherits Rectangle {
     scope := FocusScope {
         key-pressed(event) => {
             root.touched();
+            // Left for the window, which moves the focus with them.
+            if event.text == Key.Tab || event.text == Key.Backtab {
+                return reject;
+            }
             if !root.enabled {
                 return accept;
             }

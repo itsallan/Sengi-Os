@@ -67,7 +67,7 @@ pub fn current() -> Option<User> {
 
 /// The account's full name, which is the comment field up to its first
 /// comma, or the login name when that is empty.
-fn shown_name(login: &str, gecos: &str) -> String {
+pub fn shown_name(login: &str, gecos: &str) -> String {
     let full = gecos.split(',').next().unwrap_or_default();
     let full = sengi_text::line(full, MAX_SHOWN);
     if full.is_empty() {
