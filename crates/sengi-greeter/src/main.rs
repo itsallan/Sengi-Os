@@ -273,8 +273,13 @@ impl Greeter {
     /// The machine did not restart or shut down after all.
     fn stayed(self: &Rc<Self>) {
         self.login.borrow_mut().stayed();
-        self.focus_field();
+        // In this order. The button that was pressed was switched off
+        // while the machine was thought to be going down, and a button
+        // that is switched off does not hear that it has lost the focus:
+        // it would go on drawing the ring. So it is switched on again
+        // first.
         self.show();
+        self.focus_field();
     }
 }
 
