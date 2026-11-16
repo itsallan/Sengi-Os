@@ -359,9 +359,10 @@ stop
 
 guest_s=$(sed -n 's/.*SENGI-BOOT desktop_s=\([0-9.]*\).*/\1/p' "$out/serial.log" | head -1)
 ram_mb=$(sed -n 's/.*SENGI-IDLE ram_mb=\([0-9]*\).*/\1/p' "$out/serial.log" | head -1)
-# Neither of these is running at idle: the login screen and its
-# compositor are there while nobody is logged in, and polkit from the
-# first time logind has a question for it.
+# What two things cost that are not the desktop's own. The login screen
+# and its compositor are there only while nobody is logged in, so they
+# are no part of the idle figure. polkitd is: logind calls for it when
+# the session starts (see sengi-boot-report), and it stays.
 greeter_kb=$(sed -n 's/.*SENGI-GREETER running pss_kb=\([0-9]*\).*/\1/p' "$out/serial.log" | head -1)
 polkit_kb=$(sed -n 's/.*SENGI-POLKIT pss_kb=\([0-9]*\).*/\1/p' "$out/serial.log" | head -1)
 
