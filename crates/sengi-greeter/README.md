@@ -172,8 +172,8 @@ WirePlumber not to start for `_greetd`.
 The buttons run `systemctl --no-ask-password reboot` and `poweroff`, which
 ask logind. logind asks polkit, whose stock policy allows both to the
 active session on the seat, and the login screen's session is that. The
-image has `polkitd` for this; it is started by the first such question
-and not at boot. sengi-greeter has no privilege of its own and there is no
+image has `polkitd` for this; nothing enables it, and logind's first
+question starts it. sengi-greeter has no privilege of its own and there is no
 setuid helper.
 
 If logind refuses, or `systemctl` cannot be run, the line under the field
@@ -200,7 +200,7 @@ Measured in the builder VM under headless labwc 0.8.3, release build, one
   same as the lock screen. Its labwc: 6.
 - Memory: sengi-greeter 10.3 MB proportional, its labwc 28 MB. Both are
   gone once someone has logged in. The boot test records the same sum on
-  the image.
+  the image, where it came to 37 MB on a 1280 x 800 screen.
 
 ## Testing
 

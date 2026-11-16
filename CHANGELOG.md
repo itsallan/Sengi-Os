@@ -37,8 +37,9 @@ A lock screen and a login screen of our own.
   menu and the Lock button in quick settings start sengi-lock.
 - The machine does not go to sleep until every screen is covered by the
   lock screen.
-- polkitd is in the image. It is started the first time something asks
-  whether it may restart or shut down the machine, not at boot.
+- polkitd is in the image. Nothing starts it at boot; logind calls for it
+  with its first question, which comes when the session starts, so it is
+  running from then on. It takes about 3 MB.
 
 ### Fixed
 
@@ -47,6 +48,10 @@ A lock screen and a login screen of our own.
   without it logind refuses everyone but root. The boot test now asks
   logind from the live session and from the login screen's, and fails
   unless both may restart and shut down.
+- The session could not make the machine wait before sleeping. swayidle
+  asks logind to hold sleep off until the screen is locked, and for the
+  same want of polkit logind refused ("Failed to send sleep inhibit
+  signal: Permission denied" in the journal of 0.5.0). It is granted now.
 
 - The image build took the setuid and setgid bits off every program in
   /usr and gave /etc/shadow to the wrong group. sudo, su and passwd did
