@@ -42,8 +42,8 @@ use wayland_client::{Connection, Dispatch, QueueHandle};
 
 use crate::config::{Anchor, Config, KeyboardMode, Layer, Outputs};
 use crate::convert::{
-    is_modifier, is_special, is_typed_text, key_repeats, key_text, modifier_fixes, pointer_button, repeats_due,
-    scroll_delta, ModifierState, RepeatTiming,
+    is_modifier, is_special, is_typed_text, key_repeats, key_text, modifier_fixes, pointer_button,
+    repeats_due, scroll_delta, ModifierState, RepeatTiming,
 };
 use crate::frames::{Area, Frames, Painted};
 use crate::lock::{wipe, Keyboard, LockError};
@@ -1362,6 +1362,10 @@ impl KeyboardHandler for State {
             self.assume_focus();
         }
         let Some(window) = self.focus.as_ref().map(|focus| focus.window.clone()) else {
+            // Nobody to give it to. It may still be part of a password.
+            if let Some(text) = event.utf8.as_mut() {
+                wipe(text);
+            }
             return;
         };
         if self.offer_text(&mut event) {
