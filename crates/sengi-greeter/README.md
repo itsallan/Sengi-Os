@@ -212,6 +212,13 @@ logind's and polkit's decision.
 - It follows the system's keyboard layout, not the one a user chose in
   Settings, which is kept per user. A password with characters that are
   somewhere else on the system's layout has to be typed for that layout.
+- Its clock shows the system's time zone, in the system's 12 or 24 hour
+  form, not what a user chose in Settings. Those choices are kept in each
+  user's own settings file, and the login screen runs as `_greetd` before
+  it is known who will log in, so it reads only the system-wide file,
+  `/etc/xdg/sengi-os/settings.toml`, and `/etc/localtime`. Someone who
+  set another zone in Settings sees one time here and another after
+  logging in.
 - It does not switch the screen off when left alone.
 
 ## Cost
