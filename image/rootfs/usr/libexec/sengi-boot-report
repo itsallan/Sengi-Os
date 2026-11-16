@@ -40,6 +40,16 @@ done
 if pidof sengi-settings >/dev/null; then
 	echo "SENGI-FAIL sengi-settings is running with nothing open" >$port
 fi
+# The lock screen is our own. Nothing may be left of the one it replaced,
+# and without its PAM service it would refuse to lock.
+if command -v swaylock >/dev/null 2>&1 || [ -e /etc/swaylock ] || [ -e /etc/pam.d/swaylock ]; then
+	echo "SENGI-FAIL swaylock is still in the image" >$port
+fi
+[ -x /usr/bin/sengi-lock ] || echo "SENGI-FAIL sengi-lock is not in the image" >$port
+[ -f /etc/pam.d/sengi-lock ] || echo "SENGI-FAIL sengi-lock has no PAM service" >$port
+if pidof sengi-lock >/dev/null; then
+	echo "SENGI-FAIL sengi-lock is running on a session nobody locked" >$port
+fi
 # The session's start-up script asks it for the idle times.
 lock_after=$(sengi-settings --get power.lock-after 2>/dev/null)
 case $lock_after in
@@ -47,18 +57,23 @@ case $lock_after in
 esac
 echo "SENGI-DONE" >$port
 
-# The boot test goes on to open Settings and close it. Say when its process
-# is there and when it has gone again, then stop watching.
-seen=0
-n=0
-while [ $n -lt 900 ]; do
-	if pidof sengi-settings >/dev/null; then
-		[ $seen = 1 ] || echo "SENGI-SETTINGS running" >$port
-		seen=1
-	elif [ $seen = 1 ]; then
-		echo "SENGI-SETTINGS gone" >$port
-		break
-	fi
-	sleep 0.2
-	n=$((n + 1))
-done
+# The boot test goes on to open Settings and close it, and then to lock
+# the screen and unlock it. Say when each one's process is there and when
+# it has gone again, then stop watching.
+watch() {
+	seen=0
+	n=0
+	while [ $n -lt 900 ]; do
+		if pidof "$1" >/dev/null; then
+			[ $seen = 1 ] || echo "$2 running" >$port
+			seen=1
+		elif [ $seen = 1 ]; then
+			echo "$2 gone" >$port
+			break
+		fi
+		sleep 0.2
+		n=$((n + 1))
+	done
+}
+watch sengi-settings SENGI-SETTINGS
+watch sengi-lock SENGI-LOCK

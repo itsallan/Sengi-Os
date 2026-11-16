@@ -184,8 +184,75 @@ shot terminal
 key meta_l-spc
 shot launcher
 key esc 1
-key meta_l-l
-shot lock
+
+# The lock screen: lock, get it wrong, get it right. The guest says when
+# sengi-lock is there and when it has gone. What the screen shows is
+# compared with a dump of the desktop from just before: locked, most of it
+# has to differ, and unlocked it has to be the desktop again.
+lock_fail=
+# The lock screen has the desktop's own colour behind it. What tells the
+# two apart is the bar, the dock and the terminal that is open, and the
+# bar alone is over a hundred thousand bytes of a dump.
+covered_bytes=100000
+differs() {
+	cmp -l "$out/$1.ppm" "$out/$2.ppm" 2>/dev/null | wc -l
+}
+dump() {
+	echo "screendump $out/$1.ppm" >&3
+	sleep 1
+}
+dump unlocked
+key meta_l-l 1
+if wait_serial 'SENGI-LOCK running' 10; then
+	sleep 1
+	shot lock
+	dump locked
+	if [ "$(differs unlocked locked)" -lt "$covered_bytes" ]; then
+		lock_fail="sengi-lock is running but the desktop is still on screen"
+	fi
+	key caps_lock 1
+	shot lock-caps
+	dump caps
+	key caps_lock 1
+	if [ "$(differs locked caps)" -eq 0 ]; then
+		lock_fail="the lock screen does not show that Caps Lock is on"
+	fi
+	dump locked
+	for letter in w r o n g; do
+		key "$letter" 0.3
+	done
+	# PAM takes a couple of seconds to say no.
+	key ret 5
+	shot lock-wrong
+	dump wrong
+	if grep -q 'SENGI-LOCK gone' "$out/serial.log"; then
+		lock_fail="a wrong password unlocked the screen"
+	elif [ "$(differs unlocked wrong)" -lt "$covered_bytes" ]; then
+		lock_fail="the desktop is on screen after a wrong password"
+	elif [ "$(differs locked wrong)" -eq 0 ]; then
+		lock_fail="the lock screen shows nothing about a wrong password"
+	fi
+	for letter in l i v e; do
+		key "$letter" 0.3
+	done
+	key ret 1
+	if wait_serial 'SENGI-LOCK gone' 15; then
+		sleep 1
+		shot unlocked
+		dump again
+		# The bar's clock may have moved on a minute; nothing else has.
+		if [ -z "$lock_fail" ] && [ "$(differs unlocked again)" -ge 20000 ]; then
+			lock_fail="the desktop did not come back after unlocking"
+		fi
+	else
+		shot unlocked
+		lock_fail=${lock_fail:-"the password of the live user did not unlock the screen"}
+	fi
+else
+	shot lock
+	lock_fail="sengi-lock did not start on Super+L"
+fi
+rm -f "$out"/*.ppm
 stop
 
 guest_s=$(sed -n 's/.*SENGI-BOOT desktop_s=\([0-9.]*\).*/\1/p' "$out/serial.log" | head -1)
@@ -209,6 +276,10 @@ if grep -q SENGI-FAIL "$out/serial.log"; then
 fi
 if [ -n "$settings_fail" ]; then
 	echo "FAIL: $settings_fail" >&2
+	fail=1
+fi
+if [ -n "$lock_fail" ]; then
+	echo "FAIL: $lock_fail" >&2
 	fail=1
 fi
 if [ "$ram_mb" -ge "$budget_ram_mb" ]; then
