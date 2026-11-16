@@ -29,7 +29,8 @@ pub enum Power {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Stage {
-    /// No account is offered, so the name is typed first.
+    /// The name is typed first: no account is offered, or "Other…" was
+    /// chosen in place of one.
     Name,
     /// The password of the chosen user. Nothing is open with greetd.
     Password,
@@ -57,7 +58,7 @@ pub struct View {
     pub caption: String,
     /// A name is being typed, and Tab takes it as Return does.
     pub naming: bool,
-    /// There is more than one account to choose from.
+    /// There are accounts to step through, and "Other…" after them.
     pub choice: bool,
     /// Restart and Shut down can be pressed.
     pub power: bool,
@@ -65,8 +66,12 @@ pub struct View {
 
 pub struct Login {
     users: Vec<User>,
+    /// Which of the stepper's entries is up: an account, or one past the
+    /// last of them for "Other…".
     selected: usize,
-    /// The user whose name was typed, when no account is offered.
+    /// The account that was up last, to go back to from "Other…".
+    listed: usize,
+    /// The user whose name was typed.
     named: Option<User>,
     stage: Stage,
     screen: Screen,
@@ -107,6 +112,7 @@ impl Login {
             },
             users,
             selected: 0,
+            listed: 0,
             named: None,
             screen: Screen::new(layouts),
             plain: String::new(),
@@ -174,7 +180,8 @@ impl Login {
     }
 
     /// Escape. Empties the field; on an empty field it goes one step
-    /// back: out of a question greetd has put, or back to the name.
+    /// back: out of a question greetd has put, from the password of a
+    /// typed name to the name, from "Other…" to the accounts.
     pub fn cleared(&mut self) -> Option<Command> {
         self.refused = None;
         if !self.open() {
@@ -189,9 +196,14 @@ impl Login {
         self.screen.cleared();
         match self.stage {
             Stage::Question { .. } => Some(self.give_up()),
-            Stage::Password if self.users.is_empty() => {
+            Stage::Password if self.named.is_some() => {
                 self.named = None;
                 self.stage = Stage::Name;
+                None
+            }
+            Stage::Name if !self.users.is_empty() => {
+                self.selected = self.listed;
+                self.stage = Stage::Password;
                 None
             }
             _ => None,
@@ -284,22 +296,38 @@ impl Login {
         self.screen.released();
     }
 
-    /// Moves on to another of the accounts offered: `step` is 1 for the
-    /// next and -1 for the one before, round and round.
+    /// Moves on to another entry: `step` is 1 for the next and -1 for
+    /// the one before, round and round. After the accounts offered comes
+    /// "Other…", where a name is typed: the way in for an account that is
+    /// not on the list, because the list was cut short or because it is
+    /// not an ordinary user's.
     pub fn stepped(&mut self, step: isize) -> Option<Command> {
         self.screen.stirred();
-        let count = self.users.len() as isize;
-        if count < 2 || !matches!(self.stage, Stage::Password | Stage::Question { .. }) {
+        let stage_allows = matches!(
+            self.stage,
+            Stage::Name | Stage::Password | Stage::Question { .. }
+        );
+        if self.users.is_empty() || self.leaving.is_some() || !stage_allows {
             return None;
         }
         self.refused = None;
-        self.selected = (self.selected as isize + step).rem_euclid(count) as usize;
-        // What was typed was meant for the other account.
+        let entries = self.users.len() as isize + 1;
+        self.selected = (self.selected as isize + step).rem_euclid(entries) as usize;
+        // What was typed was meant for the other entry.
         self.screen.cleared();
-        match self.stage {
+        self.plain.clear();
+        self.named = None;
+        let command = match self.stage {
             Stage::Question { .. } => Some(self.give_up()),
             _ => None,
+        };
+        if self.selected == self.users.len() {
+            self.stage = Stage::Name;
+        } else {
+            self.listed = self.selected;
+            self.stage = Stage::Password;
         }
+        command
     }
 
     /// The pointer moved, or a key that types nothing was pressed.
@@ -325,9 +353,12 @@ impl Login {
             Stage::Question { .. } => Some(self.give_up()),
             _ => None,
         };
+        self.named = None;
         if self.users.is_empty() {
-            self.named = None;
             self.stage = Stage::Name;
+        } else {
+            self.selected = self.listed;
+            self.stage = Stage::Password;
         }
         (true, command)
     }
@@ -399,13 +430,14 @@ impl Login {
             naming,
             plain: self.plain.clone(),
             user: match self.stage {
-                Stage::Name => String::new(),
+                Stage::Name if self.users.is_empty() || naming => String::new(),
+                Stage::Name => "Other\u{2026}".to_string(),
                 _ => self
                     .user()
                     .map(|user| user.shown.clone())
                     .unwrap_or_default(),
             },
-            choice: self.users.len() > 1,
+            choice: !self.users.is_empty(),
             power: self.leaving.is_none() && self.stage != Stage::Starting,
         }
     }
@@ -463,7 +495,7 @@ mod tests {
         let mut login = one();
         let view = login.view();
         assert_eq!(view.user, "Sengi OS");
-        assert!(!view.choice && view.power && view.field.enabled);
+        assert!(view.choice && view.power && view.field.enabled);
         assert_eq!(view.field.placeholder, "Password");
         type_in(&mut login, "live");
         let view = login.view();
@@ -562,8 +594,12 @@ mod tests {
         assert_eq!(view.field.length, 0);
         login.stepped(1);
         assert_eq!(login.view().user, "linus");
+        // After the last account comes the entry for anyone else.
+        login.stepped(1);
+        assert_eq!(login.view().user, "Other\u{2026}");
         login.stepped(1);
         assert_eq!(login.view().user, "Ada Lovelace");
+        login.stepped(-1);
         login.stepped(-1);
         assert_eq!(login.view().user, "linus");
         type_in(&mut login, "pw");
@@ -571,9 +607,91 @@ mod tests {
             begun(login.submitted()),
             ("linus".to_string(), "pw".to_string())
         );
-        // One user has nobody to step to.
+        // With no accounts there is nothing to step through.
+        let mut login = Login::new(Vec::new(), &[]);
+        assert!(login.stepped(1).is_none());
+        assert!(!login.view().choice);
+    }
+
+    #[test]
+    fn other_takes_a_typed_name_and_escape_goes_back_to_the_accounts() {
+        let mut login = three();
+        login.stepped(1);
+        login.stepped(-1);
+        login.stepped(-1);
+        // Forward to Grace, back to Ada, and back once more.
+        let view = login.view();
+        assert_eq!(view.user, "Other\u{2026}");
+        assert_eq!(view.field.placeholder, "User name");
+        assert!(view.choice && view.field.enabled);
+        // Return on nothing stays.
+        assert!(login.submitted().is_none());
+        type_in(&mut login, "root");
+        let view = login.view();
+        assert_eq!(
+            (
+                view.user.as_str(),
+                view.caption.as_str(),
+                view.plain.as_str()
+            ),
+            ("", "User name", "root")
+        );
+        assert!(login.submitted().is_none());
+        let view = login.view();
+        assert_eq!(
+            (view.user.as_str(), view.field.placeholder.as_str()),
+            ("root", "Password")
+        );
+        type_in(&mut login, "pw");
+        assert_eq!(
+            begun(login.submitted()),
+            ("root".to_string(), "pw".to_string())
+        );
+        login.judged(Verdict::Wrong(None));
+        assert_eq!(login.view().user, "root");
+        // Escape: from the password to the name, from the name to the
+        // account that was up before.
+        assert!(login.cleared().is_none());
+        assert_eq!(login.view().user, "Other\u{2026}");
+        assert!(login.cleared().is_none());
+        let view = login.view();
+        assert_eq!(
+            (view.user.as_str(), view.field.placeholder.as_str()),
+            ("Ada Lovelace", "Password")
+        );
+
+        // Stepping on from a half-typed name drops it.
+        login.stepped(1);
+        login.stepped(1);
+        login.stepped(1);
+        type_in(&mut login, "ro");
+        login.stepped(1);
+        let view = login.view();
+        assert_eq!(
+            (view.user.as_str(), view.plain.as_str()),
+            ("Ada Lovelace", "")
+        );
+        type_in(&mut login, "pw");
+        assert_eq!(begun(login.submitted()).0, "ada");
+        login.judged(Verdict::Wrong(None));
+
+        // Left alone on a typed name, it is back at the account.
+        login.stepped(1);
+        login.stepped(1);
+        login.stepped(1);
+        type_in(&mut login, "root");
+        login.submitted();
+        assert!(login.rested().0);
+        login.stirred();
+        assert_eq!(login.view().user, "linus");
+        type_in(&mut login, "pw");
+        assert_eq!(begun(login.submitted()).0, "linus");
+
+        // One account has the entry too.
         let mut login = one();
         assert!(login.stepped(1).is_none());
+        assert_eq!(login.view().user, "Other\u{2026}");
+        login.stepped(1);
         assert_eq!(login.view().user, "Sengi OS");
     }
 

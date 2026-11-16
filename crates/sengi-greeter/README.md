@@ -48,22 +48,22 @@ and a shell that is listed in `/etc/shells` and is not `nologin` or
 `false`. The database is read through the C library, so accounts that do
 not come from `/etc/passwd` are found as well.
 
-- **One account**: its full name is shown, and the password is all that
-  is asked for.
-- **Several**: the name has a small button at each end, `‹` and `›`, that
-  step to the account before and the one after, round and round. The
-  arrow keys do the same. What was typed for one account is not kept for
+- **One or more accounts**: the first one's full name is shown, and the
+  password is all that is asked for. The name has a small button at each
+  end, `‹` and `›`, that step to the entry before and the one after,
+  round and round. The arrow keys do the same. What was typed for one account is not kept for
   the next, and stepping does not buy fresh tries: wrong passwords are
   counted across all of them. Two accounts with one full name are shown
   with their login names after it.
-- **None**: the field asks for "User name" first and shows what is typed,
+- **Other…** is the last entry, after the accounts. There the name is
+  typed, as below. It is the way in for an account that is not offered:
+  one outside the range, root among them if it has a password, or one
+  past the 64 that are listed. Escape on the empty name field goes back
+  to the account that was up before.
+- **No accounts**: the field asks for "User name" first and shows what is typed,
   with "User name" in small print above it once the typing has covered
   those words. Return or Tab goes on to the password, with the name above
   the field; Escape on an empty password field goes back to the name.
-
-Accounts outside that range, root among them, are not offered and cannot
-be typed in when any account is offered. They can log in on a text
-console.
 
 ### Wrong passwords
 

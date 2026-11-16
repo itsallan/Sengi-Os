@@ -20,7 +20,8 @@ const LAST_UID: u32 = 59999;
 const SHELLS: &str = "/etc/shells";
 
 /// More accounts than this are not listed. A machine with so many wants
-/// the name typed, not picked.
+/// the name typed, not picked, and the screen's "Other…" entry is where
+/// it is typed.
 const MOST: usize = 64;
 
 /// One line of the passwd database, as far as it matters here.
