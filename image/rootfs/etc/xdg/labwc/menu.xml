@@ -12,7 +12,7 @@
     </item>
     <separator />
     <item label="Lock">
-      <action name="Execute" command="swaylock -f" />
+      <action name="Execute" command="sengi-lock -f" />
     </item>
     <item label="Session...">
       <action name="Execute" command="sengi-power" />

@@ -29,7 +29,6 @@ zstd
 greetd
 labwc
 xwayland
-swaylock
 swayidle
 swaybg
 foot
@@ -37,6 +36,9 @@ libgl1-mesa-dri
 librsvg2-common
 libfontconfig1
 libxkbcommon0
+# sengi-lock checks the password through PAM, with pam_unix and its helper.
+libpam0g
+libpam-modules
 libx11-data
 hicolor-icon-theme
 fonts-inter

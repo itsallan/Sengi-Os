@@ -41,7 +41,7 @@
       <action name="Execute" command="sengi-run foot" />
     </keybind>
     <keybind key="W-l">
-      <action name="Execute" command="swaylock -f" />
+      <action name="Execute" command="sengi-lock -f" />
     </keybind>
     <keybind key="W-q">
       <action name="Close" />

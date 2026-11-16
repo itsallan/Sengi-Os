@@ -20,7 +20,7 @@ click outside it, or the keyboard going elsewhere.
 | Brightness | `/sys/class/backlight` to read, logind's `Session.SetBrightness` to write |
 | Do not disturb | `sengi-notify --dnd on\|off\|status` |
 | Battery | `/sys/class/power_supply` |
-| Lock, Session | `swaylock -f`, `sengi-power` |
+| Lock, Session | `sengi-lock -f`, `sengi-power` |
 
 The commands are constants in `src/commands.rs`. No call on the bus ever
 starts iwd or BlueZ: on a machine without the hardware they are not

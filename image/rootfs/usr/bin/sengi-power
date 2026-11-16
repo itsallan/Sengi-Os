@@ -3,7 +3,7 @@
 choice=$(printf 'Settings\nLock\nLog out\nRestart\nShut down\n' | sengi-launcher --menu --prompt 'Session')
 case $choice in
 Settings) exec sengi-run sengi-settings ;;
-Lock) exec swaylock -f ;;
+Lock) exec sengi-lock -f ;;
 "Log out") exec labwc --exit ;;
 Restart) exec systemctl reboot ;;
 "Shut down") exec systemctl poweroff ;;

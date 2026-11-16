@@ -74,8 +74,6 @@ notification-width = 360
 bar-icon = 16
 button = 26
 launcher-lines = 8
-lock-indicator = 64
-lock-ring = 4
 # The password field of the lock screen and the login screen, and one of
 # the dots it shows for each character typed.
 password-field-width = 280

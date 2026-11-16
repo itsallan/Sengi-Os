@@ -43,7 +43,7 @@ jobs:
         timeout-minutes: 10
         run: |
           sudo -E apt-get $APT_OPTS update -q
-          sudo -E apt-get $APT_OPTS install -y -q --no-install-recommends pkg-config libfontconfig1-dev libxkbcommon-dev
+          sudo -E apt-get $APT_OPTS install -y -q --no-install-recommends pkg-config libfontconfig1-dev libxkbcommon-dev libpam0g-dev
           rustup show active-toolchain || rustup toolchain install
       - uses: actions/cache@v4
         with:
@@ -65,7 +65,7 @@ jobs:
       # asking for it still compiles there. On its own it does not.
       - name: Each program on its own
         run: |
-          for program in sengi-bar sengi-config sengi-dock sengi-focus sengi-launcher sengi-notify sengi-quick sengi-settings; do
+          for program in sengi-bar sengi-clock sengi-config sengi-dock sengi-focus sengi-launcher sengi-lock sengi-notify sengi-quick sengi-settings; do
             cargo check --locked -p "$program"
           done
 

@@ -22,7 +22,7 @@ mkdir -p "$work/iso/live" "$work/iso/boot/grub" "$out"
 # Our own programs, built against the same Debian the image is made of.
 export CARGO_HOME="$work/cargo" CARGO_TARGET_DIR="$work/target"
 export RUSTFLAGS="--remap-path-prefix=$src=. --remap-path-prefix=$work=/build"
-programs="sengi-bar sengi-dock sengi-focus sengi-launcher sengi-notify sengi-quick"
+programs="sengi-bar sengi-dock sengi-focus sengi-launcher sengi-lock sengi-notify sengi-quick"
 set --
 for program in $programs; do
 	set -- "$@" -p "$program"
@@ -40,6 +40,12 @@ for marker in zbus resvg '/png-[0-9]'; do
 		exit 1
 	fi
 done
+# The lock screen holds a password and talks to PAM and to nothing else.
+# A D-Bus stack in it would be code it has no use for, next to a secret.
+if grep -a -q -e zbus "$work/target/release/sengi-lock"; then
+	echo "sengi-lock has zbus linked in, which it must not" >&2
+	exit 1
+fi
 # Settings is an ordinary window, the one program that wants the toolkit's
 # window backend and its font lookup. Built together with the others it
 # would turn those features on for all of them, so it gets a build to

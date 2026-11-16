@@ -35,7 +35,8 @@ for program in sengi-bar sengi-dock; do
 done
 sengi-focus >/dev/null 2>&1 &
 # When the screen goes off and when it locks are the user's to set, in
-# Settings. swayidle cannot be given new times while it runs, so Settings
+# Settings. "sengi-lock -f" returns once every output is covered, and
+# swayidle waits for that (-w) before it lets the machine go to sleep. swayidle cannot be given new times while it runs, so Settings
 # ends the one that carries the mark below and this loop starts another
 # with the times as they are now. Anything that is not a number, such as
 # no answer at all, gets the default.
@@ -53,10 +54,10 @@ sengi-focus >/dev/null 2>&1 &
 				resume 'sengi-settings --screen on'
 		fi
 		if [ "$lock" -gt 0 ]; then
-			set -- "$@" timeout "$lock" 'swaylock -f'
+			set -- "$@" timeout "$lock" 'sengi-lock -f'
 		fi
 		if [ "$on_sleep" != false ]; then
-			set -- "$@" before-sleep 'swaylock -f'
+			set -- "$@" before-sleep 'sengi-lock -f'
 		fi
 		started=$(date +%s)
 		if SENGI_IDLE_SUPERVISED=1 systemd-cat -t swayidle swayidle -w "$@"; then
