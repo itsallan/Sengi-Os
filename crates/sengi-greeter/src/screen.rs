@@ -1027,7 +1027,8 @@ mod tests {
         assert_eq!(login.pressed(Power::ShutDown), Press::Armed);
 
         // Everything that is done to the rest of the screen.
-        let acts: [(&str, fn(&mut Login)); 6] = [
+        type Act = fn(&mut Login);
+        let acts: [(&str, Act); 6] = [
             ("typing", |login| login.typed("x")),
             ("Backspace", |login| login.erased()),
             ("Escape", |login| drop(login.cleared())),
