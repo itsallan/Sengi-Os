@@ -48,7 +48,7 @@ each `- [ ]` line is an issue.
 
 ## 0.5
 
-- [ ] sengi-settings
+- [x] sengi-settings
 
 ## 0.6
 
