@@ -62,6 +62,8 @@ pub struct View {
     pub choice: bool,
     /// Restart and Shut down can be pressed.
     pub power: bool,
+    /// The one of them that has been pressed once, and says so.
+    pub armed: Option<Power>,
 }
 
 pub struct Login {
@@ -82,6 +84,20 @@ pub struct Login {
     refused: Option<Power>,
     /// A restart or shut down that has been asked for.
     leaving: Option<Power>,
+    /// The button that has been pressed once and is waiting for the
+    /// second press.
+    armed: Option<Power>,
+}
+
+/// What became of a press of Restart or Shut down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Press {
+    /// Not taken: the machine is already on its way somewhere.
+    Nothing,
+    /// The button is armed and waits for a second press.
+    Armed,
+    /// The second press: carry it out.
+    Go,
 }
 
 fn said(text: Option<String>) -> Option<String> {
@@ -119,6 +135,7 @@ impl Login {
             said: None,
             refused: None,
             leaving: None,
+            armed: None,
         }
     }
 
@@ -149,6 +166,7 @@ impl Login {
     /// A key that types text was pressed.
     pub fn typed(&mut self, text: &str) {
         self.refused = None;
+        self.armed = None;
         if !self.open() {
             self.screen.stirred();
             return;
@@ -167,6 +185,7 @@ impl Login {
     /// Backspace.
     pub fn erased(&mut self) {
         self.refused = None;
+        self.armed = None;
         if !self.open() {
             self.screen.stirred();
             return;
@@ -184,6 +203,7 @@ impl Login {
     /// typed name to the name, from "Other…" to the accounts.
     pub fn cleared(&mut self) -> Option<Command> {
         self.refused = None;
+        self.armed = None;
         if !self.open() {
             self.screen.stirred();
             return None;
@@ -224,6 +244,7 @@ impl Login {
     /// [`Login::judged`] is owed for a `Begin` and for an `Answer`.
     pub fn submitted(&mut self) -> Option<Command> {
         self.refused = None;
+        self.armed = None;
         if !self.open() {
             self.screen.stirred();
             return None;
@@ -263,6 +284,7 @@ impl Login {
 
     /// greetd cannot go on without an answer to `question`.
     pub fn asked(&mut self, question: &str, visible: bool, before: Option<String>) {
+        self.armed = None;
         if self.stage == Stage::Busy {
             self.screen.asked(&label(question));
             self.plain.clear();
@@ -273,6 +295,7 @@ impl Login {
 
     /// The login that [`Login::submitted`] started has ended.
     pub fn judged(&mut self, verdict: Verdict) -> Next {
+        self.armed = None;
         if self.stage != Stage::Busy {
             return Next::Ask;
         }
@@ -311,6 +334,7 @@ impl Login {
             return None;
         }
         self.refused = None;
+        self.armed = None;
         let entries = self.users.len() as isize + 1;
         self.selected = (self.selected as isize + step).rem_euclid(entries) as usize;
         // What was typed was meant for the other entry.
@@ -348,6 +372,7 @@ impl Login {
             return (false, None);
         }
         self.refused = None;
+        self.armed = None;
         self.plain.clear();
         let command = match self.stage {
             Stage::Question { .. } => Some(self.give_up()),
@@ -367,16 +392,34 @@ impl Login {
         self.screen.keyboard(caps_lock, layout);
     }
 
-    /// Restart or Shut down was pressed. True if it is to be carried out;
-    /// a [`Login::stayed`] is owed if it then does not happen.
-    pub fn leave(&mut self, power: Power) -> bool {
+    /// Restart or Shut down was pressed. The first press arms the button
+    /// and the second, on the same button, carries it out: Tab and then
+    /// Return, meant for the password, must not be enough to turn the
+    /// machine off. The caller disarms it again with [`Login::disarmed`]
+    /// when the time for the second press is up. For [`Press::Go`] a
+    /// [`Login::stayed`] is owed if the machine then stays up.
+    pub fn pressed(&mut self, power: Power) -> Press {
         self.screen.stirred();
         if self.leaving.is_some() || self.stage == Stage::Starting {
-            return false;
+            return Press::Nothing;
         }
         self.refused = None;
-        self.leaving = Some(power);
-        true
+        if self.armed == Some(power) {
+            self.armed = None;
+            self.leaving = Some(power);
+            Press::Go
+        } else {
+            self.armed = Some(power);
+            Press::Armed
+        }
+    }
+
+    /// The armed button is let go of: time ran out, another key was
+    /// pressed while it had the focus, or the pointer was pressed
+    /// somewhere else. Everything else that happens on the screen lets
+    /// go of it too. True if a button was armed.
+    pub fn disarmed(&mut self) -> bool {
+        self.armed.take().is_some()
     }
 
     /// The machine would not restart or shut down.
@@ -439,6 +482,7 @@ impl Login {
             },
             choice: !self.users.is_empty(),
             power: self.leaving.is_none() && self.stage != Stage::Starting,
+            armed: self.armed,
         }
     }
 }
@@ -468,6 +512,11 @@ mod tests {
             ],
             &[],
         )
+    }
+
+    /// Presses a button and presses it again. True if that carried it out.
+    fn twice(login: &mut Login, power: Power) -> bool {
+        login.pressed(power) == Press::Armed && login.pressed(power) == Press::Go
     }
 
     fn type_in(login: &mut Login, text: &str) {
@@ -790,7 +839,7 @@ mod tests {
         let mut login = one();
         login.submitted();
         login.asked("Code: ", true, None);
-        assert!(login.leave(Power::Restart));
+        assert!(twice(&mut login, Power::Restart));
         type_in(&mut login, "12");
         assert_eq!(login.view().plain, "");
         assert!(login.submitted().is_none());
@@ -799,7 +848,7 @@ mod tests {
         assert_eq!(login.view().plain, "12");
 
         let mut login = one();
-        assert!(login.leave(Power::ShutDown));
+        assert!(twice(&mut login, Power::ShutDown));
         type_in(&mut login, "live");
         assert_eq!(login.view().field.length, 0);
         assert!(login.submitted().is_none());
@@ -940,14 +989,92 @@ mod tests {
     }
 
     #[test]
+    fn one_press_only_arms_and_the_same_button_again_carries_it_out() {
+        let mut login = one();
+        assert_eq!(login.view().armed, None);
+        assert_eq!(login.pressed(Power::Restart), Press::Armed);
+        let view = login.view();
+        assert_eq!(view.armed, Some(Power::Restart));
+        // Nothing has happened yet, and nothing says it has.
+        assert!(view.power && view.field.enabled);
+        assert_eq!(view.field.note, "");
+        assert_eq!(login.pressed(Power::Restart), Press::Go);
+        let view = login.view();
+        assert_eq!(view.armed, None);
+        assert_eq!(view.field.note, "Restarting\u{2026}");
+        // And no third press.
+        assert_eq!(login.pressed(Power::Restart), Press::Nothing);
+    }
+
+    #[test]
+    fn the_other_button_does_not_count_as_the_second_press() {
+        let mut login = one();
+        assert_eq!(login.pressed(Power::Restart), Press::Armed);
+        assert_eq!(login.pressed(Power::ShutDown), Press::Armed);
+        assert_eq!(login.view().armed, Some(Power::ShutDown));
+        assert_eq!(login.pressed(Power::Restart), Press::Armed);
+        assert_eq!(login.pressed(Power::Restart), Press::Go);
+    }
+
+    #[test]
+    fn anything_else_lets_go_of_an_armed_button() {
+        // Time running out, a key on the button, the pointer elsewhere.
+        let mut login = three();
+        assert_eq!(login.pressed(Power::ShutDown), Press::Armed);
+        assert!(login.disarmed());
+        assert!(!login.disarmed());
+        assert_eq!(login.view().armed, None);
+        assert_eq!(login.pressed(Power::ShutDown), Press::Armed);
+
+        // Everything that is done to the rest of the screen.
+        let acts: [(&str, fn(&mut Login)); 6] = [
+            ("typing", |login| login.typed("x")),
+            ("Backspace", |login| login.erased()),
+            ("Escape", |login| drop(login.cleared())),
+            ("another user", |login| drop(login.stepped(1))),
+            ("Return in the field", |login| drop(login.submitted())),
+            ("being left alone", |login| drop(login.rested())),
+        ];
+        for (what, act) in acts {
+            let mut login = three();
+            assert_eq!(login.pressed(Power::Restart), Press::Armed);
+            act(&mut login);
+            assert_eq!(login.view().armed, None, "{what}");
+            // The next press starts over: it arms, it does not restart.
+            if login.view().power {
+                assert_eq!(login.pressed(Power::Restart), Press::Armed, "{what}");
+            }
+        }
+
+        // Tab, Return, meant for the password while it was being checked:
+        // the verdict lets go of the button, so the Return after it arms
+        // again and no more.
+        let mut login = one();
+        type_in(&mut login, "live");
+        login.submitted();
+        assert_eq!(login.pressed(Power::Restart), Press::Armed);
+        login.judged(Verdict::Wrong(None));
+        assert_eq!(login.view().armed, None);
+        assert_eq!(login.pressed(Power::Restart), Press::Armed);
+
+        // Only the pointer moving, or a key that types nothing in the
+        // field, is not a reason.
+        let mut login = one();
+        login.pressed(Power::Restart);
+        login.stirred();
+        login.keyboard(true, 0);
+        assert_eq!(login.view().armed, Some(Power::Restart));
+    }
+
+    #[test]
     fn a_shut_down_that_does_not_happen_is_said_so() {
         let mut login = one();
-        assert!(login.leave(Power::ShutDown));
+        assert!(twice(&mut login, Power::ShutDown));
         let view = login.view();
         assert_eq!(view.field.note, "Shutting down\u{2026}");
         assert!(!view.power && !view.field.enabled && !view.field.note_is_problem);
         // Once is enough.
-        assert!(!login.leave(Power::Restart));
+        assert_eq!(login.pressed(Power::Restart), Press::Nothing);
         assert!(!login.may_rest());
         login.stayed();
         let view = login.view();
@@ -956,7 +1083,7 @@ mod tests {
         // The next key takes the message away.
         login.typed("l");
         assert_eq!(login.view().field.note, "");
-        assert!(login.leave(Power::Restart));
+        assert!(twice(&mut login, Power::Restart));
         assert_eq!(login.view().field.note, "Restarting\u{2026}");
         login.stayed();
         assert_eq!(

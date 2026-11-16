@@ -87,4 +87,5 @@ export global Tokens {
     out property <duration> input-settle: @{timing.input-settle}ms;
     out property <duration> notification-timeout: @{timing.notification-timeout}ms;
     out property <duration> lock-prompt-hide: @{timing.lock-prompt-hide}ms;
+    out property <duration> power-confirm: @{timing.power-confirm}ms;
 }

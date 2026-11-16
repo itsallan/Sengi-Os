@@ -127,3 +127,6 @@ idle-lock = 300
 # How long the lock screen keeps its password field up with nothing typed
 # and the pointer still, before only the clock is left.
 lock-prompt-hide = 30000
+# How long Restart and Shut down on the login screen wait, after a first
+# press, for the second press that carries them out.
+power-confirm = 5000

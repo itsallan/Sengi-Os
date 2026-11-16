@@ -36,8 +36,18 @@ under the field one line for what there is to say.
   answer is given up. Any key or move of the pointer brings the field
   back.
 - **Restart** and **Shut down** are in the bottom right corner and stay
-  there when the field goes. Tab moves to them and Return presses the one
-  that has the focus. Typing goes to the field wherever the focus is.
+  there when the field goes. Each takes two presses: the first turns the
+  button's words into "Restart now" or "Shut down now" in the danger
+  colour, and a second press on the same button within five seconds
+  (`timing.power-confirm`) carries it out. Any other key, the other
+  button, a press of the pointer elsewhere, or the time running out puts
+  it back as it was.
+- Tab moves to the buttons and Return presses the one that has the focus.
+  Typing goes to the field wherever the focus is, and the focus itself
+  goes back to the field when anything is typed, when greetd has
+  answered, when the field is put away, and when a restart or shut down
+  did not happen. So Tab and Return, with the password in between or
+  not, do not turn the machine off.
 
 Every output shows the same screen.
 
@@ -189,8 +199,12 @@ setuid helper.
 If logind refuses, or `systemctl` cannot be run, the line under the field
 says "The computer could not be restarted" or "… shut down".
 
-Nothing asks "are you sure". Nobody is logged in on this seat, so there is
-nothing open to lose.
+There is no dialog asking "are you sure"; the second press is that
+question. Nobody is logged in on this screen, but others may be, on
+another virtual terminal or over the network, with work open.
+sengi-greeter does not look for them and does not warn about them.
+Whether a restart asked for here goes ahead while they are logged in is
+logind's and polkit's decision.
 
 ## What this does not do
 

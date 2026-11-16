@@ -17,7 +17,7 @@ use sengi_config::{Dirs, Settings};
 use sengi_greeter::cli::{self, Action};
 use sengi_greeter::login::{self, Command, Event, Patience};
 use sengi_greeter::power;
-use sengi_greeter::screen::{Login, Power, View};
+use sengi_greeter::screen::{Login, Power, Press, View};
 use sengi_greeter::users;
 use sengi_layer::{Anchor, App, Config, Handle, Instances, KeyboardMode, Layer, Outputs, Sender};
 use sengi_lock::screen::Next;
@@ -99,6 +99,9 @@ struct Greeter {
     hold: Timer,
     /// To the thread that speaks to greetd.
     commands: mpsc::Sender<Command>,
+    /// Lets go of Restart or Shut down when the second press has not come.
+    confirm: Timer,
+    confirm_within: Cell<Duration>,
     /// Called from the thread that ran a restart or shut down that failed.
     stayed: RefCell<Option<Sender<()>>>,
     /// greetd has granted a session.
@@ -112,6 +115,8 @@ fn apply(window: &GreeterWindow, view: &View) {
     window.set_naming(view.naming);
     window.set_choice(view.choice);
     window.set_power(view.power);
+    window.set_restart_armed(view.armed == Some(Power::Restart));
+    window.set_shut_down_armed(view.armed == Some(Power::ShutDown));
     window.set_plain(view.plain.as_str().into());
     window.set_length(field.length as i32);
     window.set_prompt(field.prompt);
@@ -156,6 +161,9 @@ impl Greeter {
                         let (changed, command) = greeter.login.borrow_mut().rested();
                         greeter.send(command);
                         if changed {
+                            // A key that wakes the screen is for the
+                            // field, not for a button Tab was left on.
+                            greeter.focus_field();
                             greeter.show();
                         }
                     }
@@ -163,6 +171,13 @@ impl Greeter {
         } else {
             self.rest.stop();
         }
+    }
+
+    /// Puts the keyboard focus back on the field, on every output. Typing
+    /// reaches the field wherever the focus is; Return does not, and a
+    /// Return that lands on Restart is one press towards restarting.
+    fn focus_field(&self) {
+        self.windows.for_each(|window| window.invoke_focus_field());
     }
 
     fn tell_time(&self) {
@@ -187,6 +202,8 @@ impl Greeter {
             } => self.login.borrow_mut().asked(&question, visible, said),
             Event::Judged(verdict) => {
                 let next = self.login.borrow_mut().judged(verdict);
+                // Whatever the verdict, the next key is for the field.
+                self.focus_field();
                 match next {
                     // The one place a login ends well. greetd starts the
                     // session when this process, and with it the
@@ -217,19 +234,46 @@ impl Greeter {
         self.show();
     }
 
-    fn leave(self: &Rc<Self>, power: Power) {
-        if self.login.borrow_mut().leave(power) {
-            let stayed = self.stayed.borrow().clone();
-            let started = stayed.and_then(|stayed| {
-                power::carry_out(power::command(power), move || {
-                    let _ = stayed.send(());
-                })
-                .ok()
-            });
-            if started.is_none() {
-                self.login.borrow_mut().stayed();
+    /// Restart or Shut down was pressed: once arms it, twice does it.
+    fn press(self: &Rc<Self>, power: Power) {
+        let press = self.login.borrow_mut().pressed(power);
+        match press {
+            Press::Armed => {
+                let greeter = Rc::downgrade(self);
+                self.confirm.start(
+                    TimerMode::SingleShot,
+                    self.confirm_within.get(),
+                    move || {
+                        if let Some(greeter) = greeter.upgrade() {
+                            if greeter.login.borrow_mut().disarmed() {
+                                greeter.show();
+                            }
+                        }
+                    },
+                );
             }
+            Press::Go => {
+                self.confirm.stop();
+                let stayed = self.stayed.borrow().clone();
+                let started = stayed.and_then(|stayed| {
+                    power::carry_out(power::command(power), move || {
+                        let _ = stayed.send(());
+                    })
+                    .ok()
+                });
+                if started.is_none() {
+                    self.stayed();
+                }
+            }
+            Press::Nothing => {}
         }
+        self.show();
+    }
+
+    /// The machine did not restart or shut down after all.
+    fn stayed(self: &Rc<Self>) {
+        self.login.borrow_mut().stayed();
+        self.focus_field();
         self.show();
     }
 }
@@ -258,6 +302,8 @@ fn greet(
         rest: Timer::default(),
         rest_after: Cell::new(Duration::from_secs(30)),
         hold: Timer::default(),
+        confirm: Timer::default(),
+        confirm_within: Cell::new(Duration::from_secs(5)),
         commands,
         stayed: RefCell::new(None),
         granted: Cell::new(false),
@@ -281,12 +327,7 @@ fn greet(
 
     *greeter.stayed.borrow_mut() = Some(handle.channel({
         let greeter = greeter.clone();
-        move |()| {
-            greeter.act(|login| {
-                login.stayed();
-                None
-            })
-        }
+        move |()| greeter.stayed()
     })?);
 
     // Every key that types text ends here, so that none of a password
@@ -299,9 +340,7 @@ fn greet(
                 login.typed(text);
                 None
             });
-            greeter
-                .windows
-                .for_each(|window| window.invoke_focus_field());
+            greeter.focus_field();
             true
         }
     });
@@ -375,11 +414,22 @@ fn greet(
             });
             window.on_restart({
                 let greeter = greeter.clone();
-                move || greeter.leave(Power::Restart)
+                move || greeter.press(Power::Restart)
             });
             window.on_shut_down({
                 let greeter = greeter.clone();
-                move || greeter.leave(Power::ShutDown)
+                move || greeter.press(Power::ShutDown)
+            });
+            greeter.confirm_within.set(Duration::from_millis(
+                window.get_confirm_within().max(1000) as u64,
+            ));
+            window.on_turned_away({
+                let greeter = greeter.clone();
+                move || {
+                    if greeter.login.borrow_mut().disarmed() {
+                        greeter.show();
+                    }
+                }
             });
             window.on_stirred({
                 let greeter = greeter.clone();
