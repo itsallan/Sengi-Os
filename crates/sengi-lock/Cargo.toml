@@ -1,0 +1,36 @@
+[package]
+name = "sengi-lock"
+description = "The Sengi OS lock screen"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[features]
+default = ["pam"]
+# Checking the password against PAM, which links libpam. The login screen
+# uses this crate for the pieces it shares with the lock screen and leaves
+# the feature off: greetd does its authentication.
+pam = []
+
+[[bin]]
+name = "sengi-lock"
+required-features = ["pam"]
+
+[dependencies]
+sengi-clock = { path = "../sengi-clock" }
+sengi-config = { path = "../sengi-config" }
+sengi-layer = { path = "../sengi-layer" }
+# No features: the secret type and nothing that speaks D-Bus.
+sengi-system = { path = "../sengi-system" }
+sengi-text = { path = "../sengi-text" }
+# Not the workspace entry: that one pulls in the winit backend. sengi-layer
+# is the backend here and turns on the software renderer.
+slint = { version = "1.18", default-features = false, features = ["compat-1-2", "std"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# fork, waitpid, getpwuid_r, and the C types of the PAM conversation. PAM
+# itself is declared by hand in src/pam.rs: six functions, no binding crate.
+libc = "0.2"
+
+[build-dependencies]
+slint-build.workspace = true
