@@ -29,9 +29,11 @@ settings), all drawn through a shared library, sengi-layer. sengi-focus gives
 the focused app priority. sengi-settings is the settings application: network,
 Bluetooth, sound, display, power, date and time, keyboard, mouse and touchpad,
 notifications, and a page about the machine. It is an ordinary window that
-runs only while it is open.
+runs only while it is open. sengi-lock is the lock screen: the time, the
+date and a password field on every output, started when the screen locks
+and gone when it unlocks. It is unlocked with the user's password.
 
-The compositor (labwc) and lock screen (swaylock) are still existing
+The compositor (labwc) and the login prompt (greetd's own) are still existing
 components configured to the Sengi OS look; later releases replace them with
 sengi-greeter and finally sengi-compositor, which is being developed on its
 own branch. See [ROADMAP.md](ROADMAP.md).

@@ -5,6 +5,28 @@ and the measured idle RAM and boot time.
 
 ## Unreleased
 
+### Added
+
+- sengi-lock, a lock screen of our own: the time and the date, the name of
+  the user and a password field, on every screen. It shows when Caps Lock
+  is on and which keyboard layout is active when there is more than one.
+  After half a minute untouched only the clock is left; any key or a move
+  of the pointer brings the field back. Repeated wrong passwords have to
+  wait a little longer each time, up to half a minute, and never lock the
+  user out.
+- The lock screen's clock follows the 12 or 24 hour setting and the time
+  zone chosen in Settings, and is right the moment the machine wakes from
+  sleep.
+- If the lock screen is killed or crashes, the session stays locked and the
+  lock screen comes back by itself.
+
+### Changed
+
+- swaylock is no longer in the image. The idle timer, Super+L, the session
+  menu and the Lock button in quick settings start sengi-lock.
+- The machine does not go to sleep until every screen is covered by the
+  lock screen.
+
 ## 0.5.0
 
 A settings application of our own.
