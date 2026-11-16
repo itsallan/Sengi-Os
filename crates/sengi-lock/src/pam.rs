@@ -87,8 +87,10 @@ extern "C" {
 pub enum Outcome {
     /// The password is right and the account may be used.
     Granted,
-    /// The password is wrong.
-    Denied,
+    /// The password is wrong. Carries what a module wanted the user told
+    /// about that, if any did, already safe to show: pam_faillock's count
+    /// of attempts left, for one.
+    Denied(Option<String>),
     /// The password is right but the account is closed: expired, or
     /// barred by a module.
     Barred,
@@ -257,7 +259,7 @@ pub fn authenticate(service: &str, user: &str, password: &Secret) -> Outcome {
             | PAM_MAXTRIES
             | PAM_PERM_DENIED
             | PAM_CRED_INSUFFICIENT
-            | PAM_ACCT_EXPIRED => Outcome::Denied,
+            | PAM_ACCT_EXPIRED => Outcome::Denied(talk.said.take()),
             _ => {
                 eprintln!(
                     "sengi-lock: the password could not be checked: {}",

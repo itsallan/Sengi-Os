@@ -232,7 +232,7 @@ fn check(login: &str, password: Secret) -> Verdict {
     drop(password);
     match outcome {
         Ok(Outcome::Granted) => Verdict::Right,
-        Ok(Outcome::Denied) => Verdict::Wrong,
+        Ok(Outcome::Denied(said)) => Verdict::Wrong(said),
         Ok(Outcome::Barred) => Verdict::Barred,
         Ok(Outcome::Unavailable(said)) => Verdict::Unchecked(said),
         Err(_) => Verdict::Unchecked(None),

@@ -8,11 +8,16 @@ use sengi_system::secret::Secret;
 use crate::backoff;
 use crate::entry::{PasswordEntry, Typed};
 
+/// What is said about a wrong password when no PAM module said more.
+const WRONG: &str = "Wrong password";
+
 /// How a check of the password ended, as far as the screen cares.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Verdict {
     Right,
-    Wrong,
+    /// With what a PAM module had to say about it, if anything: "3
+    /// attempts left", "the account is locked for 10 minutes".
+    Wrong(Option<String>),
     /// The password was right and the account is closed.
     Barred,
     /// It could not be checked. With what PAM said about it, if anything.
@@ -42,7 +47,7 @@ enum Phase {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Note {
     None,
-    Wrong,
+    Wrong(Option<String>),
     TooLong,
     Barred,
     Unchecked(Option<String>),
@@ -150,9 +155,9 @@ impl Screen {
         self.phase = Phase::Asking;
         match verdict {
             Verdict::Right => return Next::Unlock,
-            Verdict::Wrong => {
+            Verdict::Wrong(said) => {
                 self.failures = self.failures.saturating_add(1);
-                self.note = Note::Wrong;
+                self.note = Note::Wrong(said);
             }
             Verdict::Barred => self.note = Note::Barred,
             Verdict::Unchecked(said) => self.note = Note::Unchecked(said),
@@ -203,12 +208,22 @@ impl Screen {
     pub fn view(&self) -> View {
         let (note, problem, warning) = match (&self.phase, &self.note) {
             (Phase::Checking, _) => (String::new(), false, false),
-            (Phase::Held(wait), _) => (
-                format!("Wrong password. Wait {} seconds.", wait.as_secs()),
+            (Phase::Held(wait), note) => {
+                let why = match note {
+                    Note::Wrong(Some(said)) => said.trim_end_matches('.'),
+                    _ => WRONG,
+                };
+                (
+                    format!("{why}. Wait {} seconds.", wait.as_secs()),
+                    true,
+                    false,
+                )
+            }
+            (_, Note::Wrong(said)) => (
+                said.clone().unwrap_or_else(|| WRONG.to_string()),
                 true,
                 false,
             ),
-            (_, Note::Wrong) => ("Wrong password".to_string(), true, false),
             (_, Note::TooLong) => (
                 "That is as long as a password can be".to_string(),
                 true,
@@ -233,7 +248,7 @@ impl Screen {
             prompt: self.prompt,
             enabled: self.phase == Phase::Asking,
             rejected: matches!(self.phase, Phase::Held(_))
-                || (self.phase == Phase::Asking && self.note == Note::Wrong),
+                || (self.phase == Phase::Asking && matches!(self.note, Note::Wrong(_))),
             placeholder: match self.phase {
                 Phase::Checking => "Checking\u{2026}".to_string(),
                 _ => "Password".to_string(),
@@ -253,7 +268,7 @@ impl Screen {
 /// Only a wrong password is paid for with a wait. A check that could not
 /// be made is not the user's doing.
 fn verdict_costs(note: &Note) -> bool {
-    *note == Note::Wrong
+    matches!(note, Note::Wrong(_))
 }
 
 #[cfg(test)]
@@ -292,13 +307,17 @@ mod tests {
         let mut screen = screen();
         // No check is under way.
         assert_eq!(screen.judged(Verdict::Right), Next::Ask);
-        for verdict in [Verdict::Wrong, Verdict::Barred, Verdict::Unchecked(None)] {
+        for verdict in [
+            Verdict::Wrong(None),
+            Verdict::Barred,
+            Verdict::Unchecked(None),
+        ] {
             submit(&mut screen, "x");
             assert_ne!(screen.judged(verdict), Next::Unlock);
         }
         // A verdict that arrives twice counts once.
         submit(&mut screen, "x");
-        assert_ne!(screen.judged(Verdict::Wrong), Next::Unlock);
+        assert_ne!(screen.judged(Verdict::Wrong(None)), Next::Unlock);
         assert_eq!(screen.judged(Verdict::Right), Next::Ask);
     }
 
@@ -306,7 +325,7 @@ mod tests {
     fn a_wrong_password_says_so_and_empties_the_field() {
         let mut screen = screen();
         submit(&mut screen, "wrong");
-        assert_eq!(screen.judged(Verdict::Wrong), Next::Ask);
+        assert_eq!(screen.judged(Verdict::Wrong(None)), Next::Ask);
         let view = screen.view();
         assert_eq!(view.note, "Wrong password");
         assert!(view.note_is_problem && view.rejected && view.enabled);
@@ -332,7 +351,7 @@ mod tests {
         screen.erased();
         screen.cleared();
         assert_eq!(screen.view().length, 0);
-        assert_eq!(screen.judged(Verdict::Wrong), Next::Ask);
+        assert_eq!(screen.judged(Verdict::Wrong(None)), Next::Ask);
         assert!(screen.submitted().is_none());
     }
 
@@ -342,7 +361,7 @@ mod tests {
         let mut waits = Vec::new();
         for _ in 0..8 {
             submit(&mut screen, "nope");
-            match screen.judged(Verdict::Wrong) {
+            match screen.judged(Verdict::Wrong(None)) {
                 Next::Hold(wait) => {
                     waits.push(wait.as_secs());
                     let view = screen.view();
@@ -368,6 +387,38 @@ mod tests {
         // However many there were, the right one still gets in.
         submit(&mut screen, "live");
         assert_eq!(screen.judged(Verdict::Right), Next::Unlock);
+    }
+
+    #[test]
+    fn what_a_module_says_about_a_denial_is_shown_in_place_of_ours() {
+        let mut screen = screen();
+        let said = "2 attempts left before the account is locked.";
+        for _ in 0..2 {
+            submit(&mut screen, "nope");
+            assert_eq!(
+                screen.judged(Verdict::Wrong(Some(said.to_string()))),
+                Next::Ask
+            );
+            let view = screen.view();
+            assert_eq!(view.note, said);
+            assert!(view.note_is_problem && view.rejected);
+        }
+        // It still counts as a wrong password, and the wait is added to it.
+        submit(&mut screen, "nope");
+        assert!(matches!(
+            screen.judged(Verdict::Wrong(Some(said.to_string()))),
+            Next::Hold(_)
+        ));
+        assert_eq!(
+            screen.view().note,
+            "2 attempts left before the account is locked. Wait 2 seconds."
+        );
+        screen.released();
+        assert_eq!(screen.view().note, said);
+        // The next denial without a message goes back to the plain words.
+        submit(&mut screen, "nope");
+        screen.judged(Verdict::Wrong(None));
+        assert_eq!(screen.view().note, "Wrong password. Wait 4 seconds.");
     }
 
     #[test]
@@ -420,10 +471,10 @@ mod tests {
         assert!(!screen.may_rest());
         assert!(!screen.rested());
         for _ in 0..2 {
-            screen.judged(Verdict::Wrong);
+            screen.judged(Verdict::Wrong(None));
             submit(&mut screen, "x");
         }
-        assert!(matches!(screen.judged(Verdict::Wrong), Next::Hold(_)));
+        assert!(matches!(screen.judged(Verdict::Wrong(None)), Next::Hold(_)));
         assert!(!screen.rested());
         assert!(screen.view().prompt);
     }
@@ -453,7 +504,7 @@ mod tests {
         assert_eq!(view.note, "Caps Lock is on");
         assert!(view.note_is_warning && !view.note_is_problem);
         submit(&mut screen, "LIVE");
-        screen.judged(Verdict::Wrong);
+        screen.judged(Verdict::Wrong(None));
         assert_eq!(screen.view().note, "Wrong password");
         screen.typed("l");
         assert_eq!(screen.view().note, "Caps Lock is on");

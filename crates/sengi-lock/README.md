@@ -26,7 +26,9 @@ controls, nothing to click.
   one character back.
 - While PAM is checking, the field reads "Checking…" and takes no input.
   Keys pressed meanwhile are dropped, a second Return included.
-- A wrong password empties the field, marks it, and says "Wrong password".
+- A wrong password empties the field, marks it, and says "Wrong password",
+  or what a PAM module said about the refusal if one did, such as how
+  many attempts are left.
 - "Caps Lock is on" is shown under the field while it is.
 - With more than one keyboard layout set in Settings, the active one is
   named at the right end of the field.
