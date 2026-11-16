@@ -3514,7 +3514,7 @@ checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
 name = "sengi-apps"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "libc",
  "png",
@@ -3524,7 +3524,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-bar"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-io",
  "chrono",
@@ -3543,7 +3543,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-clock"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "chrono",
  "libc",
@@ -3553,11 +3553,11 @@ dependencies = [
 
 [[package]]
 name = "sengi-config"
-version = "0.5.0"
+version = "0.6.0"
 
 [[package]]
 name = "sengi-dock"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "png",
  "sengi-apps",
@@ -3570,7 +3570,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-focus"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "wayland-client",
  "wayland-protocols-wlr",
@@ -3578,7 +3578,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-greeter"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "chrono",
  "libc",
@@ -3594,7 +3594,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-launcher"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "sengi-apps",
  "sengi-layer",
@@ -3605,7 +3605,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-layer"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "slint",
  "smithay-client-toolkit",
@@ -3614,7 +3614,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-lock"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "chrono",
  "libc",
@@ -3629,7 +3629,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-notify"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "chrono",
  "sengi-layer",
@@ -3644,7 +3644,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-quick"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "sengi-layer",
  "sengi-system",
@@ -3655,7 +3655,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-settings"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "libc",
  "sengi-config",
@@ -3669,7 +3669,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-system"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "libc",
  "sengi-text",
@@ -3678,15 +3678,15 @@ dependencies = [
 
 [[package]]
 name = "sengi-text"
-version = "0.5.0"
+version = "0.6.0"
 
 [[package]]
 name = "sengi-tokens"
-version = "0.5.0"
+version = "0.6.0"
 
 [[package]]
 name = "sengi-ui"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "slint",
  "slint-build",
