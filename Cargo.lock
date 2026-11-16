@@ -3577,6 +3577,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "sengi-greeter"
+version = "0.5.0"
+dependencies = [
+ "chrono",
+ "libc",
+ "sengi-clock",
+ "sengi-config",
+ "sengi-layer",
+ "sengi-lock",
+ "sengi-system",
+ "sengi-text",
+ "slint",
+ "slint-build",
+]
+
+[[package]]
 name = "sengi-launcher"
 version = "0.5.0"
 dependencies = [
