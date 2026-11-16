@@ -12,6 +12,11 @@ echo "SENGI-BOOT desktop_s=$up" >$port
 sleep "${SENGI_IDLE_WAIT:-30}"
 awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2}
 	END {printf "SENGI-IDLE ram_mb=%d\n", (t - a) / 1024}' /proc/meminfo >$port
+# polkit answers logind when someone asks to restart or shut down, and is
+# started by that question. Nobody has asked yet.
+if pidof polkitd >/dev/null; then
+	echo "SENGI-FAIL polkitd is running at idle, before anything has asked it anything" >$port
+fi
 {
 	systemd-analyze time 2>&1
 	systemd-analyze blame 2>&1 | head -15
@@ -61,6 +66,40 @@ lock_after=$(sengi-settings --get power.lock-after 2>/dev/null)
 case $lock_after in
 '' | *[!0-9]*) echo "SENGI-FAIL sengi-settings --get power.lock-after gave '$lock_after', not a number" >$port ;;
 esac
+
+# Asks logind, as the user of the session on the seat and from inside
+# that session, whether it may restart the machine and shut it down. This
+# only asks. A process counts as part of a session by the control group
+# it is in, so the question is put from a shell moved into the session's.
+may_power_off() {
+	uid=$(id -u "$1")
+	gid=$(id -g "$1")
+	session=$(loginctl list-sessions --no-legend | awk -v user="$1" '$3 == user && $4 == "seat0" {print $1; exit}')
+	scope=$(loginctl show-session "$session" -p Scope --value 2>/dev/null)
+	for method in CanReboot CanPowerOff; do
+		# shellcheck disable=SC2016
+		answer=$(sh -c 'echo $$ >"$1" && exec setpriv --reuid "$2" --regid "$3" --init-groups \
+			busctl call org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager "$4"' \
+			sh "/sys/fs/cgroup/user.slice/user-$uid.slice/$scope/cgroup.procs" "$uid" "$gid" "$method" 2>&1)
+		echo "SENGI-INFO $method asked by $1 in session $session: $answer" >$port
+		if [ "$answer" != 's "yes"' ]; then
+			echo "SENGI-FAIL logind does not let $1 use $method: $answer" >$port
+		fi
+	done
+}
+# Proportional memory of the processes given, in kB.
+pss_kb() {
+	total=0
+	for pid in "$@"; do
+		kb=$(awk '/^Pss:/ {print $2}' "/proc/$pid/smaps_rollup" 2>/dev/null)
+		total=$((total + ${kb:-0}))
+	done
+	echo "$total"
+}
+# Restart and Shut down in the session menu go through logind.
+may_power_off live
+# shellcheck disable=SC2046
+echo "SENGI-POLKIT pss_kb=$(pss_kb $(pidof polkitd))" >$port
 echo "SENGI-DONE" >$port
 
 # The boot test goes on to open Settings and close it, and then to lock
@@ -90,3 +129,55 @@ journalctl -f -n 0 -o cat -t sengi-lock 2>/dev/null | while IFS= read -r line; d
 	esac
 done &
 watch sengi-lock SENGI-LOCK
+
+# Last, the test logs out. greetd then starts the login screen in a
+# compositor of its own, both as its own user. Say when they are up, what
+# they cost and whether they may turn the machine off; then when PAM has
+# turned the wrong password down; then when they have gone and the
+# desktop is back, and for whom.
+greeter() {
+	pgrep -u _greetd -x "$1"
+}
+n=0
+until [ -n "$(greeter sengi-greeter)" ] && [ -n "$(greeter labwc)" ]; do
+	n=$((n + 1))
+	[ $n -lt 900 ] || exit 0
+	sleep 0.2
+done
+# Give it a moment to have drawn, and the session it follows to have gone.
+sleep 3
+if pidof sengi-bar sengi-dock >/dev/null; then
+	echo "SENGI-FAIL the desktop is still running under the login screen" >$port
+fi
+# shellcheck disable=SC2046
+echo "SENGI-GREETER running pss_kb=$(pss_kb $(greeter sengi-greeter) $(greeter labwc))" >$port
+ps -u _greetd -o rss=,args= | sed 's/^/SENGI-INFO _greetd runs: /' >$port
+may_power_off _greetd
+journalctl -f -n 0 -o cat -t greetd 2>/dev/null | while IFS= read -r line; do
+	case $line in
+	*'authentication failure'*) echo "SENGI-GREETER refused" >$port ;;
+	esac
+done &
+echo "SENGI-GREETER ready" >$port
+
+n=0
+while [ -n "$(greeter sengi-greeter)" ]; do
+	n=$((n + 1))
+	[ $n -lt 900 ] || exit 0
+	sleep 0.2
+done
+echo "SENGI-GREETER gone" >$port
+n=0
+until [ -S /run/user/1000/wayland-0 ] && pidof sengi-bar >/dev/null && pidof sengi-dock >/dev/null; do
+	n=$((n + 1))
+	[ $n -lt 150 ] || break
+	sleep 0.2
+done
+sleep 2
+left=$(pgrep -u _greetd -x 'sengi-greeter|labwc' | tr '\n' ' ')
+owner=$(loginctl list-sessions --no-legend | awk '$4 == "seat0" && $6 == "user" {print $3; exit}')
+desktop=down
+if pidof labwc >/dev/null && pidof sengi-bar >/dev/null && pidof sengi-dock >/dev/null; then
+	desktop=up
+fi
+echo "SENGI-GREETER after desktop=$desktop session=${owner:-nobody} left=${left:-nothing}" >$port

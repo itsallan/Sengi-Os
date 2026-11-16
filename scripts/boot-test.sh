@@ -219,6 +219,18 @@ prompt_differs() {
 	band "$2"
 	cmp -l "$out/$1.band" "$out/$2.band" 2>/dev/null | wc -l
 }
+# PAM logs a refusal and then sits on it for a couple of seconds before it
+# tells the program that asked. So the line in the journal is not yet the
+# message on the screen, and keys typed in between are dropped. This
+# watches the band until it no longer looks as it did while the password
+# was being checked ($1), for ten seconds at most. The dump it ends on is
+# $2.
+settle() {
+	waits=10
+	while dump "$2" && [ "$(prompt_differs "$1" "$2")" -eq 0 ] && [ "$waits" -gt 0 ]; do
+		waits=$((waits - 1))
+	done
+}
 dump unlocked
 key meta_l-l 1
 if wait_serial 'SENGI-LOCK running' 10; then
@@ -240,14 +252,15 @@ if wait_serial 'SENGI-LOCK running' 10; then
 		key "$letter" 0.3
 	done
 	key ret 0.5
+	dump checking
 	# How long PAM takes to say no is PAM's business. The guest says when
-	# it has (see sengi-boot-report); only then is the screen looked at,
-	# and only then is the next password typed.
+	# it has (see sengi-boot-report), and the screen says when the lock
+	# screen has heard; only then is it looked at, and only then is the
+	# next password typed.
 	wait_serial 'SENGI-LOCK refused' 30 ||
 		lock_fail="PAM did not turn the wrong password down within 30 s"
-	sleep 1
+	settle checking wrong
 	shot lock-wrong
-	dump wrong
 	if grep -q 'SENGI-LOCK gone' "$out/serial.log"; then
 		lock_fail="a wrong password unlocked the screen"
 	elif [ "$(differs unlocked wrong)" -lt "$covered_bytes" ]; then
@@ -275,16 +288,88 @@ else
 	shot lock
 	lock_fail="sengi-lock did not start on Super+L"
 fi
+
+# The login screen: log out through the session menu, get the password
+# wrong, get it right. The guest says when the login screen and its
+# compositor are up, when PAM has refused, and what is running once the
+# login screen has gone (see sengi-boot-report). The screen is judged by
+# the same band as the lock screen's: it has to change with the first key
+# typed, which a clock that turned a minute, a blank screen or a desktop
+# that never went away would not do, and again with the refusal.
+greeter_fail=
+dump session
+pointer $((screen_w - 20)) 14
+click
+for letter in l o g; do
+	key "$letter" 0.3
+done
+key ret 1
+pointer $((screen_w / 8)) $((screen_h / 2))
+if wait_serial 'SENGI-GREETER ready' 60; then
+	sleep 1
+	shot greeter
+	dump greeter
+	if [ "$(differs session greeter)" -lt "$covered_bytes" ]; then
+		greeter_fail="sengi-greeter is running but the desktop is still on screen"
+	fi
+	key w 0.5
+	dump first
+	if [ "$(prompt_differs greeter first)" -eq 0 ]; then
+		greeter_fail="the login screen shows nothing for the first key typed"
+	fi
+	for letter in r o n g; do
+		key "$letter" 0.3
+	done
+	key ret 0.5
+	dump checking
+	wait_serial 'SENGI-GREETER refused' 30 ||
+		greeter_fail="PAM did not turn the wrong password down within 30 s"
+	settle checking wrong
+	shot greeter-wrong
+	if grep -q 'SENGI-GREETER gone' "$out/serial.log"; then
+		greeter_fail="a wrong password logged in"
+	elif [ "$(prompt_differs greeter wrong)" -eq 0 ]; then
+		greeter_fail="the login screen shows nothing about a wrong password"
+	fi
+	for letter in l i v e; do
+		key "$letter" 0.3
+	done
+	key ret 1
+	if wait_serial 'SENGI-GREETER after' 60; then
+		sleep 1
+		shot logged-in
+		dump back
+		after=$(sed -n 's/.*SENGI-GREETER after //p' "$out/serial.log" | head -1)
+		if [ -z "$greeter_fail" ] && [ "$after" != "desktop=up session=live left=nothing" ]; then
+			greeter_fail="after logging in as live: $after"
+		elif [ -z "$greeter_fail" ] && [ "$(differs greeter back)" -lt "$covered_bytes" ]; then
+			greeter_fail="the desktop is not on screen after logging in"
+		fi
+	else
+		shot logged-in
+		greeter_fail=${greeter_fail:-"the password of the live user did not log in"}
+	fi
+else
+	shot greeter
+	greeter_fail="the login screen did not appear after logging out"
+fi
 rm -f "$out"/*.ppm "$out"/*.band
 stop
 
 guest_s=$(sed -n 's/.*SENGI-BOOT desktop_s=\([0-9.]*\).*/\1/p' "$out/serial.log" | head -1)
 ram_mb=$(sed -n 's/.*SENGI-IDLE ram_mb=\([0-9]*\).*/\1/p' "$out/serial.log" | head -1)
+# Neither of these is running at idle: the login screen and its
+# compositor are there while nobody is logged in, and polkit from the
+# first time logind has a question for it.
+greeter_kb=$(sed -n 's/.*SENGI-GREETER running pss_kb=\([0-9]*\).*/\1/p' "$out/serial.log" | head -1)
+polkit_kb=$(sed -n 's/.*SENGI-POLKIT pss_kb=\([0-9]*\).*/\1/p' "$out/serial.log" | head -1)
 
 {
 	echo "boot_s=$boot_s"
 	echo "boot_guest_s=$guest_s"
 	echo "idle_ram_mb=$ram_mb"
+	echo "greeter_pss_kb=$greeter_kb"
+	echo "polkitd_pss_kb=$polkit_kb"
 	echo "accel=$accel"
 } >"$out/metrics.txt"
 cat "$out/metrics.txt"
@@ -303,6 +388,10 @@ if [ -n "$settings_fail" ]; then
 fi
 if [ -n "$lock_fail" ]; then
 	echo "FAIL: $lock_fail" >&2
+	fail=1
+fi
+if [ -n "$greeter_fail" ]; then
+	echo "FAIL: $greeter_fail" >&2
 	fail=1
 fi
 if [ "$ram_mb" -ge "$budget_ram_mb" ]; then
