@@ -60,6 +60,12 @@ const FRAME: Duration = Duration::from_millis(16);
 /// labwc then shows the surface elsewhere only after its next commit.
 const FRAME_PATIENCE: Duration = Duration::from_secs(1);
 
+/// How long after the compositor's `locked` to wait for every output to
+/// have a frame of ours before calling the session covered regardless.
+/// An output the compositor never sizes a surface for cannot be drawn
+/// on, and by now the compositor has blanked it itself.
+const COVER_PATIENCE: Duration = Duration::from_secs(1);
+
 /// What the app has asked for through its [`Handle`]. Slint callbacks run
 /// while the Wayland state is borrowed, so requests are left here and the
 /// loop picks them up before it next goes to sleep.
@@ -142,8 +148,9 @@ impl Role {
 /// A session lock being taken or held.
 struct Locking {
     lock: SessionLock,
-    /// The compositor has said the session is locked.
-    locked: bool,
+    /// When the compositor said the session is locked, measured from
+    /// `State::started`.
+    locked: Option<Duration>,
     /// Called once the session is locked and every output shows a frame
     /// of ours.
     on_covered: Option<Box<dyn FnOnce()>>,
@@ -815,14 +822,27 @@ impl State {
     /// been taken in and the app is told.
     fn check_covered(&mut self) {
         let outputs = self.outputs.outputs().count();
-        let drawn = self.surfaces.iter().filter(|surface| surface.drawn).count();
+        // An output with no area, as one that is switched off may be, has
+        // nothing to cover.
+        let settled = self
+            .surfaces
+            .iter()
+            .filter(|surface| {
+                surface.drawn || (surface.configured && (surface.width == 0 || surface.height == 0))
+            })
+            .count();
+        let now = self.started.elapsed();
         let Some(locking) = &mut self.locking else {
             return;
         };
-        if !locking.locked || locking.covering || locking.on_covered.is_none() {
+        let Some(locked) = locking.locked else {
+            return;
+        };
+        if locking.covering || locking.on_covered.is_none() {
             return;
         }
-        if drawn < outputs || drawn < self.surfaces.len() {
+        let all = settled >= outputs && settled >= self.surfaces.len();
+        if !all && now < locked + COVER_PATIENCE {
             return;
         }
         locking.covering = true;
@@ -839,7 +859,7 @@ impl State {
         let Some(locking) = &mut self.locking else {
             return false;
         };
-        if wanted && locking.locked && !locking.unlock_sent {
+        if wanted && locking.locked.is_some() && !locking.unlock_sent {
             locking.lock.unlock();
             locking.unlock_sent = true;
             // The request has to be seen before the process goes, or the
@@ -857,7 +877,7 @@ impl State {
     /// other way of ending leaves the session locked, as it must.
     fn abandon_lock(&mut self) {
         if let Some(locking) = &self.locking {
-            if locking.locked && !locking.unlock_sent {
+            if locking.locked.is_some() && !locking.unlock_sent {
                 // Dropping the last reference would send `destroy`.
                 std::mem::forget(locking.lock.clone());
             }
@@ -933,12 +953,20 @@ impl State {
         let now = self.started.elapsed();
         let repeat = self.repeat.as_ref().map(|repeat| repeat.next);
         let retries = self.surfaces.iter().filter_map(|surface| surface.retry);
+        // Still waiting to call the session covered.
+        let cover = self
+            .locking
+            .as_ref()
+            .filter(|locking| !locking.covering && locking.on_covered.is_some())
+            .and_then(|locking| locking.locked)
+            .map(|locked| locked + COVER_PATIENCE);
         let frames = self
             .surfaces
             .iter()
             .filter_map(|surface| surface.frame_pending);
         let deadline = repeat
             .into_iter()
+            .chain(cover)
             .chain(retries)
             .chain(frames)
             .min()
@@ -976,7 +1004,7 @@ pub(crate) fn run_locked(
         .map_err(|_| Error::Lock(LockError::Unsupported))?;
     state.locking = Some(Locking {
         lock,
-        locked: false,
+        locked: None,
         on_covered: Some(on_covered),
         covering: false,
         unlock_sent: false,
@@ -1180,8 +1208,9 @@ impl State {
 
 impl SessionLockHandler for State {
     fn locked(&mut self, _: &Connection, _: &QueueHandle<Self>, _: SessionLock) {
+        let now = self.started.elapsed();
         if let Some(locking) = &mut self.locking {
-            locking.locked = true;
+            locking.locked = Some(now);
         }
     }
 
@@ -1190,7 +1219,10 @@ impl SessionLockHandler for State {
     // some means of its own. Either way there is nothing left to guard,
     // and nothing here that may unlock.
     fn finished(&mut self, _: &Connection, _: &QueueHandle<Self>, _: SessionLock) {
-        let locked = self.locking.as_ref().is_some_and(|locking| locking.locked);
+        let locked = self
+            .locking
+            .as_ref()
+            .is_some_and(|locking| locking.locked.is_some());
         self.failure = Some(Error::Lock(if locked {
             LockError::Ended
         } else {

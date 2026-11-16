@@ -193,7 +193,9 @@ public. `config.validate()` reports combinations the compositor would reject.
   shows the compositor has taken those frames in. labwc says `locked` at
   once and blanks an output a tenth of a second later, so `locked` alone
   does not mean the session is out of sight. This is the point at which to
-  report success to whoever asked for the lock.
+  report success to whoever asked for the lock. An output with no area
+  counts as covered, and one second after `locked` the wait ends whatever
+  is missing: by then the compositor has blanked every output itself.
 - `Handle::unlock()` sends `unlock_and_destroy`, waits for the compositor
   to have seen it, and ends the loop with `Ok`. Nothing else unlocks.
 - Every other end is an `Error`. `Error::Lock(LockError::Refused)`: the
