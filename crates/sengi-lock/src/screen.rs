@@ -159,7 +159,10 @@ impl Screen {
         if self.phase != Phase::Asking {
             return None;
         }
-        let answer = self.entry.take().unwrap_or_else(|| Secret::new(String::new()));
+        let answer = self
+            .entry
+            .take()
+            .unwrap_or_else(|| Secret::new(String::new()));
         self.phase = Phase::Checking;
         self.note = Note::None;
         Some(answer)

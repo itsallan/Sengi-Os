@@ -153,7 +153,8 @@ mod tests {
 
     #[test]
     fn people_are_offered_and_the_system_s_own_accounts_are_not() {
-        let known = shells("# /etc/shells: valid login shells\n/bin/sh\n/bin/bash\n/usr/bin/bash\n");
+        let known =
+            shells("# /etc/shells: valid login shells\n/bin/sh\n/bin/bash\n/usr/bin/bash\n");
         let accounts = [
             account("root", 0, "root", "/bin/bash"),
             account("daemon", 1, "daemon", "/usr/sbin/nologin"),

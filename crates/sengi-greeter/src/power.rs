@@ -25,10 +25,7 @@ pub fn command(power: Power) -> Command {
 /// Runs `command` on a thread of its own and calls `refused` if it did
 /// not succeed. When it does succeed nothing is called: the machine is
 /// on its way down.
-pub fn carry_out(
-    mut command: Command,
-    refused: impl FnOnce() + Send + 'static,
-) -> io::Result<()> {
+pub fn carry_out(mut command: Command, refused: impl FnOnce() + Send + 'static) -> io::Result<()> {
     thread::Builder::new()
         .name("power".into())
         .spawn(move || {

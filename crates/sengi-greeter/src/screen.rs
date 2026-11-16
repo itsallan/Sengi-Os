@@ -363,7 +363,10 @@ impl Login {
             plain: self.plain.clone(),
             user: match self.stage {
                 Stage::Name => String::new(),
-                _ => self.user().map(|user| user.shown.clone()).unwrap_or_default(),
+                _ => self
+                    .user()
+                    .map(|user| user.shown.clone())
+                    .unwrap_or_default(),
             },
             choice: self.users.len() > 1,
             power: self.leaving.is_none() && self.stage != Stage::Starting,
@@ -488,10 +491,7 @@ mod tests {
         }
         type_in(&mut login, "nope");
         login.submitted();
-        assert!(matches!(
-            login.judged(Verdict::Wrong(None)),
-            Next::Hold(_)
-        ));
+        assert!(matches!(login.judged(Verdict::Wrong(None)), Next::Hold(_)));
     }
 
     #[test]
@@ -557,7 +557,10 @@ mod tests {
         assert!(login.submitted().is_none());
         let view = login.view();
         assert_eq!(view.user, "allan");
-        assert_eq!((view.plain.as_str(), view.field.placeholder.as_str()), ("", "Password"));
+        assert_eq!(
+            (view.plain.as_str(), view.field.placeholder.as_str()),
+            ("", "Password")
+        );
         type_in(&mut login, "pw");
         assert_eq!(login.view().plain, "");
         assert_eq!(
@@ -572,7 +575,10 @@ mod tests {
         assert_eq!(login.view().user, "allan");
         assert!(login.cleared().is_none());
         let view = login.view();
-        assert_eq!((view.user.as_str(), view.field.placeholder.as_str()), ("", "User name"));
+        assert_eq!(
+            (view.user.as_str(), view.field.placeholder.as_str()),
+            ("", "User name")
+        );
     }
 
     #[test]
@@ -658,7 +664,10 @@ mod tests {
         assert!(matches!(login.stepped(1), Some(Command::Cancel)));
         let view = login.view();
         assert_eq!(view.user, "Grace Hopper");
-        assert_eq!((view.field.placeholder.as_str(), view.field.length), ("Password", 0));
+        assert_eq!(
+            (view.field.placeholder.as_str(), view.field.length),
+            ("Password", 0)
+        );
     }
 
     #[test]
@@ -682,7 +691,10 @@ mod tests {
         assert!(changed && matches!(command, Some(Command::Cancel)));
         login.stirred();
         let view = login.view();
-        assert_eq!((view.plain.as_str(), view.field.placeholder.as_str()), ("", "Password"));
+        assert_eq!(
+            (view.plain.as_str(), view.field.placeholder.as_str()),
+            ("", "Password")
+        );
 
         // Not while greetd is busy.
         type_in(&mut login, "x");
@@ -697,7 +709,10 @@ mod tests {
         assert!(login.rested().0);
         login.stirred();
         let view = login.view();
-        assert_eq!((view.user.as_str(), view.field.placeholder.as_str()), ("", "User name"));
+        assert_eq!(
+            (view.user.as_str(), view.field.placeholder.as_str()),
+            ("", "User name")
+        );
     }
 
     #[test]
@@ -720,7 +735,10 @@ mod tests {
         assert!(login.leave(Power::Restart));
         assert_eq!(login.view().field.note, "Restarting\u{2026}");
         login.stayed();
-        assert_eq!(login.view().field.note, "The computer could not be restarted");
+        assert_eq!(
+            login.view().field.note,
+            "The computer could not be restarted"
+        );
     }
 
     #[test]
