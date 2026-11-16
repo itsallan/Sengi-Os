@@ -4,7 +4,6 @@
 //! top of the screen. sengi-layer does the Wayland work; this file fills
 //! the bar in and keeps it up to date.
 
-mod clock;
 mod status;
 mod tray;
 mod tray_ui;
@@ -17,7 +16,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use clock::Clock;
+use sengi_clock::Clock;
 use sengi_layer::{Anchor, App, Config, Instances, Layer, Outputs};
 use slint::{Timer, TimerMode};
 

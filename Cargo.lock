@@ -3532,14 +3532,23 @@ dependencies = [
  "futures-lite",
  "libc",
  "sengi-apps",
- "sengi-config",
+ "sengi-clock",
  "sengi-layer",
  "sengi-system",
  "sengi-text",
  "slint",
  "slint-build",
- "tz-rs",
  "zbus",
+]
+
+[[package]]
+name = "sengi-clock"
+version = "0.5.0"
+dependencies = [
+ "chrono",
+ "libc",
+ "sengi-config",
+ "tz-rs",
 ]
 
 [[package]]

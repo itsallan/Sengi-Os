@@ -1,10 +1,15 @@
-//! The clock: what it shows, and the two settings it follows.
+//! The clock: what it shows, and the two settings it follows. The bar,
+//! the lock screen and the login screen all tell the time through this.
 //!
 //! `clock.format` and `clock.time-zone` are read from the settings file
-//! through sengi-config. Nothing tells the bar that the file changed. It
+//! through sengi-config. Nothing tells a program that the file changed. It
 //! looks at the file's size and time when it is about to draw a new
 //! minute anyway, and reads it again only if those moved, so following
 //! the settings costs a `stat` or two a minute and no wake-up of its own.
+//!
+//! [`Clock::text`] is the bar's one line. [`Clock::time`] and
+//! [`Clock::date`] are the two lines of a large clock. [`every_minute`]
+//! says when to draw them again.
 //!
 //! A zone chosen in Settings is read from tzdata and applied to the time
 //! here, by hand. The usual way, setting `TZ` and letting the library find
@@ -13,6 +18,8 @@
 //! safe. This way the environment is never written.
 
 use std::fs;
+use std::io;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -24,6 +31,9 @@ use sengi_config::Settings;
 
 const HOURS_24: &str = "%a %-e %b  %H:%M";
 const HOURS_12: &str = "%a %-e %b  %-I:%M %p";
+const TIME_24: &str = "%H:%M";
+const TIME_12: &str = "%-I:%M %p";
+const DATE: &str = "%A %-e %B";
 
 /// Where the system's own zone is.
 const LOCALTIME: &str = "/etc/localtime";
@@ -71,6 +81,10 @@ fn load_zone(path: &Path) -> Option<tz::TimeZone> {
 
 fn format(now: DateTime<Utc>, zone: &Zone, twelve: bool) -> String {
     let pattern = if twelve { HOURS_12 } else { HOURS_24 };
+    format_as(now, zone, pattern)
+}
+
+fn format_as(now: DateTime<Utc>, zone: &Zone, pattern: &str) -> String {
     match zone {
         Zone::Inherited => now.with_timezone(&Local).format(pattern).to_string(),
         Zone::Loaded(zone) => {
@@ -153,7 +167,7 @@ impl Clock {
             match zone_file(&self.zones, &name).and_then(|path| load_zone(&path)) {
                 Some(zone) => Zone::Loaded(zone),
                 None => {
-                    eprintln!("sengi-bar: no time zone called {name}, using the system's");
+                    eprintln!("sengi-clock: no time zone called {name}, using the system's");
                     self.system_zone()
                 }
             }
@@ -172,8 +186,106 @@ impl Clock {
         Zone::Loaded(load_zone(&self.localtime).unwrap_or_else(tz::TimeZone::utc))
     }
 
+    /// Day, date and time on one line, as the bar shows them.
     pub fn text(&self, now: DateTime<Utc>) -> String {
         format(now, &self.zone, self.twelve)
+    }
+
+    /// The time alone: `13:07`, or `1:07 PM`.
+    pub fn time(&self, now: DateTime<Utc>) -> String {
+        let pattern = if self.twelve { TIME_12 } else { TIME_24 };
+        format_as(now, &self.zone, pattern)
+    }
+
+    /// The date in full: `Thursday 12 November`.
+    pub fn date(&self, now: DateTime<Utc>) -> String {
+        format_as(now, &self.zone, DATE)
+    }
+}
+
+impl Default for Clock {
+    fn default() -> Clock {
+        Clock::new()
+    }
+}
+
+/// Calls `tick` at the start of every minute of the wall clock, and at
+/// once whenever that clock is set, which is also what waking from
+/// suspend does to it. Runs on a thread of its own until `tick` returns
+/// false; between ticks the thread sleeps in the kernel and wakes nothing.
+///
+/// A timer counted in running time, as a toolkit's are, stands still
+/// while the machine sleeps and shows the minute it fell asleep in for
+/// up to a minute after it wakes.
+pub fn every_minute(mut tick: impl FnMut() -> bool + Send + 'static) -> io::Result<()> {
+    // SAFETY: timerfd_create takes two integers.
+    let fd = unsafe { libc::timerfd_create(libc::CLOCK_REALTIME, libc::TFD_CLOEXEC) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a descriptor just made, owned by nothing else.
+    let timer = unsafe { OwnedFd::from_raw_fd(fd) };
+    std::thread::Builder::new()
+        .name("minute".into())
+        .spawn(move || loop {
+            if !wait_for_next_minute(&timer) || !tick() {
+                return;
+            }
+        })
+        .map(|_| ())
+}
+
+/// The second the next minute starts at, for a clock reading `now`.
+fn next_minute(now: i64) -> i64 {
+    now - now.rem_euclid(60) + 60
+}
+
+/// Sleeps until the next minute starts or the clock is set. False if the
+/// timer cannot be used.
+fn wait_for_next_minute(timer: &OwnedFd) -> bool {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `now` is a timespec for the call to fill in.
+    if unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &mut now) } != 0 {
+        return false;
+    }
+    let when = libc::itimerspec {
+        it_interval: libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        },
+        it_value: libc::timespec {
+            tv_sec: next_minute(now.tv_sec),
+            tv_nsec: 0,
+        },
+    };
+    let flags = libc::TFD_TIMER_ABSTIME | libc::TFD_TIMER_CANCEL_ON_SET;
+    // SAFETY: `when` is a valid itimerspec and no old value is asked for.
+    if unsafe { libc::timerfd_settime(timer.as_raw_fd(), flags, &when, std::ptr::null_mut()) } != 0
+    {
+        return false;
+    }
+    let mut expirations = [0u8; 8];
+    loop {
+        // SAFETY: the buffer is eight bytes, which is what a timer writes.
+        let read = unsafe {
+            libc::read(
+                timer.as_raw_fd(),
+                expirations.as_mut_ptr().cast(),
+                expirations.len(),
+            )
+        };
+        if read >= 0 {
+            return true;
+        }
+        match io::Error::last_os_error().raw_os_error() {
+            Some(libc::EINTR) => {}
+            // The clock was set. Whatever it says now is worth showing.
+            Some(libc::ECANCELED) => return true,
+            _ => return false,
+        }
     }
 }
 
@@ -191,7 +303,7 @@ mod tests {
     impl TempDir {
         fn new() -> TempDir {
             let dir = std::env::temp_dir().join(format!(
-                "sengi-bar-clock-{}-{}",
+                "sengi-clock-{}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
             ));
@@ -258,6 +370,41 @@ mod tests {
         assert_eq!(format(at(0, 5), &utc, true), "Thu 12 Nov  12:05 AM");
         assert_eq!(format(at(12, 0), &utc, true), "Thu 12 Nov  12:00 PM");
         assert_eq!(format(at(9, 30), &utc, true), "Thu 12 Nov  9:30 AM");
+    }
+
+    #[test]
+    fn the_large_clock_has_the_time_and_the_date_apart() {
+        let tmp = TempDir::new();
+        tmp.write("zoneinfo/Test/Zero", &zone_data(0));
+        tmp.write(
+            "home/sengi-os/settings.toml",
+            b"[clock]\ntime-zone = \"Test/Zero\"\n",
+        );
+        let mut clock = tmp.clock();
+        assert_eq!(clock.time(at(13, 7)), "13:07");
+        assert_eq!(clock.date(at(13, 7)), "Thursday 12 November");
+        tmp.write(
+            "home/sengi-os/settings.toml",
+            b"[clock]\nformat = \"12h\"\ntime-zone = \"Test/Zero\"\n",
+        );
+        assert!(clock.follow_settings());
+        assert_eq!(clock.time(at(13, 7)), "1:07 PM");
+        assert_eq!(clock.time(at(0, 5)), "12:05 AM");
+    }
+
+    #[test]
+    fn the_next_minute_is_never_now() {
+        assert_eq!(next_minute(0), 60);
+        assert_eq!(next_minute(59), 60);
+        assert_eq!(next_minute(60), 120);
+        assert_eq!(next_minute(1_794_000_001), 1_794_000_060);
+    }
+
+    #[test]
+    fn a_minute_ticker_starts_and_stops() {
+        // The first tick is up to a minute away, so this only checks that
+        // the timer can be made and armed.
+        assert!(every_minute(|| false).is_ok());
     }
 
     #[test]
