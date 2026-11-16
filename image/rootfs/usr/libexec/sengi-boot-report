@@ -46,6 +46,12 @@ if command -v swaylock >/dev/null 2>&1 || [ -e /etc/swaylock ] || [ -e /etc/pam.
 	echo "SENGI-FAIL swaylock is still in the image" >$port
 fi
 [ -x /usr/bin/sengi-lock ] || echo "SENGI-FAIL sengi-lock is not in the image" >$port
+# PAM checks a user's own password through this helper, which reads
+# /etc/shadow by being in its group.
+if ! [ -g /usr/sbin/unix_chkpwd ] || [ "$(stat -c %G /etc/shadow)" != shadow ]; then
+	echo "SENGI-FAIL unix_chkpwd cannot read /etc/shadow, so no password can be checked" >$port
+fi
+[ -u /usr/bin/sudo ] || echo "SENGI-FAIL sudo has lost its setuid bit" >$port
 [ -f /etc/pam.d/sengi-lock ] || echo "SENGI-FAIL sengi-lock has no PAM service" >$port
 if pidof sengi-lock >/dev/null; then
 	echo "SENGI-FAIL sengi-lock is running on a session nobody locked" >$port

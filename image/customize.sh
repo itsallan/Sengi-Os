@@ -7,7 +7,14 @@ root=$1
 : "${VERSION:?}" "${OVERLAY:?}"
 
 cp -a "$OVERLAY/." "$root/"
-chown -R 0:0 "$root/etc" "$root/usr"
+# What the overlay brought belongs to root, and only that is touched. A
+# chown over all of /etc and /usr takes the setuid and setgid bits off
+# every program that has them, sudo and su among them, and gives
+# /etc/shadow to a group that unix_chkpwd is no longer in: no password
+# could be checked, so a locked screen could not be unlocked.
+(cd "$OVERLAY" && find . ! -name .) | while IFS= read -r entry; do
+	chown -h 0:0 "$root/$entry"
+done
 chmod 0440 "$root/etc/sudoers.d/live"
 
 rm -f "$root/etc/os-release"
