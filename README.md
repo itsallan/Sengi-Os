@@ -32,11 +32,15 @@ notifications, and a page about the machine. It is an ordinary window that
 runs only while it is open. sengi-lock is the lock screen: the time, the
 date and a password field on every output, started when the screen locks
 and gone when it unlocks. It is unlocked with the user's password.
+sengi-greeter is the login screen, shown whenever nobody is logged in. It
+looks like the lock screen: the time, the date, who is logging in and a
+password field. With several accounts the arrow keys or the buttons beside
+the name step through them, and Restart and Shut down are in its corner.
+greetd checks the password and starts the session.
 
-The compositor (labwc) and the login prompt (greetd's own) are still existing
-components configured to the Sengi OS look; later releases replace them with
-sengi-greeter and finally sengi-compositor, which is being developed on its
-own branch. See [ROADMAP.md](ROADMAP.md).
+The compositor (labwc) is still an existing component configured to the
+Sengi OS look; a later release replaces it with sengi-compositor, which is
+being developed on its own branch. See [ROADMAP.md](ROADMAP.md).
 
 ## Building the ISO
 
@@ -59,10 +63,11 @@ Boot the ISO in QEMU:
 
     qemu-system-x86_64 -enable-kvm -cpu host -smp 2 -m 4G \
       -device virtio-vga -display gtk \
-      -drive file=out/sengi-os-0.5.0-amd64.iso,format=raw,if=virtio,readonly=on
+      -drive file=out/sengi-os-0.6.0-amd64.iso,format=raw,if=virtio,readonly=on
 
 Or flash it to a USB stick and boot from that. The live session logs in on its
-own; the user is `live` and the password is `live`.
+own; the user is `live` and the password is `live`. To see the login screen,
+choose Log out from the session menu, at the power icon in the bar.
 
 | Keys | Action |
 |---|---|
@@ -73,10 +78,11 @@ own; the user is `live` and the password is `live`.
 
 ## Testing
 
-    scripts/boot-test.sh out/sengi-os-0.5.0-amd64.iso test-output
+    scripts/boot-test.sh out/sengi-os-0.6.0-amd64.iso test-output
 
-This boots the ISO headless, saves a screenshot, and records idle RAM and boot
-time against the budgets.
+This boots the ISO headless, saves screenshots, and records idle RAM and boot
+time against the budgets. It also opens Settings, locks and unlocks the
+screen, and logs out and back in through the login screen.
 
 ## Repository layout
 

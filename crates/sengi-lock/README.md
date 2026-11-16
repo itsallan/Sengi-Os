@@ -262,7 +262,12 @@ Measured in the builder VM under headless labwc 0.8.3, release build, two
 - `sengi-clock`: the time and date strings that follow Settings, and
   `every_minute`.
 - This crate as a library with `default-features = false`, which leaves
-  PAM out: `entry` (the password as typed), `backoff`, `user`.
+  PAM out: `entry` (the password as typed), `backoff`, `user`, and
+  `screen`, whose states and texts are the login screen's too. Three
+  things in `screen` are there for a login and are not used here:
+  `submitted_anyway` (Return on an empty field), `asked` (a further
+  question in the middle of a check) and `withdrawn`. The password field
+  component can also show an answer that is no secret (`plain`).
 - `sengi-layer`: `Handle::on_text` and `Handle::on_keyboard_changed`.
 - `sengi_system::secret::Secret`.
 

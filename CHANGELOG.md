@@ -3,9 +3,20 @@
 All notable changes to Sengi OS. Each release section lists what is in its ISO
 and the measured idle RAM and boot time.
 
-## Unreleased
+## 0.6.0
+
+A lock screen and a login screen of our own.
 
 ### Added
+
+- sengi-greeter, a login screen of our own, in place of greetd's text
+  prompt. It looks like the lock screen: the time and the date, who is
+  logging in, and a password field, on every screen. With more than one
+  account the arrow keys, or the buttons beside the name, step through
+  them; with none the name is typed. Restart and Shut down are in the
+  bottom right corner. Wrong passwords wait as they do on the lock screen.
+  The live image still logs in by itself, so the login screen is first
+  seen after Log out.
 
 - sengi-lock, a lock screen of our own: the time and the date, the name of
   the user and a password field, on every screen. It shows when Caps Lock
@@ -26,8 +37,16 @@ and the measured idle RAM and boot time.
   menu and the Lock button in quick settings start sengi-lock.
 - The machine does not go to sleep until every screen is covered by the
   lock screen.
+- polkitd is in the image. It is started the first time something asks
+  whether it may restart or shut down the machine, not at boot.
 
 ### Fixed
+
+- Restart and Shut down in the session menu did not work in 0.5.0. logind
+  asks polkit whether the user may, there was no polkit in the image, and
+  without it logind refuses everyone but root. The boot test now asks
+  logind from the live session and from the login screen's, and fails
+  unless both may restart and shut down.
 
 - The image build took the setuid and setgid bits off every program in
   /usr and gave /etc/shadow to the wrong group. sudo, su and passwd did
