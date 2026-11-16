@@ -22,7 +22,7 @@ mkdir -p "$work/iso/live" "$work/iso/boot/grub" "$out"
 # Our own programs, built against the same Debian the image is made of.
 export CARGO_HOME="$work/cargo" CARGO_TARGET_DIR="$work/target"
 export RUSTFLAGS="--remap-path-prefix=$src=. --remap-path-prefix=$work=/build"
-programs="sengi-bar sengi-dock sengi-focus sengi-launcher sengi-lock sengi-notify sengi-quick"
+programs="sengi-bar sengi-dock sengi-focus sengi-greeter sengi-launcher sengi-lock sengi-notify sengi-quick"
 set --
 for program in $programs; do
 	set -- "$@" -p "$program"
@@ -46,6 +46,15 @@ if grep -a -q -e zbus "$work/target/release/sengi-lock"; then
 	echo "sengi-lock has zbus linked in, which it must not" >&2
 	exit 1
 fi
+# The login screen holds a password too, and hands it to greetd. It shares
+# code with the lock screen but checks nothing itself, so PAM has no place
+# in it either. A needed library's name is in the binary as it stands.
+for marker in zbus 'libpam\.so'; do
+	if grep -a -q -e "$marker" "$work/target/release/sengi-greeter"; then
+		echo "sengi-greeter has $marker linked in, which it must not" >&2
+		exit 1
+	fi
+done
 # Settings is an ordinary window, the one program that wants the toolkit's
 # window backend and its font lookup. Built together with the others it
 # would turn those features on for all of them, so it gets a build to

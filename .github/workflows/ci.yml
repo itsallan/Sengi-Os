@@ -28,7 +28,7 @@ jobs:
       - name: Shell scripts
         run: |
           shellcheck -s sh -S warning scripts/*.sh image/*.sh \
-            image/rootfs/usr/bin/* image/rootfs/usr/libexec/* \
+            image/rootfs/usr/bin/* image/rootfs/usr/libexec/* image/rootfs/usr/lib/sengi-os/*.sh \
             image/rootfs/etc/initramfs-tools/hooks/* image/rootfs/etc/initramfs-tools/scripts/*
       - name: Generated files are current
         run: scripts/render-tokens.sh --check
@@ -65,7 +65,7 @@ jobs:
       # asking for it still compiles there. On its own it does not.
       - name: Each program on its own
         run: |
-          for program in sengi-bar sengi-clock sengi-config sengi-dock sengi-focus sengi-launcher sengi-lock sengi-notify sengi-quick sengi-settings; do
+          for program in sengi-bar sengi-clock sengi-config sengi-dock sengi-focus sengi-greeter sengi-launcher sengi-lock sengi-notify sengi-quick sengi-settings; do
             cargo check --locked -p "$program"
           done
 

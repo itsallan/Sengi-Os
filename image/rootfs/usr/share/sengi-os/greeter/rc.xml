@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<!--
+  labwc as it runs under the login screen, and only there. Nobody is
+  logged in, so nothing here may start a program or open a menu.
+
+  labwc loads its built-in key and mouse bindings when a configuration
+  defines none, and those start a terminal and a launcher. One binding
+  that does nothing in each list keeps them out.
+-->
+<labwc_config>
+  <core>
+    <xwaylandPersistence>no</xwaylandPersistence>
+  </core>
+
+  <keyboard>
+    <keybind key="C-A-W-F24">
+      <action name="None" />
+    </keybind>
+  </keyboard>
+
+  <mouse>
+    <context name="Root">
+      <mousebind button="Left" action="Press">
+        <action name="None" />
+      </mousebind>
+    </context>
+  </mouse>
+</labwc_config>

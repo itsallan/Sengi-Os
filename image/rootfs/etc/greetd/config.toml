@@ -1,8 +1,10 @@
 [terminal]
 vt = 7
 
+# The login screen, sengi-greeter, in a compositor of its own. It is shown
+# whenever nobody is logged in.
 [default_session]
-command = "/usr/sbin/agreety --cmd /usr/bin/sengi-session"
+command = "/usr/libexec/sengi-greeter-session"
 user = "_greetd"
 
 # The live image logs straight in. The installer will drop this section.
