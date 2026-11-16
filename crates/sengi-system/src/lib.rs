@@ -2,7 +2,9 @@
 //!
 //! [`instance`] is the socket by which a panel that is already open is
 //! found and told to close, and [`volume`] reads what `wpctl` prints; they
-//! need no feature and nothing but std.
+//! need no feature and nothing but std. [`secret`] holds a passphrase or
+//! a password and wipes it; it needs no feature either, so the lock screen
+//! has it without a D-Bus stack.
 //!
 //! With the `bus` feature, [`connect`] opens the D-Bus connections by hand
 //! so that no helper thread is left waking the machine.
@@ -57,7 +59,6 @@ pub mod names;
 pub mod pairing;
 #[cfg(feature = "services")]
 pub mod programs;
-#[cfg(feature = "services")]
 pub mod secret;
 #[cfg(feature = "services")]
 pub mod services;
@@ -71,24 +72,10 @@ mod testutil;
 #[cfg(feature = "services")]
 mod real {
     use std::path::PathBuf;
-    use std::sync::{Arc, OnceLock};
+    use std::sync::Arc;
 
     use crate::services::Services;
     use crate::{bluez, bus, iwd, machine, programs};
-
-    static PROGRAM: OnceLock<&'static str> = OnceLock::new();
-
-    /// Names the program in what this crate prints to standard error, as
-    /// in `sengi-quick: no system bus`. Call it once, first thing; later
-    /// calls change nothing.
-    pub fn set_program_name(name: &'static str) {
-        let _ = PROGRAM.set(name);
-    }
-
-    /// The name given to [`set_program_name`], or `sengi-system`.
-    pub fn program_name() -> &'static str {
-        PROGRAM.get().copied().unwrap_or("sengi-system")
-    }
 
     /// Names a directory to read in place of `/sys/class`, in debug builds
     /// only. For testing the battery and backlight code on a machine that has
@@ -128,4 +115,18 @@ mod real {
 }
 
 #[cfg(feature = "services")]
-pub use real::{program_name, real_services, set_program_name, sys_class};
+pub use real::{real_services, sys_class};
+
+static PROGRAM: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// Names the program in what this crate prints to standard error, as
+/// in `sengi-quick: no system bus`. Call it once, first thing; later
+/// calls change nothing.
+pub fn set_program_name(name: &'static str) {
+    let _ = PROGRAM.set(name);
+}
+
+/// The name given to [`set_program_name`], or `sengi-system`.
+pub fn program_name() -> &'static str {
+    PROGRAM.get().copied().unwrap_or("sengi-system")
+}
