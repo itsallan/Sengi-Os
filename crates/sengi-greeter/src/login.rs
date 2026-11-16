@@ -186,24 +186,29 @@ pub fn serve<S: Read + Write>(
                     current.cancel()?;
                 }
                 current.said = None;
-                current
-                    .carry_on(Request::create_session(&user), Some(password), session)
-                    .map(Some)
+                current.carry_on(Request::create_session(&user), Some(password), session)
             })(),
             Command::Answer(answer) if current.open => {
                 current.open = false;
                 let request = Request::post_auth_message_response(Some(answer.expose()));
                 drop(answer);
-                current.carry_on(request, None, session).map(Some)
+                current.carry_on(request, None, session)
             }
             // Nothing was asked. The screen is owed a verdict all the same.
-            Command::Answer(_) => Ok(Some(Event::Judged(Verdict::Unchecked(None)))),
-            Command::Cancel if current.open => current.cancel().map(|()| None),
-            Command::Cancel => Ok(None),
+            Command::Answer(_) => Ok(Event::Judged(Verdict::Unchecked(None))),
+            Command::Cancel => {
+                // The screen expects nothing back for this, and has moved
+                // on. If the connection breaks over it, the connection is
+                // dropped and nothing is said: a verdict now would be
+                // taken for the next login's.
+                if current.open && current.cancel().is_err() {
+                    talk = None;
+                }
+                continue;
+            }
         };
         let event = match outcome {
-            Ok(None) => continue,
-            Ok(Some(event)) => event,
+            Ok(event) => event,
             Err(Lost) => {
                 talk = None;
                 Event::Judged(Verdict::Unchecked(None))
@@ -523,6 +528,22 @@ mod tests {
         assert!(events
             .iter()
             .all(|event| matches!(event, Event::Asked { .. })));
+    }
+
+    #[test]
+    fn a_cancel_that_loses_the_connection_says_nothing() {
+        let events = run(
+            vec![
+                vec![(CREATE, ASK_PASSWORD), (CANCEL, "")],
+                vec![(CREATE, SUCCESS), (START, SUCCESS)],
+            ],
+            vec![begin("live", ""), Command::Cancel, begin("live", "live")],
+        );
+        // The question, and then the next login's own verdict. No verdict
+        // for the cancel in between.
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], Event::Asked { .. }));
+        assert_eq!(events[1], Event::Judged(Verdict::Right));
     }
 
     #[test]
