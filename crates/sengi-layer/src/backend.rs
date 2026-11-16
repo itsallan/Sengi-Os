@@ -3,6 +3,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::mem::ManuallyDrop;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -147,7 +148,16 @@ impl Role {
 
 /// A session lock being taken or held.
 struct Locking {
-    lock: SessionLock,
+    /// Never dropped. In smithay-client-toolkit 0.19.2 dropping the last
+    /// handle to a session lock sends `destroy`, and `unlock_and_destroy`
+    /// is sent by `SessionLock::unlock` alone. So no drop could unlock;
+    /// but `destroy` on a lock that is held is a protocol error, and on
+    /// one that was refused it is a courtesy this process, which is
+    /// about to exit, does not owe. Leaving the handle alone on every
+    /// path, an unwinding panic included, means the only request this
+    /// program can ever make about a held lock is the unlock it sends on
+    /// purpose.
+    lock: ManuallyDrop<SessionLock>,
     /// When the compositor said the session is locked, measured from
     /// `State::started`.
     locked: Option<Duration>,
@@ -872,18 +882,6 @@ impl State {
         locking.unlocked
     }
 
-    /// Called when the loop ends. A lock that is still held is left
-    /// alone: letting go of it properly is the unlock request, and any
-    /// other way of ending leaves the session locked, as it must.
-    fn abandon_lock(&mut self) {
-        if let Some(locking) = &self.locking {
-            if locking.locked.is_some() && !locking.unlock_sent {
-                // Dropping the last reference would send `destroy`.
-                std::mem::forget(locking.lock.clone());
-            }
-        }
-    }
-
     fn focus_lost(&mut self) {
         let Some(Focus { window, own, .. }) = self.focus.take() else {
             return;
@@ -984,9 +982,7 @@ pub(crate) fn run(
     mut state: State,
     builder: Builder,
 ) -> Result<(), Error> {
-    let result = run_loop(event_loop, &mut state, builder);
-    state.abandon_lock();
-    result
+    run_loop(event_loop, &mut state, builder)
 }
 
 /// Takes the session lock, then runs like [`run`] with one lock surface
@@ -1003,7 +999,7 @@ pub(crate) fn run_locked(
         .lock(&state.queue)
         .map_err(|_| Error::Lock(LockError::Unsupported))?;
     state.locking = Some(Locking {
-        lock,
+        lock: ManuallyDrop::new(lock),
         locked: None,
         on_covered: Some(on_covered),
         covering: false,

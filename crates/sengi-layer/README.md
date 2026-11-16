@@ -204,10 +204,10 @@ public. `config.validate()` reports combinations the compositor would reject.
   session, so nothing of the component has been on screen. `Unsupported`:
   no ext-session-lock-v1. `Ended`: `finished` after `locked`. `Abandoned`:
   `Handle::quit()` or `slint::quit_event_loop()` while locked.
-  `Error::Wayland`: the connection broke. After `locked`, none of these
-  sends anything that could unlock: the lock object is leaked, not
-  destroyed, and the compositor keeps the session locked when the process
-  goes. A new locker can take such a lock over under labwc.
+  `Error::Wayland`: the connection broke. None of these sends anything
+  about the lock at all: the handle to it is held where it is never
+  dropped, whichever way the loop ends, a panic included, and the
+  compositor keeps the session locked when the process goes. A new locker can take such a lock over under labwc.
 - `Handle::on_text(take)` shows `take` the text of each key press before
   Slint. If it returns true the press is dropped: no key event, no repeat,
   and the string it came in is overwritten. Keys that Slint knows by a code
