@@ -104,8 +104,13 @@ its time holds up nothing on the screen:
 Return on an empty field is sent too: an account with no password is let
 in by PAM without a question.
 
-If the connection breaks or greetd sends something that is not in the
-manual, that login ends with "The password could not be checked" and the
+A reply is not waited for for ever. greetd gets ten seconds for what it
+answers by itself (starting a login, giving one up, taking the session)
+and two minutes for an answer that PAM has to produce, since a module may
+rightly be slow: a server on the network, a finger on a reader.
+
+If the connection breaks, no reply comes in that time, or greetd sends
+something that is not in the manual, that login ends with "The password could not be checked" and the
 socket is opened again for the next. If it cannot be opened, greetd is
 gone: the program says so on standard error and exits with status 1, and
 its compositor with it.

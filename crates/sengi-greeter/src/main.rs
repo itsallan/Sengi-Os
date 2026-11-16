@@ -15,7 +15,7 @@ use std::time::Duration;
 use sengi_clock::Clock;
 use sengi_config::{Dirs, Settings};
 use sengi_greeter::cli::{self, Action};
-use sengi_greeter::login::{self, Command, Event};
+use sengi_greeter::login::{self, Command, Event, Patience};
 use sengi_greeter::power;
 use sengi_greeter::screen::{Login, Power, View};
 use sengi_greeter::users;
@@ -273,6 +273,7 @@ fn greet(
                 received,
                 |event| events.send(event).is_ok(),
                 &[session],
+                Patience::default(),
             )
         })?;
 

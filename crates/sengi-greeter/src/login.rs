@@ -11,7 +11,9 @@
 //! back to the screen to be asked.
 
 use std::io::{self, Read, Write};
+use std::os::unix::net::UnixStream;
 use std::sync::mpsc::Receiver;
+use std::time::Duration;
 
 use sengi_lock::screen::Verdict;
 use sengi_system::secret::Secret;
@@ -44,7 +46,46 @@ pub enum Event {
     Gone,
 }
 
-/// The connection is of no more use.
+/// A connection to greetd: bytes both ways, and a limit on how long a
+/// reply is waited for.
+pub trait Link: Read + Write {
+    /// From now on a read that gets nothing for `limit` fails.
+    fn wait_at_most(&mut self, limit: Duration) -> io::Result<()>;
+}
+
+impl Link for UnixStream {
+    fn wait_at_most(&mut self, limit: Duration) -> io::Result<()> {
+        self.set_read_timeout(Some(limit))
+    }
+}
+
+/// How long greetd is given to answer. Without a limit a greetd that has
+/// stopped answering would leave the field on "Checking…" for good, with
+/// no way back but the power button.
+#[derive(Clone, Copy, Debug)]
+pub struct Patience {
+    /// For what greetd answers by itself: starting a login, giving one
+    /// up, taking the session. It has nothing to wait for there.
+    pub greetd: Duration,
+    /// For the answer to something we handed on to PAM. A module may
+    /// rightly take long over it: pam_unix alone sits two seconds on a
+    /// wrong password, others ask a server on the network or wait for a
+    /// finger on a reader. Two minutes is longer than any of that and
+    /// still an end.
+    pub pam: Duration,
+}
+
+impl Default for Patience {
+    fn default() -> Patience {
+        Patience {
+            greetd: Duration::from_secs(10),
+            pam: Duration::from_secs(120),
+        }
+    }
+}
+
+/// The connection is of no more use: it broke, greetd sent something
+/// that is no reply, or no reply came in time.
 struct Lost;
 
 impl From<io::Error> for Lost {
@@ -66,6 +107,7 @@ struct Talk<S> {
     /// What PAM modules have said in this login that was not a question
     /// and has not been shown yet, in the order it came.
     said: Vec<String>,
+    patience: Patience,
 }
 
 /// No login says more than this many things worth keeping.
@@ -95,8 +137,10 @@ fn log(what: &str, description: &str) {
     );
 }
 
-impl<S: Read + Write> Talk<S> {
-    fn ask(&mut self, request: Request) -> Result<Reply, Lost> {
+impl<S: Link> Talk<S> {
+    /// Sends `request` and waits for the reply, `limit` at the longest.
+    fn ask(&mut self, request: Request, limit: Duration) -> Result<Reply, Lost> {
+        self.stream.wait_at_most(limit)?;
         request.send(&mut self.stream)?;
         // The request, and the password if it held one, is wiped here.
         drop(request);
@@ -107,23 +151,27 @@ impl<S: Read + Write> Talk<S> {
         self.open = false;
         self.said.clear();
         // Whatever it answers, there is nothing more to do about it.
-        self.ask(Request::cancel_session()).map(drop)
+        self.ask(Request::cancel_session(), self.patience.greetd)
+            .map(drop)
     }
 
-    /// Carries a login on from `request` until it ends or needs the
-    /// screen. `typed` answers the first secret question if it is there.
+    /// Carries a login on from `request`, whose reply is given `limit`,
+    /// until it ends or needs the screen. `typed` answers the first
+    /// secret question if it is there.
     fn carry_on(
         &mut self,
         request: Request,
+        limit: Duration,
         mut typed: Option<Secret>,
         session: &[String],
     ) -> Result<Event, Lost> {
-        let mut reply = self.ask(request)?;
+        let Patience { greetd, pam } = self.patience;
+        let mut reply = self.ask(request, limit)?;
         loop {
             reply = match reply {
                 Reply::Success => {
                     self.open = false;
-                    return match self.ask(Request::start_session(session, &[]))? {
+                    return match self.ask(Request::start_session(session, &[]), greetd)? {
                         Reply::Success => Ok(Event::Judged(Verdict::Right)),
                         Reply::Error { description, .. } => {
                             log("would not start the session", &description);
@@ -150,7 +198,8 @@ impl<S: Read + Write> Talk<S> {
                     message,
                 } => match typed.take().filter(|typed| !typed.is_empty()) {
                     Some(typed) => {
-                        self.ask(Request::post_auth_message_response(Some(typed.expose())))?
+                        let answer = Request::post_auth_message_response(Some(typed.expose()));
+                        self.ask(answer, pam)?
                     }
                     None => return Ok(self.put(message, false)),
                 },
@@ -162,7 +211,7 @@ impl<S: Read + Write> Talk<S> {
                     if !message.trim().is_empty() && self.said.len() < MOST_SAID {
                         self.said.push(message);
                     }
-                    self.ask(Request::post_auth_message_response(None))?
+                    self.ask(Request::post_auth_message_response(None), pam)?
                 }
             };
         }
@@ -181,12 +230,14 @@ impl<S: Read + Write> Talk<S> {
 /// Serves commands until the screen is gone or greetd is. `connect` is
 /// called once at the start, and again whenever a connection has failed:
 /// greetd closes a connection it could make no sense of, and a login that
-/// broke that way should not take the login screen with it.
-pub fn serve<S: Read + Write>(
+/// broke that way should not take the login screen with it. The same
+/// goes for a reply that did not come within `patience`.
+pub fn serve<S: Link>(
     mut connect: impl FnMut() -> io::Result<S>,
     commands: Receiver<Command>,
     mut tell: impl FnMut(Event) -> bool,
     session: &[String],
+    patience: Patience,
 ) {
     let mut talk: Option<Talk<S>> = None;
     for command in commands {
@@ -197,6 +248,7 @@ pub fn serve<S: Read + Write>(
                         stream,
                         open: false,
                         said: Vec::new(),
+                        patience,
                     })
                 }
                 Err(_) => {
@@ -214,13 +266,14 @@ pub fn serve<S: Read + Write>(
                     current.cancel()?;
                 }
                 current.said.clear();
-                current.carry_on(Request::create_session(&user), Some(password), session)
+                let create = Request::create_session(&user);
+                current.carry_on(create, patience.greetd, Some(password), session)
             })(),
             Command::Answer(answer) if current.open => {
                 current.open = false;
                 let request = Request::post_auth_message_response(Some(answer.expose()));
                 drop(answer);
-                current.carry_on(request, None, session)
+                current.carry_on(request, patience.pam, None, session)
             }
             // Nothing was asked. The screen is owed a verdict all the same.
             Command::Answer(_) => Ok(Event::Judged(Verdict::Unchecked(None))),
@@ -255,6 +308,10 @@ mod tests {
     use std::sync::mpsc;
     use std::thread;
 
+    /// For a reply: read the request and then say nothing, for as long as
+    /// the connection is there.
+    const SILENCE: &str = "(silence)";
+
     /// A greetd that expects these requests in this order and gives these
     /// replies. An empty reply means: hang up instead of answering.
     fn greetd(script: Vec<(&'static str, &'static str)>) -> (UnixStream, thread::JoinHandle<()>) {
@@ -268,6 +325,10 @@ mod tests {
                 stream.read_exact(&mut payload).unwrap();
                 assert_eq!(String::from_utf8(payload).unwrap(), expected);
                 if reply.is_empty() {
+                    return;
+                }
+                if reply == SILENCE {
+                    let _ = stream.read_to_end(&mut Vec::new());
                     return;
                 }
                 stream
@@ -298,6 +359,14 @@ mod tests {
     /// other as connections are made, and gives back what the screen was
     /// told.
     fn run(scripts: Vec<Vec<(&'static str, &'static str)>>, commands: Vec<Command>) -> Vec<Event> {
+        run_with(Patience::default(), scripts, commands)
+    }
+
+    fn run_with(
+        patience: Patience,
+        scripts: Vec<Vec<(&'static str, &'static str)>>,
+        commands: Vec<Command>,
+    ) -> Vec<Event> {
         let mut daemons = Vec::new();
         let mut streams = Vec::new();
         for script in scripts {
@@ -320,6 +389,7 @@ mod tests {
                 true
             },
             &["/usr/bin/sengi-session".to_string()],
+            patience,
         );
         drop(streams);
         for played in daemons {
@@ -634,6 +704,83 @@ mod tests {
                 Event::Judged(Verdict::Right)
             ]
         );
+    }
+
+    #[test]
+    fn a_greetd_that_stops_answering_is_not_waited_for_for_ever() {
+        let short = Duration::from_millis(60);
+        let live = r#"{"type":"post_auth_message_response","response":"live"}"#;
+        // Silent on each kind of request in turn; after each the next
+        // login gets a new connection.
+        let events = run_with(
+            Patience {
+                greetd: short,
+                pam: short,
+            },
+            vec![
+                vec![(CREATE, SILENCE)],
+                vec![(CREATE, ASK_PASSWORD), (live, SILENCE)],
+                vec![(CREATE, SUCCESS), (START, SILENCE)],
+                vec![(CREATE, ASK_PASSWORD), (live, DENIED), (CANCEL, SILENCE)],
+                vec![(CREATE, SUCCESS), (START, SUCCESS)],
+            ],
+            (0..5).map(|_| begin("live", "live")).collect(),
+        );
+        let unchecked = || Event::Judged(Verdict::Unchecked(None));
+        assert_eq!(
+            events,
+            [
+                unchecked(),
+                unchecked(),
+                unchecked(),
+                unchecked(),
+                Event::Judged(Verdict::Right)
+            ]
+        );
+    }
+
+    #[test]
+    fn pam_is_given_longer_than_greetd_itself() {
+        // The answer comes after greetd's own limit has long passed and
+        // well within PAM's.
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let slow = thread::spawn(move || {
+            let mut stream = theirs;
+            let mut say = |reply: &str, after: Duration| {
+                let mut length = [0u8; 4];
+                stream.read_exact(&mut length).unwrap();
+                let mut payload = vec![0u8; u32::from_ne_bytes(length) as usize];
+                stream.read_exact(&mut payload).unwrap();
+                thread::sleep(after);
+                stream
+                    .write_all(&(reply.len() as u32).to_ne_bytes())
+                    .unwrap();
+                stream.write_all(reply.as_bytes()).unwrap();
+            };
+            say(ASK_PASSWORD, Duration::ZERO);
+            say(SUCCESS, Duration::from_millis(250));
+            say(SUCCESS, Duration::ZERO);
+        });
+        let (send, receive) = mpsc::channel();
+        send.send(begin("live", "live")).unwrap();
+        drop(send);
+        let mut ours = Some(ours);
+        let mut events = Vec::new();
+        serve(
+            || ours.take().ok_or(io::ErrorKind::NotFound.into()),
+            receive,
+            |event| {
+                events.push(event);
+                true
+            },
+            &["/usr/bin/sengi-session".to_string()],
+            Patience {
+                greetd: Duration::from_millis(50),
+                pam: Duration::from_secs(20),
+            },
+        );
+        slow.join().unwrap();
+        assert_eq!(events, [Event::Judged(Verdict::Right)]);
     }
 
     #[test]
