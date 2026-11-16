@@ -27,6 +27,10 @@ zstd
 
 # Session
 greetd
+# logind asks polkit whether a user may restart or shut down the machine,
+# and without it refuses everyone but root: the session menu and the login
+# screen alike. Started on the first such question, not at boot.
+polkitd
 labwc
 xwayland
 swayidle
