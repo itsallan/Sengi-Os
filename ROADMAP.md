@@ -52,8 +52,8 @@ each `- [ ]` line is an issue.
 
 ## 0.6
 
-- [ ] sengi-greeter
-- [ ] Own lock screen replaces swaylock
+- [x] sengi-greeter
+- [x] Own lock screen replaces swaylock
 
 ## 0.7
 
