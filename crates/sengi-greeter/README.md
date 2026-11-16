@@ -87,15 +87,19 @@ its time holds up nothing on the screen:
      with PAM's wording in place of "Password";
    - a question that may be seen: the field opens and shows what is typed;
    - a notice or a problem: kept, answered with nothing, and shown under
-     the field with the next question or with the refusal.
+     the field with the next question or with the refusal. When there are
+     several they are all kept and shown as one line.
 3. `success` is followed by `start_session` with `/usr/bin/sengi-session`
    and no extra environment, the same as the live image's automatic login.
    When greetd has taken that, the program exits with status 0. greetd
    starts the session once the greeter's process has gone.
 4. `error` with `auth_error` is a wrong password. The session is cancelled
    with `cancel_session`, and the next Return starts over at 1. Any other
-   error is shown as greetd words it and is not counted as a wrong
-   password.
+   error is not counted as a wrong password. The screen then says "The
+   password could not be checked", or what PAM said if it said anything.
+   greetd's own description of the error names PAM calls and its internal
+   states; it is written to standard error, which is the journal, and not
+   shown.
 
 Return on an empty field is sent too: an account with no password is let
 in by PAM without a question.

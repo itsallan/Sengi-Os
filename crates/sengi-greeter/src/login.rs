@@ -63,8 +63,36 @@ struct Talk<S> {
     stream: S,
     /// greetd is waiting for an answer from us.
     open: bool,
-    /// The last thing a PAM module said that was not a question.
-    said: Option<String>,
+    /// What PAM modules have said in this login that was not a question
+    /// and has not been shown yet, in the order it came.
+    said: Vec<String>,
+}
+
+/// No login says more than this many things worth keeping.
+const MOST_SAID: usize = 8;
+
+/// Several messages as one line: each a sentence of its own.
+fn joined(said: &mut Vec<String>) -> Option<String> {
+    let mut line = String::new();
+    for message in said.drain(..) {
+        if line.ends_with(['.', '!', '?', ':', ';']) {
+            line.push(' ');
+        } else if !line.is_empty() {
+            line.push_str(". ");
+        }
+        line.push_str(message.trim());
+    }
+    Some(line).filter(|line| !line.is_empty())
+}
+
+/// greetd's own words about what went wrong are for whoever reads the
+/// journal. They name PAM calls and internal states, not anything the
+/// person at the login screen can act on.
+fn log(what: &str, description: &str) {
+    eprintln!(
+        "sengi-greeter: greetd {what}: {}",
+        sengi_text::line(description, 200)
+    );
 }
 
 impl<S: Read + Write> Talk<S> {
@@ -77,7 +105,7 @@ impl<S: Read + Write> Talk<S> {
 
     fn cancel(&mut self) -> Result<(), Lost> {
         self.open = false;
-        self.said = None;
+        self.said.clear();
         // Whatever it answers, there is nothing more to do about it.
         self.ask(Request::cancel_session()).map(drop)
     }
@@ -98,19 +126,23 @@ impl<S: Read + Write> Talk<S> {
                     return match self.ask(Request::start_session(session, &[]))? {
                         Reply::Success => Ok(Event::Judged(Verdict::Right)),
                         Reply::Error { description, .. } => {
+                            log("would not start the session", &description);
                             self.cancel()?;
-                            Ok(Event::Judged(Verdict::Unchecked(some(description))))
+                            Ok(Event::Judged(Verdict::Unchecked(None)))
                         }
                         Reply::AuthMessage { .. } => Err(Lost),
                     };
                 }
                 Reply::Error { auth, description } => {
-                    let said = self.said.take();
+                    let said = joined(&mut self.said);
+                    if !auth {
+                        log("could not check the login", &description);
+                    }
                     self.cancel()?;
                     return Ok(Event::Judged(if auth {
                         Verdict::Wrong(said)
                     } else {
-                        Verdict::Unchecked(said.or(some(description)))
+                        Verdict::Unchecked(said)
                     }));
                 }
                 Reply::AuthMessage {
@@ -127,8 +159,8 @@ impl<S: Read + Write> Talk<S> {
                     message,
                 } => return Ok(self.put(message, true)),
                 Reply::AuthMessage { message, .. } => {
-                    if !message.trim().is_empty() {
-                        self.said = Some(message);
+                    if !message.trim().is_empty() && self.said.len() < MOST_SAID {
+                        self.said.push(message);
                     }
                     self.ask(Request::post_auth_message_response(None))?
                 }
@@ -141,13 +173,9 @@ impl<S: Read + Write> Talk<S> {
         Event::Asked {
             question,
             visible,
-            said: self.said.take(),
+            said: joined(&mut self.said),
         }
     }
-}
-
-fn some(text: String) -> Option<String> {
-    Some(text).filter(|text| !text.trim().is_empty())
 }
 
 /// Serves commands until the screen is gone or greetd is. `connect` is
@@ -168,7 +196,7 @@ pub fn serve<S: Read + Write>(
                     talk = Some(Talk {
                         stream,
                         open: false,
-                        said: None,
+                        said: Vec::new(),
                     })
                 }
                 Err(_) => {
@@ -185,7 +213,7 @@ pub fn serve<S: Read + Write>(
                 if current.open {
                     current.cancel()?;
                 }
-                current.said = None;
+                current.said.clear();
                 current.carry_on(Request::create_session(&user), Some(password), session)
             })(),
             Command::Answer(answer) if current.open => {
@@ -437,7 +465,7 @@ mod tests {
                 Event::Asked {
                     question: "Code: ".to_string(),
                     visible: true,
-                    said: Some("The token is not plugged in".to_string())
+                    said: Some("Two steps are needed. The token is not plugged in".to_string())
                 },
                 Event::Asked {
                     question: "PIN: ".to_string(),
@@ -472,6 +500,45 @@ mod tests {
     }
 
     #[test]
+    fn everything_the_modules_said_is_kept_and_reads_as_sentences() {
+        let mut said = vec![
+            "Your password expires in 3 days".to_string(),
+            " 2 attempts left. ".to_string(),
+            "Touch the key!".to_string(),
+            "Now".to_string(),
+        ];
+        assert_eq!(
+            joined(&mut said).as_deref(),
+            Some("Your password expires in 3 days. 2 attempts left. Touch the key! Now")
+        );
+        assert!(said.is_empty());
+        assert_eq!(joined(&mut said), None);
+
+        // What PAM said is shown with a failure that is not a wrong
+        // password; what greetd said about it is not.
+        let events = run(
+            vec![vec![
+                (
+                    CREATE,
+                    r#"{"type":"auth_message","auth_message_type":"error","auth_message":"The directory is not answering"}"#,
+                ),
+                (
+                    NOTHING,
+                    r#"{"type":"error","error_type":"error","description":"pam_authenticate: AUTHINFO_UNAVAIL"}"#,
+                ),
+                (CANCEL, SUCCESS),
+            ]],
+            vec![begin("live", "live")],
+        );
+        assert_eq!(
+            events,
+            [Event::Judged(Verdict::Unchecked(Some(
+                "The directory is not answering".to_string()
+            )))]
+        );
+    }
+
+    #[test]
     fn an_error_that_is_not_about_the_password_is_not_counted_as_one() {
         let events = run(
             vec![vec![
@@ -493,10 +560,9 @@ mod tests {
         assert_eq!(
             events,
             [
-                Event::Judged(Verdict::Unchecked(Some(
-                    "a session is already being configured".to_string()
-                ))),
-                Event::Judged(Verdict::Unchecked(Some("no such command".to_string())))
+                // greetd's wording goes to the journal, not to the screen.
+                Event::Judged(Verdict::Unchecked(None)),
+                Event::Judged(Verdict::Unchecked(None))
             ]
         );
     }
