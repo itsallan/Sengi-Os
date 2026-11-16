@@ -27,6 +27,15 @@ and the measured idle RAM and boot time.
 - The machine does not go to sleep until every screen is covered by the
   lock screen.
 
+### Fixed
+
+- The image build took the setuid and setgid bits off every program in
+  /usr and gave /etc/shadow to the wrong group. sudo, su and passwd did
+  not work for the live user, and no password could be checked, so a
+  locked screen could not be unlocked by typing it. The 0.5.0 image has
+  this fault. The boot test now unlocks the lock screen with the live
+  user's password and fails if that does not work.
+
 ## 0.5.0
 
 A settings application of our own.
