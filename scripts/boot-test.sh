@@ -201,6 +201,24 @@ dump() {
 	echo "screendump $out/$1.ppm" >&3
 	sleep 1
 }
+# The lock screen's clock redraws itself when the minute turns, so "the
+# screen changed" says nothing about the prompt. This looks only at a band
+# across the screen below the date, where the name, the field and the line
+# under the field are. A dump is a short header and then three bytes a
+# pixel, row after row.
+band_top=$((screen_h * 54 / 100))
+band_rows=$((screen_h * 24 / 100))
+band() {
+	size=$(wc -c <"$out/$1.ppm")
+	header=$((size - screen_w * screen_h * 3))
+	tail -c +$((header + band_top * screen_w * 3 + 1)) "$out/$1.ppm" |
+		head -c $((band_rows * screen_w * 3)) >"$out/$1.band"
+}
+prompt_differs() {
+	band "$1"
+	band "$2"
+	cmp -l "$out/$1.band" "$out/$2.band" 2>/dev/null | wc -l
+}
 dump unlocked
 key meta_l-l 1
 if wait_serial 'SENGI-LOCK running' 10; then
@@ -214,22 +232,27 @@ if wait_serial 'SENGI-LOCK running' 10; then
 	shot lock-caps
 	dump caps
 	key caps_lock 1
-	if [ "$(differs locked caps)" -eq 0 ]; then
+	if [ "$(prompt_differs locked caps)" -eq 0 ]; then
 		lock_fail="the lock screen does not show that Caps Lock is on"
 	fi
 	dump locked
 	for letter in w r o n g; do
 		key "$letter" 0.3
 	done
-	# PAM takes a couple of seconds to say no.
-	key ret 5
+	key ret 0.5
+	# How long PAM takes to say no is PAM's business. The guest says when
+	# it has (see sengi-boot-report); only then is the screen looked at,
+	# and only then is the next password typed.
+	wait_serial 'SENGI-LOCK refused' 30 ||
+		lock_fail="PAM did not turn the wrong password down within 30 s"
+	sleep 1
 	shot lock-wrong
 	dump wrong
 	if grep -q 'SENGI-LOCK gone' "$out/serial.log"; then
 		lock_fail="a wrong password unlocked the screen"
 	elif [ "$(differs unlocked wrong)" -lt "$covered_bytes" ]; then
 		lock_fail="the desktop is on screen after a wrong password"
-	elif [ "$(differs locked wrong)" -eq 0 ]; then
+	elif [ "$(prompt_differs locked wrong)" -eq 0 ]; then
 		lock_fail="the lock screen shows nothing about a wrong password"
 	fi
 	for letter in l i v e; do
@@ -252,7 +275,7 @@ else
 	shot lock
 	lock_fail="sengi-lock did not start on Super+L"
 fi
-rm -f "$out"/*.ppm
+rm -f "$out"/*.ppm "$out"/*.band
 stop
 
 guest_s=$(sed -n 's/.*SENGI-BOOT desktop_s=\([0-9.]*\).*/\1/p' "$out/serial.log" | head -1)

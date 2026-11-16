@@ -82,4 +82,11 @@ watch() {
 	done
 }
 watch sengi-settings SENGI-SETTINGS
+# The test types a wrong password first. Say when PAM has turned it down,
+# so the test need not guess how long that takes.
+journalctl -f -n 0 -o cat -t sengi-lock 2>/dev/null | while IFS= read -r line; do
+	case $line in
+	*'authentication failure'*) echo "SENGI-LOCK refused" >$port ;;
+	esac
+done &
 watch sengi-lock SENGI-LOCK
