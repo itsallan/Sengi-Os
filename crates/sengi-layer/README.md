@@ -1,8 +1,9 @@
 # sengi-layer
 
-Runs Slint components on wlr-layer-shell surfaces. Slint has no layer-shell
-backend, so the Sengi OS shell programs (sengi-bar, sengi-dock,
-sengi-launcher) share this one. It owns the Wayland connection, puts a Slint
+Runs Slint components on wlr-layer-shell surfaces, and on session lock
+surfaces for the lock screen. Slint has no layer-shell backend, so the
+Sengi OS shell programs (sengi-bar, sengi-dock, sengi-launcher and the
+rest) share this one. It owns the Wayland connection, puts a Slint
 component on a layer surface, feeds it pointer and keyboard input, and copies
 software-rendered frames into shared-memory buffers.
 
@@ -98,6 +99,30 @@ height, no keyboard, fed by a worker thread.
         })
     }
 
+A lock screen: one surface per output through ext-session-lock-v1 instead
+of layer-shell, typed text taken before Slint sees it.
+
+    fn main() -> Result<(), sengi_layer::Error> {
+        let app = App::new()?;
+        let handle = app.handle();
+        handle.on_text(|text| {
+            collect(text); // into memory this program can wipe
+            true           // and Slint never hears of it
+        });
+        app.run_locked(
+            move |_context| {
+                let screen = LockScreen::new()?;
+                let handle = handle.clone();
+                screen.on_password_was_right(move || handle.unlock());
+                Ok(screen)
+            },
+            || tell_whoever_asked_that_the_session_is_locked(),
+        )
+    }
+
+`run_locked` returns `Ok` only after `Handle::unlock()`. See "Session lock"
+below.
+
 ## Things to know
 
 - Never call `show()`, `hide()` or `run()` on the component. The loop shows
@@ -152,6 +177,44 @@ public. `config.validate()` reports combinations the compositor would reject.
   `C` is the Slint component. It runs after the Slint platform is installed.
 - `run` returns `Ok(())` after a quit, and an `Error` (`Config`, `Wayland`,
   `Platform`, `Build`) when it cannot start or the connection is lost.
+
+### Session lock
+
+- `app.run_locked(build, covered) -> Result<(), Error>` asks the compositor
+  for the session lock and puts `build`'s component on a lock surface on
+  every output, now and as outputs are plugged in. There is no `Config`:
+  the compositor sizes the surfaces to their outputs and gives them the
+  keyboard. `hide`, `show`, sizes and input regions do nothing to them.
+- The surfaces are created straight after the lock is asked for and drawn
+  as soon as the compositor has sized them, as the protocol recommends, so
+  a compositor that waits for them before it says `locked` can.
+- `covered` is called once: after the compositor's `locked`, after every
+  output has had a first frame committed, and after a round trip that
+  shows the compositor has taken those frames in. labwc says `locked` at
+  once and blanks an output a tenth of a second later, so `locked` alone
+  does not mean the session is out of sight. This is the point at which to
+  report success to whoever asked for the lock.
+- `Handle::unlock()` sends `unlock_and_destroy`, waits for the compositor
+  to have seen it, and ends the loop with `Ok`. Nothing else unlocks.
+- Every other end is an `Error`. `Error::Lock(LockError::Refused)`: the
+  compositor sent `finished` without `locked`, most often because another
+  locker holds the session; lock surfaces are only ever shown on a locked
+  session, so nothing of the component has been on screen. `Unsupported`:
+  no ext-session-lock-v1. `Ended`: `finished` after `locked`. `Abandoned`:
+  `Handle::quit()` or `slint::quit_event_loop()` while locked.
+  `Error::Wayland`: the connection broke. After `locked`, none of these
+  sends anything that could unlock: the lock object is leaked, not
+  destroyed, and the compositor keeps the session locked when the process
+  goes. A new locker can take such a lock over under labwc.
+- `Handle::on_text(take)` shows `take` the text of each key press before
+  Slint. If it returns true the press is dropped: no key event, no repeat,
+  and the string it came in is overwritten. Keys that Slint knows by a code
+  (Return, Backspace, Escape, arrows, modifiers) and presses with Control
+  held are not offered. It works on layer surfaces too.
+- `Handle::on_keyboard_changed(changed)` reports `Keyboard { caps_lock,
+  layout }` when either changes; `layout` is the index of the active XKB
+  group.
+- `sengi_layer::wipe(&mut String)` overwrites a string and empties it.
 
 ### `Context`
 

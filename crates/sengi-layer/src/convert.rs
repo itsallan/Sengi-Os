@@ -76,6 +76,11 @@ pub(crate) fn key_text(keysym: Keysym, utf8: Option<&str>) -> Option<SharedStrin
         .map(SharedString::from)
 }
 
+/// True for keys that reach Slint as one of its own codes, not as text.
+pub(crate) fn is_special(keysym: Keysym) -> bool {
+    special_key(keysym).is_some()
+}
+
 fn special_key(keysym: Keysym) -> Option<Key> {
     Some(match keysym {
         Keysym::BackSpace => Key::Backspace,

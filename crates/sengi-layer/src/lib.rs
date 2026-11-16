@@ -98,6 +98,7 @@ mod backend;
 mod config;
 mod convert;
 mod frames;
+mod lock;
 mod outputs;
 mod platform;
 mod surface;
@@ -118,15 +119,17 @@ use smithay_client_toolkit::reexports::calloop::{EventLoop, LoopHandle};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::RegistryState;
 use smithay_client_toolkit::seat::SeatState;
+use smithay_client_toolkit::session_lock::SessionLockState;
 use smithay_client_toolkit::shell::wlr_layer::LayerShell;
 use smithay_client_toolkit::shm::Shm;
-use wayland_client::globals::registry_queue_init;
+use wayland_client::globals::{registry_queue_init, GlobalList};
 use wayland_client::Connection;
 
 use backend::{Builder, Instance, Shared, State};
 use platform::{LayerPlatform, ProxyEvent, QuitGuard, Unclaimed};
 
 pub use config::{Anchor, Config, ConfigError, KeyboardMode, Layer, Margins, Outputs};
+pub use lock::{wipe, Keyboard, LockError};
 pub use surface::{Output, Rect, SurfaceHandle};
 /// The version of wayland-client the connection from [`Handle::connection`]
 /// belongs to. Use this instead of a dependency of your own so the types
@@ -146,6 +149,9 @@ pub enum Error {
     Platform(PlatformError),
     /// The build closure failed.
     Build(Box<dyn std::error::Error>),
+    /// [`App::run_locked`] did not get the session lock, or stopped
+    /// without unlocking.
+    Lock(LockError),
 }
 
 impl fmt::Display for Error {
@@ -155,6 +161,7 @@ impl fmt::Display for Error {
             Error::Wayland(error) => write!(f, "{error}"),
             Error::Platform(error) => write!(f, "{error}"),
             Error::Build(error) => write!(f, "{error}"),
+            Error::Lock(error) => write!(f, "{error}"),
         }
     }
 }
@@ -166,6 +173,7 @@ impl std::error::Error for Error {
             Error::Wayland(_) => None,
             Error::Platform(error) => Some(error),
             Error::Build(error) => Some(error.as_ref()),
+            Error::Lock(error) => Some(error),
         }
     }
 }
@@ -235,6 +243,7 @@ pub struct App {
     state: State,
     unclaimed: Unclaimed,
     handle: Handle,
+    globals: GlobalList,
 }
 
 impl App {
@@ -292,6 +301,9 @@ impl App {
             input_region: None,
             input_stamp: 0,
             quit: false,
+            unlock: false,
+            text_hook: None,
+            keyboard_hook: None,
         }));
         let handle = Handle {
             shared: shared.clone(),
@@ -317,6 +329,7 @@ impl App {
             state,
             unclaimed,
             handle,
+            globals,
         })
     }
 
@@ -335,24 +348,67 @@ impl App {
     ///
     /// `config` replaces anything set through the handle before this call,
     /// except [`Handle::hide`]: an app hidden before `run` starts hidden.
-    pub fn run<C, F>(self, config: Config, mut build: F) -> Result<(), Error>
+    pub fn run<C, F>(self, config: Config, build: F) -> Result<(), Error>
     where
         C: ComponentHandle + 'static,
         F: FnMut(&Context) -> Result<C, Box<dyn std::error::Error>> + 'static,
     {
         config.validate()?;
         self.state.shared.borrow_mut().config = config;
-
-        let unclaimed = self.unclaimed;
-        let builder: Builder = Box::new(move |context| {
-            let component = build(context)?;
-            let window = claim(&unclaimed, component.window())
-                .ok_or("the component returned by the build closure has no window here")?;
-            component.show()?;
-            Ok((Box::new(component) as Box<dyn Instance>, window))
-        });
+        let builder = builder(self.unclaimed, build);
         backend::run(self.event_loop, self.state, builder)
     }
+
+    /// Locks the session through ext-session-lock-v1 and shows the
+    /// component `build` returns on a lock surface on every output,
+    /// including outputs plugged in later. The surfaces cover their
+    /// outputs and have the keyboard; there is no [`Config`] because the
+    /// compositor decides all of that.
+    ///
+    /// `covered` is called once, when the compositor has said the session
+    /// is locked and has taken in a first frame for every output. Nothing
+    /// of the session can be seen from then on, so that is the moment to
+    /// tell whoever asked for the lock that it holds.
+    ///
+    /// Returns `Ok` only after [`Handle::unlock`], once the compositor has
+    /// taken the unlock in. Every other way out is an error and leaves the
+    /// session as it was: [`LockError::Refused`] before it was ever
+    /// locked, and locked for good after, because a compositor keeps a
+    /// session locked when its locker goes away. The lock surfaces are
+    /// only ever shown by the compositor on a locked session, so nothing
+    /// of the component appears if the lock is refused.
+    pub fn run_locked<C, F>(self, build: F, covered: impl FnOnce() + 'static) -> Result<(), Error>
+    where
+        C: ComponentHandle + 'static,
+        F: FnMut(&Context) -> Result<C, Box<dyn std::error::Error>> + 'static,
+    {
+        let manager = SessionLockState::new(&self.globals, &self.state.queue_handle());
+        self.state.shared.borrow_mut().config = Config::new("lock")
+            .keyboard(KeyboardMode::Exclusive)
+            .outputs(Outputs::All);
+        let builder = builder(self.unclaimed, build);
+        backend::run_locked(
+            self.event_loop,
+            self.state,
+            manager,
+            builder,
+            Box::new(covered),
+        )
+    }
+}
+
+fn builder<C, F>(unclaimed: Unclaimed, mut build: F) -> Builder
+where
+    C: ComponentHandle + 'static,
+    F: FnMut(&Context) -> Result<C, Box<dyn std::error::Error>> + 'static,
+{
+    Box::new(move |context| {
+        let component = build(context)?;
+        let window = claim(&unclaimed, component.window())
+            .ok_or("the component returned by the build closure has no window here")?;
+        component.show()?;
+        Ok((Box::new(component) as Box<dyn Instance>, window))
+    })
 }
 
 /// Finds the software window behind a component among those Slint has
@@ -537,9 +593,40 @@ impl Handle {
         self.shared.borrow().visible
     }
 
-    /// Ends the loop; [`run`] returns `Ok`.
+    /// Ends the loop; [`run`] returns `Ok`. Under [`App::run_locked`] it
+    /// returns [`LockError::Abandoned`] and the session stays locked.
     pub fn quit(&self) {
         self.shared.borrow_mut().quit = true;
+    }
+
+    /// Lifts the session lock taken by [`App::run_locked`], which then
+    /// returns `Ok`. Call it when the user has been authenticated and for
+    /// no other reason. Does nothing in a program that holds no lock.
+    pub fn unlock(&self) {
+        self.shared.borrow_mut().unlock = true;
+    }
+
+    /// Hands typed text to `take` before Slint sees it. The text is what
+    /// one key press produced in the active layout, after dead keys and
+    /// compose sequences; keys Slint knows by a code of its own, such as
+    /// Return, Backspace and Escape, and presses made with Control held
+    /// are not offered and arrive in the component as usual.
+    ///
+    /// When `take` returns true the press goes no further. It never
+    /// reaches the component, it does not repeat while held, and the
+    /// buffer the text came in is overwritten before it is freed. A
+    /// password prompt collects its input this way and shows only how
+    /// much has been typed. A second call replaces the hook.
+    pub fn on_text(&self, take: impl FnMut(&str) -> bool + 'static) {
+        self.shared.borrow_mut().text_hook = Some(Box::new(take));
+    }
+
+    /// Calls `changed` when Caps Lock goes on or off or another keyboard
+    /// layout becomes active. The compositor says so when a surface of
+    /// the app gets the keyboard and whenever it changes after that. A
+    /// second call replaces the hook.
+    pub fn on_keyboard_changed(&self, changed: impl FnMut(Keyboard) + 'static) {
+        self.shared.borrow_mut().keyboard_hook = Some(Box::new(changed));
     }
 
     /// Opens a channel into the loop. Messages sent from any thread wake
