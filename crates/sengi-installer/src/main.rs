@@ -786,6 +786,10 @@ impl App {
         drop(progress);
         self.set_can_next();
         self.window.invoke_focus_next();
+        // The page has a new title and new words above the steps, and the
+        // renderer has been seen to leave the old title standing. The whole
+        // window is drawn once more.
+        self.window.invoke_draw_everything();
     }
 
     fn next(self: &Rc<Self>) {

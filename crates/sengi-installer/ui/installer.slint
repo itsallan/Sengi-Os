@@ -411,7 +411,7 @@ export component InstallerWindow inherits Window {
     private property <int> sheet: 0;
     private property <int> sheets-owed: 0;
 
-    function draw-everything() {
+    public function draw-everything() {
         root.sheet += 1;
         root.sheets-owed = 3;
     }
