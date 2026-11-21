@@ -3,23 +3,18 @@
 # took and the idle memory use to the serial port.
 port=/dev/ttyS0
 
-# The compositor this boot was asked for, by the same rule as sengi-session.
-# labwc takes the socket name wayland-0; ours counts from wayland-1.
-compositor=labwc
-socket=/run/user/1000/wayland-0
-read -r cmdline </proc/cmdline
-case " $cmdline " in
-*" sengi.compositor=own "*)
-	compositor=sengi-compositor
-	socket=/run/user/1000/wayland-1
-	;;
-esac
+# desktop_is_up, session_compositor, may_power_off and pss_kb, which the
+# install test's report uses too.
+. /usr/lib/sengi-os/report.sh
 
-until [ -S "$socket" ] && pidof sengi-bar >/dev/null && pidof sengi-dock >/dev/null; do
+until desktop_is_up; do
 	sleep 0.1
 done
 read -r up _ </proc/uptime
 echo "SENGI-BOOT desktop_s=$up" >$port
+# Whichever compositor the session came up on. The test knows which one
+# it asked for.
+compositor=$(session_compositor)
 
 sleep "${SENGI_IDLE_WAIT:-30}"
 awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2}
@@ -93,8 +88,6 @@ case $lock_after in
 '' | *[!0-9]*) echo "SENGI-FAIL sengi-settings --get power.lock-after gave '$lock_after', not a number" >$port ;;
 esac
 
-# may_power_off and pss_kb, which the install test's report uses too.
-. /usr/lib/sengi-os/report.sh
 # Restart and Shut down in the session menu go through logind.
 may_power_off live
 # shellcheck disable=SC2046
@@ -167,7 +160,7 @@ while [ -n "$(greeter sengi-greeter)" ]; do
 done
 echo "SENGI-GREETER gone" >$port
 n=0
-until [ -S "$socket" ] && pidof sengi-bar >/dev/null && pidof sengi-dock >/dev/null; do
+until desktop_is_up; do
 	n=$((n + 1))
 	[ $n -lt 150 ] || break
 	sleep 0.2

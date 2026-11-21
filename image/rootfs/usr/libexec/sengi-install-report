@@ -161,7 +161,7 @@ swapon --noheadings --show=NAME | grep -q zram || fail "there is no zram swap"
 [ "$(systemctl is-active systemd-oomd)" = active ] || fail "systemd-oomd is not running"
 failed=$(systemctl --failed --no-legend --plain | awk '{print $1}' | tr '\n' ' ')
 [ -z "$failed" ] || fail "units failed: $failed"
-for prog in labwc sengi-bar sengi-dock swayidle sengi-focus; do
+for prog in "$(session_compositor)" sengi-bar sengi-dock swayidle sengi-focus; do
 	pidof "$prog" >/dev/null || fail "$prog is not running"
 done
 # Restart and Shut down go through logind, for the new account too.

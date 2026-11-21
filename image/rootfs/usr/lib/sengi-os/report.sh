@@ -34,7 +34,23 @@ pss_kb() {
 }
 
 # Whether the desktop of the person with user number 1000 is up: its
-# compositor's socket, the bar and the dock.
+# compositor's socket, the bar and the dock. labwc calls its socket
+# wayland-0, sengi-compositor counts from wayland-1.
 desktop_is_up() {
-	[ -S /run/user/1000/wayland-0 ] && pidof sengi-bar >/dev/null && pidof sengi-dock >/dev/null
+	for socket in /run/user/1000/wayland-[0-9]; do
+		if [ -S "$socket" ] && pidof sengi-bar >/dev/null && pidof sengi-dock >/dev/null; then
+			return 0
+		fi
+	done
+	return 1
+}
+
+# The compositor the desktop session is running on. Ours only ever runs
+# for a session; labwc is also what the login screen is shown in.
+session_compositor() {
+	if pidof sengi-compositor >/dev/null; then
+		echo sengi-compositor
+	else
+		echo labwc
+	fi
 }
