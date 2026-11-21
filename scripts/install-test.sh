@@ -87,7 +87,6 @@ start_qemu() {
 		-audiodev none,id=snd -device intel-hda -device hda-output,audiodev=snd \
 		-nic user,model=virtio-net-pci \
 		-smbios type=11,value=io.systemd.credential:sengi.test.install=1 \
-		${SENGI_TEST_PRE:+-smbios "type=11,value=io.systemd.credential:sengi.test.install.pre=$SENGI_TEST_PRE"} \
 		-serial file:"$serial" \
 		-monitor stdio <"$out/mon.in" >"$monitor" 2>&1 &
 	qemu=$!

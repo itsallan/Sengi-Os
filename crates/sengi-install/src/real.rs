@@ -232,6 +232,10 @@ impl System for Real {
         path.exists()
     }
 
+    fn under_test(&mut self) -> bool {
+        Path::new("/run/credentials/@system/sengi.test.install").exists()
+    }
+
     fn uefi(&mut self) -> bool {
         Path::new("/sys/firmware/efi").is_dir()
     }

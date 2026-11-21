@@ -115,8 +115,9 @@ const TARGET_FILES: [&str; 9] = [
 
 /// What belongs to the live image alone and is not left on an installed
 /// system: the installer, the live user's right to be root without a
-/// password, and the start-up scripts that find the live medium.
-pub const LIVE_ONLY: [&str; 7] = [
+/// password, the start-up scripts that find the live medium, and the
+/// boot test's reporter, which runs commands handed to it by the host.
+pub const LIVE_ONLY: [&str; 10] = [
     "usr/bin/sengi-install",
     "usr/bin/sengi-installer",
     "usr/share/applications/sengi-installer.desktop",
@@ -124,6 +125,18 @@ pub const LIVE_ONLY: [&str; 7] = [
     "etc/sudoers.d/live",
     "etc/initramfs-tools/hooks/sengi",
     "etc/initramfs-tools/scripts/sengi",
+    "usr/libexec/sengi-boot-report",
+    "etc/systemd/system/sengi-boot-report.service",
+    "etc/systemd/system/graphical.target.wants/sengi-boot-report.service",
+];
+
+/// The install test's reporter. It is left on the installed system only
+/// when that test is what is installing.
+pub const INSTALL_TEST: [&str; 4] = [
+    "usr/libexec/sengi-install-report",
+    "usr/lib/sengi-os/report.sh",
+    "etc/systemd/system/sengi-install-report.service",
+    "etc/systemd/system/graphical.target.wants/sengi-install-report.service",
 ];
 
 /// The account of the live image.
@@ -178,6 +191,9 @@ pub trait System {
     fn exists(&mut self, path: &Path) -> bool;
     /// Whether this machine was started by UEFI firmware.
     fn uefi(&mut self) -> bool;
+    /// Whether the install test started this machine, which it says
+    /// with a credential only whoever runs the machine can set.
+    fn under_test(&mut self) -> bool;
     /// Every mount point at or under `path`, deepest first.
     fn mounts_under(&mut self, path: &Path) -> Vec<PathBuf>;
     /// Thirty-two random hexadecimal digits.
@@ -609,6 +625,17 @@ impl Installer<'_> {
         for file in LIVE_ONLY {
             self.remove(file)?;
         }
+        // The install test's reporter stays only where the test asked
+        // for one: the machine this runs on was started with the test's
+        // credential. Anywhere else it is no part of an installed system.
+        if self.sys.under_test() {
+            self.sys
+                .log("the install test is running: its reporter stays");
+        } else {
+            for file in INSTALL_TEST {
+                self.remove(file)?;
+            }
+        }
         // Host keys would be the same on every machine. The image has
         // no SSH server, and if one ever gets in, its keys stay behind.
         if let Ok(entries) = fs::read_dir(self.at("etc/ssh")) {
@@ -953,6 +980,7 @@ mod tests {
         /// A signal arrives while a command with this in it runs.
         /// Something else has the disk open.
         busy: bool,
+        under_test: bool,
         /// Each command, and whether the disk was held while it ran.
         held_during: Vec<(String, bool)>,
         held: bool,
@@ -1111,6 +1139,10 @@ mod tests {
             true
         }
 
+        fn under_test(&mut self) -> bool {
+            self.under_test
+        }
+
         fn uefi(&mut self) -> bool {
             self.uefi
         }
@@ -1204,7 +1236,11 @@ mod tests {
         root.write("usr/share/zoneinfo/UTC", "TZif");
         root.mkdir(&format!("lib/modules/{KERNEL}"));
         root.write("home/live/.profile", "");
-        for file in TARGET_FILES.iter().chain(LIVE_ONLY.iter()) {
+        for file in TARGET_FILES
+            .iter()
+            .chain(LIVE_ONLY.iter())
+            .chain(INSTALL_TEST.iter())
+        {
             root.write(file, "");
         }
         std::os::unix::fs::symlink("/usr/share/zoneinfo/UTC", root.join("etc/localtime")).unwrap();
@@ -1259,6 +1295,7 @@ mod tests {
             wrong_menu: false,
             stops_at: None,
             busy: false,
+            under_test: false,
             held_during: Vec::new(),
             held: false,
             stale_table: false,
@@ -1439,6 +1476,12 @@ mod tests {
             "pinned = [\"foot\", \"sengi-settings\"]\n"
         );
         for file in LIVE_ONLY {
+            assert!(!target.exists(file), "{file} is still there");
+        }
+        // The boot test's reporter runs commands the host hands it, as
+        // root. So does nothing on an installed system: it is gone, and so
+        // is the install test's, which was not asked for here.
+        for file in INSTALL_TEST {
             assert!(!target.exists(file), "{file} is still there");
         }
         assert!(!target.exists("home/live"));
@@ -1789,6 +1832,22 @@ mod tests {
         same.plan.wwn = "0x5002538e40a1b2c3".to_string();
         let (result, _) = run(&mut same);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn the_install_tests_reporter_stays_only_when_that_test_is_installing() {
+        let mut world = world();
+        world.fake.under_test = true;
+        let (result, _) = run(&mut world);
+        assert!(result.is_ok());
+        for file in INSTALL_TEST {
+            assert!(world.target.exists(file), "{file} was removed");
+        }
+        // The boot test's reporter, with its command hook, goes either way.
+        assert!(!world.target.exists("usr/libexec/sengi-boot-report"));
+        assert!(!world
+            .target
+            .exists("etc/systemd/system/graphical.target.wants/sengi-boot-report.service"));
     }
 
     #[test]

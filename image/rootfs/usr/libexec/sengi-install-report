@@ -9,12 +9,10 @@ port=/dev/ttyS0
 
 . /usr/lib/sengi-os/report.sh
 
-# Commands from the host to run first, without rebuilding the image:
-#   -smbios type=11,value=io.systemd.credential:sengi.test.install.pre=COMMANDS
-pre=/run/credentials/@system/sengi.test.install.pre
-if [ -r "$pre" ]; then
-	sh "$pre" 2>&1 | sed 's/^/SENGI-PRE /' >$port
-fi
+# It only looks and reports. It takes no commands from the host: unlike
+# the boot test's reporter, this one can end up on an installed disk (the
+# installer leaves it there when this test is what is installing, and
+# only then), and nothing that runs what it is handed belongs on one.
 
 uptime_s() {
 	read -r up _ </proc/uptime
@@ -148,7 +146,8 @@ case $(cat /etc/machine-id) in
 *) fail "the machine has no identifier" ;;
 esac
 for left in /usr/bin/sengi-install /usr/bin/sengi-installer /usr/share/applications/sengi-installer.desktop \
-	/etc/initramfs-tools/scripts/sengi; do
+	/etc/initramfs-tools/scripts/sengi /usr/libexec/sengi-boot-report \
+	/etc/systemd/system/sengi-boot-report.service; do
 	[ ! -e "$left" ] || fail "$left is still there"
 done
 if grep -q sengi-installer /etc/xdg/sengi-os/dock.toml; then fail "the installer is still on the dock"; fi
