@@ -5,7 +5,10 @@ FROM docker.io/library/debian:trixie-slim
 ARG SNAPSHOT
 ENV DEBIAN_FRONTEND=noninteractive
 
+# A download that stalls is given up after half a minute and tried again,
+# a few times. Without this apt waits on a dead connection for ever.
 RUN rm -f /etc/apt/sources.list.d/* \
+ && printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "5";\n' >/etc/apt/apt.conf.d/80sengi-timeouts \
  && echo "deb http://snapshot.debian.org/archive/debian/${SNAPSHOT} trixie main" >/etc/apt/sources.list \
  && apt-get -o Acquire::Check-Valid-Until=false update \
  && apt-get install -y --no-install-recommends \

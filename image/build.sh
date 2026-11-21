@@ -88,6 +88,9 @@ mmdebstrap --variant=minbase \
 	--include="$packages" \
 	--aptopt='APT::Install-Recommends "false"' \
 	--aptopt='Acquire::Check-Valid-Until "false"' \
+	--aptopt='Acquire::http::Timeout "30"' \
+	--aptopt='Acquire::https::Timeout "30"' \
+	--aptopt='Acquire::Retries "5"' \
 	--dpkgopt='path-exclude=/usr/share/man/*' \
 	--dpkgopt='path-exclude=/usr/share/doc/*' \
 	--dpkgopt='path-include=/usr/share/doc/*/copyright' \
