@@ -274,6 +274,7 @@ impl App {
 
     fn set_can_next(&self) {
         let can = match self.page.get() {
+            "region" => !self.zone.borrow().is_empty(),
             "disk" => self.chosen.borrow().is_some(),
             "you" => self.form_ready(),
             "progress" => self.progress.borrow().outcome != Outcome::Running,
@@ -295,7 +296,15 @@ impl App {
     fn render_region(&self) {
         let wizard = self.wizard();
         wizard.set_keyboard(self.layout_name().into());
-        wizard.set_zone(self.zone.borrow().replace('_', " ").into());
+        let zone = self.zone.borrow();
+        wizard.set_zone(
+            if zone.is_empty() {
+                "Choose\u{2026}".to_string()
+            } else {
+                zone.replace('_', " ")
+            }
+            .into(),
+        );
     }
 
     fn open_chooser(
@@ -354,7 +363,13 @@ impl App {
     fn close_chooser(&self) {
         *self.chooser.borrow_mut() = None;
         self.window.global::<ChooserState>().set_open(false);
-        self.window.invoke_focus_next();
+        // The choice may be what the page was waiting for.
+        self.set_can_next();
+        if self.wizard().get_can_next() {
+            self.window.invoke_focus_next();
+        } else {
+            self.window.invoke_release();
+        }
     }
 
     fn choose_keyboard(&self) {
@@ -910,6 +925,7 @@ impl App {
             }
             page => {
                 let ready = match page {
+                    "region" => !self.zone.borrow().is_empty(),
                     "disk" => self.chosen.borrow().is_some(),
                     "you" => self.form_ready(),
                     _ => true,
@@ -1088,7 +1104,8 @@ fn main() -> ExitCode {
         password: RefCell::new(PasswordEntry::new()),
         again: RefCell::new(PasswordEntry::new()),
         layout: RefCell::new(layout),
-        zone: RefCell::new("UTC".to_string()),
+        // Not chosen yet: nothing is assumed about where the computer is.
+        zone: RefCell::new(String::new()),
         database: RefCell::new(None),
         chooser: RefCell::new(None),
         progress: RefCell::new(Progress::default()),
