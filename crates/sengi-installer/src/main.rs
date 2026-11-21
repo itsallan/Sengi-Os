@@ -47,8 +47,22 @@ stick, and puts Sengi OS on a disk of this computer.
 /// file has the same name.
 const APP_ID: &str = "sengi-installer";
 
-/// The program that writes the disk.
-const BACKEND: &str = "/usr/bin/sengi-install";
+/// How the program that writes the disk is started: as root, without
+/// being asked for a password (see the top of this file), and in a
+/// scope of its own under the system's slice. Left where it starts, it
+/// would be part of this window's app scope, which oomd may end when
+/// memory is short; an installation is not something to end halfway.
+const BACKEND: [&str; 9] = [
+    "-n",
+    "systemd-run",
+    "--scope",
+    "--quiet",
+    "--collect",
+    "--slice=system.slice",
+    "--property=ManagedOOMPreference=omit",
+    "/usr/bin/sengi-install",
+    "run",
+];
 
 /// The most that is kept of what the installing program says when it
 /// says it to standard error.
@@ -468,6 +482,15 @@ impl App {
             .collect();
         wizard.set_disk_note(model::disk_note(&disks).into());
         wizard.set_disks(rows(items));
+        // The keyboard starts on the disk that was chosen, or on the
+        // first that can be. Nothing is chosen for anyone.
+        let at = disks.iter().position(|disk| match chosen.as_ref() {
+            Some(chosen) => chosen.path == disk.path,
+            None => disks::refusal(disk).is_none(),
+        });
+        if let Some(at) = at {
+            wizard.set_disk_current(at as i32);
+        }
         wizard.set_disk_chosen(chosen.is_some());
         wizard.set_erase_warning(
             chosen
@@ -615,7 +638,7 @@ impl App {
         let mut command = match self.demo {
             Demo::Off => {
                 let mut command = Command::new("sudo");
-                command.args(["-n", BACKEND, "run"]);
+                command.args(BACKEND);
                 command
             }
             demo => {
