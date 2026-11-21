@@ -74,6 +74,12 @@ impl PasswordEntry {
         self.secret.is_empty()
     }
 
+    /// Whether the same was typed into both. For a new password, which
+    /// is typed twice because it cannot be read back.
+    pub fn same_as(&self, other: &PasswordEntry) -> bool {
+        self.secret.expose() == other.secret.expose()
+    }
+
     /// Hands the password over for checking and starts afresh. None if
     /// nothing was typed.
     pub fn take(&mut self) -> Option<Secret> {
@@ -143,6 +149,20 @@ mod tests {
         let secret = entry.take().unwrap();
         assert_eq!(secret.len(), MAX_BYTES);
         assert!(secret.expose().ends_with("xz"));
+    }
+
+    #[test]
+    fn two_entries_are_the_same_when_the_same_was_typed() {
+        let (mut first, mut again) = (PasswordEntry::new(), PasswordEntry::new());
+        assert!(first.same_as(&again));
+        first.push("p\u{e4}ss");
+        assert!(!first.same_as(&again));
+        again.push("p\u{e4}s");
+        assert!(!first.same_as(&again));
+        again.push("s");
+        assert!(first.same_as(&again) && again.same_as(&first));
+        again.push(" ");
+        assert!(!first.same_as(&again));
     }
 
     #[test]
