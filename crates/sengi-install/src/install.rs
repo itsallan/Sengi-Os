@@ -81,7 +81,9 @@ pub const STEPS: [Step; 9] = [
 
 /// Programs of the running system that the steps call. All of them are
 /// looked for before the disk is touched.
-const HOST_PROGRAMS: [&str; 13] = [
+const HOST_PROGRAMS: [&str; 15] = [
+    "chown",
+    "chmod",
     "sfdisk",
     "udevadm",
     "mkfs.vfat",
@@ -490,6 +492,12 @@ impl Installer<'_> {
             }
         })?;
         Self::judge(&command, output)?;
+        // The copy gave the top directory the owner and mode of the one
+        // it was copied from. In the image those are root and 0755, and
+        // a system whose top directory is anyone else's starts no
+        // session, so they are set and not assumed.
+        self.run(&["chown", "0:0", &target_text])?;
+        self.run(&["chmod", "0755", &target_text])?;
 
         // The live image keeps its kernel beside the system, not in it.
         let kernel = format!("boot/vmlinuz-{}", self.kernel);
@@ -1225,6 +1233,8 @@ mod tests {
             "blkid -s UUID -o value /dev/sda3".to_string(),
             format!("mount -t ext4 /dev/sda3 {target}"),
             format!("cp -ax {}/. {target}", world.source.path().display()),
+            format!("chown 0:0 {target}"),
+            format!("chmod 0755 {target}"),
             format!("mount -t vfat -o umask=0077 /dev/sda2 {target}/boot/efi"),
             format!("mount --bind /dev {target}/dev"),
             format!("mount -t proc proc {target}/proc"),
