@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use common::LOCK_MANAGER;
 use harness::{Compositor, SOON};
+use wayland_protocols::ext::session_lock::v1::client::ext_session_lock_manager_v1::ExtSessionLockManagerV1;
 
 const RED: u32 = 0xffb0_2020;
 const GREEN: u32 = 0xff20_b020;
@@ -194,8 +195,25 @@ fn a_client_the_compositor_did_not_start_cannot_ask_for_the_lock() {
     let compositor = Compositor::start(None);
     assert!(!compositor.connect().has_global(LOCK_MANAGER));
     // Not while the real one holds the lock either.
-    let (_locker, _held) = locked(&compositor);
-    assert!(!compositor.connect().has_global(LOCK_MANAGER));
+    let (locker, _held) = locked(&compositor);
+    let mut other = compositor.connect();
+    assert!(!other.has_global(LOCK_MANAGER));
+
+    // Asking by the number the locker was told does not get around it.
+    let name = locker.globals.contents().with_list(|list| {
+        list.iter()
+            .find(|global| global.interface == LOCK_MANAGER)
+            .map(|global| global.name)
+    });
+    let _forced: ExtSessionLockManagerV1 =
+        other
+            .globals
+            .registry()
+            .bind(name.unwrap(), 1, &other.handle, ());
+    assert!(
+        other.roundtrip().is_err(),
+        "binding a hidden global must fail"
+    );
 }
 
 /// Not a test of its own: the next one has the compositor start this as

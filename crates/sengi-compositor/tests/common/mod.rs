@@ -34,6 +34,7 @@ use wayland_client::{
     Connection, Dispatch, EventQueue, QueueHandle,
 };
 use wayland_protocols::{
+    ext::idle_notify::v1::client::ext_idle_notifier_v1::ExtIdleNotifierV1,
     ext::session_lock::v1::client::{
         ext_session_lock_manager_v1::ExtSessionLockManagerV1,
         ext_session_lock_surface_v1::{self, ExtSessionLockSurfaceV1},
@@ -375,6 +376,7 @@ impl Dispatch<WlCallback, ()> for Seen {
 delegate_noop!(Seen: WlCompositor);
 delegate_noop!(Seen: WlShmPool);
 delegate_noop!(Seen: ExtSessionLockManagerV1);
+delegate_noop!(Seen: ExtIdleNotifierV1);
 delegate_noop!(Seen: WpSecurityContextManagerV1);
 delegate_noop!(Seen: WpSecurityContextV1);
 delegate_noop!(Seen: ignore WlShm);
