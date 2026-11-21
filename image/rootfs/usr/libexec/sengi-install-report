@@ -172,5 +172,7 @@ may_power_off "$user"
 	cat /proc/cmdline
 	df -h / /boot/efi 2>&1
 	ls -la /boot 2>&1
+	# Which of the firmware's entries this start came from.
+	if [ -d /sys/firmware/efi ]; then efibootmgr 2>&1 | head -8; fi
 } | sed 's/^/SENGI-INFO /' >$port
 echo "SENGI-DONE" >$port

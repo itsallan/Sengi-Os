@@ -34,7 +34,7 @@ full_name="Test User"
 user="test"
 password=sengitest
 host=sengi
-zone=Africa/Kigali
+zone=Europe/Paris
 keyboard=gb
 
 mkdir -p "$out"
@@ -173,7 +173,7 @@ key tab
 key tab
 key tab
 key ret 1.5
-type_text kigali
+type_text paris
 sleep 1
 key ret 1.5
 shot installer-region-chosen
