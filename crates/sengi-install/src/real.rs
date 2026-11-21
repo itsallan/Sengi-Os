@@ -121,7 +121,7 @@ impl System for Real {
             return Err("there is no program to run".to_string());
         };
         self.log(&format!("$ {}", command.argv.join(" ")));
-        if INTERRUPTED.load(Ordering::Relaxed) {
+        if INTERRUPTED.load(Ordering::Relaxed) && !command.cleanup {
             return Err("the installation was told to stop".to_string());
         }
         let has_input = !matches!(command.input, Input::None);
@@ -160,7 +160,7 @@ impl System for Real {
                 Ok(None) => {}
                 Err(error) => break Err(format!("{program} was lost: {error}")),
             }
-            if INTERRUPTED.load(Ordering::Relaxed) {
+            if INTERRUPTED.load(Ordering::Relaxed) && !command.cleanup {
                 // The whole group: a script's children too.
                 // SAFETY: kill takes a process group and a signal.
                 unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) };
@@ -267,6 +267,7 @@ mod tests {
         let command = Command {
             argv: vec!["sh".to_string(), "-c".to_string(), "wc -c".to_string()],
             input: Input::Secret(&secret),
+            cleanup: false,
         };
         let output = sys.run(&command, &mut || {}).unwrap();
         assert_eq!(output.stdout.trim(), "14");
@@ -274,6 +275,7 @@ mod tests {
         let command = Command {
             argv: vec!["cat".to_string()],
             input: Input::Text("label: gpt\n"),
+            cleanup: false,
         };
         assert_eq!(
             sys.run(&command, &mut || {}).unwrap().stdout,

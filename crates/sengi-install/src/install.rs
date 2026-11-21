@@ -142,6 +142,9 @@ pub enum Input<'a> {
 pub struct Command<'a> {
     pub argv: Vec<String>,
     pub input: Input<'a>,
+    /// Part of putting things back after a failure: run it even when the
+    /// installation has been told to stop, and do not cut it short.
+    pub cleanup: bool,
 }
 
 impl Command<'_> {
@@ -149,6 +152,7 @@ impl Command<'_> {
         Command {
             argv: argv.iter().map(|arg| arg.to_string()).collect(),
             input: Input::None,
+            cleanup: false,
         }
     }
 }
@@ -422,6 +426,7 @@ impl Installer<'_> {
             .map(String::from)
             .to_vec(),
             input: Input::Text(edit::PARTITIONS),
+            cleanup: false,
         })?;
         self.run(&["udevadm", "settle", "--timeout=30"])?;
         // The kernel has the new table; the nodes follow in a moment.
@@ -654,6 +659,7 @@ impl Installer<'_> {
                 "chpasswd".to_string(),
             ],
             input: Input::Secret(&line),
+            cleanup: false,
         };
         self.run_command(&chpasswd)?;
         self.inside(&["passwd", "--lock", "root"])?;
@@ -812,7 +818,11 @@ impl Installer<'_> {
                     &["umount", "--lazy", &place]
                 };
                 // Without `run`'s check: a failure is looked for below.
-                if let Err(why) = self.sys.run(&Command::new(argv), &mut || {}) {
+                let command = Command {
+                    cleanup: true,
+                    ..Command::new(argv)
+                };
+                if let Err(why) = self.sys.run(&command, &mut || {}) {
                     self.sys.log(&format!("umount {place}: {why}"));
                 }
             }
@@ -905,6 +915,11 @@ mod tests {
         firmware: &'static str,
         /// update-grub writes a menu for a disk that is not this one.
         wrong_menu: bool,
+        /// A signal arrives while a command with this in it runs.
+        stops_at: Option<&'static str>,
+        stopped: bool,
+        /// What was asked for after the signal and not run.
+        refused: Vec<String>,
     }
 
     impl Fake {
@@ -948,6 +963,17 @@ mod tests {
                 }
             }
             tick();
+            if self.stops_at.is_some_and(|what| line.contains(what)) {
+                self.stopped = true;
+            }
+            if self.stopped && !command.cleanup {
+                // As the real machine does: nothing more is run.
+                if !self.stops_at.is_some_and(|what| line.contains(what)) {
+                    self.refused.push(line.clone());
+                    self.commands.pop();
+                }
+                return Err("the installation was told to stop".to_string());
+            }
             if self.fails.is_some_and(|what| line.contains(what)) {
                 return Ok(Output {
                     code: Some(1),
@@ -1162,6 +1188,9 @@ mod tests {
             log: Vec::new(),
             firmware: "",
             wrong_menu: false,
+            stops_at: None,
+            stopped: false,
+            refused: Vec::new(),
         };
         World {
             _sys: sys,
@@ -1501,6 +1530,35 @@ mod tests {
             result.unwrap_err().1,
             "useradd ended with status 1: it broke"
         );
+    }
+
+    #[test]
+    fn told_to_stop_it_still_unmounts_what_it_mounted() {
+        // A signal arrives while the copy runs. Every command after it is
+        // refused, except the ones that put things back.
+        let mut world = world();
+        world.fake.stops_at = Some("cp -ax");
+        let (result, events) = run(&mut world);
+        let (step, why) = result.unwrap_err();
+        assert_eq!(step, "copy");
+        assert!(why.contains("told to stop"), "{why}");
+        assert!(
+            world.fake.mounted.is_empty(),
+            "left {:?}",
+            world.fake.mounted
+        );
+        assert!(world.fake.ran("umount"));
+        assert!(
+            world.fake.refused.is_empty(),
+            "refused {:?}",
+            world.fake.refused
+        );
+        assert!(matches!(events.last(), Some(Event::Failed(..))));
+        // And nothing but unmounting was run after the signal.
+        let at = world.fake.position("cp -ax");
+        for command in &world.fake.commands[at + 1..] {
+            assert!(command.starts_with("umount"), "ran {command}");
+        }
     }
 
     #[test]
