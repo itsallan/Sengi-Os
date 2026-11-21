@@ -3,6 +3,67 @@
 All notable changes to Sengi OS. Each release section lists what is in its ISO
 and the measured idle RAM and boot time.
 
+## 0.7.0
+
+An installer: Sengi OS can be put on a computer's disk.
+
+### Added
+
+- Install Sengi OS, in the dock and the launcher of the live session. It
+  asks for a keyboard layout and a time zone, a disk, a name, a password
+  and a name for the computer, shows all of it once more, and installs.
+  Each step is shown as it runs, and the copy says how far it is.
+- The installer takes one whole disk and erases it. It lists every disk
+  with what is on it now, and does not offer the stick Sengi OS is running
+  from, a disk with anything mounted or in use, or one under 8 GB.
+  Nothing is changed before the last page. The button that erases never
+  has the keyboard to begin with, and asks once more with Cancel as the
+  answer Return gives.
+- The disk gets a GPT partition table with an EFI system partition and
+  one ext4 partition for everything else. There is no swap partition:
+  zram is the swap, as on the live image. GRUB is installed for UEFI and
+  for BIOS firmware both, so the disk starts either way, and for UEFI
+  also at the path firmware falls back to when it has no entry for the
+  disk. Its menu is hidden and does not wait, like the live image's.
+- The installed system starts at the login screen. The account made in
+  the installer is the one person on it; it uses sudo with its password.
+  The root account is locked. The `live` user, its right to be root
+  without a password and the installer itself are not on the installed
+  system.
+- The keyboard layout chosen in the installer takes effect at once, so
+  that the password is typed with the layout it will be typed with later,
+  and is the layout of the login screen and of new accounts on the
+  installed system.
+- sengi-install, the program that does the installing. The window starts
+  it; it can also be run by hand with a plan in a file. It leaves a
+  record in /var/log/sengi-install.log, on the live session and on the
+  installed disk.
+- scripts/install-test.sh installs onto a blank disk image in QEMU
+  through the installer's window, starts that disk alone, logs in with
+  the password that was chosen and checks what it finds. CI runs it after
+  the boot test, through BIOS, and through UEFI without failing the build
+  on it yet.
+
+### Changed
+
+- The image has what the installer needs: fdisk, dosfstools, e2fsprogs,
+  efibootmgr, and GRUB's tools and its files for both kinds of firmware.
+  None of it runs at boot or at idle.
+
+### Known limits
+
+- No installing beside another system, no encryption, and no laying out
+  of partitions by hand. The installer erases one whole disk.
+- Secure Boot has to be off, for the installed system as for the ISO.
+- Installed, the boot loader is put in place once. A later GRUB package
+  update refreshes the menu when a kernel is installed but does not write
+  the boot loader itself again.
+- One language, English, and no choice of locale.
+- The time zone starts at UTC and has to be chosen from the list; nothing
+  guesses it.
+- The installer has been run in QEMU only, on virtio disks, with BIOS and
+  with UEFI firmware. It has not yet been run on a real machine.
+
 ## 0.6.0
 
 A lock screen and a login screen of our own.
