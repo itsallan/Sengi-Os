@@ -182,7 +182,11 @@ fn list_disks() -> ExitCode {
             disk.path,
             disks::size_words(disk.size),
             plain(model),
-            if disk.removable { "  (removable)" } else { "" }
+            if disk.tran.is_empty() {
+                String::new()
+            } else {
+                format!("  ({})", disk.tran)
+            }
         );
         println!("    Now on it: {}", plain(&disks::contents_words(&disk)));
         match disks::refusal(&disk) {

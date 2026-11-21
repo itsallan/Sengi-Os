@@ -44,8 +44,7 @@ pub fn disk_title(disk: &Disk) -> String {
     } else {
         model
     };
-    let removable = if disk.removable { ", removable" } else { "" };
-    format!("{model} \u{b7} {}{removable}", disks::size_words(disk.size))
+    format!("{model} \u{b7} {}", disks::size_words(disk.size))
 }
 
 /// The second line of a disk in the list: what is on it, or why it is
@@ -178,6 +177,8 @@ impl Form {
             device: disk.path.clone(),
             size: disk.size,
             model: disk.model.clone(),
+            serial: disk.serial.clone(),
+            wwn: disk.wwn.clone(),
             user: self.user_name.clone(),
             full_name: self.full_name.trim().to_string(),
             host_name: self.host_name.clone(),
@@ -384,7 +385,9 @@ mod tests {
             path: "/dev/sda".to_string(),
             size: 256_060_514_304,
             model: "SanDisk SD8SN8U".to_string(),
-            removable: false,
+            serial: String::new(),
+            wwn: String::new(),
+            tran: String::new(),
             read_only: false,
             parts: Vec::new(),
             fstype: String::new(),
@@ -512,8 +515,8 @@ mod tests {
             .contains("Now on it: One volume, Windows (NTFS) \u{201c}Data\u{201d}."));
         assert!(erase_warning(&disk).contains("/dev/sda"));
         disk.model = String::new();
-        disk.removable = true;
-        assert_eq!(disk_title(&disk), "Disk \u{b7} 256 GB, removable");
+
+        assert_eq!(disk_title(&disk), "Disk \u{b7} 256 GB");
         disk.medium = true;
         assert_eq!(disk_detail(&disk), "Sengi OS is running from it");
     }

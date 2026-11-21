@@ -11,6 +11,8 @@
 //! encryption = "none"
 //! size = 256060514304
 //! model = "SanDisk SD8SN8U"
+//! serial = "162345400999"
+//! wwn = "0x5001b448b1234567"
 //!
 //! [user]
 //! name = "allan"
@@ -32,9 +34,11 @@
 //! refused whole: a key that is not known might be the one that says not
 //! to erase.
 //!
-//! `size` and `model` are what the person was shown when they chose the
-//! disk. If the device of that name is no longer that disk, because a
-//! stick was plugged in and the names moved, nothing is touched.
+//! `size`, `model`, `serial` and `wwn` are what the disk was when it was
+//! chosen: the last two as far as it has them. If the device of that name
+//! is no longer that disk, because a stick was plugged in and the names
+//! moved, nothing is touched. Two disks of one model and size differ in
+//! their serial numbers.
 //!
 //! `[source]` is for testing away from the live image: where the system
 //! to copy is, where its kernel is, and whether a loop device may be the
@@ -55,13 +59,15 @@ pub const LIVE_ROOT: &str = "/run/sengi/rootfs";
 pub const LIVE_KERNEL: &str = "/run/sengi/medium/live/vmlinuz";
 
 /// Every key a plan may have.
-const KEYS: [(&str, &str); 13] = [
+const KEYS: [(&str, &str); 15] = [
     ("plan", "version"),
     ("disk", "device"),
     ("disk", "mode"),
     ("disk", "encryption"),
     ("disk", "size"),
     ("disk", "model"),
+    ("disk", "serial"),
+    ("disk", "wwn"),
     ("user", "name"),
     ("user", "full-name"),
     ("system", "host-name"),
@@ -80,6 +86,9 @@ pub struct Plan {
     /// Its size in bytes and its model, as its chooser saw them.
     pub size: u64,
     pub model: String,
+    /// Its serial number and world-wide name, empty where it has none.
+    pub serial: String,
+    pub wwn: String,
     pub user: String,
     pub full_name: String,
     pub host_name: String,
@@ -151,6 +160,8 @@ impl Plan {
             _ => return Err("the plan does not say how large the disk is".to_string()),
         };
         let model = text_of("disk", "model")?.unwrap_or_default();
+        let serial = text_of("disk", "serial")?.unwrap_or_default();
+        let wwn = text_of("disk", "wwn")?.unwrap_or_default();
 
         let user = needed("user", "name")?;
         names::user_name(&user).map_err(|why| format!("user.name: {why}"))?;
@@ -186,6 +197,8 @@ impl Plan {
             device,
             size,
             model,
+            serial,
+            wwn,
             user,
             full_name,
             host_name,
@@ -203,12 +216,14 @@ impl Plan {
         let text = |text: &str| Value::text(text).render();
         let mut out = format!(
             "[plan]\nversion = {VERSION}\n\n\
-             [disk]\ndevice = {}\nmode = \"erase\"\nencryption = \"none\"\nsize = {}\nmodel = {}\n\n\
+             [disk]\ndevice = {}\nmode = \"erase\"\nencryption = \"none\"\nsize = {}\nmodel = {}\nserial = {}\nwwn = {}\n\n\
              [user]\nname = {}\nfull-name = {}\n\n\
              [system]\nhost-name = {}\ntime-zone = {}\nkeyboard = {}\n",
             text(&self.device),
             self.size,
             text(&self.model),
+            text(&self.serial),
+            text(&self.wwn),
             text(&self.user),
             text(&self.full_name),
             text(&self.host_name),

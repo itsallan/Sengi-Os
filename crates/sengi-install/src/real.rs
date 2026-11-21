@@ -29,6 +29,8 @@ pub static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 const KEPT_BYTES: usize = 64 * 1024;
 
 pub struct Real {
+    /// The disk, while it is held against other users.
+    held: Option<File>,
     log: Option<File>,
     started: Instant,
 }
@@ -53,6 +55,7 @@ impl Real {
         Real {
             log: file.ok(),
             started: Instant::now(),
+            held: None,
         }
     }
 }
@@ -113,6 +116,29 @@ pub fn mounts_under(mountinfo: &str, path: &Path) -> Vec<PathBuf> {
         .collect();
     under.reverse();
     under
+}
+
+/// The partitions under a disk's directory in sysfs: number, first
+/// sector and length, as the kernel has them.
+pub fn partitions_in(disk: &Path) -> Vec<(u32, u64, u64)> {
+    let number =
+        |path: PathBuf| -> Option<u64> { fs::read_to_string(path).ok()?.trim().parse().ok() };
+    let mut found: Vec<(u32, u64, u64)> = fs::read_dir(disk)
+        .map(|entries| {
+            entries
+                .filter_map(|entry| {
+                    let dir = entry.ok()?.path();
+                    Some((
+                        number(dir.join("partition"))? as u32,
+                        number(dir.join("start"))?,
+                        number(dir.join("size"))?,
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    found.sort();
+    found
 }
 
 impl System for Real {
@@ -225,6 +251,39 @@ impl System for Real {
 
     fn pause(&mut self, time: Duration) {
         std::thread::sleep(time);
+    }
+
+    fn hold(&mut self, device: &str) -> Result<(), String> {
+        self.log(&format!("hold {device}"));
+        // O_EXCL on a block device is the kernel's own claim: it is
+        // refused while the disk or a partition of it is mounted, is
+        // swap, or is part of another volume, and while it is held here
+        // none of those can begin.
+        let opened = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_EXCL | libc::O_CLOEXEC)
+            .open(device);
+        match opened {
+            Ok(file) => {
+                self.held = Some(file);
+                Ok(())
+            }
+            Err(error) if error.raw_os_error() == Some(libc::EBUSY) => {
+                Err(format!("{device} is in use by something else"))
+            }
+            Err(error) => Err(format!("{device} could not be opened: {error}")),
+        }
+    }
+
+    fn release(&mut self) {
+        if self.held.take().is_some() {
+            self.log("release the disk");
+        }
+    }
+
+    fn partitions(&mut self, device: &str) -> Vec<(u32, u64, u64)> {
+        let name = device.rsplit('/').next().unwrap_or_default();
+        partitions_in(&Path::new("/sys/class/block").join(name))
     }
 
     fn log(&mut self, line: &str) {
@@ -346,6 +405,24 @@ mod tests {
         );
         assert!(mounts_under("", Path::new("/")).is_empty());
         assert_eq!(unescape("a\\134b\\zz"), "a\\b\\zz");
+    }
+
+    #[test]
+    fn partitions_are_read_as_the_kernel_shows_them() {
+        let tmp = TempDir::new();
+        for (name, number, start, size) in [("sda2", 2, 4096, 1_048_576), ("sda1", 1, 2048, 2048)] {
+            tmp.write(&format!("sda/{name}/partition"), &format!("{number}\n"));
+            tmp.write(&format!("sda/{name}/start"), &format!("{start}\n"));
+            tmp.write(&format!("sda/{name}/size"), &format!("{size}\n"));
+        }
+        // Not partitions: the disk's own files and directories.
+        tmp.write("sda/size", "500118192\n");
+        tmp.write("sda/queue/rotational", "0\n");
+        assert_eq!(
+            partitions_in(&tmp.join("sda")),
+            [(1, 2048, 2048), (2, 4096, 1_048_576)]
+        );
+        assert!(partitions_in(&tmp.join("no-such-disk")).is_empty());
     }
 
     #[test]

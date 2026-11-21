@@ -158,7 +158,9 @@ fn demo_disks() -> Vec<Disk> {
         path: format!("/dev/{name}"),
         size,
         model: model.to_string(),
-        removable: false,
+        serial: String::new(),
+        wwn: String::new(),
+        tran: String::new(),
         read_only: false,
         parts: Vec::new(),
         fstype: String::new(),
@@ -175,7 +177,7 @@ fn demo_disks() -> Vec<Disk> {
         part("sda3", 55_000_000_000, "ext4", ""),
     ];
     let mut stick = disk("sdb", 30_752_000_000, "Ultra Fit");
-    stick.removable = true;
+    stick.tran = "usb".to_string();
     stick.medium = true;
     stick.fstype = "iso9660".to_string();
     stick.label = "SENGIOS".to_string();

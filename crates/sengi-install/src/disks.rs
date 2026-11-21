@@ -38,7 +38,13 @@ pub struct Disk {
     pub size: u64,
     /// As the device reports it. Not cleaned: a stranger chose it.
     pub model: String,
-    pub removable: bool,
+    /// Its serial number and its world-wide name, where it has them.
+    /// With the model and the size, these are what tells this disk from
+    /// another that might come to have its name.
+    pub serial: String,
+    pub wwn: String,
+    /// How it is attached, as lsblk names it: `sata`, `nvme`, `usb`.
+    pub tran: String,
     pub read_only: bool,
     pub parts: Vec<Part>,
     /// A file system straight on the disk, with no partitions.
@@ -201,7 +207,7 @@ pub struct Sources<'a> {
     pub mountinfo: &'a str,
     /// `/proc/swaps`.
     pub swaps: &'a str,
-    /// What `lsblk -P -o NAME,FSTYPE,LABEL` printed.
+    /// What `lsblk -P -o NAME,FSTYPE,LABEL,TRAN,SERIAL,WWN` printed.
     pub contents: &'a str,
     /// Where the live medium is mounted.
     pub medium: &'a str,
@@ -239,30 +245,43 @@ fn pair<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     }
 }
 
-/// The file system and label lsblk gave for the device called `name`.
-fn contents_of(contents: &str, name: &str) -> (String, String) {
+/// What lsblk gave under `key` for the device called `name`. It writes
+/// characters it does not trust as \xNN; they are left as that.
+fn told(contents: &str, name: &str, key: &str) -> String {
     contents
         .lines()
         .find(|line| pair(line, "NAME") == Some(name))
-        .map(|line| {
-            (
-                pair(line, "FSTYPE").unwrap_or_default().to_string(),
-                // lsblk writes characters it does not trust as \xNN.
-                // They are left as that; nobody types a label back.
-                pair(line, "LABEL").unwrap_or_default().to_string(),
-            )
-        })
+        .and_then(|line| pair(line, key))
         .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
-/// Where the device numbered `number` (`8:1`) is mounted.
-fn mount_points<'a>(mountinfo: &'a str, number: &str) -> impl Iterator<Item = &'a str> + 'a {
-    let number = number.to_string();
+/// The file system and label lsblk gave for the device called `name`.
+fn contents_of(contents: &str, name: &str) -> (String, String) {
+    (
+        told(contents, name, "FSTYPE"),
+        told(contents, name, "LABEL"),
+    )
+}
+
+/// Where a device is mounted: by its number (`8:1`), and by its node
+/// (`/dev/sda1`) as the source of the mount. The number alone is not
+/// enough: btrfs mounts under a number of its own that belongs to no
+/// device, and only the source says which disk it is on.
+fn mount_points<'a>(
+    mountinfo: &'a str,
+    number: &str,
+    node: &str,
+) -> impl Iterator<Item = &'a str> + 'a {
+    let (number, node) = (number.to_string(), node.to_string());
     mountinfo.lines().filter_map(move |line| {
-        let mut fields = line.split(' ');
+        let (before, after) = line.split_once(" - ")?;
+        let mut fields = before.split(' ');
         let device = fields.nth(2)?;
         let place = fields.nth(1)?;
-        (device == number).then_some(place)
+        let source = after.split(' ').nth(1)?;
+        ((!number.is_empty() && device == number) || source == node).then_some(place)
     })
 }
 
@@ -306,7 +325,9 @@ pub fn scan(sources: &Sources, allow_loop: bool) -> Vec<Disk> {
             path: format!("/dev/{name}"),
             size,
             model: read_trimmed(&dir.join("device/model")),
-            removable: read_trimmed(&dir.join("removable")) == "1",
+            serial: told(sources.contents, &name, "SERIAL"),
+            wwn: told(sources.contents, &name, "WWN"),
+            tran: told(sources.contents, &name, "TRAN"),
             read_only: read_trimmed(&dir.join("ro")) == "1",
             parts: Vec::new(),
             fstype,
@@ -317,7 +338,7 @@ pub fn scan(sources: &Sources, allow_loop: bool) -> Vec<Disk> {
             medium: false,
             name,
         };
-        let mut numbers = vec![read_trimmed(&dir.join("dev"))];
+        let mut numbers = vec![(read_trimmed(&dir.join("dev")), disk.path.clone())];
         let mut parts: Vec<String> = fs::read_dir(&dir)
             .map(|entries| {
                 entries
@@ -329,7 +350,7 @@ pub fn scan(sources: &Sources, allow_loop: bool) -> Vec<Disk> {
         parts.sort();
         for part in parts {
             let part_dir = dir.join(&part);
-            numbers.push(read_trimmed(&part_dir.join("dev")));
+            numbers.push((read_trimmed(&part_dir.join("dev")), format!("/dev/{part}")));
             disk.swap |= swapping(&part);
             disk.held |= has_entries(&part_dir.join("holders"));
             let (fstype, label) = contents_of(sources.contents, &part);
@@ -340,8 +361,8 @@ pub fn scan(sources: &Sources, allow_loop: bool) -> Vec<Disk> {
                 label,
             });
         }
-        for number in numbers.iter().filter(|number| !number.is_empty()) {
-            for place in mount_points(sources.mountinfo, number) {
+        for (number, node) in &numbers {
+            for place in mount_points(sources.mountinfo, number, node) {
                 if place == sources.medium {
                     disk.medium = true;
                 }
@@ -359,7 +380,7 @@ pub fn scan(sources: &Sources, allow_loop: bool) -> Vec<Disk> {
 /// the disks are then listed without their contents.
 fn lsblk() -> String {
     Command::new("lsblk")
-        .args(["-P", "-o", "NAME,FSTYPE,LABEL"])
+        .args(["-P", "-o", "NAME,FSTYPE,LABEL,TRAN,SERIAL,WWN"])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
@@ -396,7 +417,6 @@ pub(crate) mod tests {
         let dir = format!("block/{name}");
         sys.write(&format!("{dir}/size"), &format!("{}\n", bytes / 512));
         sys.write(&format!("{dir}/dev"), &format!("{number}:0\n"));
-        sys.write(&format!("{dir}/removable"), "0\n");
         sys.write(&format!("{dir}/ro"), "0\n");
         sys.mkdir(&format!("{dir}/holders"));
         for (index, size) in parts.iter().enumerate() {
@@ -479,10 +499,9 @@ pub(crate) mod tests {
         // A flashed stick: the image is on the whole device, 8:16.
         sys.write("block/sdb/size", &format!("{}\n", 32 * GB / 512));
         sys.write("block/sdb/dev", "8:16\n");
-        sys.write("block/sdb/removable", "1\n");
         let disks = scan(&sources(&sys, MOUNTS, "", ""), false);
         let stick = disks.iter().find(|disk| disk.name == "sdb").unwrap();
-        assert!(stick.medium && stick.removable);
+        assert!(stick.medium);
         assert_eq!(refusal(stick), Some(Refusal::Medium));
         let sda = disks.iter().find(|disk| disk.name == "sda").unwrap();
         assert_eq!(refusal(sda), None);
@@ -622,6 +641,45 @@ pub(crate) mod tests {
         assert_eq!(pair(line, "UUID"), None);
         assert_eq!(pair("nonsense", "NAME"), None);
         assert_eq!(contents_of("", "sda"), (String::new(), String::new()));
+    }
+
+    #[test]
+    fn a_disk_is_known_by_its_serial_its_name_and_how_it_is_attached() {
+        let sys = TempDir::new();
+        add_disk(&sys, "sda", "8", 256 * GB, &[]);
+        add_disk(&sys, "vda", "254", 16 * GB, &[]);
+        let contents = "NAME=\"sda\" FSTYPE=\"\" LABEL=\"\" TRAN=\"sata\" SERIAL=\"S3Z8NB0K123456A \" WWN=\"0x5002538e40a1b2c3\"\n\
+            NAME=\"vda\" FSTYPE=\"\" LABEL=\"\" TRAN=\"virtio\" SERIAL=\"\" WWN=\"\"\n";
+        let disks = scan(&sources(&sys, "", "", contents), false);
+        assert_eq!(disks[0].serial, "S3Z8NB0K123456A");
+        assert_eq!(disks[0].wwn, "0x5002538e40a1b2c3");
+        assert_eq!(disks[0].tran, "sata");
+        assert_eq!(disks[1].serial, "");
+        assert_eq!(disks[1].wwn, "");
+        assert_eq!(disks[1].tran, "virtio");
+    }
+
+    #[test]
+    fn a_mount_is_found_by_its_source_where_its_number_is_nobodys() {
+        let sys = TempDir::new();
+        add_disk(&sys, "sda", "8", 256 * GB, &[GB, 255 * GB]);
+        // btrfs: the number 0:31 belongs to no device; the source says
+        // which partition it is.
+        let mounts = "55 30 0:31 /@home /mnt/data rw,relatime shared:30 - btrfs /dev/sda2 rw,subvol=/@home\n";
+        let disks = scan(&sources(&sys, mounts, "", ""), false);
+        assert_eq!(disks[0].mounted, ["/mnt/data"]);
+        assert_eq!(
+            refusal(&disks[0]),
+            Some(Refusal::Mounted("/mnt/data".to_string()))
+        );
+        // A source that only starts the same is another disk.
+        let other = "55 30 0:31 / /mnt/data rw - btrfs /dev/sda22 rw\n56 30 0:32 / /x rw - btrfs /dev/sdab rw\n";
+        let disks = scan(&sources(&sys, other, "", ""), false);
+        assert!(disks[0].mounted.is_empty());
+        // The whole disk as the source counts too.
+        let whole = "55 30 0:31 / /mnt/whole rw - btrfs /dev/sda rw\n";
+        let disks = scan(&sources(&sys, whole, "", ""), false);
+        assert_eq!(disks[0].mounted, ["/mnt/whole"]);
     }
 
     #[test]

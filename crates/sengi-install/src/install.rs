@@ -81,10 +81,11 @@ pub const STEPS: [Step; 9] = [
 
 /// Programs of the running system that the steps call. All of them are
 /// looked for before the disk is touched.
-const HOST_PROGRAMS: [&str; 15] = [
+const HOST_PROGRAMS: [&str; 16] = [
     "chown",
     "chmod",
     "sfdisk",
+    "blockdev",
     "udevadm",
     "mkfs.vfat",
     "mkfs.ext4",
@@ -182,6 +183,14 @@ pub trait System {
     /// Thirty-two random hexadecimal digits.
     fn random_id(&mut self) -> Result<String, String>;
     fn pause(&mut self, time: Duration);
+    /// Open the whole disk so that nothing else can open it to use it:
+    /// no mount, no volume built on it. An error if something already
+    /// has. Kept until [`System::release`].
+    fn hold(&mut self, device: &str) -> Result<(), String>;
+    fn release(&mut self);
+    /// The partitions of a disk as the kernel has them now: number,
+    /// first sector and length, in sectors of 512 bytes.
+    fn partitions(&mut self, device: &str) -> Vec<(u32, u64, u64)>;
     fn log(&mut self, line: &str);
 }
 
@@ -342,10 +351,14 @@ impl Installer<'_> {
                 refusal.words()
             ));
         }
-        if disk.size != plan.size || disk.model != plan.model {
+        let same = disk.size == plan.size
+            && disk.model == plan.model
+            && disk.serial == plan.serial
+            && disk.wwn == plan.wwn;
+        if !same {
             return Err(format!(
-                "{} is not the disk that was chosen: it is \u{201c}{}\u{201d} of {} bytes, and the plan is for \u{201c}{}\u{201d} of {} bytes",
-                plan.device, disk.model, disk.size, plan.model, plan.size
+                "{} is not the disk that was chosen: it is \u{201c}{}\u{201d} of {} bytes, serial \u{201c}{}\u{201d}, and the plan is for \u{201c}{}\u{201d} of {} bytes, serial \u{201c}{}\u{201d}",
+                plan.device, disk.model, disk.size, disk.serial, plan.model, plan.size, plan.serial
             ));
         }
 
@@ -407,16 +420,26 @@ impl Installer<'_> {
                 disks::size_words(self.source_bytes)
             ));
         }
+        // Last, and kept until the new table is written: the disk, opened
+        // so that nothing else can open it to mount it or build on it.
+        // If something already has, this is where it shows, whatever the
+        // tables read above said.
+        self.sys.hold(&plan.device)?;
         Ok(())
     }
 
     /// From here on the disk is no longer what it was.
     fn partition(&mut self) -> Result<(), String> {
         let device = self.plan.device.clone();
-        self.run_command(&Command {
+        // The table is written while the disk is held, and the kernel is
+        // not asked to read it yet: it would refuse, for the same reason
+        // nobody else can open the disk.
+        let written = self.run_command(&Command {
             argv: [
                 "sfdisk",
                 "--lock",
+                "--no-reread",
+                "--no-tell-kernel",
                 "--wipe",
                 "always",
                 "--wipe-partitions",
@@ -427,7 +450,12 @@ impl Installer<'_> {
             .to_vec(),
             input: Input::Text(edit::PARTITIONS),
             cleanup: false,
-        })?;
+        });
+        self.sys.release();
+        written?;
+        // Now the kernel reads it. If anything took the disk or one of
+        // its old partitions in the moment between, this fails.
+        self.run(&["blockdev", "--rereadpt", &device])?;
         self.run(&["udevadm", "settle", "--timeout=30"])?;
         // The kernel has the new table; the nodes follow in a moment.
         for number in [edit::BIOS_PART, edit::EFI_PART, edit::ROOT_PART] {
@@ -441,7 +469,13 @@ impl Installer<'_> {
                 self.sys.pause(Duration::from_millis(200));
             }
         }
-        Ok(())
+        // And it is the table that was asked for, as the kernel sees it,
+        // before anything is formatted by partition number: a kernel
+        // still on the old table would have mkfs write somewhere else.
+        let seen = self.sys.partitions(&device);
+        edit::table_is_as_asked(&seen, self.plan.size / 512).map_err(|why| {
+            format!("the kernel does not show the new partition table on {device}: {why}")
+        })
     }
 
     fn uuid_of(&mut self, node: &str) -> Result<String, String> {
@@ -871,6 +905,7 @@ pub fn install(
             _ => Err("there is no such step".to_string()),
         };
         if let Err(why) = result {
+            installer.sys.release();
             let left = installer.unmount_all();
             for place in left {
                 installer
@@ -916,6 +951,13 @@ mod tests {
         /// update-grub writes a menu for a disk that is not this one.
         wrong_menu: bool,
         /// A signal arrives while a command with this in it runs.
+        /// Something else has the disk open.
+        busy: bool,
+        /// Each command, and whether the disk was held while it ran.
+        held_during: Vec<(String, bool)>,
+        held: bool,
+        /// The kernel did not take the new partition table.
+        stale_table: bool,
         stops_at: Option<&'static str>,
         stopped: bool,
         /// What was asked for after the signal and not run.
@@ -963,6 +1005,7 @@ mod tests {
                 }
             }
             tick();
+            self.held_during.push((line.clone(), self.held));
             if self.stops_at.is_some_and(|what| line.contains(what)) {
                 self.stopped = true;
             }
@@ -1090,6 +1133,32 @@ mod tests {
 
         fn pause(&mut self, _time: Duration) {}
 
+        fn hold(&mut self, device: &str) -> Result<(), String> {
+            if self.busy {
+                return Err(format!("{device} is in use by something else"));
+            }
+            self.held = true;
+            self.log.push(format!("hold {device}"));
+            Ok(())
+        }
+
+        fn release(&mut self) {
+            self.held = false;
+        }
+
+        fn partitions(&mut self, _device: &str) -> Vec<(u32, u64, u64)> {
+            if self.stale_table {
+                // What was there before: two partitions, elsewhere.
+                return vec![(1, 2048, 195_312_500), (2, 195_314_548, 304_687_500)];
+            }
+            let sectors = self.disks[0].size / 512;
+            vec![
+                (1, 2048, 2048),
+                (2, 4096, 1_048_576),
+                (3, 1_052_672, sectors - 1_052_672 - 2048),
+            ]
+        }
+
         fn log(&mut self, line: &str) {
             self.log.push(line.to_string());
         }
@@ -1189,6 +1258,10 @@ mod tests {
             firmware: "",
             wrong_menu: false,
             stops_at: None,
+            busy: false,
+            held_during: Vec::new(),
+            held: false,
+            stale_table: false,
             stopped: false,
             refused: Vec::new(),
         };
@@ -1254,7 +1327,8 @@ mod tests {
         let fake = &world.fake;
         let expected = [
             format!("du -sxk {}", world.source.path().display()),
-            "sfdisk --lock --wipe always --wipe-partitions always /dev/sda".to_string(),
+            "sfdisk --lock --no-reread --no-tell-kernel --wipe always --wipe-partitions always /dev/sda".to_string(),
+            "blockdev --rereadpt /dev/sda".to_string(),
             "udevadm settle".to_string(),
             "mkfs.vfat -F 32 -n SENGI-EFI /dev/sda2".to_string(),
             "mkfs.ext4 -q -F -L sengi-os /dev/sda3".to_string(),
@@ -1648,6 +1722,73 @@ mod tests {
         let (result, _) = run(&mut left);
         assert_eq!(result.unwrap_err().0, "account");
         assert!(left.target.read("etc/passwd").contains("live:"));
+    }
+
+    #[test]
+    fn a_disk_that_something_else_has_open_is_not_written() {
+        let mut world = world();
+        world.fake.busy = true;
+        refused(&mut world, "in use by something else");
+    }
+
+    #[test]
+    fn the_disk_is_held_while_the_table_is_written_and_let_go_before_it_is_read() {
+        let mut world = world();
+        let (result, _) = run(&mut world);
+        assert!(result.is_ok());
+        let held = |start: &str| {
+            world
+                .fake
+                .held_during
+                .iter()
+                .find(|(command, _)| command.starts_with(start))
+                .map(|(_, held)| *held)
+                .unwrap()
+        };
+        assert!(!held("du "));
+        assert!(held("sfdisk"));
+        assert!(!held("blockdev --rereadpt"));
+        assert!(!held("mkfs.vfat"));
+        assert!(!world.fake.held);
+        // Held, and then a failure: let go all the same.
+        let mut failing = self::world();
+        failing.fake.fails = Some("sfdisk");
+        let (result, _) = run(&mut failing);
+        assert!(result.is_err());
+        assert!(!failing.fake.held);
+    }
+
+    #[test]
+    fn a_kernel_still_on_the_old_table_stops_everything_before_mkfs() {
+        let mut world = world();
+        world.fake.stale_table = true;
+        let (result, _) = run(&mut world);
+        let (step, why) = result.unwrap_err();
+        assert_eq!(step, "partition");
+        assert!(
+            why.contains("does not show the new partition table"),
+            "{why}"
+        );
+        assert!(!world.fake.ran("mkfs"));
+        assert!(!world.fake.ran("mount"));
+    }
+
+    #[test]
+    fn a_disk_with_another_serial_or_name_is_not_the_one_that_was_chosen() {
+        let mut serial = world();
+        serial.fake.disks[0].serial = "S3Z8NB0K999999Z".to_string();
+        refused(&mut serial, "not the disk that was chosen");
+        let mut wwn = world();
+        wwn.fake.disks[0].wwn = "0x5002538e00000000".to_string();
+        refused(&mut wwn, "not the disk that was chosen");
+        // The same serial and name on both sides is the same disk.
+        let mut same = world();
+        same.fake.disks[0].serial = "S3Z8NB0K123456A".to_string();
+        same.plan.serial = "S3Z8NB0K123456A".to_string();
+        same.fake.disks[0].wwn = "0x5002538e40a1b2c3".to_string();
+        same.plan.wwn = "0x5002538e40a1b2c3".to_string();
+        let (result, _) = run(&mut same);
+        assert!(result.is_ok());
     }
 
     #[test]

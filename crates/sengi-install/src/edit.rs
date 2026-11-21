@@ -20,6 +20,48 @@ pub const BIOS_PART: u32 = 1;
 pub const EFI_PART: u32 = 2;
 pub const ROOT_PART: u32 = 3;
 
+/// Where that table puts the partitions, in sectors of 512 bytes: sfdisk
+/// starts the first at one mebibyte and sets each against the last.
+const MEBIBYTE: u64 = 2048;
+const BIOS_START: u64 = MEBIBYTE;
+const EFI_START: u64 = 2 * MEBIBYTE;
+const EFI_SECTORS: u64 = 512 * MEBIBYTE;
+const ROOT_START: u64 = EFI_START + EFI_SECTORS;
+
+/// Whether the partitions the kernel shows (number, first sector, length)
+/// are the ones [`PARTITIONS`] asks for on a disk of `disk_sectors`. The
+/// last partition takes the rest, less the copy of the table at the end
+/// and what alignment leaves over, so it is held to a range.
+pub fn table_is_as_asked(seen: &[(u32, u64, u64)], disk_sectors: u64) -> Result<(), String> {
+    let mut seen = seen.to_vec();
+    seen.sort();
+    if seen.len() != 3 {
+        return Err(format!("it shows {} partitions, not 3", seen.len()));
+    }
+    let fixed = [
+        (BIOS_PART, BIOS_START, MEBIBYTE),
+        (EFI_PART, EFI_START, EFI_SECTORS),
+    ];
+    for (asked, found) in fixed.iter().zip(&seen) {
+        if asked != found {
+            return Err(format!(
+                "partition {} starts at sector {} and has {} sectors, not {} and {}",
+                found.0, found.1, found.2, asked.1, asked.2
+            ));
+        }
+    }
+    let (number, start, length) = seen[2];
+    let most = disk_sectors.saturating_sub(ROOT_START);
+    let least = most.saturating_sub(2 * MEBIBYTE);
+    if number != ROOT_PART || start != ROOT_START || length > most || length < least || length == 0
+    {
+        return Err(format!(
+            "partition {number} starts at sector {start} and has {length} sectors, not {ROOT_START} and the rest of the disk"
+        ));
+    }
+    Ok(())
+}
+
 /// What GRUB is told. The menu is hidden and waits for nobody, as the
 /// live image's is; holding Shift or pressing Esc shows it. The kernel
 /// is as quiet as the live image's. There is no recovery entry: it would
@@ -328,6 +370,51 @@ user = \"live\"
             BootFFFZ* Sengi OS\n";
         assert_eq!(boot_entries(listing, "Sengi OS"), ["0001", "0003"]);
         assert!(boot_entries("", "Sengi OS").is_empty());
+    }
+
+    #[test]
+    fn the_kernels_view_of_the_table_is_held_to_what_was_asked() {
+        // A 12 GiB disk, as sfdisk lays it out.
+        let disk = 25_165_824;
+        let good = [
+            (1, 2048, 2048),
+            (2, 4096, 1_048_576),
+            (3, 1_052_672, 24_111_104),
+        ];
+        assert_eq!(table_is_as_asked(&good, disk), Ok(()));
+        // In any order.
+        assert_eq!(
+            table_is_as_asked(&[good[2], good[0], good[1]], disk),
+            Ok(())
+        );
+        // The old table: two partitions somewhere else.
+        assert!(
+            table_is_as_asked(&[(1, 2048, 1_000_000), (2, 1_002_048, 9_000_000)], disk).is_err()
+        );
+        assert!(table_is_as_asked(&[], disk).is_err());
+        // Three, but not ours.
+        let moved = [
+            (1, 2048, 2048),
+            (2, 4096, 2_097_152),
+            (3, 2_101_248, 23_062_528),
+        ];
+        assert!(table_is_as_asked(&moved, disk)
+            .unwrap_err()
+            .contains("partition 2"));
+        let short = [good[0], good[1], (3, 1_052_672, 10_000_000)];
+        assert!(table_is_as_asked(&short, disk)
+            .unwrap_err()
+            .contains("partition 3"));
+        let long = [good[0], good[1], (3, 1_052_672, disk)];
+        assert!(table_is_as_asked(&long, disk).is_err());
+        let four = [good[0], good[1], good[2], (4, 25_163_776, 2048)];
+        assert!(table_is_as_asked(&four, disk).is_err());
+        let numbered = [
+            (1, 2048, 2048),
+            (2, 4096, 1_048_576),
+            (5, 1_052_672, 24_111_104),
+        ];
+        assert!(table_is_as_asked(&numbered, disk).is_err());
     }
 
     #[test]
