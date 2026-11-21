@@ -5,8 +5,10 @@
 #   boot-test.sh ISO [OUTDIR]
 #
 # Set SENGI_UEFI to an OVMF firmware image to boot through UEFI instead of BIOS.
-# Set SENGI_PREVIEW=1 to boot the sengi-compositor preview entry instead of
-# the default one.
+# Set SENGI_COMPOSITOR=own to run the session on sengi-compositor: the guest
+# is handed the file that sengi-session looks for, under either firmware.
+# Set SENGI_PREVIEW=1 to get there through the boot menu's preview entry
+# instead, the way a person does (BIOS only).
 #
 # The ISO is attached as a disk, the way a flashed USB stick shows up. The
 # guest reports through its serial port (see sengi-boot-report). Boot time is
@@ -47,6 +49,13 @@ now() { date +%s.%N; }
 preview=${SENGI_PREVIEW:-0}
 want=labwc
 handover=
+# systemd-tmpfiles makes the file early in the start, from a credential
+# the firmware tables carry. No comma may be in it.
+choice=
+if [ "${SENGI_COMPOSITOR:-}" = own ]; then
+	want=sengi-compositor
+	choice='io.systemd.credential:tmpfiles.extra=f /run/sengi-os.compositor 0644 root root - own'
+fi
 if [ "$preview" = 1 ]; then
 	if [ -n "${SENGI_UEFI:-}" ]; then
 		echo "the preview entry can only be picked under BIOS so far" >&2
@@ -76,6 +85,7 @@ qemu-system-x86_64 -machine q35,accel=$accel -cpu $cpu -smp 2 -m 4096 \
 	-nic user,model=virtio-net-pci \
 	-smbios type=11,value=io.systemd.credential:sengi.test=1 \
 	${SENGI_TEST_DEBUG:+-smbios "type=11,value=io.systemd.credential:sengi.test.debug=$SENGI_TEST_DEBUG"} \
+	${choice:+-smbios "type=11,value=$choice"} \
 	-serial file:"$out/serial.log" \
 	${handover:+-chardev file,id=firmware,path="$out/firmware.log" -device isa-debugcon,iobase=0x402,chardev=firmware} \
 	-qmp pipe:"$out/qmp" \
