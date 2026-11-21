@@ -9,8 +9,11 @@
 //!
 //! Who may do what:
 //!
-//! - Only the configured locker program may ask for the lock at all; the
-//!   global is hidden from everything else, see `Lockers`.
+//! - Only a locker the compositor started itself may ask for the lock at
+//!   all. It is handed its connection when it is started, and the global
+//!   is hidden from every other connection; see `started_as_locker`.
+//!   Whoever wants the screen locked asks the compositor, see
+//!   `lock_requested`.
 //! - While a locker lives, a second one is turned away.
 //! - Only the lock object that was granted the lock can unlock or supply
 //!   lock surfaces. Smithay's own handling does not make that difference,
@@ -20,9 +23,13 @@
 //!   was drawn after the lock began, see `Covering`.
 
 use std::{
-    os::unix::fs::MetadataExt,
+    io::Write,
+    os::unix::net::UnixStream,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
@@ -75,8 +82,8 @@ pub enum Holder {
     Dead,
 }
 
-/// Whether a lock request is granted. `recognised` says the client is the
-/// configured locker program.
+/// Whether a lock request is granted. `recognised` says the client is a
+/// locker the compositor started.
 ///
 /// Nobody may lock over a live locker, and nothing but the locker may lock
 /// at all: a program that can lock can also show its own password prompt,
@@ -112,87 +119,15 @@ impl<O: PartialEq> Covering<O> {
     }
 }
 
-/// Which program is the screen locker, shared with the filter that decides
-/// who sees the lock global.
-#[derive(Debug, Clone, Default)]
-pub struct Lockers {
-    known: Arc<Mutex<Known>>,
-}
-
-#[derive(Debug, Default)]
-struct Known {
-    program: Option<PathBuf>,
-    /// The device and inode of that file. Paths are no proof: in another
-    /// mount namespace the same path can name any file.
-    file: Option<(u64, u64)>,
-    /// The last program that was turned away although it is called like
-    /// the locker, so that this is said once and not for every global.
-    turned_away: Option<PathBuf>,
-}
-
-impl Lockers {
-    pub fn set(&self, program: Option<PathBuf>) {
-        let mut known = self.known.lock().unwrap();
-        known.file = program
-            .as_ref()
-            .and_then(|path| std::fs::metadata(path).ok())
-            .map(|meta| (meta.dev(), meta.ino()));
-        known.program = program;
-    }
-
-    pub fn program(&self) -> Option<PathBuf> {
-        self.known.lock().unwrap().program.clone()
-    }
-
-    /// Whether `client` runs the locker program and is not sandboxed.
-    ///
-    /// This goes by the file the process that connected is executing. It
-    /// keeps out everything that is confined and everything that merely
-    /// asks; a program of the same user that is free to start the locker
-    /// and take over its connection is not stopped by it, nor by anything
-    /// else here.
-    pub fn recognises(&self, client: &Client) -> bool {
-        // Nothing here may ask the display: this also runs while it is
-        // deciding which globals a client sees, and would wait on itself.
-        let Some(data) = client.get_data::<ClientState>() else {
-            return false;
-        };
-        let Some(pid) = data.pid.filter(|_| !data.sandboxed) else {
-            return false;
-        };
-        let mut known = self.known.lock().unwrap();
-        let Some(file) = known.file else { return false };
-        // Through the link, so this is the file itself wherever the
-        // process sees it.
-        let link = format!("/proc/{pid}/exe");
-        let running = std::fs::metadata(&link)
-            .ok()
-            .map(|meta| (meta.dev(), meta.ino()));
-        // Only now is it certain whose executable that was: had the
-        // process gone and its number been given to another, the
-        // descriptor taken when it connected would say so.
-        if !data.still_running() {
-            return false;
-        }
-        if running == Some(file) {
-            return true;
-        }
-        let seen = std::fs::read_link(&link).unwrap_or_default();
-        let same_name = known
-            .program
-            .as_ref()
-            .is_some_and(|program| program.file_name() == seen.file_name());
-        if same_name && known.turned_away.as_ref() != Some(&seen) {
-            crate::say!(
-                "{} (pid {pid}) is not the locker {} and may not lock; --locker and the \
-                 session's idle command must name the same file",
-                seen.display(),
-                known.program.as_deref().unwrap_or(Path::new("")).display(),
-            );
-            known.turned_away = Some(seen);
-        }
-        false
-    }
+/// Whether the compositor started `client` as the screen locker. Such a
+/// client did not connect: it was given one end of a socket pair when it
+/// was started, so nothing else can be at the other end of it but the
+/// locker and what the locker itself hands it to. What the program is
+/// called, and whether it lets others look at it, does not come into it.
+pub fn started_as_locker(client: &Client) -> bool {
+    client
+        .get_data::<ClientState>()
+        .is_some_and(|data| data.locker.is_some() && !data.sandboxed)
 }
 
 /// The first word of a locker command line as an absolute path, looked up
@@ -207,8 +142,13 @@ pub fn locker_program(command: &str, path: &str) -> Option<PathBuf> {
             .map(|dir| Path::new(dir).join(name))
             .find(|candidate| candidate.is_file())?
     };
-    // The kernel reports a running program by its real path.
     found.canonicalize().ok()
+}
+
+/// One line to someone who asked for the lock. It may have stopped
+/// listening; that is its business.
+fn answer(mut asker: UnixStream, locked: bool) {
+    let _ = asker.write_all(if locked { b"locked\n" } else { b"failed\n" });
 }
 
 /// How long to wait before starting a locker for a session whose locker
@@ -233,22 +173,90 @@ impl State {
             crate::say!("no locker: cannot find the program of `{command}`");
         }
         self.locker_command = command.to_string();
-        self.lockers.set(program);
+        self.locker_program = program;
     }
 
-    /// Starts the configured locker.
+    /// Starts the configured locker on a connection of its own, the only
+    /// kind that is shown the lock. Does nothing while a locker holds the
+    /// session or one we started is still on its way.
     pub fn spawn_locker(&mut self) {
-        let Some(program) = self.lockers.program() else {
+        let Some(program) = self.locker_program.clone() else {
             return;
         };
+        let running = self.child_pids();
+        self.locker_pids.retain(|pid| running.contains(pid));
+        if self.lock_holder() == Holder::Alive || !self.locker_pids.is_empty() {
+            return;
+        }
         let arguments: Vec<String> = self
             .locker_command
             .split_whitespace()
             .skip(1)
             .map(str::to_string)
             .collect();
-        if let Some(pid) = self.spawn_program(&program, &arguments) {
+        let (ours, theirs) = match UnixStream::pair() {
+            Ok(pair) => pair,
+            Err(err) => {
+                crate::say!("no socket for the locker: {err}");
+                return;
+            }
+        };
+        let gone = Arc::new(AtomicBool::new(false));
+        let data = ClientState {
+            locker: Some(gone.clone()),
+            ..ClientState::default()
+        };
+        if let Err(err) = self.display_handle.insert_client(ours, Arc::new(data)) {
+            crate::say!("cannot take the locker on: {err}");
+            return;
+        }
+        if let Some(pid) = self.spawn_program(&program, &arguments, Some(theirs)) {
             self.locker_pids.push(pid);
+            self.locker_gone = Some(gone);
+        }
+    }
+
+    /// Somebody asked for the screen to be locked, through
+    /// `sengi-compositor --lock`. `asker` is answered with one line,
+    /// `locked` once every screen is covered or `failed` if the locker
+    /// went away without locking, and that is all it is told.
+    pub fn lock_requested(&mut self, asker: UnixStream) {
+        let covered = self
+            .lock
+            .as_ref()
+            .is_some_and(|lock| lock.pending.is_none());
+        if self.lock_holder() == Holder::Alive && covered {
+            answer(asker, true);
+            return;
+        }
+        if self.locker_program.is_none() {
+            answer(asker, false);
+            return;
+        }
+        self.lock_askers.push(asker);
+        self.spawn_locker();
+    }
+
+    /// Tells everyone who asked for the lock how it went.
+    fn answer_lock_askers(&mut self, locked: bool) {
+        for asker in self.lock_askers.drain(..) {
+            answer(asker, locked);
+        }
+    }
+
+    /// Those who asked for a lock that is not going to come are told so:
+    /// the locker we started for them has gone, its connection too, and
+    /// the session is not in a locker's hands.
+    fn give_up_on_lock(&mut self) {
+        if self.lock_askers.is_empty() || self.lock_holder() == Holder::Alive {
+            return;
+        }
+        let connection_gone = self
+            .locker_gone
+            .as_ref()
+            .is_none_or(|gone| gone.load(Ordering::Relaxed));
+        if connection_gone && self.locker_pids.is_empty() {
+            self.answer_lock_askers(false);
         }
     }
 
@@ -257,10 +265,11 @@ impl State {
     pub fn watch_locker(&mut self) {
         let running = self.child_pids();
         self.locker_pids.retain(|pid| running.contains(pid));
+        self.give_up_on_lock();
         // Without a locker to start there is nothing to keep trying.
         let orphaned = self.lock_holder() == Holder::Dead
             && self.locker_pids.is_empty()
-            && self.lockers.program().is_some();
+            && self.locker_program.is_some();
         if !orphaned || self.relock_armed {
             return;
         }
@@ -345,6 +354,7 @@ impl State {
             if let Some((locker, _)) = lock.pending.take() {
                 locker.lock();
             }
+            self.answer_lock_askers(true);
         }
     }
 
@@ -361,6 +371,7 @@ impl State {
             if let Some((locker, _)) = lock.pending.take() {
                 locker.lock();
             }
+            self.answer_lock_askers(true);
         }
     }
 
@@ -396,7 +407,7 @@ impl SessionLockHandler for State {
         let recognised = confirmation
             .ext_session_lock()
             .client()
-            .is_some_and(|client| self.lockers.recognises(&client));
+            .is_some_and(|client| started_as_locker(&client));
         if !may_lock(self.lock_holder(), recognised) {
             return;
         }
@@ -548,6 +559,26 @@ mod tests {
         assert!(!covering.presented(&"left", true));
         assert!(covering.removed(&"right"));
         assert!(Covering::<&str>::new(Vec::new()).presented(&"left", false));
+    }
+
+    #[test]
+    fn the_control_socket_sits_beside_the_wayland_socket() {
+        use crate::state::control_path;
+        use std::ffi::OsStr;
+        let at = |dir: Option<&str>, name: Option<&str>| {
+            control_path(dir.map(OsStr::new), name.map(OsStr::new))
+        };
+        assert_eq!(
+            at(Some("/run/user/1000"), Some("wayland-1")),
+            Some(PathBuf::from("/run/user/1000/wayland-1.control"))
+        );
+        assert_eq!(
+            at(None, Some("/tmp/x/wayland-1")),
+            Some(PathBuf::from("/tmp/x/wayland-1.control"))
+        );
+        assert_eq!(at(None, Some("wayland-1")), None);
+        assert_eq!(at(Some("/run/user/1000"), None), None);
+        assert_eq!(at(Some("/run/user/1000"), Some("")), None);
     }
 
     #[test]

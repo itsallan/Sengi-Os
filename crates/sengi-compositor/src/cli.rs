@@ -15,12 +15,15 @@ Usage: sengi-compositor [options]
       --exit-after SEC  stop after SEC seconds
       --script FILE     play scripted input and screenshots (headless only)
       --locker CMD      the screen locker: a program and its arguments, no
-                        shell syntax (default: sengi-lock -f). Super+L runs
-                        it, and nothing else may lock the session
+                        shell syntax (default: sengi-lock -f). Super+L and
+                        --lock start it on a connection of its own, and
+                        nothing else may lock the session
       --renderer NAME   drm backend: gles, pixman or auto (default auto: gles
                         with a GPU, pixman without; SENGI_COMPOSITOR_RENDERER
                         sets the same)
       --exit            ask the running compositor to quit (log out)
+      --lock            ask the running compositor to lock the screen;
+                        returns once every screen is covered
   -h, --help            show this help
   -V, --version         show the version";
 
@@ -103,6 +106,7 @@ pub enum Command {
     Version,
     /// Ask the running compositor to end the session.
     Exit,
+    Lock,
 }
 
 pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> {
@@ -115,6 +119,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             "-h" | "--help" => return Ok(Command::Help),
             "-V" | "--version" => return Ok(Command::Version),
             "--exit" => return Ok(Command::Exit),
+            "--lock" => return Ok(Command::Lock),
             "-s" | "--startup" => options.startup.push(value()?),
             "--backend" => {
                 options.backend = match value()?.as_str() {
@@ -245,6 +250,7 @@ mod tests {
         assert_eq!(run(&["--size", "1x1", "--help"]), Ok(Command::Help));
         assert_eq!(run(&["-V"]), Ok(Command::Version));
         assert_eq!(run(&["--exit"]), Ok(Command::Exit));
+        assert_eq!(run(&["--lock"]), Ok(Command::Lock));
     }
 
     #[test]

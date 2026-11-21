@@ -46,7 +46,7 @@ impl SecurityContextHandler for State {
             return;
         }
         let listening = self.loop_handle.insert_source(source, |stream, _, state| {
-            let data = ClientState::of(&stream, true);
+            let data = ClientState::of(true);
             if let Err(err) = state.display_handle.insert_client(stream, Arc::new(data)) {
                 crate::say!("rejected a sandboxed client: {err}");
             }

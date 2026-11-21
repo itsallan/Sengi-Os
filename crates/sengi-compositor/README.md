@@ -74,21 +74,24 @@ such as `adwaita-icon-theme`, and a seat provider: systemd-logind (a greetd
 session with pam_systemd is enough) or seatd.
 
 Under greetd, point the session command at a script like the image's
-`sengi-session` with the last line replaced:
+`sengi-session`, which runs
 
-    exec sengi-compositor --backend drm \
-        -s 'LABWC_PID=$SENGI_COMPOSITOR_PID sh /etc/xdg/labwc/autostart'
+    sengi-compositor --backend drm --locker '/usr/bin/sengi-lock -f' \
+        -s '. /usr/lib/sengi-os/session-start'
 
 Name the backend there. Left to choose, the compositor opens a window
 when `WAYLAND_DISPLAY` or `DISPLAY` name a display that is really there,
 takes the screen when started on a terminal, and otherwise runs headless.
 
-Started programs get `WAYLAND_DISPLAY` and `SENGI_COMPOSITOR_PID`. The
-start-up script's restart loops watch `LABWC_PID`, hence the assignment
-until the script learns the new name. `sengi-compositor --exit` from inside
-the session, or SIGTERM, logs out and gives the terminal back.
-Ctrl+Alt+F1..F12 switch virtual terminals. The keyboard layout follows
-`XKB_DEFAULT_LAYOUT` and the other `XKB_DEFAULT_*` variables.
+Started programs get `WAYLAND_DISPLAY` and `SENGI_COMPOSITOR_PID`, which
+the session's restart loops watch. From inside the session,
+`sengi-compositor --exit` (or SIGTERM) logs out and gives the terminal
+back, and `sengi-compositor --lock` locks the screen and returns once
+every screen is covered. SIGHUP, which `labwc --reconfigure` would send,
+is noted in the log and otherwise ignored: there is nothing to read again
+yet. Ctrl+Alt+F1..F12 switch virtual terminals. The keyboard layout follows
+`XKB_DEFAULT_LAYOUT` and the other `XKB_DEFAULT_*` variables, which
+`sengi-session` takes from the environment file Settings writes.
 
 `--backend drm --screenshot PNG` saves what is drawn, by rendering the same
 frame once more into memory, whenever the compositor gets SIGUSR2, and at
@@ -187,7 +190,7 @@ swaylock, swayidle, sengi-focus, wlrctl and gtk3-widget-factory:
 - Key bindings as labwc has them in the image: Super+Space runs
   sengi-launcher (fuzzel where that is missing),
   Super+Return a terminal (`sengi-run foot`, or `foot`), Super+L
-  `swaylock -f`, Super+Q and Alt+F4 close the window that has the keyboard,
+  the locker, Super+Q and Alt+F4 close the window that has the keyboard,
   Alt+Tab and Alt+Shift+Tab step through windows by recent use.
 - With Super held, the left button moves a window from anywhere on it and
   the right button resizes it by the nearest corner. A double click on the
@@ -385,27 +388,48 @@ libpixman-1-dev libxkbcommon-dev`; EGL and GLES are loaded at run time and
 need no headers. Every library it links against is already in the image
 because labwc needs it too, and the build stops if that ever changes.
 
-The boot menu has an entry "Sengi OS (sengi-compositor preview)" that adds
-`sengi.compositor=own` to the kernel command line. The menu is hidden;
-press P while the machine starts to pick the entry, or Esc for the menu.
-`/usr/bin/sengi-session` looks for that word and then runs
+labwc stays the default. `/usr/bin/sengi-session` starts the session on
+sengi-compositor instead when it is asked to, in one of three ways:
+
+- The word `sengi.compositor=own` on the kernel command line. The live
+  image's boot menu has an entry "Sengi OS (sengi-compositor preview)"
+  that adds it; the menu is hidden, so press P while the machine starts to
+  pick the entry, or Esc for the menu. On any other entry, an installed
+  system's included, press E and add the word to the `linux` line.
+- A file `/etc/sengi-os/compositor` that says `own`, for every login until
+  it is removed: `sudo mkdir -p /etc/sengi-os && echo own | sudo tee
+  /etc/sengi-os/compositor`, then log out and in.
+- A file `/run/sengi-os.compositor` that says `own`, until the next start.
+  The boot test makes it.
+
+It then reads the environment file labwc would read (the user's
+`~/.config/labwc/environment`, or else `/etc/xdg/labwc/environment`) for
+the keyboard layout, the cursor size and the time zone, and runs
 
     sengi-compositor --backend drm --locker '/usr/bin/sengi-lock -f' \
-        -s 'LABWC_PID=$SENGI_COMPOSITOR_PID sh /etc/xdg/labwc/autostart'
+        -s '. /usr/lib/sengi-os/session-start'
 
 with its output in the journal (`journalctl -t sengi-compositor`). If the
 compositor exits with an error within ten seconds, the session writes a
 line to the journal (`-t sengi-session`) and starts labwc instead, once.
-Without the word nothing of this runs.
 
-The start-up script is labwc's, unchanged. Its restart loops watch
-`LABWC_PID`, hence the assignment. It picks the wallpaper by `WLR_RENDERER`,
-which nothing sets here, so swaybg gets its one-colour buffer, which both
-of our renderers draw correctly. `swayidle` runs `sengi-lock -f`, which has
-to be the same file `--locker` names: only that file may lock, compared by
-device and inode. With `/usr/bin` first in `PATH` they agree. The session
-menu's "Log out" runs `labwc --exit`, which signals `LABWC_PID` and so ends
-this session too.
+`/usr/lib/sengi-os/session-start` is the one start-up script of the
+session; labwc's `autostart` runs the same file. Its restart loops watch
+the compositor by the process number each one gives its children. It
+picks the wallpaper by `WLR_RENDERER`, which nothing sets here, so swaybg
+gets its one-colour buffer, which both of our renderers draw correctly.
+The session menu's "Log out" runs `sengi-compositor --exit`.
+
+Locking goes through the compositor. Super+L, or anything that runs
+`sengi-compositor --lock`, makes it start the locker on a connection of
+its own; see "Who may do what". `sengi-lock` started by anything else in
+this session (swayidle, the session menu, quick settings) passes the
+request on with `sengi-compositor --lock` and so behaves as it does under
+labwc: `sengi-lock -f` returns once the screen is locked.
+
+Settings' keyboard repeat and pointer settings do not reach the
+compositor yet. They live in labwc's `rc.xml`, and Settings tells only a
+running labwc to read it again.
 
 Seen in a QEMU guest booted from the image's preview entry (no GPU there,
 so pixman on dumb buffers, and no LLVM mapped): swaybg, sengi-bar,
@@ -424,13 +448,13 @@ this image, and logging out through the session menu.
 ### The boot test
 
 `scripts/boot-test.sh` boots the default entry and expects labwc.
-`SENGI_PREVIEW=1 scripts/boot-test.sh ISO OUT` presses the preview entry's
-hotkey between SeaBIOS handing over and the kernel starting (BIOS only so
-far) and expects sengi-compositor; the guest
-reports which one the command line asked for, and the test fails if that
-is not the one meant or if it is not running. Smithay numbers its sockets
-from `wayland-1`, which is what the boot report waits for on this entry.
-The screenshots are QEMU's own and the same seven as for labwc.
+`SENGI_COMPOSITOR=own scripts/boot-test.sh ISO OUT` hands the guest the
+`/run` file above, under either firmware, and expects sengi-compositor.
+`SENGI_PREVIEW=1` gets there through the boot menu instead: it presses
+the preview entry's hotkey between SeaBIOS handing over and the kernel
+starting (BIOS only). The guest reports which compositor the session
+really came up on, and the test fails if that is not the one meant. The
+checks and screenshots are the same as for labwc.
 
 From inside the guest, SIGUSR1 makes the compositor print two lines to the
 journal: `N page flips, N with the cursor on its own plane, N dmabufs
@@ -471,22 +495,30 @@ notification or the security context manager, and cannot bind them by
 number either. It can still do what any window can: open windows, read
 the clipboard while it has keyboard focus, and offer drags.
 
-The session lock is offered only to the locker program: the first word
-of `--locker` (default `sengi-lock -f`; a program and its arguments, no
-shell syntax), found in `PATH` at start and compared with the
-executable of the process that connected. Whoever holds the lock is the
-only one who can unlock or supply lock surfaces; a second locker is
-refused while the first lives, and one that connects after the first
-died takes its place.
+The session lock is offered only to a locker the compositor started
+itself. The locker is the command of `--locker` (default `sengi-lock -f`;
+a program and its arguments, no shell syntax, found in `PATH` at start).
+The compositor starts it on Super+L, when `sengi-compositor --lock` asks,
+and for a locked session whose locker died. It makes a socket pair, keeps
+one end as a client that may see the lock, and hands the other to the
+program as `WAYLAND_SOCKET`. No client that connects to the session's
+socket is shown the lock, whatever program it is. Nothing is looked up
+about the locker's process, so a locker that has closed itself to other
+processes (`PR_SET_DUMPABLE` off, as sengi-lock does to keep its password
+out of reach) works like any other. Whoever holds the lock is the only
+one who can unlock or supply lock surfaces, and no second locker is
+started while one lives.
+
+`--lock` is asked for over a socket beside the Wayland one
+(`$XDG_RUNTIME_DIR/wayland-N.control`), which like it is open to the
+user's own programs only. All it can do is have the screen locked.
 
 A program that runs unsandboxed as the user is not confined by any of
 this, here or under labwc. It can put up a layer surface over everything
 and take all keys, list, activate and close all windows, and watch idle
 time, because the bar, the dock and swayidle do exactly that through the
-same globals. It can start the locker itself, or connect and then
-replace itself with the locker so that the executable check passes for a
-connection its parent kept, and with the user's rights it could as well
-trace the real locker or replace the session's start-up script. Keeping
+same globals. It can ask for the screen to be locked, and with the user's
+rights it could as well replace the session's start-up script. Keeping
 untrusted programs in a sandbox is what protects against them.
 
 ## Layout

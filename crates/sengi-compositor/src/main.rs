@@ -70,6 +70,7 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Ok(Command::Exit) => return ask_to_exit(),
+        Ok(Command::Lock) => return ask_to_lock(),
         Err(err) => {
             crate::say!("{err}\n{}", cli::USAGE);
             return ExitCode::from(2);
@@ -165,5 +166,41 @@ fn ask_to_exit() -> ExitCode {
             crate::say!("could not signal process {pid}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// `--lock`: asks the compositor this was started under to lock the
+/// screen, and waits for its answer. Success means every screen is
+/// covered, which is what `swayidle -w` waits for before the machine
+/// sleeps.
+fn ask_to_lock() -> ExitCode {
+    use std::io::{BufRead, BufReader, Write};
+
+    let path = state::control_path(
+        std::env::var_os("XDG_RUNTIME_DIR").as_deref(),
+        std::env::var_os("WAYLAND_DISPLAY").as_deref(),
+    );
+    let Some(path) = path else {
+        crate::say!("WAYLAND_DISPLAY is not set; not started from a session?");
+        return ExitCode::FAILURE;
+    };
+    let mut stream = match std::os::unix::net::UnixStream::connect(&path) {
+        Ok(stream) => stream,
+        Err(err) => {
+            crate::say!("no sengi-compositor at {}: {err}", path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(err) = stream.write_all(b"lock\n") {
+        crate::say!("could not ask for the lock: {err}");
+        return ExitCode::FAILURE;
+    }
+    let mut answer = String::new();
+    let _ = BufReader::new(stream).read_line(&mut answer);
+    if answer.trim() == "locked" {
+        ExitCode::SUCCESS
+    } else {
+        crate::say!("the screen was not locked");
+        ExitCode::FAILURE
     }
 }

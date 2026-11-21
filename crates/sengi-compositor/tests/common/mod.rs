@@ -84,6 +84,15 @@ impl Client {
             Some(path) => Connection::from_socket(UnixStream::connect(path)?)?,
             None => Connection::connect_to_env()?,
         };
+        Self::on(connection)
+    }
+
+    /// A client on a socket that is already connected.
+    pub fn from_stream(stream: UnixStream) -> Result<Self, Failure> {
+        Self::on(Connection::from_socket(stream)?)
+    }
+
+    fn on(connection: Connection) -> Result<Self, Failure> {
         let (globals, queue) = registry_queue_init::<Seen>(&connection)?;
         let handle = queue.handle();
         let compositor = globals.bind(&handle, 1..=4, ())?;

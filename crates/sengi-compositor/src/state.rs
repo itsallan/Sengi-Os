@@ -4,12 +4,20 @@ use std::{
     collections::HashMap,
     error::Error,
     ffi::OsString,
+    io::Read,
     os::{
-        fd::{AsRawFd, FromRawFd, OwnedFd},
-        unix::net::UnixStream,
+        fd::AsRawFd,
+        unix::{
+            net::{UnixListener, UnixStream},
+            process::CommandExt,
+        },
     },
+    path::PathBuf,
     process::{Child, Command},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::Instant,
 };
 
@@ -81,7 +89,7 @@ use crate::{
     input::Drag,
     keys::{self, Swallowed},
     layout::{self, FocusStack, Rect},
-    lock::{Lock, Lockers},
+    lock::Lock,
     render, security,
     text::Font,
 };
@@ -113,8 +121,14 @@ pub struct State {
     pub lock_count: u64,
     /// Set while a request of the lock's holder is being handled.
     pub lock_request_from_holder: bool,
-    /// Which program may lock.
-    pub lockers: Lockers,
+    /// The locker's program file, if there is one to start.
+    pub locker_program: Option<PathBuf>,
+    /// Set once the connection of the locker we started last has closed.
+    pub locker_gone: Option<Arc<AtomicBool>>,
+    /// Those who asked for the lock and have not been answered yet.
+    pub lock_askers: Vec<UnixStream>,
+    /// Where `--lock` is asked for; the file goes when we do.
+    _control: ControlSocket,
     /// Switches to another virtual terminal, where the backend can.
     pub switch_vt: Option<Box<dyn FnMut(i32)>>,
     /// Frames shown on a real screen so far. Stays zero on backends that
@@ -214,11 +228,9 @@ impl State {
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
         let foreign_toplevels = ForeignToplevelState::new(&dh);
         let cursor_shape_state = CursorShapeManagerState::new::<Self>(&dh);
-        // Only the locker program gets to see the lock.
-        let lockers = Lockers::default();
-        let known = lockers.clone();
+        // Only a locker we started gets to see the lock.
         let session_lock_state =
-            SessionLockManagerState::new::<Self, _>(&dh, move |client| known.recognises(client));
+            SessionLockManagerState::new::<Self, _>(&dh, crate::lock::started_as_locker);
         let idle_notifier_state = IdleNotifierState::<Self>::new(&dh, event_loop.handle());
         let layer_shell_state =
             WlrLayerShellState::new_with_filter::<Self, _>(&dh, security::trusted);
@@ -275,11 +287,23 @@ impl State {
         let socket_name = socket.socket_name().to_os_string();
         let handle = event_loop.handle();
         handle.insert_source(socket, |stream, _, state| {
-            let data = ClientState::of(&stream, false);
+            let data = ClientState::of(false);
             if let Err(err) = state.display_handle.insert_client(stream, Arc::new(data)) {
                 crate::say!("rejected a client: {err}");
             }
         })?;
+        // Requests to the compositor itself come in beside the Wayland
+        // socket, in the same directory, which only the user can enter.
+        let control = ControlSocket::bind(&socket_name)?;
+        handle.insert_source(
+            Generic::new(control.listener.try_clone()?, Interest::READ, Mode::Level),
+            |_, listener, state| {
+                while let Ok((stream, _)) = listener.accept() {
+                    state.control_request(stream);
+                }
+                Ok(PostAction::Continue)
+            },
+        )?;
         handle.insert_source(
             Generic::new(display, Interest::READ, Mode::Level),
             |_, display, state| {
@@ -312,7 +336,10 @@ impl State {
             hidden_frames_armed: false,
             lock_count: 0,
             lock_request_from_holder: false,
-            lockers,
+            locker_program: None,
+            locker_gone: None,
+            lock_askers: Vec::new(),
+            _control: control,
             switch_vt: None,
             page_flips: 0,
             cursor_plane_frames: 0,
@@ -616,17 +643,47 @@ impl State {
         }
     }
 
-    /// Starts `program` itself, without a shell in between.
+    /// One request on the control socket: a word and a newline.
+    fn control_request(&mut self, mut stream: UnixStream) {
+        // Whoever asks writes at once. One that does not is not waited for.
+        let _ = stream.set_nonblocking(false);
+        let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(100)));
+        let mut word = [0u8; 16];
+        let read = stream.read(&mut word).unwrap_or(0);
+        if word[..read].trim_ascii() == b"lock" {
+            self.lock_requested(stream);
+        }
+    }
+
+    /// Starts `program` itself, without a shell in between. With `socket`
+    /// the program gets that as its connection to us, the way
+    /// `WAYLAND_SOCKET` hands one over.
     pub fn spawn_program(
         &mut self,
         program: &std::path::Path,
         arguments: &[String],
+        socket: Option<UnixStream>,
     ) -> Option<u32> {
-        let child = Command::new(program)
+        let mut command = Command::new(program);
+        command
             .args(arguments)
             .env("WAYLAND_DISPLAY", &self.socket_name)
-            .env(PID_VARIABLE, std::process::id().to_string())
-            .spawn();
+            .env(PID_VARIABLE, std::process::id().to_string());
+        if let Some(socket) = &socket {
+            let fd = socket.as_raw_fd();
+            command.env("WAYLAND_SOCKET", fd.to_string());
+            // SAFETY: runs in the child between fork and exec and makes one
+            // system call, on a descriptor the child has a copy of.
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+        let child = command.spawn();
         match child {
             Ok(child) => {
                 let pid = child.id();
@@ -795,68 +852,74 @@ pub struct ClientState {
     pub compositor_state: CompositorClientState,
     /// The client came in through a sandbox's security context.
     pub sandboxed: bool,
-    /// The process that connected, as the kernel reported it then.
-    pub pid: Option<i32>,
-    /// A handle on that very process, where the kernel gives one. A pid
-    /// can be handed to another process later; this cannot.
-    pub process: Option<OwnedFd>,
+    /// Set for a locker we started on a connection we made for it, see
+    /// `State::spawn_locker`. The flag inside says that connection has
+    /// closed.
+    pub locker: Option<Arc<AtomicBool>>,
 }
 
 impl ClientState {
-    /// What is known of the client at the other end of `stream`.
-    pub fn of(stream: &UnixStream, sandboxed: bool) -> Self {
-        let pid = smithay::reexports::rustix::net::sockopt::socket_peercred(stream)
-            .ok()
-            .map(|credentials| credentials.pid.as_raw_nonzero().get());
+    /// A client that connected by itself.
+    pub fn of(sandboxed: bool) -> Self {
         Self {
             sandboxed,
-            pid,
-            process: peer_pidfd(stream),
             ..Self::default()
         }
     }
+}
 
-    /// Whether the process that connected still exists. Without a handle
-    /// on it there is only the pid to go by, and the answer is yes.
-    pub fn still_running(&self) -> bool {
-        let Some(process) = &self.process else {
-            return true;
-        };
-        // The kernel shows the pid behind a pidfd, and -1 once the
-        // process is gone.
-        let info = format!("/proc/self/fdinfo/{}", process.as_raw_fd());
-        std::fs::read_to_string(info).is_ok_and(|info| {
-            info.lines()
-                .find_map(|line| line.strip_prefix("Pid:"))
-                .and_then(|pid| pid.trim().parse::<i32>().ok())
-                .is_some_and(|pid| Some(pid) == self.pid)
-        })
+/// The socket `sengi-compositor --lock` talks to: the Wayland socket's
+/// name with `.control` after it.
+struct ControlSocket {
+    listener: UnixListener,
+    path: PathBuf,
+}
+
+impl ControlSocket {
+    fn bind(socket_name: &std::ffi::OsStr) -> Result<Self, Box<dyn Error>> {
+        let path = control_path(
+            std::env::var_os("XDG_RUNTIME_DIR").as_deref(),
+            Some(socket_name),
+        )
+        .ok_or("XDG_RUNTIME_DIR is not set")?;
+        // One left behind by a compositor that was killed.
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path)?;
+        listener.set_nonblocking(true)?;
+        Ok(Self { listener, path })
     }
 }
 
-/// A pidfd for the process at the other end of `stream`, from
-/// SO_PEERPIDFD (Linux 6.5 and later).
-fn peer_pidfd(stream: &UnixStream) -> Option<OwnedFd> {
-    const SO_PEERPIDFD: libc::c_int = 77;
-    let mut fd: libc::c_int = -1;
-    let mut size = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
-    // Safety: the kernel writes one int, which is what there is room for.
-    let result = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            SO_PEERPIDFD,
-            (&raw mut fd).cast(),
-            &raw mut size,
-        )
-    };
-    // Safety: on success the descriptor is new and nobody else's.
-    (result == 0 && fd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(fd) })
+impl Drop for ControlSocket {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Where the control socket of the compositor at `display` is, given the
+/// values of `XDG_RUNTIME_DIR` and `WAYLAND_DISPLAY`.
+pub fn control_path(
+    runtime_dir: Option<&std::ffi::OsStr>,
+    display: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
+    let display = display.filter(|name| !name.is_empty())?;
+    let mut name = display.to_os_string();
+    name.push(".control");
+    let name = PathBuf::from(name);
+    if name.is_absolute() {
+        return Some(name);
+    }
+    let dir = runtime_dir.filter(|dir| !dir.is_empty())?;
+    Some(PathBuf::from(dir).join(name))
 }
 
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
-    fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
+    fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {
+        if let Some(gone) = &self.locker {
+            gone.store(true, Ordering::Relaxed);
+        }
+    }
 }
 
 impl BufferHandler for State {
