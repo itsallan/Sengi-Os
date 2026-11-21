@@ -37,7 +37,7 @@ fi
 {
 	# When each piece of the desktop was started, in seconds since boot,
 	# beside the desktop marker above, and when polkit was called for.
-	for prog in labwc sengi-bar sengi-dock swayidle polkitd; do
+	for prog in "$compositor" sengi-bar sengi-dock swayidle polkitd; do
 		pid=$(pidof -s "$prog") &&
 			awk -v prog="$prog" '{printf "started at %.2f s: %s\n", $22 / 100, prog}' "/proc/$pid/stat"
 	done
@@ -167,7 +167,7 @@ while [ -n "$(greeter sengi-greeter)" ]; do
 done
 echo "SENGI-GREETER gone" >$port
 n=0
-until [ -S /run/user/1000/wayland-0 ] && pidof sengi-bar >/dev/null && pidof sengi-dock >/dev/null; do
+until [ -S "$socket" ] && pidof sengi-bar >/dev/null && pidof sengi-dock >/dev/null; do
 	n=$((n + 1))
 	[ $n -lt 150 ] || break
 	sleep 0.2
@@ -176,7 +176,7 @@ sleep 2
 left=$(pgrep -u _greetd -x 'sengi-greeter|labwc' | tr '\n' ' ')
 owner=$(loginctl list-sessions --no-legend | awk '$4 == "seat0" && $6 == "user" {print $3; exit}')
 desktop=down
-if pidof labwc >/dev/null && pidof sengi-bar >/dev/null && pidof sengi-dock >/dev/null; then
+if pidof "$compositor" >/dev/null && pidof sengi-bar >/dev/null && pidof sengi-dock >/dev/null; then
 	desktop=up
 fi
 echo "SENGI-GREETER after desktop=$desktop session=${owner:-nobody} left=${left:-nothing}" >$port
