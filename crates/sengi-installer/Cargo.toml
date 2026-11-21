@@ -1,0 +1,31 @@
+[package]
+name = "sengi-installer"
+description = "The Sengi OS installer's window"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[dependencies]
+# An ordinary window, as Settings is: the workspace entry with what the
+# software renderer needs to find Inter and to draw the icons.
+slint = { workspace = true, features = ["software-renderer-systemfonts", "software-renderer-path"] }
+
+# The plan, the rules for names, the list of disks and the lines the
+# installing program reports with. The program itself is started, not
+# linked: it runs as root and this does not.
+sengi-install = { path = "../sengi-install" }
+# The list of time zones, the keyboard layouts and their names, and the
+# way a layout is put into effect in the running session. Its window kit
+# is used from ui/ through the include path in build.rs.
+sengi-settings = { path = "../sengi-settings" }
+sengi-config = { path = "../sengi-config" }
+# The password as it is typed, as the lock screen and the login screen
+# hold it. Without PAM: nothing is checked here.
+sengi-lock = { path = "../sengi-lock", default-features = false }
+# No features: the secret type and nothing that speaks D-Bus.
+sengi-system = { path = "../sengi-system" }
+sengi-text = { path = "../sengi-text" }
+
+[build-dependencies]
+slint-build.workspace = true

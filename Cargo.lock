@@ -3602,6 +3602,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "sengi-installer"
+version = "0.6.0"
+dependencies = [
+ "sengi-config",
+ "sengi-install",
+ "sengi-lock",
+ "sengi-settings",
+ "sengi-system",
+ "sengi-text",
+ "slint",
+ "slint-build",
+]
+
+[[package]]
 name = "sengi-launcher"
 version = "0.6.0"
 dependencies = [
