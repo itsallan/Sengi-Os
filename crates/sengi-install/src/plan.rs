@@ -296,6 +296,24 @@ keyboard = \"fr(azerty)\"
     }
 
     #[test]
+    fn names_in_any_script_survive_the_plan() {
+        // The image's useradd takes all of these as a full name; see the
+        // README for how that was found out.
+        for name in [
+            "Zo\u{eb} Nakato",
+            "\u{41e}\u{43b}\u{435}\u{43d}\u{430} \u{428}\u{435}\u{432}\u{447}\u{435}\u{43d}\u{43a}\u{43e}",
+            "\u{7530}\u{4e2d} \u{82b1}\u{5b50}",
+            "\u{645}\u{62d}\u{645}\u{62f} \u{639}\u{644}\u{64a}",
+            "O'Neil \"Bud\" Jr.",
+        ] {
+            let mut plan = Plan::parse(PLAN).unwrap();
+            plan.full_name = name.to_string();
+            let read = Plan::parse(&plan.render()).unwrap();
+            assert_eq!(read.full_name, name);
+        }
+    }
+
+    #[test]
     fn a_plan_written_out_reads_back_the_same() {
         let plan = Plan::parse(PLAN).unwrap();
         assert_eq!(Plan::parse(&plan.render()), Ok(plan.clone()));

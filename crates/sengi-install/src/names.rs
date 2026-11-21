@@ -175,6 +175,9 @@ mod tests {
             "",
             "Allan",
             "Ada Lovelace",
+            "Zo\u{eb} Nakato",
+            "\u{41e}\u{43b}\u{435}\u{43d}\u{430} \u{428}\u{435}\u{432}\u{447}\u{435}\u{43d}\u{43a}\u{43e}",
+            "\u{7530}\u{4e2d} \u{82b1}\u{5b50}",
             "Jos\u{e9} \u{c5}ngstr\u{f6}m",
             "O'Neil",
         ] {
