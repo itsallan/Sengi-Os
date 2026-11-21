@@ -22,7 +22,7 @@ pub fn vt_for(keysym: u32) -> Option<i32> {
 
 /// What locks the session unless `--locker` says otherwise: a program and
 /// its arguments. It is started without a shell.
-pub const DEFAULT_LOCKER: &str = "swaylock -f";
+pub const DEFAULT_LOCKER: &str = "sengi-lock -f";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -237,7 +237,7 @@ mod tests {
             .unwrap()
             .contains("sengi-run foot"));
         assert!(command(Action::Terminal).unwrap().contains("exec foot"));
-        assert!(DEFAULT_LOCKER.contains("swaylock -f"));
+        assert!(DEFAULT_LOCKER.contains("sengi-lock -f"));
         assert_eq!(command(Action::Lock), None);
         assert_eq!(command(Action::CloseWindow), None);
         assert_eq!(command(Action::NextWindow), None);

@@ -390,7 +390,7 @@ The boot menu has an entry "Sengi OS (sengi-compositor preview)" that adds
 press P while the machine starts to pick the entry, or Esc for the menu.
 `/usr/bin/sengi-session` looks for that word and then runs
 
-    sengi-compositor --backend drm --locker '/usr/bin/swaylock -f' \
+    sengi-compositor --backend drm --locker '/usr/bin/sengi-lock -f' \
         -s 'LABWC_PID=$SENGI_COMPOSITOR_PID sh /etc/xdg/labwc/autostart'
 
 with its output in the journal (`journalctl -t sengi-compositor`). If the
@@ -401,7 +401,7 @@ Without the word nothing of this runs.
 The start-up script is labwc's, unchanged. Its restart loops watch
 `LABWC_PID`, hence the assignment. It picks the wallpaper by `WLR_RENDERER`,
 which nothing sets here, so swaybg gets its one-colour buffer, which both
-of our renderers draw correctly. `swayidle` runs `swaylock -f`, which has
+of our renderers draw correctly. `swayidle` runs `sengi-lock -f`, which has
 to be the same file `--locker` names: only that file may lock, compared by
 device and inode. With `/usr/bin` first in `PATH` they agree. The session
 menu's "Log out" runs `labwc --exit`, which signals `LABWC_PID` and so ends
@@ -472,7 +472,7 @@ number either. It can still do what any window can: open windows, read
 the clipboard while it has keyboard focus, and offer drags.
 
 The session lock is offered only to the locker program: the first word
-of `--locker` (default `swaylock -f`; a program and its arguments, no
+of `--locker` (default `sengi-lock -f`; a program and its arguments, no
 shell syntax), found in `PATH` at start and compared with the
 executable of the process that connected. Whoever holds the lock is the
 only one who can unlock or supply lock surfaces; a second locker is

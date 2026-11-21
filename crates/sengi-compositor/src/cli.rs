@@ -15,7 +15,7 @@ Usage: sengi-compositor [options]
       --exit-after SEC  stop after SEC seconds
       --script FILE     play scripted input and screenshots (headless only)
       --locker CMD      the screen locker: a program and its arguments, no
-                        shell syntax (default: swaylock -f). Super+L runs
+                        shell syntax (default: sengi-lock -f). Super+L runs
                         it, and nothing else may lock the session
       --renderer NAME   drm backend: gles, pixman or auto (default auto: gles
                         with a GPU, pixman without; SENGI_COMPOSITOR_RENDERER
