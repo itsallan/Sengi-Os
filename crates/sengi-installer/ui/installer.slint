@@ -4,7 +4,7 @@
 // nothing here has a colour or a size of its own.
 
 import { Tokens, SengiText, SengiButton, SengiSurface, SengiPasswordField, SengiStep, SengiStepState } from "components.slint";
-import { Metrics, Item, ItemList, InfoRow, InfoCard, DialogSpec, DialogLayer, ChooserLayer, Page, PageColumn, Card, Divider, SettingRow, Note, Gap, SectionLabel, ChoiceButton, TextField } from "kit.slint";
+import { Metrics, Nudge, Item, ItemList, InfoRow, InfoCard, DialogSpec, DialogLayer, ChooserLayer, Page, PageColumn, Card, Divider, SettingRow, Note, Gap, SectionLabel, ChoiceButton, TextField } from "kit.slint";
 
 export { Item, InfoRow, DialogSpec, SengiStepState }
 
@@ -493,6 +493,27 @@ export component InstallerWindow inherits Window {
             background: Tokens.color-border;
         }
 
+        // The keyboard is on one of these buttons whenever a page has
+        // nothing of its own to hold it, and a page can be longer than
+        // the window: the last one lists every step. The keys that scroll
+        // are passed up to the page from here, the way Settings passes
+        // them from its sidebar.
+        FocusScope {
+            focus-on-click: false;
+            focus-on-tab-navigation: false;
+
+            key-pressed(event) => {
+                if event.text == Key.PageDown || event.text == Key.DownArrow {
+                    Nudge.down += 1;
+                    return EventResult.accept;
+                }
+                if event.text == Key.PageUp || event.text == Key.UpArrow {
+                    Nudge.up += 1;
+                    return EventResult.accept;
+                }
+                return EventResult.reject;
+            }
+
         HorizontalLayout {
             padding-left: Tokens.space-xl;
             padding-right: Tokens.space-xl;
@@ -526,6 +547,7 @@ export component InstallerWindow inherits Window {
                 enabled: Wizard.can-next && Wizard.next-label != "";
                 clicked => { Wizard.next(); }
             }
+        }
         }
     }
 

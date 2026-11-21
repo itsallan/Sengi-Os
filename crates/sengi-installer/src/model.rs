@@ -430,6 +430,40 @@ impl Progress {
             .skip(1)
             .any(|step| step.state != StepState::Waiting)
     }
+
+    /// The step it stopped in, by the words the list shows it with.
+    pub fn failed_step(&self) -> Option<&'static str> {
+        self.steps
+            .iter()
+            .find(|step| step.state == StepState::Failed)
+            .map(|step| step.title)
+    }
+
+    /// What the failure page says: on which disk, in which step, why,
+    /// and what that leaves. `disk` is what to call the disk; its node
+    /// is added if that does not already have it.
+    pub fn failure_words(&self, disk: &str) -> String {
+        let Outcome::Failed(_, why) = &self.outcome else {
+            return String::new();
+        };
+        let on = match (disk.is_empty(), self.disk.is_empty()) {
+            (true, true) => "the disk".to_string(),
+            (true, false) => self.disk.clone(),
+            (false, true) => disk.to_string(),
+            (false, false) if disk.contains(&self.disk) => disk.to_string(),
+            (false, false) => format!("{disk} ({})", self.disk),
+        };
+        let at = match self.failed_step() {
+            Some(step) => format!("Installing on {on} stopped at \u{201c}{step}\u{201d}"),
+            None => format!("Installing on {on} did not start"),
+        };
+        let left = if self.disk_was_touched() {
+            "The disk was being written and no longer holds what it did. This live session is as it was, and the installer can be run again."
+        } else {
+            "Nothing on the computer was changed."
+        };
+        format!("{at}: {why}. {left}")
+    }
 }
 
 /// How long it took, for people.
@@ -732,6 +766,20 @@ mod tests {
             "sfdisk said no".to_string(),
         ));
         assert!(late.disk_was_touched());
+        assert_eq!(late.failed_step(), Some("Erasing the disk"));
+        late.disk = "/dev/sda".to_string();
+        let words = late.failure_words("SanDisk \u{b7} 256 GB");
+        assert!(words.starts_with("Installing on SanDisk \u{b7} 256 GB (/dev/sda) stopped at \u{201c}Erasing the disk\u{201d}: sfdisk said no. The disk was being written"), "{words}");
+        // Opened again after the fact, the window knows only the node.
+        assert!(late
+            .failure_words("")
+            .starts_with("Installing on /dev/sda stopped at"));
+        let early_words = early.failure_words("Disk (/dev/sda)");
+        assert!(
+            early_words.ends_with("Nothing on the computer was changed."),
+            "{early_words}"
+        );
+        assert!(!early_words.contains("(/dev/sda) (/dev/sda)"));
     }
 
     #[test]

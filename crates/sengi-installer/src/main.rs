@@ -225,7 +225,7 @@ fn demo_script(fails: bool) -> String {
         "for s in boot-loader finish; do echo \"begin $s\"; sleep 0.7; echo \"end $s\"; done; echo 'done 135'"
     };
     format!(
-        "read -r password; cat >/dev/null; echo 'log /var/log/sengi-install.log'; \
+        "read -r password; cat >/dev/null; echo 'log /var/log/sengi-install.log'; echo 'disk /dev/sda'; \
          for s in check partition format; do echo \"begin $s\"; sleep 0.7; echo \"end $s\"; done; \
          echo 'begin copy'; for p in 8 21 42; do echo \"percent copy $p\"; sleep 0.5; done; sleep ${{SENGI_DEMO_PAUSE:-1}}; \
          for p in 63 87 100; do echo \"percent copy $p\"; sleep 0.5; done; echo 'end copy'; \
@@ -883,15 +883,16 @@ impl App {
                 wizard.set_next_label("Restart".into());
                 wizard.set_back_label("Not now".into());
             }
-            Outcome::Failed(_, why) => {
+            Outcome::Failed(..) => {
                 wizard.set_outcome("failed".into());
-                let state = if progress.disk_was_touched() {
-                    format!("{disk} was being written when this happened and no longer holds what it did. This live session is as it was; the installer can be run again.")
-                } else {
-                    "Nothing on the computer was changed.".to_string()
-                };
-                wizard.set_outcome_words(format!("{why}. {state}").into());
+                wizard.set_outcome_words(progress.failure_words(&disk).into());
                 let mut rows = Vec::new();
+                if !progress.disk.is_empty() {
+                    rows.push(("Disk", progress.disk.clone()));
+                }
+                if let Some(step) = progress.failed_step() {
+                    rows.push(("Stopped at", step.to_string()));
+                }
                 if !progress.log.is_empty() {
                     rows.push(("Full record", progress.log.clone()));
                 }
