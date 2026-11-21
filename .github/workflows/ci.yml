@@ -119,10 +119,8 @@ jobs:
       # file the script makes.
       - name: Install test
         run: scripts/install-test.sh out/sengi-os-$(cat VERSION)-amd64.iso test-output/install
-      # The same through UEFI. New, so it reports without blocking until
-      # it has proved steady on the runners.
+      # The same through UEFI, which is how the target machine starts.
       - name: Install test, UEFI
-        continue-on-error: true
         run: |
           SENGI_UEFI=/usr/share/OVMF/OVMF_CODE_4M.fd SENGI_UEFI_VARS=/usr/share/OVMF/OVMF_VARS_4M.fd \
             scripts/install-test.sh out/sengi-os-$(cat VERSION)-amd64.iso test-output/install-uefi

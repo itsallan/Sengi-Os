@@ -1,13 +1,15 @@
 #!/bin/sh
 # Print release notes for a version: its CHANGELOG.md section plus the
-# measurements from the boot test and, if given, from the install test.
+# measurements from the boot test and, if given, from the install test
+# (one file for each firmware it was run under, the one to lead with first).
 #
-#   release-notes.sh VERSION METRICS_FILE [INSTALL_METRICS_FILE]
+#   release-notes.sh VERSION METRICS_FILE [INSTALL_METRICS_FILE [INSTALL_METRICS_FILE]]
 set -eu
 
-version=${1:?usage: release-notes.sh VERSION METRICS_FILE [INSTALL_METRICS_FILE]}
-metrics=${2:?usage: release-notes.sh VERSION METRICS_FILE [INSTALL_METRICS_FILE]}
+version=${1:?usage: release-notes.sh VERSION METRICS_FILE [INSTALL_METRICS_FILE [INSTALL_METRICS_FILE]]}
+metrics=${2:?usage: release-notes.sh VERSION METRICS_FILE [INSTALL_METRICS_FILE [INSTALL_METRICS_FILE]]}
 installed=${3:-}
+also=${4:-}
 root=$(cd "$(dirname "$0")/.." && pwd)
 
 value() { sed -n "s/^$1=//p" "$metrics"; }
@@ -30,10 +32,13 @@ cat <<NOTES
 Measured in QEMU ($(value accel)), 2 cores and 4 GB RAM, booting the ISO as a disk.
 NOTES
 
-if [ -n "$installed" ]; then
+# One table for each install test's figures: the first is the one that
+# matters most, and the release gives UEFI there, the target machine's way.
+for installed in "$installed" "$also"; do
+	[ -n "$installed" ] || continue
 	cat <<NOTES
 
-### Measured, installed
+### Measured, installed ($(installed_value install_firmware))
 
 | | Result | Budget |
 |---|---|---|
@@ -45,8 +50,9 @@ if [ -n "$installed" ]; then
 
 Installed through the installer's window onto a blank disk in QEMU
 ($(installed_value install_accel), $(installed_value install_firmware)), then started from that disk alone.
+The boot menu waits one second for Esc, which is in these figures.
 NOTES
-fi
+done
 
 cat <<NOTES
 
