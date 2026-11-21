@@ -123,6 +123,22 @@ pub fn erase_warning(disk: &Disk) -> String {
     )
 }
 
+/// The one sentence of the question before the disk is erased: which
+/// disk, by everything that tells it from another, and what it holds.
+pub fn erase_question(disk: &Disk) -> String {
+    let contents = disk_contents(disk);
+    let holds = if contents == "Empty" {
+        "which looks empty".to_string()
+    } else {
+        format!("which now holds {contents}")
+    };
+    format!(
+        "This erases {} ({}), {holds}, and cannot be undone.",
+        disk_title(disk),
+        disk_place(disk)
+    )
+}
+
 /// What the list says above it.
 pub fn disk_note(disks: &[Disk]) -> &'static str {
     if disks.is_empty() {
@@ -249,8 +265,12 @@ pub fn review(
 ) -> Vec<(&'static str, String)> {
     let name = form.full_name.trim();
     vec![
-        ("Disk", format!("{} ({})", disk_title(disk), disk.path)),
-        ("What is on it", "All of it is erased".to_string()),
+        (
+            "Disk",
+            format!("{} ({})", disk_title(disk), disk_place(disk)),
+        ),
+        ("On it now", disk_contents(disk)),
+        ("What happens to it", "All of it is erased".to_string()),
         (
             "Put on it",
             "Sengi OS on the whole disk, not encrypted".to_string(),
@@ -629,12 +649,28 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(value("Disk"), "SanDisk SD8SN8U \u{b7} 256 GB (/dev/sda)");
-        assert_eq!(value("What is on it"), "All of it is erased");
+        assert_eq!(value("On it now"), "Empty");
+        assert_eq!(value("What happens to it"), "All of it is erased");
+        // The question names the disk by all that tells it apart, and
+        // what is on it, in one sentence.
+        let mut windows = disk();
+        windows.tran = "sata".to_string();
+        windows.serial = "162345400999".to_string();
+        windows.fstype = "ntfs".to_string();
+        windows.label = "Data".to_string();
+        assert_eq!(
+            erase_question(&windows),
+            "This erases SanDisk SD8SN8U \u{b7} 256 GB (/dev/sda \u{b7} SATA \u{b7} serial \u{2026}400999), which now holds One volume, Windows (NTFS) \u{201c}Data\u{201d}, and cannot be undone."
+        );
+        assert!(erase_question(&disk()).contains("(/dev/sda), which looks empty, and"));
+        let with_windows = review(&filled(), &windows, "x", "UTC", true);
+        assert_eq!(with_windows[1].0, "On it now");
+        assert!(with_windows[1].1.contains("Windows (NTFS)"));
         assert_eq!(value("Your account"), "Allan Smith (allan)");
         assert_eq!(value("Time zone"), "America/New York");
         assert!(value("Starts with").starts_with("UEFI"));
         let bios = review(&filled(), &disk(), "x", "UTC", false);
-        assert!(bios[3].1.starts_with("BIOS"));
+        assert!(bios[4].1.starts_with("BIOS"));
     }
 
     #[test]

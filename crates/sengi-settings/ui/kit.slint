@@ -471,6 +471,9 @@ export component InfoCard inherits Card {
             title: fact.title;
             RowValue {
                 horizontal-stretch: 2;
+                // A long value wraps in its own share of the row and does
+                // not push the title down to a letter and three dots.
+                max-width: root.width * 0.62;
                 text: fact.value;
                 wrap: word-wrap;
                 overflow: clip;
@@ -1006,6 +1009,10 @@ export component DialogLayer inherits Rectangle {
                         width: root.spec.confirm != "" ? self.preferred-width : 0;
                         text: root.spec.confirm;
                         primary: !root.spec.danger;
+                        // The words in the danger colour, as the spec asks: the
+                        // button was told it is not the usual choice and never
+                        // told why.
+                        danger: root.spec.danger;
                         enabled: root.ready && root.spec.confirm != "";
                         clicked => { root.confirm(); }
                     }

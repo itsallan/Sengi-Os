@@ -617,13 +617,8 @@ impl App {
         let Some(disk) = chosen.as_ref() else { return };
         let state = self.window.global::<DialogState>();
         state.set_spec(DialogSpec {
-            title: format!("Erase {}?", model::disk_title(disk)).into(),
-            body: format!(
-                "Everything on {} will be erased. Now on it: {}. There is no undo.",
-                disk.path,
-                sengi_text::line(&disks::contents_words(disk), 120)
-            )
-            .into(),
+            title: "Erase this disk?".into(),
+            body: model::erase_question(disk).into(),
             confirm: "Erase and install".into(),
             cancel: "Cancel".into(),
             danger: true,
