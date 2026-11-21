@@ -10,6 +10,7 @@
 //! done 73
 //! failed partition sfdisk ended with status 1
 //! log /var/log/sengi-install.log
+//! disk /dev/sda
 //! ```
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,6 +28,9 @@ pub enum Event {
     Failed(String, String),
     /// Where the full record is.
     Log(String),
+    /// The disk that is being installed on. Said first, so that a window
+    /// opened while an installation runs knows what it is looking at.
+    Disk(String),
 }
 
 /// One line: what is said never breaks the framing.
@@ -44,6 +48,7 @@ impl Event {
             Event::Done(seconds) => format!("done {seconds}"),
             Event::Failed(step, why) => format!("failed {step} {}", flat(why)),
             Event::Log(path) => format!("log {path}"),
+            Event::Disk(path) => format!("disk {path}"),
         }
     }
 
@@ -73,6 +78,9 @@ impl Event {
                 Some(Event::Failed(step(name)?, why.to_string()))
             }
             "log" if rest.starts_with('/') => Some(Event::Log(rest.to_string())),
+            "disk" if rest.starts_with("/dev/") && !rest.contains(char::is_whitespace) => {
+                Some(Event::Disk(rest.to_string()))
+            }
             _ => None,
         }
     }
@@ -97,6 +105,7 @@ mod tests {
             ),
             Event::Failed("check".to_string(), String::new()),
             Event::Log("/var/log/sengi-install.log".to_string()),
+            Event::Disk("/dev/nvme0n1".to_string()),
         ] {
             assert_eq!(
                 Event::parse(&event.line()),
@@ -132,6 +141,8 @@ mod tests {
             "percent copy 101",
             "done soon",
             "log relative/path",
+            "disk sda",
+            "disk /dev/sda and more",
             "warning",
             "failed",
             "begin ../../x",

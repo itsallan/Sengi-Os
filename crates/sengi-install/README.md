@@ -8,12 +8,43 @@ each step as a line on standard output. The installer's window,
 **It erases the disk the plan names.** It is meant to run in the live
 session.
 
-    sengi-install run [--plan FILE]     install, as root
+    sengi-install start                 install in a service of its own, as root
+    sengi-install run [--plan FILE]     install here and now, as root
     sengi-install disks                 list the disks and why some are refused
 
-The first line of standard input is the password of the account to create.
-The plan follows it, or is read from FILE. The password is never taken from
-an argument or the environment and never written to the log.
+For `start` and `run` the first line of standard input is the password of
+the account to create and the plan follows it; `run` can read the plan from
+FILE instead. The password is never taken from an argument or the
+environment and never written to the log.
+
+## How the window starts it
+
+`start` checks that the plan can be read, then runs
+
+    systemd-run --unit=sengi-install.service --collect --no-block \
+        --slice=system.slice --property=ManagedOOMPreference=omit \
+        -- systemd-inhibit --what=sleep:idle:shutdown --mode=block \
+        /usr/bin/sengi-install run --request /run/sengi-install/request
+
+and returns. The installation is then a transient system service: no child
+of `start`, of sudo or of the window, and no part of anyone's session. It
+goes on when the window, the terminal or the session that asked for it has
+gone. `systemd-inhibit` holds off sleep, the idle action and shutdown until
+it is over. `systemctl stop sengi-install.service` stops it, and it
+unmounts as it goes.
+
+The password and the plan reach the service through one file,
+`/run/sengi-install/request`. A pipe would not do: nothing that holds one
+outlives `start`. A unit property or the command line would be readable by
+every user through `systemctl show`. The file is in `/run`, which is memory
+and not a disk; it is created for root alone (mode 0600) and the service
+takes it out of the directory as it opens it, before reading it. It exists
+for as long as the service takes to start.
+
+What the installation reports is written to `/run/sengi-install/progress`
+as well as to standard output (the journal, for the service). That file is
+what the window follows, and what lets a window opened later pick up an
+installation that is already running.
 
 ## The plan
 
@@ -79,8 +110,12 @@ left as it was. A signal (TERM, INT, HUP) ends the running command and
 fails the step the same way. A second installation cannot start while one
 runs.
 
-If the window that started it goes away, the installation carries on: half
-a system on a disk is worse than a whole one nobody watched.
+If the window that started it goes away, or the session it was started
+from ends, the installation carries on: half a system on a disk is worse
+than a whole one nobody watched. What does stop it is being told to: a
+signal, or `systemctl stop`. Tried on a loop device: SIGTERM during the
+copy, and `systemctl stop` during the copy, both leave nothing mounted,
+and the next installation runs to the end.
 
 The record is `/var/log/sengi-install.log`: every command, what it printed
 and how it ended. On success it is also on the installed disk at the same

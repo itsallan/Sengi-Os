@@ -10,10 +10,11 @@
 //! installer.
 
 use std::cell::{Cell, RefCell};
-use std::io::{BufRead, BufReader, Read, Write};
-use std::path::Path;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, ModelRc, VecModel};
 
@@ -21,6 +22,7 @@ use sengi_config::settings::Layout;
 use sengi_config::{Dirs, Value};
 use sengi_install::disks::{self, Disk};
 use sengi_install::progress::Event;
+use sengi_install::{PROGRESS, UNIT};
 use sengi_installer::model::{self, Form, Outcome, Progress, StepState, Typed};
 use sengi_installer::ui::{
     ChooserState, DialogSpec, DialogState, InfoRow, InstallerWindow, Item, SengiStepState, StepRow,
@@ -47,26 +49,45 @@ stick, and puts Sengi OS on a disk of this computer.
 /// file has the same name.
 const APP_ID: &str = "sengi-installer";
 
-/// How the program that writes the disk is started: as root, without
-/// being asked for a password (see the top of this file), and in a
-/// scope of its own under the system's slice. Left where it starts, it
-/// would be part of this window's app scope, which oomd may end when
-/// memory is short; an installation is not something to end halfway.
-const BACKEND: [&str; 9] = [
-    "-n",
-    "systemd-run",
-    "--scope",
-    "--quiet",
-    "--collect",
-    "--slice=system.slice",
-    "--property=ManagedOOMPreference=omit",
-    "/usr/bin/sengi-install",
-    "run",
-];
+/// How the installation is handed over: to sengi-install, as root,
+/// without being asked for a password (see the top of this file). That
+/// program starts a service for the installation and returns. From then
+/// on the installation is no child of this window and no part of this
+/// session; the window only follows what it reports.
+const START: [&str; 3] = ["-n", "/usr/bin/sengi-install", "start"];
 
-/// The most that is kept of what the installing program says when it
-/// says it to standard error.
-const KEPT_STDERR: usize = 4096;
+/// How often the report is looked at for more.
+const FOLLOW_EVERY: Duration = Duration::from_millis(200);
+/// How long a service that was just started has to show itself.
+const STARTING: Duration = Duration::from_secs(15);
+
+/// How it is known that the installation is still going.
+enum Alive {
+    /// The service is active.
+    Service,
+    /// The stand-in of a demo is running.
+    Child(std::process::Child),
+}
+
+impl Alive {
+    fn check(&mut self) -> bool {
+        match self {
+            // "activating" counts: the unit is on its way.
+            Alive::Service => Command::new("systemctl")
+                .args(["is-active", UNIT])
+                .stdin(Stdio::null())
+                .stderr(Stdio::null())
+                .output()
+                .is_ok_and(|output| {
+                    matches!(
+                        String::from_utf8_lossy(&output.stdout).trim(),
+                        "active" | "activating" | "deactivating"
+                    )
+                }),
+            Alive::Child(child) => matches!(child.try_wait(), Ok(None)),
+        }
+    }
+}
 
 /// What a chooser on the Region page is choosing.
 enum Choosing {
@@ -625,90 +646,164 @@ impl App {
             return;
         };
         self.again.borrow_mut().clear();
+        self.show_progress();
+
+        // The password first, on a line of its own, then the plan.
+        let hand_over = |mut command: Command, stdout: Stdio| {
+            let mut child = command
+                .stdin(Stdio::piped())
+                .stdout(stdout)
+                .stderr(Stdio::piped())
+                .spawn()?;
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin.write_all(password.expose().as_bytes())?;
+                stdin.write_all(b"\n")?;
+                stdin.write_all(plan.as_bytes())?;
+            }
+            Ok::<_, std::io::Error>(child)
+        };
+        match self.demo {
+            Demo::Off => {
+                let mut command = Command::new("sudo");
+                command.args(START);
+                // It returns as soon as the service is started, or says
+                // why it was not.
+                let handed =
+                    hand_over(command, Stdio::null()).and_then(|child| child.wait_with_output());
+                match handed {
+                    Ok(output) if output.status.success() => {
+                        self.follow(PathBuf::from(PROGRESS), Alive::Service);
+                    }
+                    Ok(output) => {
+                        let said = String::from_utf8_lossy(&output.stderr).into_owned();
+                        let last = said
+                            .lines()
+                            .rev()
+                            .find(|line| !line.trim().is_empty())
+                            .unwrap_or_default();
+                        self.ended(&output.status.to_string(), last);
+                    }
+                    Err(error) => self.ended("it could not be started", &error.to_string()),
+                }
+            }
+            demo => {
+                let report = std::env::temp_dir()
+                    .join(format!("sengi-installer-demo-{}", std::process::id()));
+                let mut command = Command::new("sh");
+                command.args(["-c", &demo_script(demo == Demo::Fails)]);
+                let started = std::fs::File::create(&report)
+                    .and_then(|file| hand_over(command, Stdio::from(file)));
+                match started {
+                    Ok(child) => self.follow(report, Alive::Child(child)),
+                    Err(error) => self.ended("it could not be started", &error.to_string()),
+                }
+            }
+        }
+    }
+
+    /// The page the installation is followed on, with nothing on it yet.
+    fn show_progress(&self) {
         self.installing.set(true);
         *self.progress.borrow_mut() = Progress::default();
-
         let wizard = self.wizard();
+        self.window.invoke_release();
         self.page.set("progress");
         wizard.set_place("".into());
         wizard.set_back_label("".into());
         wizard.set_next_label("".into());
         wizard.set_next_erases(false);
+        wizard.set_outcome("".into());
+        wizard.set_outcome_words("".into());
         wizard.set_page("progress".into());
         self.render_progress();
+    }
 
-        let mut command = match self.demo {
-            Demo::Off => {
-                let mut command = Command::new("sudo");
-                command.args(BACKEND);
-                command
-            }
-            demo => {
-                let mut command = Command::new("sh");
-                command.args(["-c", &demo_script(demo == Demo::Fails)]);
-                command
-            }
-        };
-        let spawned = command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn();
-        let mut child = match spawned {
-            Ok(child) => child,
-            Err(error) => {
-                self.ended("it could not be started", &error.to_string());
-                return;
-            }
-        };
-        // The password first, on a line of its own, then the plan. Both
-        // fit in the pipe, so this does not wait for the reader.
-        if let Some(mut stdin) = child.stdin.take() {
-            let written = stdin
-                .write_all(password.expose().as_bytes())
-                .and_then(|()| stdin.write_all(b"\n"))
-                .and_then(|()| stdin.write_all(plan.as_bytes()));
-            if let Err(error) = written {
-                eprintln!("sengi-installer: could not hand the plan over: {error}");
-            }
-        }
-        drop(password);
-
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
+    /// Read the installation's report as it grows, from the start, and
+    /// pass on what it says. It is over when the report says how it
+    /// ended, or when the installation has gone without saying.
+    fn follow(&self, report: PathBuf, mut alive: Alive) {
         let spawned = std::thread::Builder::new()
             .name("installer-progress".to_string())
             .spawn(move || {
-                let errors = std::thread::spawn(move || {
-                    let mut said = Vec::new();
-                    if let Some(stderr) = stderr {
-                        let _ = stderr.take(KEPT_STDERR as u64).read_to_end(&mut said);
-                    }
-                    String::from_utf8_lossy(&said).into_owned()
-                });
-                if let Some(stdout) = stdout {
-                    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                        if let Some(event) = Event::parse(&line) {
-                            post(move |app| app.event(event));
+                let started = Instant::now();
+                let mut read = 0u64;
+                let mut pending = String::new();
+                let mut seen = false;
+                let mut quiet = 0u32;
+                let mut last_look = false;
+                loop {
+                    let mut over = false;
+                    if let Ok(mut file) = std::fs::File::open(&report) {
+                        seen = true;
+                        let mut more = String::new();
+                        if file.seek(SeekFrom::Start(read)).is_ok()
+                            && file.read_to_string(&mut more).is_ok()
+                        {
+                            read += more.len() as u64;
+                            quiet = if more.is_empty() { quiet + 1 } else { 0 };
+                            pending.push_str(&more);
                         }
+                        // Only whole lines: the last may still be on its way.
+                        while let Some(end) = pending.find('\n') {
+                            let line: String = pending.drain(..=end).collect();
+                            if let Some(event) = Event::parse(&line) {
+                                over |= matches!(event, Event::Done(_) | Event::Failed(..));
+                                post(move |app| app.event(event));
+                            }
+                        }
+                    } else {
+                        quiet += 1;
                     }
+                    if over || last_look {
+                        break;
+                    }
+                    // Nothing new for a second: is it still there? A
+                    // service just started is given time to appear.
+                    if quiet > 0
+                        && quiet.is_multiple_of(5)
+                        && (seen || started.elapsed() > STARTING)
+                    {
+                        // Gone. What it wrote last is read once more.
+                        last_look = !alive.check();
+                        continue;
+                    }
+                    std::thread::sleep(FOLLOW_EVERY);
                 }
-                let status = match child.wait() {
-                    Ok(status) => status.to_string(),
-                    Err(error) => error.to_string(),
-                };
-                let said = errors.join().unwrap_or_default();
-                let last = said
-                    .lines()
-                    .rev()
-                    .find(|line| !line.trim().is_empty())
-                    .unwrap_or_default()
-                    .to_string();
-                post(move |app| app.ended(&status, &last));
+                post(|app| app.ended("it stopped", ""));
             });
         if let Err(error) = spawned {
-            self.ended("its output could not be read", &error.to_string());
+            self.ended("its report could not be followed", &error.to_string());
         }
+    }
+
+    /// An installation that was started before this window was opened:
+    /// one that is running is followed again, and one that finished is
+    /// shown as finished. True if there was one.
+    fn reattach(&self) -> bool {
+        if self.demo != Demo::Off {
+            return false;
+        }
+        let Ok(report) = std::fs::read_to_string(PROGRESS) else {
+            return false;
+        };
+        let mut alive = Alive::Service;
+        if alive.check() {
+            self.show_progress();
+            self.follow(PathBuf::from(PROGRESS), alive);
+            return true;
+        }
+        let mut progress = Progress::default();
+        for event in report.lines().filter_map(Event::parse) {
+            progress.apply(event);
+        }
+        if !matches!(progress.outcome, Outcome::Done(_)) {
+            return false;
+        }
+        self.show_progress();
+        *self.progress.borrow_mut() = progress;
+        self.installing.set(false);
+        self.render_progress();
+        true
     }
 
     fn event(&self, event: Event) {
@@ -752,7 +847,7 @@ impl App {
             .borrow()
             .as_ref()
             .map(model::disk_title)
-            .unwrap_or_default();
+            .unwrap_or_else(|| progress.disk.clone());
         match &progress.outcome {
             Outcome::Running => {}
             Outcome::Done(seconds) => {
@@ -1002,7 +1097,11 @@ fn main() -> ExitCode {
     wizard.set_version(env!("CARGO_PKG_VERSION").into());
     wizard.set_host_name(model::DEFAULT_HOST_NAME.into());
     app.render_region();
-    app.show("welcome");
+    // An installation may be running already, started by a window that
+    // has since gone. Then this one takes its place.
+    if !app.reattach() {
+        app.show("welcome");
+    }
 
     // The names of the layouts are a few hundred kilobytes to read and
     // sort, which is not for the UI thread and not needed for the first

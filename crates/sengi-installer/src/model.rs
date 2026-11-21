@@ -262,6 +262,8 @@ pub struct Progress {
     pub steps: Vec<StepRow>,
     pub warnings: Vec<String>,
     pub log: String,
+    /// The disk it is installing on, as its node: `/dev/sda`.
+    pub disk: String,
     pub outcome: Outcome,
 }
 
@@ -279,6 +281,7 @@ impl Default for Progress {
                 .collect(),
             warnings: Vec::new(),
             log: String::new(),
+            disk: String::new(),
             outcome: Outcome::Running,
         }
     }
@@ -313,6 +316,7 @@ impl Progress {
             }
             Event::Warning(text) => self.warnings.push(sengi_text::line(&text, 300)),
             Event::Log(path) => self.log = sengi_text::line(&path, 200),
+            Event::Disk(path) => self.disk = sengi_text::line(&path, 64),
             Event::Done(seconds) => self.outcome = Outcome::Done(seconds),
             Event::Failed(id, why) => {
                 if let Some(step) = self.step(&id) {

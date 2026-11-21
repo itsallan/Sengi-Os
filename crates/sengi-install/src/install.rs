@@ -935,6 +935,7 @@ pub fn install(
         efi_uuid: String::new(),
     };
     installer.tell(Event::Log(paths.log.to_string_lossy().into_owned()));
+    installer.tell(Event::Disk(plan.device.clone()));
     for step in &STEPS {
         installer.tell(Event::Begin(step.id.to_string()));
         let result = match step.id {

@@ -46,11 +46,13 @@ question answered.
 
 The window runs as the live user. To install, it runs
 
-    sudo -n systemd-run --scope --quiet --collect --slice=system.slice \
-        --property=ManagedOOMPreference=omit /usr/bin/sengi-install run
+    sudo -n /usr/bin/sengi-install start
 
-and writes the password, then the plan, to its standard input. The password
-is never in an argument or in the environment.
+and writes the password, then the plan, to its standard input. That program
+starts the installation as a service of its own, `sengi-install.service`,
+and returns. The password is never in an argument, in the environment or
+in the unit's properties; see sengi-install's README for how it reaches
+the service.
 
 `sudo -n` works because the live image lets the `live` user be root without
 a password (`/etc/sudoers.d/live`). That is acceptable only there: whoever
@@ -60,8 +62,22 @@ no `live` user and no installer, and sengi-install removes all three from
 what it installs. On any other system the window opens and the installation
 fails at once with sudo's refusal.
 
-The scope under `system.slice` takes the installing program out of the
-window's own app scope, which systemd-oomd may end when memory is short.
+## What an installation survives
+
+The installation is not a child of the window, of sudo or of the session.
+The window follows it by reading `/run/sengi-install/progress`.
+
+| What happens | The installation |
+|---|---|
+| The window is closed (it refuses while installing), killed or crashes | Goes on. Opening the installer again shows it where it is. |
+| The user logs out, or the session's scope is ended | Goes on. |
+| systemd-oomd ends the heaviest app for want of memory | Goes on: it is not in an app scope, and oomd is told to leave it. |
+| The lid is closed, the machine is idle, someone chooses Restart or Shut down | Held off until it is over: it holds an inhibitor for sleep, idle and shutdown. Root, or a forced power-off, can still override that. |
+| `systemctl stop sengi-install.service`, or a signal to sengi-install | Stops. What was mounted is unmounted; the disk is left half written and can be installed on again. |
+| Power is lost, or the stick is pulled out | Stops where it is. The disk is left half written. Nothing else on the machine is affected. |
+
+Opened while no installation is running, the installer starts at the
+beginning, unless the last one finished: then it shows that, with Restart.
 
 ## The password
 
@@ -72,8 +88,10 @@ The two fields are compared inside that type. The process is kept out of
 core dumps. When the installation starts the password is written to
 sengi-install's standard input and dropped; the second copy is cleared.
 
-Not protected: the pipe to sengi-install and that program's own copy,
-which it hands to `chpasswd` the same way.
+Not protected by this program: the pipe to sengi-install, the file in
+`/run` that program passes it through (root only, in memory, gone as soon
+as the service has opened it), and that program's own copy, which it
+hands to `chpasswd` down a pipe.
 
 ## What it reuses
 

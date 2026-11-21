@@ -25,3 +25,12 @@ pub const LOG: &str = "/var/log/sengi-install.log";
 pub const TARGET: &str = "/run/sengi-install/target";
 /// Held for as long as an installation runs, so that there is one.
 pub const LOCK: &str = "/run/sengi-install/lock";
+/// What an installation says as it goes, a line an event, for whoever
+/// wants to follow it: the window, when it started the installation and
+/// when it was opened again while one runs.
+pub const PROGRESS: &str = "/run/sengi-install/progress";
+/// Where the password and the plan wait, for the moment between the
+/// window handing them over and the installation taking them.
+pub const REQUEST: &str = "/run/sengi-install/request";
+/// The transient service an installation started by the window runs as.
+pub const UNIT: &str = "sengi-install.service";
