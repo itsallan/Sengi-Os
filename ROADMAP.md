@@ -57,7 +57,7 @@ each `- [ ]` line is an issue.
 
 ## 0.7
 
-- [ ] Installer
+- [x] Installer
 
 ## 0.8
 
