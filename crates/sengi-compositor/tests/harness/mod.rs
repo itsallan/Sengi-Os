@@ -129,6 +129,38 @@ impl Compositor {
         }
         panic!("the compositor started no locker");
     }
+
+    pub fn signal(&self, name: &str) {
+        Command::new("kill")
+            .args([&format!("-{name}"), &self.child.id().to_string()])
+            .status()
+            .expect("kill runs");
+    }
+
+    pub fn connect(&self) -> Client {
+        Client::connect(Some(&self.socket)).expect("a connection")
+    }
+
+    /// What the compositor says about the session lock on SIGUSR1.
+    pub fn status(&self) -> String {
+        let count = |log: &Vec<String>| log.iter().filter(|line| line.contains("session ")).count();
+        let before = count(&self.log.lock().unwrap());
+        Command::new("kill")
+            .args(["-USR1", &self.child.id().to_string()])
+            .status()
+            .expect("kill runs");
+        let end = Instant::now() + SOON;
+        while Instant::now() < end {
+            let log = self.log.lock().unwrap();
+            if count(&log) > before {
+                let line = log.iter().rev().find(|line| line.contains("session "));
+                return line.cloned().unwrap_or_default();
+            }
+            drop(log);
+            sleep(Duration::from_millis(10));
+        }
+        panic!("the compositor did not report its state");
+    }
 }
 
 impl Drop for Compositor {

@@ -227,3 +227,11 @@ fn a_locker_closed_to_other_processes_can_lock() {
     assert!(status.contains("locker alive"), "{status}");
     assert!(status.contains("locker told yes"), "{status}");
 }
+
+#[test]
+fn a_hangup_does_not_end_the_session() {
+    let compositor = Compositor::start(None);
+    compositor.signal("HUP");
+    assert!(compositor.status().contains("session unlocked"));
+    assert!(compositor.connect().roundtrip().is_ok());
+}

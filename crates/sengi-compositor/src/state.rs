@@ -280,6 +280,11 @@ impl State {
                         state.take_screenshot = Some(shoot);
                     }
                 }
+                // What `labwc --reconfigure` sends. A session must not
+                // end because something asked it to read its settings.
+                Signal::SIGHUP => {
+                    crate::say!("SIGHUP: there is no configuration to read again yet");
+                }
                 _ => state.loop_signal.stop(),
             })?;
 
