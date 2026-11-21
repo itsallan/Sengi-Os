@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Install Sengi OS
+GenericName=Installer
+Comment=Put Sengi OS on a disk of this computer
+Exec=sengi-installer
+Icon=sengi-installer
+Terminal=false
+StartupWMClass=sengi-installer
+Categories=System;
+Keywords=installer;setup;disk;

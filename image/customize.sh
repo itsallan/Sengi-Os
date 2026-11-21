@@ -45,11 +45,14 @@ chroot "$root" passwd -l root >/dev/null
 # Only what the desktop needs at boot. Wi-Fi and Bluetooth daemons are
 # started by udev when the hardware shows up (see 70-sengi-on-demand.rules).
 chroot "$root" systemctl enable greetd systemd-networkd systemd-resolved systemd-oomd \
-	systemd-timesyncd sengi-boot-report
+	systemd-timesyncd sengi-boot-report sengi-install-report
 chroot "$root" systemctl disable iwd bluetooth networking 2>/dev/null || true
+# grub-common.service notes at every start that the start worked, for a
+# menu that falls back after a failed one. Ours does not: one more thing
+# to run at boot, on the live image and on an installed system alike.
 chroot "$root" systemctl mask systemd-networkd-wait-online.service \
 	apt-daily.timer apt-daily-upgrade.timer dpkg-db-backup.timer e2scrub_all.timer \
-	e2scrub_reap.service getty@tty1.service
+	e2scrub_reap.service getty@tty1.service grub-common.service
 # The image is read-only and complete, so there is nothing for the
 # first-boot update services to do. ldconfig alone costs over a second.
 chroot "$root" ldconfig

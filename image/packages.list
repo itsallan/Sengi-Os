@@ -59,3 +59,17 @@ bluez
 # Apps
 flatpak
 xdg-desktop-portal-gtk
+
+# The installer. sengi-install partitions with sfdisk, makes the file
+# systems, and installs GRUB for both kinds of firmware. All of it stays
+# on the installed system, which needs fsck, and GRUB to take a new kernel.
+# The grub-pc and grub-efi-amd64 packages themselves are left out: they
+# would install a boot loader on whatever machine builds the image.
+fdisk
+dosfstools
+e2fsprogs
+grub-common
+grub2-common
+grub-pc-bin
+grub-efi-amd64-bin
+efibootmgr
