@@ -47,15 +47,63 @@ pub fn disk_title(disk: &Disk) -> String {
     format!("{model} \u{b7} {}", disks::size_words(disk.size))
 }
 
-/// The second line of a disk in the list: what is on it, or why it is
-/// not offered.
+/// How a disk is attached, in the words on its box. What lsblk reports
+/// as the transport is what says whether a disk is inside the computer
+/// or plugged into it; the kernel's "removable" flag does not: it is set
+/// for card readers and clear for most USB disks.
+pub fn attached_words(tran: &str) -> String {
+    match tran {
+        "" => String::new(),
+        "sata" | "ata" => "SATA".to_string(),
+        "nvme" => "NVMe".to_string(),
+        "usb" => "USB".to_string(),
+        "mmc" => "SD or eMMC".to_string(),
+        "virtio" => "virtual".to_string(),
+        other => sengi_text::line(other, 12).to_uppercase(),
+    }
+}
+
+/// The end of a disk's serial number: enough to tell two disks of one
+/// model apart against the label on them. Empty if it has none.
+pub fn serial_end(serial: &str) -> String {
+    let serial = sengi_text::line(serial, 64);
+    let count = serial.chars().count();
+    if count == 0 {
+        String::new()
+    } else {
+        let end: String = serial.chars().skip(count.saturating_sub(6)).collect();
+        format!("serial \u{2026}{end}")
+    }
+}
+
+/// Where a disk is and which one it is: its node, how it is attached,
+/// and the end of its serial number.
+pub fn disk_place(disk: &Disk) -> String {
+    [
+        disk.path.clone(),
+        attached_words(&disk.tran),
+        serial_end(&disk.serial),
+    ]
+    .into_iter()
+    .filter(|part| !part.is_empty())
+    .collect::<Vec<_>>()
+    .join(" \u{b7} ")
+}
+
+/// What is on a disk now, in a line that cannot break the page.
+pub fn disk_contents(disk: &Disk) -> String {
+    sengi_text::line(&disks::contents_words(disk), 120)
+}
+
+/// The second line of a disk in the list: where it is and which, and
+/// then what is on it, or why it is not offered.
 pub fn disk_detail(disk: &Disk) -> String {
     match disks::refusal(disk) {
-        Some(refusal) => refusal.words(),
+        Some(refusal) => format!("{} \u{b7} {}", disk_place(disk), refusal.words()),
         None => format!(
             "{} \u{b7} now on it: {}",
-            disk.path,
-            sengi_text::line(&disks::contents_words(disk), 120)
+            disk_place(disk),
+            disk_contents(disk)
         ),
     }
 }
@@ -522,7 +570,29 @@ mod tests {
 
         assert_eq!(disk_title(&disk), "Disk \u{b7} 256 GB");
         disk.medium = true;
-        assert_eq!(disk_detail(&disk), "Sengi OS is running from it");
+        assert_eq!(
+            disk_detail(&disk),
+            "/dev/sda \u{b7} Sengi OS is running from it"
+        );
+        disk.tran = "usb".to_string();
+        disk.serial = "4C530001230512117093 ".to_string();
+        assert_eq!(
+            disk_detail(&disk),
+            "/dev/sda \u{b7} USB \u{b7} serial \u{2026}117093 \u{b7} Sengi OS is running from it"
+        );
+        disk.medium = false;
+        disk.fstype = String::new();
+        assert_eq!(
+            disk_detail(&disk),
+            "/dev/sda \u{b7} USB \u{b7} serial \u{2026}117093 \u{b7} now on it: Empty"
+        );
+        assert_eq!(attached_words("sata"), "SATA");
+        assert_eq!(attached_words("nvme"), "NVMe");
+        assert_eq!(attached_words("virtio"), "virtual");
+        assert_eq!(attached_words(""), "");
+        assert_eq!(attached_words("sas"), "SAS");
+        assert_eq!(serial_end(""), "");
+        assert_eq!(serial_end("AB12"), "serial \u{2026}AB12");
     }
 
     #[test]

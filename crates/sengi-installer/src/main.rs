@@ -197,13 +197,23 @@ fn demo_disks() -> Vec<Disk> {
         part("sda2", 200_000_000_000, "ntfs", "Windows"),
         part("sda3", 55_000_000_000, "ext4", ""),
     ];
+    main.tran = "sata".to_string();
+    main.serial = "162345400999".to_string();
     let mut stick = disk("sdb", 30_752_000_000, "Ultra Fit");
     stick.tran = "usb".to_string();
     stick.medium = true;
     stick.fstype = "iso9660".to_string();
     stick.label = "SENGIOS".to_string();
-    let card = disk("mmcblk0", 3_900_000_000, "SD04G");
-    vec![main, stick, card]
+    stick.serial = "4C530001230512117093".to_string();
+    let mut card = disk("mmcblk0", 3_900_000_000, "SD04G");
+    card.tran = "mmc".to_string();
+    card.serial = "0x1a2b3c4d".to_string();
+    let mut second = disk("nvme0n1", 500_107_862_016, "Samsung SSD 970 EVO 500GB");
+    second.tran = "nvme".to_string();
+    second.serial = "S466NX0M123456H".to_string();
+    second.parts = vec![part("nvme0n1p1", 500_000_000_000, "ext4", "data")];
+    second.mounted = vec!["/media/live/data".to_string()];
+    vec![main, second, stick, card]
 }
 
 /// What stands in for sengi-install in a demo: it says what the real
