@@ -326,3 +326,91 @@ export component SengiPasswordField inherits Rectangle {
         }
     }
 }
+
+// How far a piece of work has got, for work that can tell: a copy knows
+// how many bytes are behind it. Work that cannot tell gets no bar.
+export component SengiProgress inherits Rectangle {
+    in property <int> percent;
+
+    height: Tokens.space-xs;
+    border-radius: self.height / 2;
+    background: Tokens.color-surface-raised;
+
+    Rectangle {
+        x: 0;
+        width: parent.width * Math.clamp(root.percent, 0, 100) / 100;
+        border-radius: parent.border-radius;
+        background: Tokens.color-accent;
+        animate width { duration: Tokens.motion-base; easing: cubic-bezier(0.2, 0, 0, 1); }
+    }
+}
+
+export enum SengiStepState { waiting, running, done, failed }
+
+// One step of a job that is done in steps, with a mark that says where
+// it stands: an empty ring while it waits, a ring in the accent colour
+// while it runs, filled when it is done, and the danger colour if it is
+// where the job stopped. A running step that knows how far it is shows
+// that beside its words and as a bar under them.
+export component SengiStep inherits Rectangle {
+    in property <string> text;
+    in property <SengiStepState> state;
+    // 0 to 100, or less than 0 for a step that cannot tell.
+    in property <int> percent: -1;
+
+    private property <bool> measured: root.state == SengiStepState.running && root.percent >= 0;
+    // Where the words sit: in the middle, or above the bar.
+    private property <length> line: root.measured
+        ? (root.height - words.height - Tokens.space-sm - bar.height) / 2
+        : (root.height - words.height) / 2;
+
+    min-height: Tokens.button + Tokens.space-md;
+
+    mark := Rectangle {
+        x: Tokens.space-md;
+        y: (parent.height - self.height) / 2;
+        width: Tokens.space-md;
+        height: Tokens.space-md;
+        border-radius: self.height / 2;
+        border-width: root.state == SengiStepState.running ? Tokens.focus-ring-width
+            : root.state == SengiStepState.waiting ? Tokens.border-width : 0;
+        border-color: root.state == SengiStepState.running ? Tokens.color-accent : Tokens.color-outline-disabled;
+        background: root.state == SengiStepState.done ? Tokens.color-success
+            : root.state == SengiStepState.failed ? Tokens.color-danger : transparent;
+        animate background { duration: Tokens.motion-base; easing: cubic-bezier(0.2, 0, 0, 1); }
+    }
+
+    words := Text {
+        x: mark.x + mark.width + Tokens.space-md;
+        y: root.line;
+        width: parent.width - self.x - Tokens.space-md - (root.measured ? Tokens.value-column-md : 0);
+        height: self.preferred-height;
+        text: root.text;
+        color: root.state == SengiStepState.waiting ? Tokens.color-text-muted
+            : root.state == SengiStepState.failed ? Tokens.color-danger : Tokens.color-text;
+        font-family: Tokens.font-family;
+        font-size: Tokens.font-size-md;
+        font-weight: root.state == SengiStepState.running ? Tokens.font-weight-medium : Tokens.font-weight-regular;
+        overflow: elide;
+    }
+
+    if root.measured: Text {
+        x: parent.width - self.width - Tokens.space-md;
+        y: root.line;
+        width: Tokens.value-column-md;
+        height: self.preferred-height;
+        text: root.percent + "%";
+        color: Tokens.color-text-muted;
+        font-family: Tokens.font-family;
+        font-size: Tokens.font-size-md;
+        horizontal-alignment: right;
+    }
+
+    bar := SengiProgress {
+        x: words.x;
+        y: parent.height - self.height - Tokens.space-sm;
+        width: parent.width - self.x - Tokens.space-md;
+        visible: root.measured;
+        percent: root.percent;
+    }
+}
