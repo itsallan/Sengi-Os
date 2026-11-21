@@ -69,6 +69,39 @@ jobs:
             cargo check --locked -p "$program"
           done
 
+  # sengi-compositor is a workspace of its own, so that nothing else has
+  # to build Smithay. Its tests start it headless and talk to it as clients.
+  compositor:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: crates/sengi-compositor
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        timeout-minutes: 10
+        run: |
+          sudo -E apt-get $APT_OPTS update -q
+          sudo -E apt-get $APT_OPTS install -y -q --no-install-recommends pkg-config \
+            libxkbcommon-dev libseat-dev libinput-dev libudev-dev libgbm-dev libpixman-1-dev
+          rustup show active-toolchain || rustup toolchain install
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            crates/sengi-compositor/target
+          key: cargo-compositor-${{ hashFiles('crates/sengi-compositor/Cargo.lock') }}
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      # What the image is built with: no window backend, no test switches.
+      - name: Clippy, as built for the image
+        run: cargo clippy --locked --no-default-features --features drm -- -D warnings
+      - name: Tests
+        run: cargo test --locked
+
   # Types into a real layer surface under a headless compositor. New, so it
   # reports without blocking until it has proved steady on the runners.
   keyboard:
