@@ -12,21 +12,29 @@ installation. It never writes to a disk itself: that is
    into effect in the running session at once, the way Settings does it,
    so that the password typed two pages later is typed with the layout it
    will be typed with at the login screen. There is a field to try the
-   keys in. The time zone starts at UTC.
-3. **Disk.** Every disk, with its model, size and what is on it now. The
-   ones that cannot be chosen are listed too, greyed out, with the reason:
-   the stick Sengi OS is running from, a disk with something mounted, in
-   use as swap or under another volume, read-only, or under 8 GB. Nothing
-   is chosen for you. "Look again" reads the disks again.
+   keys in. No time zone is chosen for you, and Continue waits until one
+   is; UTC is in the list.
+3. **Disk.** Every disk: its model and size, and under them its node
+   (`/dev/sda`), how it is attached as lsblk reports it (SATA, NVMe, USB),
+   the end of its serial number, and what is on it now. The ones that
+   cannot be chosen are listed the same way, greyed out, with the reason
+   in place of the contents: the stick Sengi OS is running from, a disk
+   with something mounted, in use as swap or under another volume,
+   read-only, or under 8 GB. Nothing is chosen for you. "Look again" reads
+   the disks again. The kernel's "removable" flag is not used for
+   anything: it does not say what is external.
 4. **You.** Your name, a user name (offered from the name until one is
    typed), the password twice, and a name for the computer. What is wrong
    with a field is said under it once something has been typed.
-5. **Review.** The disk, that all of it is erased, the account, the
-   computer's name, the layout and the zone.
+5. **Review.** The disk, what is on it now, that all of it is erased, the
+   account, the computer's name, the layout and the zone.
 6. **Installing**, which becomes **Sengi OS is installed** or **The
    installation failed**. The nine steps are listed and marked as they
    run; the copy shows a percentage, counted in bytes on the new disk.
-   The window cannot be closed while this runs.
+   The window cannot be closed while this runs. A failure names the disk
+   by its node, the step it stopped at, why, whether the disk had been
+   touched, and where the full record is. The page scrolls, by wheel and
+   by Page Up, Page Down and the arrows.
 
 ## Erasing is deliberate
 
@@ -36,11 +44,14 @@ question answered.
 - On the Review page the keyboard starts on Back. The button that goes on,
   "Erase disk and install…", is drawn as a warning and is not what Return
   presses.
-- It opens a question that names the disk and what is on it. There the
-  keyboard starts on Cancel, and Escape cancels.
-- The plan handed to sengi-install carries the size and model of the disk
-  that was shown. If the device of that name is no longer that disk,
-  sengi-install stops before touching anything.
+- It opens a question of one sentence that names the disk by its model,
+  size, node, attachment and serial number, and says what is on it. There
+  the keyboard starts on Cancel, Escape cancels, and "Erase and install"
+  is in the danger colour.
+- The plan handed to sengi-install carries the size, model, serial number
+  and world-wide name of the disk that was shown. If the device of that
+  name is no longer that disk, sengi-install stops before touching
+  anything.
 
 ## How it gets root
 

@@ -24,7 +24,19 @@ An installer: Sengi OS can be put on a computer's disk.
   zram is the swap, as on the live image. GRUB is installed for UEFI and
   for BIOS firmware both, so the disk starts either way, and for UEFI
   also at the path firmware falls back to when it has no entry for the
-  disk. Its menu is hidden and does not wait, like the live image's.
+  disk.
+- The installed system's boot menu is hidden and waits one second for
+  Esc, which shows it. It has an entry "Sengi OS, text mode" for when the
+  desktop does not start: the same kernel without the login screen, with
+  a text login where you log in as yourself and have sudo.
+- The disk is known by its serial number and world-wide name as well as
+  its model and size, is listed with how it is attached, and is held
+  open against any other use while its partition table is written. What
+  the kernel then shows of the new table is checked before anything is
+  formatted.
+- The installation runs as a service of its own. It goes on if the
+  window is closed or killed or the session ends, holds off sleep and
+  shutdown until it is over, and a window opened again finds it.
 - The installed system starts at the login screen. The account made in
   the installer is the one person on it; it uses sudo with its password.
   The root account is locked. The `live` user, its right to be root
@@ -40,9 +52,9 @@ An installer: Sengi OS can be put on a computer's disk.
   installed disk.
 - scripts/install-test.sh installs onto a blank disk image in QEMU
   through the installer's window, starts that disk alone, logs in with
-  the password that was chosen and checks what it finds. CI runs it after
-  the boot test, through BIOS, and through UEFI without failing the build
-  on it yet.
+  the password that was chosen and checks what it finds, then starts it
+  once more to see that Esc shows the boot menu. CI and the release run
+  it after the boot test, through BIOS and through UEFI.
 
 ### Changed
 
@@ -58,9 +70,15 @@ An installer: Sengi OS can be put on a computer's disk.
 - Installed, the boot loader is put in place once. A later GRUB package
   update refreshes the menu when a kernel is installed but does not write
   the boot loader itself again.
+- An installed system does not look for updates by itself. They come when
+  asked for: `sudo apt update && sudo apt upgrade`.
+- The installed system's boot menu costs one second at every start, the
+  price of being able to reach it.
 - One language, English, and no choice of locale.
-- The time zone starts at UTC and has to be chosen from the list; nothing
-  guesses it.
+- The time zone has to be chosen from the list; nothing guesses it. The
+  list is by principal city, so some capitals are not in it by name.
+- A full name in a script the system's typeface lacks (Inter has Latin,
+  Cyrillic and Greek) is stored as typed but may be drawn as boxes.
 - The installer has been run in QEMU only, on virtio disks, with BIOS and
   with UEFI firmware. It has not yet been run on a real machine.
 
