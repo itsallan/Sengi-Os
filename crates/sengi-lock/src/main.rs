@@ -69,6 +69,22 @@ fn main() -> ExitCode {
         }
     };
 
+    // sengi-compositor shows the session lock only to a locker it started
+    // itself, on a connection it hands over. Started there by anything
+    // else, such as the idle timer or the session menu, this passes the
+    // request on to the compositor, which then starts the locker. That
+    // returns once the screen is locked, with or without `-f`.
+    if std::env::var_os("WAYLAND_SOCKET").is_none()
+        && std::env::var_os("SENGI_COMPOSITOR_PID").is_some()
+    {
+        use std::os::unix::process::CommandExt;
+        let error = std::process::Command::new("sengi-compositor")
+            .arg("--lock")
+            .exec();
+        eprintln!("sengi-lock: cannot ask sengi-compositor to lock: {error}");
+        return ExitCode::from(supervise::FAILED);
+    }
+
     // A screen that nothing could unlock is worse than one that will not
     // lock, so both of these are settled before the compositor is asked.
     let Some(user) = user::current() else {

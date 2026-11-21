@@ -90,6 +90,18 @@ fn decide(ended: Ended, locked: bool, tries: u32) -> Decision {
     }
 }
 
+/// A worker that was handed its connection to the compositor, through
+/// `WAYLAND_SOCKET`, has used it up: a second worker would have none.
+/// The compositor that handed it over notices the connection closing
+/// when this process ends, keeps the session locked and starts a locker
+/// again itself. So the decision to start another becomes one to leave.
+fn on_a_handed_connection(decision: Decision) -> Decision {
+    match decision {
+        Decision::Restart => Decision::Exit(FAILED),
+        exit => exit,
+    }
+}
+
 /// How long to wait before starting a worker again after `deaths` quick
 /// ones in a row.
 fn restart_delay(deaths: u32) -> Duration {
@@ -150,7 +162,7 @@ fn leave(code: u8) -> ! {
 /// Runs `work` in a child process until it ends in a way that needs no
 /// successor, and returns the exit code for this process. `locked` is
 /// told the first time a worker reports the session locked.
-fn supervise(work: fn(Ready) -> u8, mut locked: Option<File>) -> u8 {
+fn supervise(work: fn(Ready) -> u8, mut locked: Option<File>, handed: bool) -> u8 {
     let mut was_locked = false;
     let mut tries = 0;
     let mut deaths = 0;
@@ -180,7 +192,13 @@ fn supervise(work: fn(Ready) -> u8, mut locked: Option<File>) -> u8 {
         } else {
             tries += 1;
         }
-        match decide(wait_for(child), was_locked, tries) {
+        let decision = decide(wait_for(child), was_locked, tries);
+        let decision = if handed {
+            on_a_handed_connection(decision)
+        } else {
+            decision
+        };
+        match decision {
             Decision::Exit(code) => return code,
             Decision::Restart => {
                 deaths = if started.elapsed() >= SETTLED {
@@ -211,8 +229,10 @@ pub fn run(detach: bool, work: fn(Ready) -> u8) -> u8 {
     // from a crash.
     // SAFETY: setting a signal's disposition to its default.
     unsafe { libc::signal(libc::SIGCHLD, libc::SIG_DFL) };
+    // The worker takes the variable out of its own environment only.
+    let handed = std::env::var_os("WAYLAND_SOCKET").is_some();
     if !detach {
-        return supervise(work, None);
+        return supervise(work, None, handed);
     }
     let Some((from_supervisor, to_starter)) = pipe() else {
         return FAILED;
@@ -233,7 +253,7 @@ pub fn run(detach: bool, work: fn(Ready) -> u8) -> u8 {
                 libc::dup2(null.as_raw_fd(), 0);
             }
         }
-        let code = supervise(work, Some(to_starter));
+        let code = supervise(work, Some(to_starter), handed);
         leave(code);
     }
     drop(to_starter);
@@ -276,6 +296,20 @@ mod tests {
         assert_eq!(decide(Ended::Killed, false, 2), Decision::Restart);
         assert_eq!(decide(Ended::Killed, false, 3), Decision::Exit(FAILED));
         assert_eq!(decide(Ended::Exited(7), false, 3), Decision::Exit(7));
+    }
+
+    #[test]
+    fn a_worker_on_a_handed_connection_is_never_replaced() {
+        assert_eq!(
+            on_a_handed_connection(Decision::Restart),
+            Decision::Exit(FAILED)
+        );
+        for code in [UNLOCKED, REFUSED, NO_COMPOSITOR, FAILED] {
+            assert_eq!(
+                on_a_handed_connection(Decision::Exit(code)),
+                Decision::Exit(code)
+            );
+        }
     }
 
     #[test]
