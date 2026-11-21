@@ -1,0 +1,15 @@
+[package]
+name = "sengi-install"
+description = "Puts Sengi OS on a disk: the part of the installer that runs as root"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The plan is written in the settings file's format and read by its parser,
+# and the zone and layout names are held to its rules.
+sengi-config = { path = "../sengi-config" }
+# No features: the secret type and nothing that speaks D-Bus.
+sengi-system = { path = "../sengi-system" }
+# statvfs for the progress of the copy, signals, the lock file, geteuid.
+libc = "0.2"

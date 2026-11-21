@@ -3593,6 +3593,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sengi-install"
+version = "0.6.0"
+dependencies = [
+ "libc",
+ "sengi-config",
+ "sengi-system",
+]
+
+[[package]]
 name = "sengi-launcher"
 version = "0.6.0"
 dependencies = [
