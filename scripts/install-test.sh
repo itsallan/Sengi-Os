@@ -20,6 +20,9 @@
 # started. The guest reports through its serial port (see
 # sengi-install-report).
 set -eu
+# A monitor whose QEMU has gone is a broken pipe; the script says what
+# happened and does not die of it.
+trap "" PIPE
 
 iso=${1:?usage: install-test.sh ISO [OUTDIR]}
 out=${2:-test-output/install}
@@ -250,7 +253,11 @@ exec 3>&-
 wait "$qemu" 2>/dev/null || true
 rm -f "$out/mon.in"
 
-# Second half: the disk alone.
+# Second half: the disk alone. What the first half wrote is still on its
+# way to the host's disk, since QEMU was told not to wait for it. Left to
+# finish during the second start it is the host that is slow, not the
+# guest, so it is let finish first.
+sync "$disk" 2>/dev/null || sync
 start_qemu "$out/serial-installed.log" "$out/monitor-installed.log" \
 	-drive "file=$disk,format=qcow2,if=virtio,cache=unsafe"
 wait_serial SENGI-LOGIN "$timeout_s" || give_up "the installed system did not reach the login screen" installed-login
