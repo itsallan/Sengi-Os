@@ -647,6 +647,21 @@ impl Installer<'_> {
         }
 
         self.write("etc/default/grub", edit::GRUB_DEFAULT)?;
+        // The way in when the desktop does not start. The menu gets an
+        // entry that starts the same kernel without it, and a login on
+        // the first console that only that entry switches on: the image
+        // masks that login, because the desktop has no use for it.
+        self.write("etc/grub.d/11_sengi-text", edit::GRUB_TEXT_ENTRY)?;
+        fs::set_permissions(
+            self.at("etc/grub.d/11_sengi-text"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .map_err(|error| format!("could not make the menu entry runnable: {error}"))?;
+        self.remove("etc/systemd/system/getty@tty1.service")?;
+        self.write(
+            "etc/systemd/system/getty@tty1.service.d/10-sengi.conf",
+            edit::TEXT_LOGIN,
+        )?;
         // There is no swap partition to wake from, and the start-up
         // image must not wait for one.
         self.write("etc/initramfs-tools/conf.d/resume", "RESUME=none\n")?;
@@ -786,6 +801,9 @@ impl Installer<'_> {
         let menu = self.read("boot/grub/grub.cfg")?;
         if !menu.contains(&self.root_uuid) || !menu.contains(&format!("vmlinuz-{}", self.kernel)) {
             return Err("GRUB's menu does not start the system that was installed".to_string());
+        }
+        if !menu.contains(edit::TEXT_MODE_FLAG) {
+            return Err("GRUB's menu has no entry for starting without the desktop".to_string());
         }
         for file in [
             "boot/grub/i386-pc/core.img",
@@ -1114,7 +1132,7 @@ mod tests {
                     };
                     self.touch(
                         "boot/grub/grub.cfg",
-                        &format!("linux /boot/vmlinuz-{KERNEL} root=UUID={root} ro quiet\n"),
+                        &format!("linux /boot/vmlinuz-{KERNEL} root=UUID={root} ro quiet\nlinux /boot/vmlinuz-{KERNEL} root=UUID={root} ro sengi.text systemd.unit=multi-user.target\n"),
                     );
                 }
                 "efibootmgr" if inner.len() == 1 => stdout = self.firmware.to_string(),
@@ -1220,6 +1238,7 @@ mod tests {
         root.write("etc/machine-id", "");
         root.write("etc/hostname", "sengios\n");
         root.write("etc/sudoers.d/live", "live ALL=(ALL) NOPASSWD: ALL\n");
+        root.write("etc/systemd/system/getty@tty1.service", "");
         root.write(
             "etc/greetd/config.toml",
             "[terminal]\nvt = 7\n\n[default_session]\ncommand = \"/usr/libexec/sengi-greeter-session\"\nuser = \"_greetd\"\n\n# The live image logs straight in.\n[initial_session]\ncommand = \"/usr/bin/sengi-session\"\nuser = \"live\"\n",
@@ -1486,6 +1505,19 @@ mod tests {
         }
         assert!(!target.exists("home/live"));
         assert_eq!(target.read("etc/default/grub"), edit::GRUB_DEFAULT);
+        // A way in when the desktop does not start: an entry in the menu,
+        // and a text login that only that entry switches on.
+        let entry = target.read("etc/grub.d/11_sengi-text");
+        assert!(entry.starts_with("#!/bin/sh\n"));
+        let mode = fs::metadata(target.join("etc/grub.d/11_sengi-text"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o755);
+        assert!(!target.exists("etc/systemd/system/getty@tty1.service"));
+        assert!(target
+            .read("etc/systemd/system/getty@tty1.service.d/10-sengi.conf")
+            .contains("ConditionKernelCommandLine=sengi.text"));
         assert_eq!(
             target.read("etc/initramfs-tools/conf.d/resume"),
             "RESUME=none\n"

@@ -275,6 +275,33 @@ sleep 2
 shot installed-desktop
 wait_serial SENGI-DONE "$timeout_s" || give_up "the installed system did not finish its report" installed-desktop
 stop
+report=$serial
+
+# Third start: the way in when the desktop does not start. GRUB's menu is
+# hidden and waits a second for Esc. Esc is pressed all through the hand-
+# over from the firmware; the menu then has to be up, which shows as the
+# system not starting by itself, and on the screen. Return starts it.
+menu_fail=
+start_qemu "$out/serial-menu.log" "$out/monitor-menu.log" \
+	-drive "file=$disk,format=qcow2,if=virtio,cache=unsafe"
+tries=60
+while [ "$tries" -gt 0 ]; do
+	echo "sendkey esc" >&3
+	tries=$((tries - 1))
+	sleep 0.2
+done
+sleep 8
+shot installed-boot-menu
+if grep -q SENGI-LOGIN "$serial"; then
+	menu_fail="Esc at start-up did not show GRUB's menu: the system started by itself"
+else
+	key ret 0
+	wait_serial SENGI-LOGIN "$timeout_s" ||
+		menu_fail="the system did not start from GRUB's menu after Return"
+	grep -q 'sengi.text' "$report" && menu_fail="the kernel's command line of an ordinary start says text mode"
+fi
+stop
+serial=$report
 
 ram_mb=$(tr -d '\r' <"$serial" | sed -n 's/.*SENGI-IDLE ram_mb=\([0-9]*\).*/\1/p' | head -1)
 installed=$(tr -d '\r' <"$serial" | sed -n 's/.*SENGI-INSTALLED //p' | head -1)
@@ -297,6 +324,10 @@ fail=0
 if grep -q SENGI-FAIL "$out"/serial-*.log; then
 	sed -n 's/.*SENGI-FAIL /FAIL: /p' "$out"/serial-*.log >&2
 	fail=1
+if [ -n "$menu_fail" ]; then
+	echo "FAIL: $menu_fail" >&2
+	fail=1
+fi
 fi
 expected="user=$user host=$host zone=$zone root=/dev/vda3 type=ext4 firmware=$firmware keyboard=$keyboard"
 if [ "$installed" != "$expected" ]; then
@@ -304,7 +335,7 @@ if [ "$installed" != "$expected" ]; then
 	fail=1
 fi
 for shot in installer-welcome installer-disk installer-review installer-progress installer-done \
-	installed-login installed-desktop; do
+	installed-login installed-desktop installed-boot-menu; do
 	[ -s "$out/$shot.png" ] || { echo "FAIL: no screenshot $shot.png was saved" >&2; fail=1; }
 done
 if [ "${ram_mb:-9999}" -ge "$budget_ram_mb" ]; then

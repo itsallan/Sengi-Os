@@ -62,21 +62,65 @@ pub fn table_is_as_asked(seen: &[(u32, u64, u64)], disk_sectors: u64) -> Result<
     Ok(())
 }
 
-/// What GRUB is told. The menu is hidden and waits for nobody, as the
-/// live image's is; holding Shift or pressing Esc shows it. The kernel
-/// is as quiet as the live image's. There is no recovery entry: it would
-/// ask for root's password, and root has none.
+/// What GRUB is told. The menu is hidden, and waits one second for Esc,
+/// which shows it. With no wait at all, as on the live image, GRUB looks
+/// once for a key already pressed: that was tried, and under UEFI the
+/// key was never there to be found, so the menu could not be reached at
+/// all. A second is what a way in costs. The kernel is as quiet as the
+/// live image's. There is no recovery entry: it would ask for root's
+/// password, and root has none; [`GRUB_TEXT_ENTRY`] is in its place.
 pub const GRUB_DEFAULT: &str = "\
 # Written by the Sengi OS installer. Run update-grub after changing it.
 GRUB_DEFAULT=0
 GRUB_TIMEOUT_STYLE=hidden
-GRUB_TIMEOUT=0
+GRUB_TIMEOUT=1
 GRUB_DISTRIBUTOR=\"Sengi OS\"
 GRUB_CMDLINE_LINUX_DEFAULT=\"quiet loglevel=3 systemd.show_status=false rd.udev.log_level=3\"
 GRUB_CMDLINE_LINUX=\"\"
 GRUB_TERMINAL=console
 GRUB_DISABLE_OS_PROBER=true
 GRUB_DISABLE_RECOVERY=true
+";
+
+/// The word on the kernel's command line that says "without the desktop".
+pub const TEXT_MODE_FLAG: &str = "sengi.text";
+
+/// A script for /etc/grub.d: one more entry in GRUB's menu, written anew
+/// whenever update-grub runs, for the newest kernel there is. It starts
+/// the system as far as multi-user and no further: no login screen, no
+/// desktop, and a text login on the first console, where the person can
+/// log in with their own name and password and use sudo. Root is locked,
+/// so the usual recovery entry, which asks for root's password, would
+/// let nobody in.
+pub const GRUB_TEXT_ENTRY: &str = r#"#!/bin/sh
+# Written by the Sengi OS installer. Adds "Sengi OS, text mode" to the
+# boot menu: the same kernel, started without the login screen and the
+# desktop, with a text login on the first console. For when the desktop
+# does not start. Log in there with your own name and password.
+set -e
+. "$pkgdatadir/grub-mkconfig_lib"
+
+kernel=$(ls -1 /boot/vmlinuz-* 2>/dev/null | sort -V | tail -n 1)
+[ -n "$kernel" ] || exit 0
+version=${kernel#/boot/vmlinuz-}
+[ -e "/boot/initrd.img-$version" ] || exit 0
+
+echo "Found text mode entry for: $kernel" >&2
+echo "menuentry 'Sengi OS, text mode (if the desktop does not start)' --class sengi --class gnu-linux --class os {"
+prepare_grub_to_access_device "$GRUB_DEVICE" | sed 's/^/	/'
+printf '\tlinux\t/boot/vmlinuz-%s root=UUID=%s ro sengi.text systemd.unit=multi-user.target\n' "$version" "$GRUB_DEVICE_UUID"
+printf '\tinitrd\t/boot/initrd.img-%s\n' "$version"
+echo "}"
+"#;
+
+/// A drop-in for getty@tty1: the text login on the first console runs
+/// only when the kernel was started with [`TEXT_MODE_FLAG`]. On every
+/// other start it costs one condition that is not met.
+pub const TEXT_LOGIN: &str = "\
+# Written by the Sengi OS installer. The text login on the first console
+# is for the \"text mode\" entry of the boot menu and nothing else.
+[Unit]
+ConditionKernelCommandLine=sengi.text
 ";
 
 /// The directory on the EFI system partition, and the name in the
@@ -429,8 +473,8 @@ user = \"live\"
     }
 
     #[test]
-    fn grub_is_hidden_and_does_not_wait() {
-        assert!(GRUB_DEFAULT.contains("GRUB_TIMEOUT=0\n"));
+    fn grub_is_hidden_and_waits_a_second_for_esc() {
+        assert!(GRUB_DEFAULT.contains("GRUB_TIMEOUT=1\n"));
         assert!(GRUB_DEFAULT.contains("GRUB_TIMEOUT_STYLE=hidden\n"));
     }
 }

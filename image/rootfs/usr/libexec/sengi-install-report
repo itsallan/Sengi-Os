@@ -151,6 +151,11 @@ for left in /usr/bin/sengi-install /usr/bin/sengi-installer /usr/share/applicati
 	[ ! -e "$left" ] || fail "$left is still there"
 done
 if grep -q sengi-installer /etc/xdg/sengi-os/dock.toml; then fail "the installer is still on the dock"; fi
+# The way in when the desktop does not start: an entry in GRUB's menu,
+# and the text login it switches on and no other start does.
+grep -q "sengi.text systemd.unit=multi-user.target" /boot/grub/grub.cfg ||
+	fail "the boot menu has no text mode entry"
+if systemctl is-active --quiet getty@tty1.service; then fail "the text login is running on an ordinary start"; fi
 # zram and oomd, as on the live image.
 swapon --noheadings --show=NAME | grep -q zram || fail "there is no zram swap"
 [ "$(systemctl is-active systemd-oomd)" = active ] || fail "systemd-oomd is not running"
