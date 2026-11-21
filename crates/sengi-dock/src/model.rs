@@ -5,9 +5,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::desktop::{Apps, Entry};
-use crate::icons;
-use crate::matching;
+use sengi_apps::{matching, AppIndex, DesktopEntry, Env};
+
 use crate::windows::Window;
 
 /// Key of the search button. No desktop-file ID can be empty.
@@ -255,8 +254,9 @@ fn fold_children(windows: &[Window]) -> Vec<Window> {
 
 /// The dock's state: installed apps, pins, and how app_ids map onto them.
 pub struct Dock {
+    env: Env,
     data_dirs: Vec<PathBuf>,
-    apps: Apps,
+    apps: AppIndex,
     pinned: Vec<String>,
     /// app_id to item key, remembered so matching runs once per app.
     keys: HashMap<String, String>,
@@ -285,9 +285,11 @@ fn stamps(data_dirs: &[PathBuf]) -> Vec<Option<SystemTime>> {
 impl Dock {
     /// `pinned` holds desktop-file IDs from the config. `data_dirs` is where
     /// desktop entries are re-read from when apps have been installed or
-    /// removed while the dock runs.
-    pub fn new(apps: Apps, pinned: Vec<String>, data_dirs: Vec<PathBuf>) -> Self {
+    /// removed while the dock runs; `env` decides which translations of
+    /// their names are used.
+    pub fn new(apps: AppIndex, pinned: Vec<String>, data_dirs: Vec<PathBuf>, env: Env) -> Self {
         Self {
+            env,
             stamps: stamps(&data_dirs),
             data_dirs,
             apps,
@@ -310,18 +312,18 @@ impl Dock {
         let now = stamps(&self.data_dirs);
         if now != self.stamps {
             self.stamps = now;
-            self.apps = Apps::load(&self.data_dirs);
+            self.apps = AppIndex::load(&self.data_dirs, &self.env);
             self.keys.clear();
             self.generation += 1;
         }
     }
 
-    pub fn load(pinned: Vec<String>, data_dirs: Vec<PathBuf>) -> Self {
-        Self::new(Apps::load(&data_dirs), pinned, data_dirs)
+    pub fn load(pinned: Vec<String>, data_dirs: Vec<PathBuf>, env: Env) -> Self {
+        Self::new(AppIndex::load(&data_dirs, &env), pinned, data_dirs, env)
     }
 
     /// The desktop entry behind an item key.
-    pub fn entry(&self, key: &str) -> Option<&Entry> {
+    pub fn entry(&self, key: &str) -> Option<&DesktopEntry> {
         self.apps.get(key)
     }
 
@@ -329,7 +331,7 @@ impl Dock {
         if let Some(key) = self.keys.get(app_id) {
             return key.clone();
         }
-        let found = matching::find(app_id, &self.apps).map(|e| e.id.to_lowercase());
+        let found = matching::find(app_id, &self.apps).map(|e| e.app_id().to_lowercase());
         let key = found.unwrap_or_else(|| app_id.trim().to_lowercase());
         self.keys.insert(app_id.to_string(), key.clone());
         key
@@ -345,7 +347,7 @@ impl Dock {
                 (
                     entry.name.clone(),
                     own.unwrap_or_else(|| Icon::Named(entry.icon.clone())),
-                    entry.exec.is_some(),
+                    !entry.exec.is_empty(),
                 )
             }
             // No entry: the app_id is the best name there is, and sometimes
@@ -354,7 +356,7 @@ impl Dock {
         };
         Item {
             kind,
-            letter: icons::initial(&name),
+            letter: sengi_text::initial(&name),
             key,
             name,
             icon,
@@ -421,7 +423,7 @@ impl Dock {
             let Some(entry) = self.apps.get(id) else {
                 continue;
             };
-            let key = entry.id.to_lowercase();
+            let key = entry.app_id().to_lowercase();
             if !used.insert(key.clone()) {
                 continue;
             }
@@ -443,7 +445,7 @@ impl Dock {
                 items.push(Item {
                     kind: Kind::Running,
                     key,
-                    letter: icons::initial(&name),
+                    letter: sengi_text::initial(&name),
                     name,
                     icon: Icon::Named(String::new()),
                     launchable: false,
@@ -460,10 +462,10 @@ impl Dock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::desktop::testing::{entry, temp_dir, write};
+    use crate::testing::{entry, env, temp_dir, write};
 
-    fn apps() -> Apps {
-        Apps::from_entries(vec![
+    fn apps() -> AppIndex {
+        AppIndex::from_entries(vec![
             entry("firefox-esr", "Firefox ESR", "firefox-esr %u"),
             entry("foot", "Foot", "foot"),
             entry("org.gnome.Nautilus", "Files", "nautilus %U"),
@@ -476,6 +478,7 @@ mod tests {
             apps(),
             pinned.iter().map(|s| s.to_string()).collect(),
             Vec::new(),
+            env(),
         )
     }
 
@@ -612,7 +615,7 @@ mod tests {
     #[test]
     fn an_app_installed_later_is_picked_up_when_its_window_appears() {
         let dir = temp_dir("late");
-        let mut dock = Dock::load(vec!["foot".into()], vec![dir.clone()]);
+        let mut dock = Dock::load(vec!["foot".into()], vec![dir.clone()], env());
         assert_eq!(keys(&dock.items(&[])), [""]);
 
         write(
@@ -644,7 +647,11 @@ mod tests {
             "[Desktop Entry]\nType=Application\nName=Foot\nExec=foot\n",
         );
         touch(&apps_dir, 1_000);
-        let mut dock = Dock::load(vec!["foot".into(), "paint".into()], vec![dir.clone()]);
+        let mut dock = Dock::load(
+            vec!["foot".into(), "paint".into()],
+            vec![dir.clone()],
+            env(),
+        );
 
         // Seen once with nothing installed for it: a plain tile.
         let items = dock.items(&[window(1, "paint")]);
@@ -685,7 +692,7 @@ mod tests {
             "[Desktop Entry]\nType=Application\nName=Foot\nExec=foot\n",
         );
         touch(&apps_dir, 1_000);
-        let mut dock = Dock::load(vec!["foot".into()], vec![dir]);
+        let mut dock = Dock::load(vec!["foot".into()], vec![dir], env());
         assert_eq!(keys(&dock.items(&[])), ["", "foot"]);
 
         std::fs::remove_file(apps_dir.join("foot.desktop")).unwrap();

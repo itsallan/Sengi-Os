@@ -1,0 +1,572 @@
+// The installer's window: one page at a time, and under it a bar with
+// where this is in the sequence and the buttons that move through it.
+// The pages are built from the shared components and from Settings' kit;
+// nothing here has a colour or a size of its own.
+
+import { Tokens, SengiText, SengiButton, SengiSurface, SengiPasswordField, SengiStep, SengiStepState } from "components.slint";
+import { Metrics, Nudge, Item, ItemList, InfoRow, InfoCard, DialogSpec, DialogLayer, ChooserLayer, Page, PageColumn, Card, Divider, SettingRow, Note, Gap, SectionLabel, ChoiceButton, TextField } from "kit.slint";
+
+export { Item, InfoRow, DialogSpec, SengiStepState }
+
+export struct StepRow {
+    text: string,
+    state: SengiStepState,
+    // 0 to 100 while the step can tell how far it is, else -1.
+    percent: int,
+}
+
+// Everything the pages show and everything they report. Rust fills the
+// one and hears the other.
+export global Wizard {
+    // welcome, region, disk, you, review, progress.
+    in property <string> page: "welcome";
+    in property <string> version;
+    // "Step 2 of 5", or nothing.
+    in property <string> place;
+    in property <string> back-label;
+    in property <string> next-label: "Continue";
+    in property <bool> can-next: true;
+    // The next button erases: it is not the one Return presses.
+    in property <bool> next-erases: false;
+    callback back();
+    callback next();
+
+    // Region.
+    in property <string> keyboard;
+    in property <string> zone;
+    callback choose-keyboard();
+    callback choose-zone();
+
+    // Disk.
+    in property <[Item]> disks;
+    in-out property <int> disk-current: 0;
+    in property <string> disk-note;
+    in property <bool> disk-chosen: false;
+    callback disk-picked(string);
+    callback look-again();
+
+    // You.
+    in-out property <string> full-name;
+    in-out property <string> user-name;
+    in-out property <string> host-name;
+    in property <string> full-name-problem;
+    in property <string> user-name-problem;
+    in property <string> host-name-problem;
+    in property <string> password-problem;
+    in property <int> password-length;
+    in property <int> again-length;
+    callback full-name-edited(string);
+    callback user-name-edited(string);
+    callback host-name-edited(string);
+    // Which field ("password" or "again"), and what the key typed.
+    callback password-typed(string, string);
+    callback password-erased(string);
+    callback password-cleared(string);
+
+    // Review.
+    in property <[InfoRow]> review;
+    in property <string> erase-warning;
+
+    // Progress, and how it ended: "", "done" or "failed".
+    in property <[StepRow]> steps;
+    in property <string> outcome;
+    in property <string> outcome-words;
+    in property <string> warnings;
+    in property <[InfoRow]> outcome-facts;
+}
+
+export global DialogState {
+    in property <bool> open: false;
+    in property <DialogSpec> spec;
+    callback confirmed(string);
+    callback cancelled();
+}
+
+export global ChooserState {
+    in property <bool> open: false;
+    in property <string> title;
+    in property <bool> searchable: false;
+    in property <string> empty;
+    in property <[Item]> items;
+    in-out property <int> current: 0;
+    in property <int> generation: 0;
+    callback chosen(string);
+    callback cancelled();
+    callback filtered(string);
+}
+
+component WelcomePage inherits Page {
+    title: "Install Sengi OS";
+    content-height: column.preferred-height;
+
+    column := PageColumn {
+        Note {
+            text: "This puts Sengi OS " + Wizard.version + " on a disk of this computer, so that it starts without the USB stick. It takes a few minutes. Until you confirm on the last page, nothing on the computer is changed.";
+        }
+
+        Gap { }
+
+        SectionLabel {
+            text: "What you will be asked";
+        }
+
+        InfoCard {
+            rows: [
+                { title: "Region", value: "Your keyboard layout and time zone" },
+                { title: "Disk", value: "Which disk to install on" },
+                { title: "You", value: "Your name, a password, and a name for the computer" },
+                { title: "Review", value: "Everything once more, before anything is erased" },
+            ];
+        }
+
+        Gap { }
+
+        Note {
+            warning: true;
+            text: "Sengi OS takes one whole disk and erases everything on it. Not offered yet: installing beside another system, encryption, and partitions laid out by hand. To keep trying Sengi OS from the stick instead, close this window.";
+        }
+    }
+}
+
+component RegionPage inherits Page {
+    title: "Region";
+    content-height: column.preferred-height;
+
+    column := PageColumn {
+        Card {
+            SettingRow {
+                title: "Keyboard layout";
+                detail: "Used from now on, so the password you choose later is typed with it";
+
+                VerticalLayout {
+                    alignment: center;
+                    ChoiceButton {
+                        width: Metrics.control-wide;
+                        text: Wizard.keyboard;
+                        clicked => { Wizard.choose-keyboard(); }
+                    }
+                }
+            }
+
+            Divider { }
+
+            SettingRow {
+                title: "Try it";
+                detail: "Type a few characters to see that the keys are where you expect";
+
+                VerticalLayout {
+                    alignment: center;
+                    TextField {
+                        width: Metrics.control-wide;
+                        placeholder: "Type here";
+                    }
+                }
+            }
+
+            Divider { }
+
+            SettingRow {
+                title: "Time zone";
+                detail: "The clock of the installed system. Choose one to go on";
+
+                VerticalLayout {
+                    alignment: center;
+                    ChoiceButton {
+                        width: Metrics.control-wide;
+                        text: Wizard.zone;
+                        clicked => { Wizard.choose-zone(); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+component DiskPage inherits Page {
+    title: "Disk";
+    content-height: column.preferred-height;
+
+    init => {
+        if Wizard.disks.length > 0 {
+            list.take-focus();
+        }
+    }
+
+    column := PageColumn {
+        Note {
+            text: Wizard.disk-note;
+        }
+
+        Card {
+            visible: Wizard.disks.length > 0;
+
+            list := ItemList {
+                items: Wizard.disks;
+                current <=> Wizard.disk-current;
+                activated(id) => { Wizard.disk-picked(id); }
+            }
+        }
+
+        if Wizard.disk-chosen: Note {
+            warning: true;
+            text: Wizard.erase-warning;
+        }
+
+        HorizontalLayout {
+            alignment: start;
+            SengiButton {
+                text: "Look again";
+                clicked => { Wizard.look-again(); }
+            }
+        }
+    }
+}
+
+// A row of the You page: a field of the page's one width at the right.
+component FieldRow inherits SettingRow {
+    in property <string> problem;
+
+    alert: root.problem != "";
+}
+
+component YouPage inherits Page {
+    title: "You";
+    content-height: column.preferred-height;
+
+    init => { name.take-focus(); }
+
+    column := PageColumn {
+        Card {
+            FieldRow {
+                title: "Your name";
+                problem: Wizard.full-name-problem;
+                detail: self.problem != "" ? self.problem : "Shown on the login screen";
+
+                VerticalLayout {
+                    alignment: center;
+                    name := TextField {
+                        width: Tokens.password-field-width;
+                        text <=> Wizard.full-name;
+                        edited(text) => { Wizard.full-name-edited(text); }
+                        accepted => { user.take-focus(); }
+                    }
+                }
+            }
+
+            Divider { }
+
+            FieldRow {
+                title: "User name";
+                problem: Wizard.user-name-problem;
+                detail: self.problem != "" ? self.problem : "Small letters and digits; names your account and your folder";
+
+                VerticalLayout {
+                    alignment: center;
+                    user := TextField {
+                        width: Tokens.password-field-width;
+                        text <=> Wizard.user-name;
+                        edited(text) => { Wizard.user-name-edited(text); }
+                        accepted => { password.focus(); }
+                    }
+                }
+            }
+
+            Divider { }
+
+            FieldRow {
+                title: "Password";
+                detail: "For logging in and for changes to the system";
+
+                VerticalLayout {
+                    alignment: center;
+                    password := SengiPasswordField {
+                        height: Tokens.button;
+                        length: Wizard.password-length;
+                        typed(text) => { Wizard.password-typed("password", text); }
+                        erased => { Wizard.password-erased("password"); }
+                        cleared => { Wizard.password-cleared("password"); }
+                        accepted => { again.focus(); }
+                    }
+                }
+            }
+
+            Divider { }
+
+            FieldRow {
+                title: "Password again";
+                problem: Wizard.password-problem;
+                detail: self.problem != "" ? self.problem : "It cannot be shown, so it is typed twice";
+
+                VerticalLayout {
+                    alignment: center;
+                    again := SengiPasswordField {
+                        height: Tokens.button;
+                        length: Wizard.again-length;
+                        rejected: Wizard.password-problem != "";
+                        typed(text) => { Wizard.password-typed("again", text); }
+                        erased => { Wizard.password-erased("again"); }
+                        cleared => { Wizard.password-cleared("again"); }
+                        accepted => { host.take-focus(); }
+                    }
+                }
+            }
+        }
+
+        Gap { }
+
+        Card {
+            FieldRow {
+                title: "Computer name";
+                problem: Wizard.host-name-problem;
+                detail: self.problem != "" ? self.problem : "What this computer is called on a network";
+
+                VerticalLayout {
+                    alignment: center;
+                    host := TextField {
+                        width: Tokens.password-field-width;
+                        text <=> Wizard.host-name;
+                        edited(text) => { Wizard.host-name-edited(text); }
+                        accepted => { Wizard.next(); }
+                    }
+                }
+            }
+        }
+
+        Note {
+            text: "Your account can make changes to the system with its password (sudo). There is no separate administrator password: the root account is locked.";
+        }
+    }
+}
+
+component ReviewPage inherits Page {
+    title: "Review";
+    content-height: column.preferred-height;
+
+    column := PageColumn {
+        Note {
+            warning: true;
+            text: Wizard.erase-warning;
+        }
+
+        InfoCard {
+            rows: Wizard.review;
+        }
+    }
+}
+
+component ProgressPage inherits Page {
+    title: Wizard.outcome == "done" ? "Sengi OS is installed"
+        : Wizard.outcome == "failed" ? "The installation failed" : "Installing Sengi OS";
+    content-height: column.preferred-height;
+
+    column := PageColumn {
+        if Wizard.outcome-words != "": Note {
+            warning: Wizard.outcome == "failed";
+            text: Wizard.outcome-words;
+        }
+
+        if Wizard.warnings != "": Note {
+            warning: true;
+            text: Wizard.warnings;
+        }
+
+        if Wizard.outcome-facts.length > 0: InfoCard {
+            rows: Wizard.outcome-facts;
+        }
+
+        Card {
+            for step[index] in Wizard.steps: VerticalLayout {
+                if index > 0: Divider { }
+
+                SengiStep {
+                    text: step.text;
+                    state: step.state;
+                    percent: step.percent;
+                }
+            }
+        }
+
+        if Wizard.outcome == "": Note {
+            text: "Leave the computer on and the USB stick in until this is done.";
+        }
+    }
+}
+
+export component InstallerWindow inherits Window {
+    title: "Install Sengi OS";
+    preferred-width: Tokens.settings-window-width;
+    preferred-height: Tokens.settings-window-height;
+    min-width: Tokens.settings-window-min-width;
+    min-height: Tokens.settings-window-min-height;
+    background: Tokens.color-bg;
+    default-font-family: Tokens.font-family;
+    default-font-size: Tokens.font-size-md;
+
+    private property <length> bar: Tokens.button + Tokens.space-md * 2;
+
+    // After a change of size or scale the whole window is drawn for a
+    // few frames, as the Settings window does and for its reason: the
+    // renderer keeps two buffers and only one of them knows it is new.
+    private property <float> pixel: 1phx / 1px;
+    private property <int> sheet: 0;
+    private property <int> sheets-owed: 0;
+
+    public function draw-everything() {
+        root.sheet += 1;
+        root.sheets-owed = 3;
+    }
+
+    // Where the keyboard starts on a page. The pages with fields take
+    // it themselves. On the others it starts on the button that goes
+    // on, except where going on erases: there it starts on Back.
+    public function settle() {
+        if Wizard.page == "review" {
+            back.focus();
+        } else if Wizard.page != "disk" && Wizard.page != "you" {
+            next.focus();
+        }
+    }
+
+    public function focus-next() {
+        next.focus();
+    }
+
+    // Take the keyboard off the buttons before a page change switches
+    // one of them off: a button switched off while it has the keyboard
+    // is not told it lost it, and keeps its ring.
+    public function release() {
+        park.focus();
+    }
+
+    park := FocusScope {
+        width: 0;
+        height: 0;
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+    }
+
+    private property <string> page: Wizard.page;
+    changed page => { root.settle(); }
+    changed pixel => { root.draw-everything(); }
+    changed width => { root.draw-everything(); }
+    changed height => { root.draw-everything(); }
+
+    init => { root.settle(); }
+
+    Timer {
+        interval: Tokens.motion-fast;
+        running: root.sheets-owed > 0;
+        triggered => {
+            root.sheet += 1;
+            root.sheets-owed -= 1;
+        }
+    }
+
+    Rectangle {
+        background: Math.mod(root.sheet, 2) == 0 ? transparent : Tokens.color-bg.transparentize(1);
+    }
+
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height - root.bar;
+
+        if Wizard.page == "welcome": WelcomePage { }
+        if Wizard.page == "region": RegionPage { }
+        if Wizard.page == "disk": DiskPage { }
+        if Wizard.page == "you": YouPage { }
+        if Wizard.page == "review": ReviewPage { }
+        if Wizard.page == "progress": ProgressPage { }
+    }
+
+    Rectangle {
+        x: 0;
+        y: parent.height - root.bar;
+        width: parent.width;
+        height: root.bar;
+        background: Tokens.color-surface;
+
+        Rectangle {
+            y: 0;
+            height: Tokens.border-width;
+            background: Tokens.color-border;
+        }
+
+        // The keyboard is on one of these buttons whenever a page has
+        // nothing of its own to hold it, and a page can be longer than
+        // the window: the last one lists every step. The keys that scroll
+        // are passed up to the page from here, the way Settings passes
+        // them from its sidebar.
+        FocusScope {
+            focus-on-click: false;
+            focus-on-tab-navigation: false;
+
+            key-pressed(event) => {
+                if event.text == Key.PageDown || event.text == Key.DownArrow {
+                    Nudge.down += 1;
+                    return EventResult.accept;
+                }
+                if event.text == Key.PageUp || event.text == Key.UpArrow {
+                    Nudge.up += 1;
+                    return EventResult.accept;
+                }
+                return EventResult.reject;
+            }
+
+        HorizontalLayout {
+            padding-left: Tokens.space-xl;
+            padding-right: Tokens.space-xl;
+            padding-top: Tokens.space-md;
+            padding-bottom: Tokens.space-md;
+            spacing: Tokens.space-sm;
+
+            SengiText {
+                horizontal-stretch: 1;
+                text: Wizard.place;
+                color: Tokens.color-text-muted;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            back := SengiButton {
+                visible: Wizard.back-label != "";
+                width: Wizard.back-label != "" ? self.preferred-width : 0;
+                enabled: Wizard.back-label != "";
+                text: Wizard.back-label;
+                clicked => { Wizard.back(); }
+            }
+
+            next := SengiButton {
+                visible: Wizard.next-label != "";
+                width: Wizard.next-label != "" ? self.preferred-width : 0;
+                text: Wizard.next-label;
+                primary: !Wizard.next-erases;
+                danger: Wizard.next-erases;
+                outlined: Wizard.next-erases;
+                enabled: Wizard.can-next && Wizard.next-label != "";
+                clicked => { Wizard.next(); }
+            }
+        }
+        }
+    }
+
+    if ChooserState.open: ChooserLayer {
+        title: ChooserState.title;
+        searchable: ChooserState.searchable;
+        placeholder: "Search";
+        empty: ChooserState.empty;
+        items: ChooserState.items;
+        current <=> ChooserState.current;
+        generation: ChooserState.generation;
+        chosen(id) => { ChooserState.chosen(id); }
+        cancelled => { ChooserState.cancelled(); }
+        filtered(text) => { ChooserState.filtered(text); }
+    }
+
+    if DialogState.open: DialogLayer {
+        spec: DialogState.spec;
+        confirmed(text) => { DialogState.confirmed(text); }
+        cancelled => { DialogState.cancelled(); }
+    }
+}

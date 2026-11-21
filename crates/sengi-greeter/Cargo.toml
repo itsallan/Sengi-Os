@@ -1,0 +1,27 @@
+[package]
+name = "sengi-greeter"
+description = "The Sengi OS login screen"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[dependencies]
+sengi-clock = { path = "../sengi-clock" }
+sengi-config = { path = "../sengi-config" }
+sengi-layer = { path = "../sengi-layer" }
+# The pieces shared with the lock screen: the password as typed, the
+# screen's states and texts, the waits. Without PAM: greetd does that.
+sengi-lock = { path = "../sengi-lock", default-features = false }
+# No features: the secret type and nothing that speaks D-Bus.
+sengi-system = { path = "../sengi-system" }
+sengi-text = { path = "../sengi-text" }
+# Not the workspace entry: that one pulls in the winit backend. sengi-layer
+# is the backend here and turns on the software renderer.
+slint = { version = "1.18", default-features = false, features = ["compat-1-2", "std"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# The passwd database.
+libc = "0.2"
+
+[build-dependencies]
+slint-build.workspace = true

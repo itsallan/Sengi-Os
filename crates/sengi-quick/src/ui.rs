@@ -9,8 +9,8 @@ use slint::platform::{Key, WindowEvent};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use crate::panel::{DndControl, NetworkRow, Panel, View};
-use crate::secret::Secret;
-use crate::services::{Command, Event};
+use sengi_system::secret::Secret;
+use sengi_system::services::{Command, Event};
 
 slint::include_modules!();
 

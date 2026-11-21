@@ -1,0 +1,244 @@
+// The login screen. It is laid out as the lock screen is, so that the two
+// read as one: the time and the date, and under them who is logging in
+// and a field for the password. Added to that are the two things only a
+// login screen needs: a way to pick another user, and Restart and Shut
+// down in the bottom right corner.
+
+import { Tokens, SengiText, SengiLabel, SengiButton, SengiClockBlock, SengiPasswordField } from "components.slint";
+
+export component GreeterWindow inherits Window {
+    in property <string> time;
+    // "AM" or "PM", or empty on a 24-hour clock.
+    in property <string> period;
+    in property <string> date;
+    in property <string> user;
+    // Said in small print where the name goes while there is no name:
+    // what the field holds, once what is typed has covered its own words.
+    in property <string> caption;
+    // A name is being typed. Tab then takes it, as Return does.
+    in property <bool> naming: false;
+    // There are users to step through.
+    in property <bool> choice: false;
+    // How many characters of the password have been typed.
+    in property <int> length;
+    // What is typed where it may be seen: a user name, or the answer to a
+    // question that PAM asks out loud.
+    in property <string> plain;
+    // False once nobody has touched anything for a while: the clock alone.
+    in property <bool> prompt: true;
+    in property <bool> enabled: true;
+    // greetd has what was typed.
+    in property <bool> busy: false;
+    in property <bool> rejected: false;
+    in property <string> placeholder;
+    // The line under the field.
+    in property <string> note;
+    in property <bool> note-is-problem: false;
+    in property <bool> note-is-warning: false;
+    // The keyboard layout, when there is more than one to be in.
+    in property <string> layout;
+    // Restart and Shut down can be pressed.
+    in property <bool> power: true;
+    // Pressed once, and waiting for the second press that carries it out.
+    in property <bool> restart-armed: false;
+    in property <bool> shut-down-armed: false;
+    out property <duration> hide-after: Tokens.lock-prompt-hide;
+    // How long a button stays armed.
+    out property <duration> confirm-within: Tokens.power-confirm;
+    callback accepted();
+    callback cleared();
+    callback erased();
+    callback typed(string);
+    // Another user: 1 for the next, -1 for the one before.
+    callback stepped(int);
+    callback restart();
+    callback shut-down();
+    // A key was pressed or the pointer moved.
+    callback stirred();
+    // Something that is not a press of Restart or Shut down: a key other
+    // than Return while one of them has the focus, or the pointer pressed
+    // anywhere else.
+    callback turned-away();
+
+    // Typing always goes to the field, wherever Tab has left the focus.
+    public function focus-field() {
+        field.focus();
+    }
+
+    background: Tokens.color-desktop;
+    default-font-family: Tokens.font-family;
+    forward-focus: field;
+
+    // Under everything else: a move of the pointer anywhere brings the
+    // field back.
+    TouchArea {
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                root.turned-away();
+            }
+            if event.kind == PointerEventKind.move || event.kind == PointerEventKind.down {
+                root.stirred();
+            }
+        }
+    }
+
+    VerticalLayout {
+        alignment: center;
+        spacing: Tokens.space-xxl;
+
+        SengiClockBlock {
+            time: root.time;
+            period: root.period;
+            date: root.date;
+        }
+
+        // Always laid out, so the clock stays where it is when this goes.
+        VerticalLayout {
+            alignment: start;
+            spacing: Tokens.space-md;
+            opacity: root.prompt ? 1 : 0;
+            animate opacity { duration: Tokens.motion-base; easing: Tokens.motion-easing; }
+
+            // The name, as wide as the field under it, with a button at
+            // each end to step through the users, which the arrow keys do
+            // too.
+            HorizontalLayout {
+                alignment: center;
+
+                HorizontalLayout {
+                    width: Tokens.password-field-width;
+                    height: Tokens.button;
+                    spacing: Tokens.space-sm;
+
+                    if root.choice: SengiButton {
+                        width: Tokens.button;
+                        text: "\u{2039}";
+                        focusable: false;
+                        enabled: root.prompt;
+                        clicked => { root.stepped(-1); }
+                    }
+
+                    if root.user != "": SengiText {
+                        text: root.user;
+                        font-size: Tokens.font-size-lg;
+                        font-weight: Tokens.font-weight-medium;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    if root.user == "": SengiLabel {
+                        text: root.caption;
+                        font-size: Tokens.font-size-md;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    if root.choice: SengiButton {
+                        width: Tokens.button;
+                        text: "\u{203a}";
+                        focusable: false;
+                        enabled: root.prompt;
+                        clicked => { root.stepped(1); }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                alignment: center;
+
+                // Sees the keys before the field does, for the one case
+                // where Tab is not for moving on to the buttons.
+                FocusScope {
+                    width: field.width;
+                    height: field.height;
+                    focus-on-click: false;
+                    focus-on-tab-navigation: false;
+                    capture-key-pressed(event) => {
+                        if root.naming && event.text == Key.Tab {
+                            root.accepted();
+                            return accept;
+                        }
+                        return reject;
+                    }
+
+                    field := SengiPasswordField {
+                        length: root.length;
+                        plain: root.plain;
+                        placeholder: root.placeholder;
+                        enabled: root.enabled;
+                        busy: root.busy;
+                        // The keyboard is the login screen's on every
+                        // output, unless Tab has moved on to a button.
+                        active: !restart.has-focus && !shut-down.has-focus;
+                        rejected: root.rejected;
+                        badge: root.layout;
+                        accepted => { root.accepted(); }
+                        cleared => { root.cleared(); }
+                        erased => { root.erased(); }
+                        typed(text) => {
+                            if text == Key.LeftArrow || text == Key.UpArrow {
+                                root.stepped(-1);
+                            } else if text == Key.RightArrow || text == Key.DownArrow {
+                                root.stepped(1);
+                            } else {
+                                root.typed(text);
+                            }
+                        }
+                        touched => { root.stirred(); }
+                    }
+                }
+            }
+
+            SengiLabel {
+                // Keeps its line when it has nothing to say.
+                min-height: Tokens.password-note-height;
+                font-size: Tokens.font-size-md;
+                text: root.note;
+                color: root.note-is-problem ? Tokens.color-danger
+                    : root.note-is-warning ? Tokens.color-warning : Tokens.color-text-muted;
+                horizontal-alignment: center;
+            }
+        }
+    }
+
+    // These stay when the field goes: turning the machine off is not
+    // something to have to wake the screen for. Each takes two presses.
+    // The first arms it, which shows in its words and their colour; the
+    // second carries it out. The scope around them sees every key that
+    // is pressed while one of them has the focus.
+    FocusScope {
+        x: root.width - self.width - Tokens.space-xl;
+        y: root.height - self.height - Tokens.space-xl;
+        width: buttons.preferred-width;
+        height: buttons.preferred-height;
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        capture-key-pressed(event) => {
+            root.stirred();
+            if event.text != Key.Return {
+                root.turned-away();
+            }
+            return reject;
+        }
+
+        buttons := HorizontalLayout {
+            spacing: Tokens.space-sm;
+
+            restart := SengiButton {
+                text: root.restart-armed ? "Restart now" : "Restart";
+                danger: root.restart-armed;
+                enabled: root.power;
+                clicked => { root.restart(); }
+            }
+
+            shut-down := SengiButton {
+                text: root.shut-down-armed ? "Shut down now" : "Shut down";
+                danger: root.shut-down-armed;
+                enabled: root.power;
+                clicked => { root.shut-down(); }
+            }
+        }
+    }
+}

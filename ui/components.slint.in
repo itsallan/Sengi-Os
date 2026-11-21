@@ -28,9 +28,20 @@ export component SengiSurface inherits Rectangle {
     border-color: Tokens.color-border;
 }
 
+// A button that cannot be used is drawn as an outline with no fill. A
+// fill in a surface colour would vanish on whichever surface has that
+// colour, leaving bare words that do not look like a button at all.
 export component SengiButton inherits Rectangle {
     in property <string> text;
     in property <bool> primary: false;
+    // The words in the danger colour: it removes or forgets something.
+    in property <bool> danger: false;
+    // With a line around it, for a button on a surface that may take on
+    // the button's own colours, such as a list row under the pointer.
+    in property <bool> outlined: false;
+    // False for a button that only repeats, for the pointer, what a key
+    // already does where the keyboard is: it is then no stop for Tab.
+    in property <bool> focusable: true;
     in property <bool> enabled: true;
     out property <bool> has-focus: scope.has-focus;
     callback clicked();
@@ -38,9 +49,11 @@ export component SengiButton inherits Rectangle {
     forward-focus: scope;
     min-height: Tokens.button;
     border-radius: Tokens.radius;
-    border-width: scope.has-focus ? Tokens.focus-ring-width : 0;
-    border-color: Tokens.color-focus-ring;
-    background: !root.enabled ? Tokens.color-surface
+    border-width: scope.has-focus ? Tokens.focus-ring-width
+        : root.outlined || !root.enabled ? Tokens.border-width : 0;
+    border-color: scope.has-focus ? Tokens.color-focus-ring
+        : !root.enabled ? Tokens.color-outline-disabled : Tokens.color-border;
+    background: !root.enabled ? transparent
         : root.primary ? (touch.has-hover ? Tokens.color-accent-hover : Tokens.color-accent)
         : (touch.has-hover ? Tokens.color-surface-hover : Tokens.color-surface-raised);
     animate background { duration: Tokens.motion-fast; easing: @{motion.easing}; }
@@ -51,7 +64,8 @@ export component SengiButton inherits Rectangle {
         Text {
             text: root.text;
             color: !root.enabled ? Tokens.color-text-disabled
-                : root.primary ? Tokens.color-accent-text : Tokens.color-text;
+                : root.primary ? Tokens.color-accent-text
+                : root.danger ? Tokens.color-danger : Tokens.color-text;
             font-family: Tokens.font-family;
             font-size: Tokens.font-size-md;
             font-weight: Tokens.font-weight-medium;
@@ -63,7 +77,7 @@ export component SengiButton inherits Rectangle {
 
     // Return and Space press the button when it has keyboard focus.
     scope := FocusScope {
-        enabled: root.enabled;
+        enabled: root.enabled && root.focusable;
         key-pressed(event) => {
             if (event.text == Key.Return || event.text == " ") {
                 root.clicked();
@@ -79,6 +93,7 @@ export component SengiButton inherits Rectangle {
     }
 }
 
+// Switched off for good, the track is an outline, like a button's.
 export component SengiToggle inherits Rectangle {
     in-out property <bool> checked: false;
     in property <bool> enabled: true;
@@ -94,9 +109,10 @@ export component SengiToggle inherits Rectangle {
     width: Tokens.space-xl * 1.5;
     height: Tokens.space-lg + Tokens.space-xs;
     border-radius: self.height / 2;
-    border-width: scope.has-focus ? Tokens.focus-ring-width : 0;
-    border-color: Tokens.color-focus-ring;
-    background: !root.enabled ? Tokens.color-surface
+    border-width: scope.has-focus ? Tokens.focus-ring-width
+        : !root.enabled ? Tokens.border-width : 0;
+    border-color: scope.has-focus ? Tokens.color-focus-ring : Tokens.color-outline-disabled;
+    background: !root.enabled ? transparent
         : root.checked ? Tokens.color-accent : Tokens.color-surface-raised;
     animate background { duration: Tokens.motion-fast; easing: @{motion.easing}; }
 
@@ -124,5 +140,277 @@ export component SengiToggle inherits Rectangle {
     TouchArea {
         enabled: root.enabled;
         clicked => { root.flip(); }
+    }
+}
+
+// The time, large, with the date under it. The lock screen and the login
+// screen are built around this. Both strings come from the program: see
+// the sengi-clock crate.
+export component SengiClockBlock inherits VerticalLayout {
+    // The digits: "13:07", or "1:07" with `period` beside it.
+    in property <string> time;
+    // "AM" or "PM" on a 12-hour clock, empty on a 24-hour one. Set small
+    // on the digits' baseline, so the line is not much wider for it.
+    in property <string> period;
+    in property <string> date;
+
+    alignment: center;
+    spacing: Tokens.space-xs;
+
+    HorizontalLayout {
+        alignment: center;
+        spacing: Tokens.space-sm;
+
+        Text {
+            text: root.time;
+            color: Tokens.color-text;
+            font-family: Tokens.font-family;
+            font-size: Tokens.font-size-display;
+            font-weight: Tokens.font-weight-regular;
+        }
+
+        if root.period != "": VerticalLayout {
+            alignment: end;
+            // Both boxes end one descent below their baselines, and the
+            // large one's descent is the longer by this much.
+            padding-bottom: (Tokens.font-size-display - Tokens.font-size-xl) * Tokens.font-descent;
+
+            Text {
+                text: root.period;
+                color: Tokens.color-text-muted;
+                font-family: Tokens.font-family;
+                font-size: Tokens.font-size-xl;
+                font-weight: Tokens.font-weight-medium;
+            }
+        }
+    }
+
+    Text {
+        text: root.date;
+        color: Tokens.color-text-muted;
+        font-family: Tokens.font-family;
+        font-size: Tokens.font-size-xl;
+        font-weight: Tokens.font-weight-regular;
+        horizontal-alignment: center;
+    }
+}
+
+// A field for a password. It never holds what is typed. The program
+// collects the key presses, where it can wipe them, and tells the field
+// only how many characters there are; the field draws that many dots.
+// There is nothing to select, copy or reveal.
+//
+// The same field takes an answer that is no secret, such as a user name
+// on the login screen: the program then hands back what was typed as
+// `plain`, and it is shown as it is.
+//
+// Return, Escape and Backspace are reported through the callbacks. Every
+// other key is reported through `typed`, unless the program has taken it
+// before it got here, as a program on sengi-layer does with
+// `Handle::on_text`.
+export component SengiPasswordField inherits Rectangle {
+    // How many characters have been typed.
+    in property <int> length;
+    // What was typed, where it may be seen. Drawn in place of the dots.
+    in property <string> plain;
+    // Shown while nothing has been typed.
+    in property <string> placeholder;
+    in property <bool> enabled: true;
+    // Not taking input because what was typed is being checked. Looks
+    // alive, where a field that is merely not enabled looks switched off.
+    in property <bool> busy: false;
+    // Drawn with the focus ring. On by default while the field has the
+    // keyboard; a lock screen that shows the same field on every output
+    // sets it everywhere, because the keyboard belongs to all of them.
+    in property <bool> active: scope.has-focus;
+    // The last attempt was turned down.
+    in property <bool> rejected: false;
+    // A short word at the right end, such as the keyboard layout.
+    in property <string> badge;
+    out property <bool> has-focus: scope.has-focus;
+    callback typed(string);
+    callback erased();
+    callback accepted();
+    callback cleared();
+    // Any key at all was pressed, the ones above included.
+    callback touched();
+
+    // How many dots fit beside the badge.
+    property <length> room: self.width - Tokens.space-md * 2
+        - (root.badge == "" ? 0px : badge-text.preferred-width + Tokens.space-sm);
+    property <int> capacity: Math.max(1,
+        Math.floor((root.room + Tokens.space-xs) / (Tokens.password-dot + Tokens.space-xs)));
+
+    forward-focus: scope;
+    width: Tokens.password-field-width;
+    height: Tokens.password-field-height;
+    border-radius: Tokens.radius;
+    border-width: root.active && root.enabled ? Tokens.focus-ring-width : Tokens.border-width;
+    border-color: root.rejected ? Tokens.color-danger
+        : root.active && root.enabled ? Tokens.color-focus-ring
+        : root.enabled || root.busy ? Tokens.color-border : Tokens.color-outline-disabled;
+    background: root.enabled || root.busy ? Tokens.color-surface : transparent;
+    animate border-color { duration: Tokens.motion-fast; easing: @{motion.easing}; }
+
+    if root.length == 0: Text {
+        x: Tokens.space-md;
+        width: root.room;
+        height: parent.height;
+        text: root.plain != "" ? root.plain : root.placeholder;
+        color: root.plain != "" ? (root.enabled ? Tokens.color-text : Tokens.color-text-disabled)
+            : root.busy ? Tokens.color-text-muted : Tokens.color-text-disabled;
+        font-family: Tokens.font-family;
+        font-size: Tokens.font-size-md;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    HorizontalLayout {
+        x: Tokens.space-md;
+        width: root.room;
+        height: parent.height;
+        alignment: start;
+        spacing: Tokens.space-xs;
+
+        for index in Math.min(root.length, root.capacity): VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: Tokens.password-dot;
+                height: Tokens.password-dot;
+                border-radius: self.height / 2;
+                background: root.enabled ? Tokens.color-text : Tokens.color-text-disabled;
+            }
+        }
+    }
+
+    badge-text := Text {
+        x: parent.width - self.width - Tokens.space-md;
+        height: parent.height;
+        text: root.badge;
+        color: Tokens.color-text-muted;
+        font-family: Tokens.font-family;
+        font-size: Tokens.font-size-sm;
+        font-weight: Tokens.font-weight-medium;
+        vertical-alignment: center;
+    }
+
+    scope := FocusScope {
+        key-pressed(event) => {
+            root.touched();
+            // Left for the window, which moves the focus with them.
+            if event.text == Key.Tab || event.text == Key.Backtab {
+                return reject;
+            }
+            if !root.enabled {
+                return accept;
+            }
+            if event.text == Key.Return {
+                root.accepted();
+                return accept;
+            }
+            if event.text == Key.Escape {
+                root.cleared();
+                return accept;
+            }
+            if event.text == Key.Backspace {
+                root.erased();
+                return accept;
+            }
+            if event.modifiers.control || event.modifiers.alt || event.modifiers.meta {
+                return reject;
+            }
+            // Keys that type nothing arrive too, as Slint's own codes:
+            // control and private-use characters, for the program to drop.
+            root.typed(event.text);
+            return accept;
+        }
+    }
+}
+
+// How far a piece of work has got, for work that can tell: a copy knows
+// how many bytes are behind it. Work that cannot tell gets no bar.
+export component SengiProgress inherits Rectangle {
+    in property <int> percent;
+
+    height: Tokens.space-xs;
+    border-radius: self.height / 2;
+    background: Tokens.color-surface-raised;
+
+    Rectangle {
+        x: 0;
+        width: parent.width * Math.clamp(root.percent, 0, 100) / 100;
+        border-radius: parent.border-radius;
+        background: Tokens.color-accent;
+        animate width { duration: Tokens.motion-base; easing: @{motion.easing}; }
+    }
+}
+
+export enum SengiStepState { waiting, running, done, failed }
+
+// One step of a job that is done in steps, with a mark that says where
+// it stands: an empty ring while it waits, a ring in the accent colour
+// while it runs, filled when it is done, and the danger colour if it is
+// where the job stopped. A running step that knows how far it is shows
+// that beside its words and as a bar under them.
+export component SengiStep inherits Rectangle {
+    in property <string> text;
+    in property <SengiStepState> state;
+    // 0 to 100, or less than 0 for a step that cannot tell.
+    in property <int> percent: -1;
+
+    private property <bool> measured: root.state == SengiStepState.running && root.percent >= 0;
+    // Where the words sit: in the middle, or above the bar.
+    private property <length> line: root.measured
+        ? (root.height - words.height - Tokens.space-sm - bar.height) / 2
+        : (root.height - words.height) / 2;
+
+    min-height: Tokens.button + Tokens.space-md;
+
+    mark := Rectangle {
+        x: Tokens.space-md;
+        y: (parent.height - self.height) / 2;
+        width: Tokens.space-md;
+        height: Tokens.space-md;
+        border-radius: self.height / 2;
+        border-width: root.state == SengiStepState.running ? Tokens.focus-ring-width
+            : root.state == SengiStepState.waiting ? Tokens.border-width : 0;
+        border-color: root.state == SengiStepState.running ? Tokens.color-accent : Tokens.color-outline-disabled;
+        background: root.state == SengiStepState.done ? Tokens.color-success
+            : root.state == SengiStepState.failed ? Tokens.color-danger : transparent;
+        animate background { duration: Tokens.motion-base; easing: @{motion.easing}; }
+    }
+
+    words := Text {
+        x: mark.x + mark.width + Tokens.space-md;
+        y: root.line;
+        width: parent.width - self.x - Tokens.space-md - (root.measured ? Tokens.value-column-md : 0);
+        height: self.preferred-height;
+        text: root.text;
+        color: root.state == SengiStepState.waiting ? Tokens.color-text-muted
+            : root.state == SengiStepState.failed ? Tokens.color-danger : Tokens.color-text;
+        font-family: Tokens.font-family;
+        font-size: Tokens.font-size-md;
+        font-weight: root.state == SengiStepState.running ? Tokens.font-weight-medium : Tokens.font-weight-regular;
+        overflow: elide;
+    }
+
+    if root.measured: Text {
+        x: parent.width - self.width - Tokens.space-md;
+        y: root.line;
+        width: Tokens.value-column-md;
+        height: self.preferred-height;
+        text: root.percent + "%";
+        color: Tokens.color-text-muted;
+        font-family: Tokens.font-family;
+        font-size: Tokens.font-size-md;
+        horizontal-alignment: right;
+    }
+
+    bar := SengiProgress {
+        x: words.x;
+        y: parent.height - self.height - Tokens.space-sm;
+        width: parent.width - self.x - Tokens.space-md;
+        visible: root.measured;
+        percent: root.percent;
     }
 }

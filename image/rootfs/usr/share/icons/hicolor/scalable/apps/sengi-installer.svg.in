@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="@{size.dock-icon}" height="@{size.dock-icon}" viewBox="0 0 40 40">
+  <!-- The installer: an arrow coming down onto a disk, on the same tile
+       the dock draws its own icons on. The glyph is on a 20 unit grid at
+       twice the size, so the line is twice the bar's icon line, as the
+       dock's is. -->
+  <rect x="0.5" y="0.5" width="39" height="39" rx="@{radius.base}" fill="@{color.bg}" stroke="@{color.border}" stroke-width="@{border.width}"/>
+  <g transform="scale(2)" fill="none" stroke-width="@{border.icon-stroke}" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M10 4.5v6.5M7 8.25l3 3 3-3" stroke="@{color.accent}"/>
+    <path d="M4.5 12.5v3h11v-3" stroke="@{color.text}"/>
+  </g>
+</svg>

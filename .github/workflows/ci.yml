@@ -28,7 +28,7 @@ jobs:
       - name: Shell scripts
         run: |
           shellcheck -s sh -S warning scripts/*.sh image/*.sh \
-            image/rootfs/usr/bin/* image/rootfs/usr/libexec/* \
+            image/rootfs/usr/bin/* image/rootfs/usr/libexec/* image/rootfs/usr/lib/sengi-os/*.sh \
             image/rootfs/etc/initramfs-tools/hooks/* image/rootfs/etc/initramfs-tools/scripts/*
       - name: Generated files are current
         run: scripts/render-tokens.sh --check
@@ -43,7 +43,7 @@ jobs:
         timeout-minutes: 10
         run: |
           sudo -E apt-get $APT_OPTS update -q
-          sudo -E apt-get $APT_OPTS install -y -q --no-install-recommends pkg-config libfontconfig1-dev libxkbcommon-dev
+          sudo -E apt-get $APT_OPTS install -y -q --no-install-recommends pkg-config libfontconfig1-dev libxkbcommon-dev libpam0g-dev
           rustup show active-toolchain || rustup toolchain install
       - uses: actions/cache@v4
         with:
@@ -60,6 +60,14 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Tests
         run: cargo test --workspace --locked
+      # A build of the whole workspace shares cargo features between the
+      # programs, so one that uses a feature of a shared crate without
+      # asking for it still compiles there. On its own it does not.
+      - name: Each program on its own
+        run: |
+          for program in sengi-bar sengi-clock sengi-config sengi-dock sengi-focus sengi-greeter sengi-install sengi-installer sengi-launcher sengi-lock sengi-notify sengi-quick sengi-settings; do
+            cargo check --locked -p "$program"
+          done
 
   # Types into a real layer surface under a headless compositor. New, so it
   # reports without blocking until it has proved steady on the runners.
@@ -99,13 +107,23 @@ jobs:
         timeout-minutes: 10
         run: |
           sudo -E apt-get $APT_OPTS update -q
-          sudo -E apt-get $APT_OPTS install -y -q --no-install-recommends qemu-system-x86 qemu-utils
+          sudo -E apt-get $APT_OPTS install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf
           # Let the runner's user open KVM. Setting the mode directly cannot
           # hang the way waiting on udev can.
           sudo chmod 666 /dev/kvm || true
           ls -l /dev/kvm || true
       - name: Boot test
         run: scripts/boot-test.sh out/sengi-os-$(cat VERSION)-amd64.iso test-output
+      # Installs onto a blank disk image through the installer's window,
+      # then starts that disk alone. The only disk written is the image
+      # file the script makes.
+      - name: Install test
+        run: scripts/install-test.sh out/sengi-os-$(cat VERSION)-amd64.iso test-output/install
+      # The same through UEFI, which is how the target machine starts.
+      - name: Install test, UEFI
+        run: |
+          SENGI_UEFI=/usr/share/OVMF/OVMF_CODE_4M.fd SENGI_UEFI_VARS=/usr/share/OVMF/OVMF_VARS_4M.fd \
+            scripts/install-test.sh out/sengi-os-$(cat VERSION)-amd64.iso test-output/install-uefi
       - name: Summary
         if: always()
         run: |
@@ -113,6 +131,14 @@ jobs:
             echo '### Boot test'
             echo '```'
             cat test-output/metrics.txt 2>/dev/null || echo 'no metrics recorded'
+            echo '```'
+            echo '### Install test'
+            echo '```'
+            cat test-output/install/install-metrics.txt 2>/dev/null || echo 'no metrics recorded'
+            echo '```'
+            echo '### Install test, UEFI'
+            echo '```'
+            cat test-output/install-uefi/install-metrics.txt 2>/dev/null || echo 'no metrics recorded'
             echo '```'
           } >>"$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
@@ -124,6 +150,15 @@ jobs:
             test-output/metrics.txt
             test-output/guest-info.txt
             test-output/serial.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: install-test
+          path: |
+            test-output/install*/*.png
+            test-output/install*/install-metrics.txt
+            test-output/install*/guest-info-*.txt
+            test-output/install*/serial-*.log
       - uses: actions/upload-artifact@v4
         with:
           name: iso

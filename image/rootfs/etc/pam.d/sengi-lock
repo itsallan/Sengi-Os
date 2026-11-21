@@ -1,0 +1,8 @@
+# PAM configuration for sengi-lock, the Sengi OS lock screen.
+#
+# The password is checked the way every other login on the system checks
+# it, and the account has to be one that may still be used. Nothing else
+# of a login applies to a session that is already open: no session is
+# started and no password is changed from the lock screen.
+@include common-auth
+@include common-account

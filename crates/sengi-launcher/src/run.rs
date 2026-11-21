@@ -4,11 +4,12 @@ use std::io::{Read, Write};
 
 use crate::apps::Apps;
 use crate::cli::{Invocation, Mode};
-use crate::env::Env;
 use crate::matcher::TieBreak;
 use crate::session::Session;
 use crate::ui::{segments, Outcome};
-use crate::{exec, menu, usage};
+use crate::{menu, usage};
+use sengi_apps::env::Env;
+use sengi_apps::exec;
 
 /// Exit status after a choice was made and carried out.
 pub const CHOSEN: u8 = 0;
@@ -229,7 +230,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(marker.exists());
-        assert!(env.usage_file().exists());
+        assert!(usage::file(&env).exists());
     }
 
     #[test]

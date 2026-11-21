@@ -76,6 +76,23 @@ pub(crate) fn key_text(keysym: Keysym, utf8: Option<&str>) -> Option<SharedStrin
         .map(SharedString::from)
 }
 
+/// True if a key press typed text, as against naming a key or making a
+/// shortcut. `special` is [`is_special`] of its symbol; `chord` is whether
+/// Alt or the logo key is held. Control needs no flag: what xkbcommon
+/// gives for a press with Control held is a control character.
+///
+/// Super+L on a locked screen must not put an "l" into the password.
+/// AltGr is not Alt: `chord` is false for it, and "@" on a German layout
+/// is text like any other.
+pub(crate) fn is_typed_text(text: &str, special: bool, chord: bool) -> bool {
+    !special && !chord && !text.is_empty() && !text.chars().any(char::is_control)
+}
+
+/// True for keys that reach Slint as one of its own codes, not as text.
+pub(crate) fn is_special(keysym: Keysym) -> bool {
+    special_key(keysym).is_some()
+}
+
 fn special_key(keysym: Keysym) -> Option<Key> {
     Some(match keysym {
         Keysym::BackSpace => Key::Backspace,
@@ -239,6 +256,24 @@ pub(crate) fn repeats_due(next: Duration, interval: Duration, now: Duration) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shortcuts_and_named_keys_are_not_typed_text() {
+        assert!(is_typed_text("l", false, false));
+        assert!(is_typed_text("\u{e9}", false, false));
+        assert!(is_typed_text(" ", false, false));
+        // AltGr+Q on a German layout: level three, with neither Alt nor
+        // the logo key held as far as the modifiers go.
+        assert!(is_typed_text("@", false, false));
+        // Super+L and Alt+X.
+        assert!(!is_typed_text("l", false, true));
+        assert!(!is_typed_text("x", false, true));
+        // Control+U arrives as a control character.
+        assert!(!is_typed_text("\u{15}", false, false));
+        // Return has text of its own and is still a named key.
+        assert!(!is_typed_text("\r", true, false));
+        assert!(!is_typed_text("", false, false));
+    }
 
     fn text(key: Key) -> SharedString {
         key.into()

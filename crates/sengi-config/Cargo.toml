@@ -1,0 +1,8 @@
+[package]
+name = "sengi-config"
+description = "Reading the Sengi OS settings file"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]

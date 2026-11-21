@@ -5,6 +5,9 @@
 //! numbers come from the app, so nothing is allocated until they agree with
 //! each other and with our limits.
 
+use sengi_apps::icons::fit;
+pub use sengi_apps::icons::Pixels;
+
 /// Largest pixmap we will look at, in pixels per side. The tray draws
 /// at 16 pixels times the output scale; anything bigger than this is not
 /// meant for a tray.
@@ -21,14 +24,6 @@ pub const MAX_ICON: u32 = 256;
 pub struct Pixmap {
     pub width: i32,
     pub height: i32,
-    pub data: Vec<u8>,
-}
-
-/// A square icon ready to draw: `size` by `size` pixels of premultiplied
-/// RGBA.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Pixels {
-    pub size: u32,
     pub data: Vec<u8>,
 }
 
@@ -100,56 +95,6 @@ pub fn render(pixmaps: &[Pixmap], wanted: u32) -> Option<Pixels> {
         }
         Some(fit(&rgba, width, height, wanted))
     })
-}
-
-/// How much of source cell `cell` falls inside the span `[start, end)`.
-fn overlap(cell: usize, start: f32, end: f32) -> f32 {
-    let lo = (cell as f32).max(start);
-    let hi = ((cell + 1) as f32).min(end);
-    (hi - lo).max(0.0)
-}
-
-/// Scales straight RGBA to fit a `size` square, centred, keeping its shape,
-/// and premultiplies. Each output pixel is the area average of the source
-/// pixels it covers.
-pub fn fit(rgba: &[u8], width: u32, height: u32, size: u32) -> Pixels {
-    let scale = size as f32 / width.max(height) as f32;
-    let out_w = ((width as f32 * scale).round() as u32).clamp(1, size);
-    let out_h = ((height as f32 * scale).round() as u32).clamp(1, size);
-    let left = (size - out_w) / 2;
-    let top = (size - out_h) / 2;
-    let step_x = width as f32 / out_w as f32;
-    let step_y = height as f32 / out_h as f32;
-
-    let mut data = vec![0u8; (size * size * 4) as usize];
-    for oy in 0..out_h {
-        let (y0, y1) = (oy as f32 * step_y, (oy + 1) as f32 * step_y);
-        for ox in 0..out_w {
-            let (x0, x1) = (ox as f32 * step_x, (ox + 1) as f32 * step_x);
-            let mut sum = [0f32; 4];
-            let mut area = 0f32;
-            for sy in (y0 as usize)..(y1.ceil() as usize).min(height as usize) {
-                let wy = overlap(sy, y0, y1);
-                for sx in (x0 as usize)..(x1.ceil() as usize).min(width as usize) {
-                    let weight = wy * overlap(sx, x0, x1);
-                    let p = &rgba[(sy * width as usize + sx) * 4..][..4];
-                    let alpha = p[3] as f32 / 255.0;
-                    sum[0] += p[0] as f32 * alpha * weight;
-                    sum[1] += p[1] as f32 * alpha * weight;
-                    sum[2] += p[2] as f32 * alpha * weight;
-                    sum[3] += p[3] as f32 * weight;
-                    area += weight;
-                }
-            }
-            if area > 0.0 {
-                let at = (((top + oy) * size + left + ox) * 4) as usize;
-                for (out, total) in data[at..at + 4].iter_mut().zip(sum) {
-                    *out = (total / area).round().clamp(0.0, 255.0) as u8;
-                }
-            }
-        }
-    }
-    Pixels { size, data }
 }
 
 /// Draws `badge` over the bottom right corner of `base`. Both are

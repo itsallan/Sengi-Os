@@ -7,7 +7,14 @@ root=$1
 : "${VERSION:?}" "${OVERLAY:?}"
 
 cp -a "$OVERLAY/." "$root/"
-chown -R 0:0 "$root/etc" "$root/usr"
+# What the overlay brought belongs to root, and only that is touched. A
+# chown over all of /etc and /usr takes the setuid and setgid bits off
+# every program that has them, sudo and su among them, and gives
+# /etc/shadow to a group that unix_chkpwd is no longer in: no password
+# could be checked, so a locked screen could not be unlocked.
+(cd "$OVERLAY" && find . ! -name .) | while IFS= read -r entry; do
+	chown -h 0:0 "$root/$entry"
+done
 chmod 0440 "$root/etc/sudoers.d/live"
 
 rm -f "$root/etc/os-release"
@@ -38,13 +45,31 @@ chroot "$root" passwd -l root >/dev/null
 # Only what the desktop needs at boot. Wi-Fi and Bluetooth daemons are
 # started by udev when the hardware shows up (see 70-sengi-on-demand.rules).
 chroot "$root" systemctl enable greetd systemd-networkd systemd-resolved systemd-oomd \
-	systemd-timesyncd sengi-boot-report
+	systemd-timesyncd sengi-boot-report sengi-install-report
 chroot "$root" systemctl disable iwd bluetooth networking 2>/dev/null || true
+# What is masked here is masked on an installed system too: the installer
+# copies this image. So each of these is a decision for both.
+#
+# - The apt timers: nothing fetches package lists or installs updates in
+#   the background. On the live image there would be no point. On an
+#   installed system it means updates come only when the person asks for
+#   them (apt update, apt upgrade), until Sengi OS has a way of its own
+#   to offer them; the README says so under what is not offered yet.
+# - dpkg-db-backup and the e2scrub pair: housekeeping the desktop does
+#   not need at boot, and e2scrub wants LVM, which is not used.
+# - getty@tty1: the desktop has no use for a text login on the first
+#   console. The installer puts it back for the boot menu's text mode
+#   and for nothing else.
+# - grub-common.service notes at every start that the start worked, for a
+#   menu that falls back after a failed one. Ours does not.
+# - systemd-networkd-wait-online: nothing at boot waits for the network.
 chroot "$root" systemctl mask systemd-networkd-wait-online.service \
 	apt-daily.timer apt-daily-upgrade.timer dpkg-db-backup.timer e2scrub_all.timer \
-	e2scrub_reap.service getty@tty1.service
-# The image is read-only and complete, so there is nothing for the
-# first-boot update services to do. ldconfig alone costs over a second.
+	e2scrub_reap.service getty@tty1.service grub-common.service
+# The services that bring /etc and /var up to date with a /usr that was
+# replaced whole have nothing to do here, live or installed: packages run
+# ldconfig and their own triggers when apt installs them. ldconfig alone
+# costs over a second at boot.
 chroot "$root" ldconfig
 chroot "$root" systemctl mask ldconfig.service systemd-journal-catalog-update.service \
 	systemd-hwdb-update.service systemd-update-done.service

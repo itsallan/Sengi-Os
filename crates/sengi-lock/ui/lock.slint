@@ -1,0 +1,108 @@
+// The lock screen: the time and the date, and under them who is logged in
+// and a field for the password. One of these covers every output.
+
+import { Tokens, SengiText, SengiLabel, SengiClockBlock, SengiPasswordField } from "components.slint";
+
+export component LockWindow inherits Window {
+    in property <string> time;
+    // "AM" or "PM", or empty on a 24-hour clock.
+    in property <string> period;
+    in property <string> date;
+    in property <string> user;
+    // How many characters of the password have been typed.
+    in property <int> length;
+    // False once nobody has touched anything for a while: the clock alone.
+    in property <bool> prompt: true;
+    // False while the password is being checked and while a wrong one is
+    // being paid for.
+    in property <bool> enabled: true;
+    // The password is with PAM.
+    in property <bool> busy: false;
+    in property <bool> rejected: false;
+    in property <string> placeholder;
+    // The line under the field.
+    in property <string> note;
+    in property <bool> note-is-problem: false;
+    in property <bool> note-is-warning: false;
+    // The keyboard layout, when there is more than one to be in.
+    in property <string> layout;
+    out property <duration> hide-after: Tokens.lock-prompt-hide;
+    callback accepted();
+    callback cleared();
+    callback erased();
+    callback typed(string);
+    // A key was pressed or the pointer moved.
+    callback stirred();
+
+    background: Tokens.color-desktop;
+    default-font-family: Tokens.font-family;
+    forward-focus: field;
+
+    VerticalLayout {
+        alignment: center;
+        spacing: Tokens.space-xxl;
+
+        SengiClockBlock {
+            time: root.time;
+            period: root.period;
+            date: root.date;
+        }
+
+        // Always laid out, so the clock stays where it is when this goes.
+        VerticalLayout {
+            alignment: start;
+            spacing: Tokens.space-md;
+            opacity: root.prompt ? 1 : 0;
+            animate opacity { duration: Tokens.motion-base; easing: Tokens.motion-easing; }
+
+            SengiText {
+                text: root.user;
+                font-size: Tokens.font-size-lg;
+                font-weight: Tokens.font-weight-medium;
+                horizontal-alignment: center;
+                overflow: elide;
+            }
+
+            HorizontalLayout {
+                alignment: center;
+
+                field := SengiPasswordField {
+                    length: root.length;
+                    placeholder: root.placeholder;
+                    enabled: root.enabled;
+                    busy: root.busy;
+                    // The keyboard is the lock's, whichever output the
+                    // compositor says has it.
+                    active: true;
+                    rejected: root.rejected;
+                    badge: root.layout;
+                    accepted => { root.accepted(); }
+                    cleared => { root.cleared(); }
+                    erased => { root.erased(); }
+                    typed(text) => { root.typed(text); }
+                    touched => { root.stirred(); }
+                }
+            }
+
+            SengiLabel {
+                // Keeps its line when it has nothing to say.
+                min-height: Tokens.password-note-height;
+                font-size: Tokens.font-size-md;
+                text: root.note;
+                color: root.note-is-problem ? Tokens.color-danger
+                    : root.note-is-warning ? Tokens.color-warning : Tokens.color-text-muted;
+                horizontal-alignment: center;
+            }
+        }
+    }
+
+    // Over everything: there is nothing here to click, and a move of the
+    // pointer anywhere brings the field back.
+    TouchArea {
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.move || event.kind == PointerEventKind.down {
+                root.stirred();
+            }
+        }
+    }
+}

@@ -5,14 +5,14 @@
 //! It never touches the window or a service, so every rule about what is
 //! shown when can be tested here.
 
-use crate::backlight::{self, Backlight};
-use crate::battery::Battery;
-use crate::bluetooth::{self, Bluetooth};
-use crate::secret::Secret;
-use crate::services::{Block, Command, Event, Hardware};
-use crate::text::isolate;
-use crate::volume::{Echo, Volume, MAX_PERCENT};
-use crate::wifi::{self, Join, JoinError, Link, Network, Problem, Security, Wifi};
+use sengi_system::backlight::{self, Backlight};
+use sengi_system::battery::Battery;
+use sengi_system::bluetooth::{self, Bluetooth};
+use sengi_system::secret::Secret;
+use sengi_system::services::{Block, Command, Event, Hardware};
+use sengi_system::volume::{Echo, Volume, MAX_PERCENT};
+use sengi_system::wifi::{self, Join, JoinError, Link, Network, Problem, Security, Wifi};
+use sengi_text::isolate;
 
 /// A reading that has not arrived yet, has, or will not.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -225,6 +225,8 @@ impl Panel {
                 self.dnd_asked = Some(answer.is_some());
                 self.dnd = answer.or(self.dnd);
             }
+            // News of a kind this panel has no tile for.
+            _ => {}
         }
         self.relist();
     }
@@ -540,13 +542,12 @@ impl Panel {
         };
         let name = isolate(name);
         match error {
-            JoinError::Failed | JoinError::Aborted | JoinError::NeedsPassphrase => {
-                format!("Could not connect to {name}")
-            }
             JoinError::Timeout => format!("{name} did not answer"),
             JoinError::NotConfigured => format!("{name} has to be set up before it can be joined"),
             JoinError::NotSupported => format!("{name} uses security that is not supported"),
             JoinError::Unavailable => "Wi-Fi is not available".to_string(),
+            // Failed, Aborted, NeedsPassphrase, and any reason added later.
+            _ => format!("Could not connect to {name}"),
         }
     }
 
@@ -662,7 +663,7 @@ fn battery_view(battery: Option<&Battery>) -> BatteryView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::battery::Charge;
+    use sengi_system::battery::Charge;
 
     fn network(name: &str, security: Security, known: bool, signal: i16) -> Network {
         Network {

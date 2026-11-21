@@ -1,22 +1,15 @@
-//! Starting programs from the dock.
+//! Starting programs from the dock. Building the command and letting go of
+//! the program are sengi-apps' business; this is the dock's wording for
+//! what can go wrong, and the search button.
 
 use std::fmt;
 use std::io;
-use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
-use crate::desktop::Entry;
-use crate::exec::{self, ExecError};
+use sengi_apps::exec::{self, ExecError};
+use sengi_apps::{DesktopEntry, Env};
 
-/// What the search button runs. This becomes `sengi-launcher` when it exists.
+/// What the search button runs.
 pub const LAUNCHER_COMMAND: &[&str] = &["sengi-launcher"];
-
-/// Puts an app in its own scope under app.slice. Used when it is installed.
-pub const RUNNER: &str = "sengi-run";
-
-/// Prefix for entries that say `Terminal=true`.
-pub const TERMINAL_COMMAND: &[&str] = &["foot", "-e"];
 
 #[derive(Debug)]
 pub enum LaunchError {
@@ -38,210 +31,85 @@ impl fmt::Display for LaunchError {
 
 impl std::error::Error for LaunchError {}
 
-/// The full argument vector for an entry, before the runner is added.
-pub fn command_for(entry: &Entry) -> Result<Vec<String>, ExecError> {
-    let mut args = exec::command(entry)?;
-    if entry.terminal {
-        let mut wrapped: Vec<String> = TERMINAL_COMMAND.iter().map(|s| s.to_string()).collect();
-        wrapped.append(&mut args);
-        args = wrapped;
+impl From<ExecError> for LaunchError {
+    fn from(error: ExecError) -> Self {
+        match error {
+            ExecError::NotFound(program) => Self::Missing(program),
+            other => Self::Exec(other),
+        }
     }
-    Ok(args)
 }
 
-/// Looks a program up the way the shell would.
-pub fn find_in_path(program: &str, path: &str) -> Option<PathBuf> {
-    path.split(':')
-        .filter(|dir| !dir.is_empty())
-        .map(|dir| Path::new(dir).join(program))
-        .find(|candidate| is_executable(candidate))
-}
-
-/// Puts the runner in front of a command when the runner is installed.
-pub fn with_runner(mut args: Vec<String>, path: &str) -> Vec<String> {
-    if find_in_path(RUNNER, path).is_some() {
-        args.insert(0, RUNNER.to_string());
-    }
-    args
-}
-
-/// Starts a program and lets go of it.
-///
-/// The program is forked twice, so it is never our child: when it exits,
-/// init collects it and no zombie is left for the dock to reap. It also gets
-/// a session of its own, so it outlives a dock restart.
-pub fn spawn_detached(args: &[String]) -> Result<(), LaunchError> {
-    let Some((program, rest)) = args.split_first() else {
-        return Err(LaunchError::Exec(ExecError::Empty));
-    };
-    let mut command = Command::new(program);
-    command.args(rest).stdin(Stdio::null());
-    // SAFETY: the closure runs in the forked child before exec and only
-    // makes async-signal-safe calls: fork, setsid and _exit.
-    unsafe {
-        command.pre_exec(|| match libc::fork() {
-            -1 => Err(io::Error::last_os_error()),
-            0 => {
-                libc::setsid();
-                Ok(())
-            }
-            _ => libc::_exit(0),
-        });
-    }
-    // The child seen from here is the short-lived middle process. A failed
-    // exec in the grandchild is still reported through spawn().
-    let mut middle = command
-        .spawn()
-        .map_err(|e| LaunchError::Spawn(program.clone(), e))?;
-    let _ = middle.wait();
-    Ok(())
-}
-
-fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    path.metadata()
-        .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-}
-
-/// Checks that a program can be found, as a path or by name on `path`.
-///
-/// Starting it would not tell us: the dock starts the runner, and the
-/// runner succeeds whether or not the app it is given exists.
-pub fn check_program(program: &str, path: &str) -> Result<(), LaunchError> {
-    let found = if program.contains('/') {
-        is_executable(Path::new(program))
-    } else {
-        find_in_path(program, path).is_some()
-    };
-    if found {
-        Ok(())
-    } else {
-        Err(LaunchError::Missing(program.to_string()))
-    }
+fn spawn(args: &[String], entry: Option<&DesktopEntry>) -> Result<(), LaunchError> {
+    let dir = entry.and_then(|entry| entry.working_dir.as_deref());
+    exec::spawn(args, dir)
+        .map_err(|e| LaunchError::Spawn(args.first().cloned().unwrap_or_default(), e))
 }
 
 /// The full command for an entry, checked and with the runner in front.
-pub fn prepare(entry: &Entry, path: &str) -> Result<Vec<String>, LaunchError> {
-    // The app itself, and the terminal it runs in if it needs one.
-    let app = exec::command(entry).map_err(LaunchError::Exec)?;
-    check_program(&app[0], path)?;
-    let args = command_for(entry).map_err(LaunchError::Exec)?;
-    check_program(&args[0], path)?;
-    Ok(with_runner(args, path))
+///
+/// The check matters: the dock starts the runner, and the runner succeeds
+/// whether or not the app it is given exists.
+pub fn prepare(entry: &DesktopEntry, env: &Env) -> Result<Vec<String>, LaunchError> {
+    Ok(exec::launchable(entry, env)?)
 }
 
 /// Starts an app from its desktop entry, through the runner if there is one.
-pub fn launch(entry: &Entry) -> Result<(), LaunchError> {
-    let path = std::env::var("PATH").unwrap_or_default();
-    spawn_detached(&prepare(entry, &path)?)
+pub fn launch(entry: &DesktopEntry) -> Result<(), LaunchError> {
+    let env = Env::from_process();
+    spawn(&prepare(entry, &env)?, Some(entry))
 }
 
 /// Opens the search launcher.
 pub fn open_launcher() -> Result<(), LaunchError> {
     let args: Vec<String> = LAUNCHER_COMMAND.iter().map(|s| s.to_string()).collect();
-    let path = std::env::var("PATH").unwrap_or_default();
-    check_program(&args[0], &path)?;
-    spawn_detached(&args)
+    if Env::from_process().find_program(&args[0]).is_none() {
+        return Err(LaunchError::Missing(args[0].clone()));
+    }
+    spawn(&args, None)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::desktop::testing::{entry, temp_dir};
+    use crate::testing::{entry, temp_dir};
+    use sengi_apps::exec::RUNNER;
+    use std::ffi::OsString;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
-    use std::time::{Duration, Instant};
-
-    fn strings(list: &[&str]) -> Vec<String> {
-        list.iter().map(|s| s.to_string()).collect()
-    }
+    use std::path::Path;
 
     fn executable(path: &Path, body: &str) {
         fs::write(path, body).unwrap();
         fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    #[test]
-    fn terminal_apps_are_wrapped_in_the_terminal() {
-        let mut vim = entry("vim", "Vim", "vim %F");
-        assert_eq!(command_for(&vim).unwrap(), ["vim"]);
-        vim.terminal = true;
-        assert_eq!(command_for(&vim).unwrap(), ["foot", "-e", "vim"]);
-    }
-
-    #[test]
-    fn the_runner_is_used_only_when_installed() {
-        let dir = temp_dir("path");
-        let path = format!("/nonexistent:{}", dir.display());
-        assert_eq!(with_runner(strings(&["foot"]), &path), ["foot"]);
-
-        // Present but not executable does not count.
-        fs::write(dir.join(RUNNER), "").unwrap();
-        assert_eq!(with_runner(strings(&["foot"]), &path), ["foot"]);
-
-        executable(&dir.join(RUNNER), "#!/bin/sh\nexec \"$@\"\n");
-        assert_eq!(
-            with_runner(strings(&["foot", "-x"]), &path),
-            ["sengi-run", "foot", "-x"]
-        );
-        assert_eq!(find_in_path(RUNNER, &path), Some(dir.join(RUNNER)));
-        assert_eq!(find_in_path(RUNNER, ""), None);
-    }
-
-    #[test]
-    fn a_started_program_runs_with_its_arguments_and_is_not_our_child() {
-        let dir = temp_dir("spawn");
-        let script = dir.join("report");
-        let out = dir.join("out");
-        executable(
-            &script,
-            "#!/bin/sh\nprintf '%s|%s|%s' \"$1\" \"$2\" \"$PPID\" > \"$3\"\n",
-        );
-        spawn_detached(&[
-            script.to_string_lossy().into_owned(),
-            "two words".into(),
-            "$HOME".into(),
-            out.to_string_lossy().into_owned(),
-        ])
-        .unwrap();
-
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let text = loop {
-            match fs::read_to_string(&out) {
-                Ok(text) if text.matches('|').count() == 2 => break text,
-                _ if Instant::now() > deadline => panic!("the program did not run"),
-                _ => std::thread::sleep(Duration::from_millis(10)),
-            }
-        };
-        let fields: Vec<&str> = text.split('|').collect();
-        // Arguments arrive untouched: no shell has split or expanded them.
-        assert_eq!(fields[0], "two words");
-        assert_eq!(fields[1], "$HOME");
-        // Its parent is whoever adopts orphans, not this process.
-        assert_ne!(fields[2], std::process::id().to_string());
+    fn env_with_path(path: &str) -> Env {
+        let path = OsString::from(path);
+        Env::from_vars(move |name| (name == "PATH").then(|| path.clone()))
     }
 
     #[test]
     fn a_missing_program_is_an_error() {
-        let result = spawn_detached(&strings(&["/nonexistent/program"]));
-        assert!(matches!(result, Err(LaunchError::Spawn(_, _))));
-        assert!(matches!(
-            spawn_detached(&[]),
-            Err(LaunchError::Exec(ExecError::Empty))
-        ));
+        let result = spawn(&["/nonexistent/program".to_string()], None);
+        assert!(
+            matches!(result, Err(LaunchError::Spawn(program, _)) if program == "/nonexistent/program")
+        );
+        assert!(matches!(spawn(&[], None), Err(LaunchError::Spawn(_, _))));
     }
 
     #[test]
     fn a_missing_app_is_caught_before_the_runner_hides_it() {
         let dir = temp_dir("missing");
-        let path = dir.to_string_lossy().into_owned();
+        let env = env_with_path(&dir.to_string_lossy());
         executable(&dir.join(RUNNER), "#!/bin/sh\nexec \"$@\"\n");
         executable(&dir.join("present"), "#!/bin/sh\n");
+        let runner = dir.join(RUNNER).to_string_lossy().into_owned();
 
-        let found = prepare(&entry("present", "Present", "present --flag %U"), &path).unwrap();
-        assert_eq!(found, ["sengi-run", "present", "--flag"]);
+        let found = prepare(&entry("present", "Present", "present --flag %U"), &env).unwrap();
+        assert_eq!(found, [runner.as_str(), "present", "--flag"]);
 
-        let gone = prepare(&entry("gone", "Gone", "gone-app %U"), &path);
+        let gone = prepare(&entry("gone", "Gone", "gone-app %U"), &env);
         assert!(matches!(gone, Err(LaunchError::Missing(program)) if program == "gone-app"));
         assert_eq!(
             LaunchError::Missing("gone-app".into()).to_string(),
@@ -250,22 +118,21 @@ mod tests {
 
         // A full path is checked where it points, not on PATH.
         let absolute = dir.join("present").to_string_lossy().into_owned();
-        assert!(prepare(&entry("p", "P", &absolute), "").is_ok());
-        assert!(prepare(&entry("p", "P", "/nonexistent/app"), &path).is_err());
+        assert!(prepare(&entry("p", "P", &absolute), &env_with_path("")).is_ok());
+        assert!(prepare(&entry("p", "P", "/nonexistent/app"), &env).is_err());
 
         // A terminal app needs its terminal too.
         let mut tui = entry("present", "Present", "present");
         tui.terminal = true;
         assert!(matches!(
-            prepare(&tui, &path),
+            prepare(&tui, &env),
             Err(LaunchError::Missing(program)) if program == "foot"
         ));
     }
 
     #[test]
     fn an_entry_without_a_command_cannot_be_launched() {
-        let mut broken = entry("x", "X", "");
-        broken.exec = None;
+        let broken = entry("x", "X", "");
         assert!(matches!(
             launch(&broken),
             Err(LaunchError::Exec(ExecError::Empty))

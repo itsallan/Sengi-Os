@@ -1,0 +1,257 @@
+// The Settings window: categories down the left, the chosen one's page
+// at the right, and over both a dialog or a chooser when one is open.
+// The compositor draws the title bar.
+
+import { Tokens, SengiText } from "components.slint";
+import { NamedIcon } from "icons.slint";
+import { Metrics, Nudge, Item, InfoRow, DialogSpec, DialogLayer, ChooserLayer } from "kit.slint";
+import { NetworkData, NetworkPage } from "pages/network.slint";
+import { BluetoothData, BluetoothPage } from "pages/bluetooth.slint";
+import { SoundData, SoundSide, SoundPage } from "pages/sound.slint";
+import { DisplayData, DisplayOutput, DisplayPage } from "pages/display.slint";
+import { PowerData, PowerPage } from "pages/power.slint";
+import { DateTimeData, DateTimePage } from "pages/datetime.slint";
+import { KeyboardData, KeyboardPage } from "pages/keyboard.slint";
+import { AboutData, AboutPage } from "pages/about.slint";
+import { NotificationsData, NotificationsPage } from "pages/notifications.slint";
+import { PointerData, PointerSide, PointerPage } from "pages/pointer.slint";
+
+export { Item, InfoRow, DialogSpec, AboutData, NotificationsData, PointerData, PointerSide, KeyboardData, PowerData, DateTimeData, NetworkData, BluetoothData, SoundData, SoundSide, DisplayData, DisplayOutput }
+
+export struct PageEntry {
+    name: string,
+    title: string,
+    icon: string,
+}
+
+// The one dialog. Rust opens it and hears the answer.
+export global DialogState {
+    in property <bool> open: false;
+    in property <DialogSpec> spec;
+    in property <string> countdown;
+    in property <bool> busy: false;
+    in property <int> wipe: 0;
+    callback confirmed(string);
+    callback cancelled();
+}
+
+// The one chooser.
+export global ChooserState {
+    in property <bool> open: false;
+    in property <string> title;
+    in property <bool> searchable: false;
+    in property <string> placeholder;
+    in property <string> empty;
+    in property <[Item]> items;
+    in-out property <int> current: 0;
+    in property <int> generation: 0;
+    callback chosen(string);
+    callback cancelled();
+    callback filtered(string);
+}
+
+component Sidebar inherits Rectangle {
+    in property <[PageEntry]> pages;
+    in property <string> current;
+    callback selected(string);
+
+    private property <int> index: 0;
+
+    public function take-focus() {
+        scope.focus();
+    }
+
+    function go(to: int) {
+        if to >= 0 && to < root.pages.length {
+            root.selected(root.pages[to].name);
+        }
+    }
+
+    forward-focus: scope;
+    background: Tokens.color-surface;
+
+    scope := FocusScope {
+        focus-on-click: false;
+
+        key-pressed(event) => {
+            if event.text == Key.UpArrow {
+                root.go(root.index - 1);
+            } else if event.text == Key.DownArrow {
+                root.go(root.index + 1);
+            } else if event.text == Key.Home {
+                root.go(0);
+            } else if event.text == Key.End {
+                root.go(root.pages.length - 1);
+            } else if event.text == Key.PageDown {
+                Nudge.down += 1;
+            } else if event.text == Key.PageUp {
+                Nudge.up += 1;
+            } else {
+                return EventResult.reject;
+            }
+            return EventResult.accept;
+        }
+    }
+
+    for page[index] in root.pages: Rectangle {
+        private property <bool> chosen: page.name == root.current;
+
+        x: Tokens.space-sm;
+        y: Tokens.space-sm + index * (Metrics.sidebar-row + Tokens.space-xxs);
+        width: parent.width - Tokens.space-sm * 2;
+        height: Metrics.sidebar-row;
+        border-radius: Tokens.radius;
+        border-width: self.chosen && scope.has-focus ? Tokens.focus-ring-width : 0;
+        border-color: Tokens.color-focus-ring;
+        background: self.chosen ? Tokens.color-surface-hover
+            : touch.has-hover ? Tokens.color-surface-raised : transparent;
+        animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+
+        changed chosen => {
+            if self.chosen {
+                root.index = index;
+            }
+        }
+
+        init => {
+            if self.chosen {
+                root.index = index;
+            }
+        }
+
+        NamedIcon {
+            x: Tokens.space-md;
+            y: (parent.height - self.height) / 2;
+            name: page.icon;
+            ink: parent.chosen ? Tokens.color-accent : Tokens.color-text-muted;
+        }
+
+        SengiText {
+            x: Tokens.space-md * 2 + Tokens.bar-icon;
+            width: parent.width - self.x - Tokens.space-sm;
+            height: parent.height;
+            text: page.title;
+            font-weight: parent.chosen ? Tokens.font-weight-medium : Tokens.font-weight-regular;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        touch := TouchArea {
+            clicked => {
+                scope.focus();
+                root.selected(page.name);
+            }
+        }
+    }
+
+    // The edge against the page.
+    Rectangle {
+        x: parent.width - self.width;
+        width: Tokens.border-width;
+        background: Tokens.color-border;
+    }
+}
+
+export component SettingsWindow inherits Window {
+    in property <[PageEntry]> pages;
+    in property <string> page;
+    callback page-selected(string);
+    // Another invocation has left a request with this one.
+    callback request-pending();
+
+    public function focus-sidebar() {
+        sidebar.take-focus();
+    }
+
+    title: "Settings";
+    preferred-width: Tokens.settings-window-width;
+    preferred-height: Tokens.settings-window-height;
+    min-width: Tokens.settings-window-min-width;
+    min-height: Tokens.settings-window-min-height;
+    background: Tokens.color-bg;
+    default-font-family: Tokens.font-family;
+    default-font-size: Tokens.font-size-md;
+
+    // The window is drawn into two buffers taken in turn. When its size
+    // in pixels changes, as when the output's scale does, each buffer is
+    // made anew only as its turn comes, and the second is not said to be
+    // new: only what changed since is drawn into it, over whatever the
+    // old size left there. So for a few frames after such a change the
+    // whole window is drawn, by a sheet under everything that changes
+    // without looking any different.
+    private property <float> pixel: 1phx / 1px;
+    private property <int> sheet: 0;
+    private property <int> sheets-owed: 0;
+
+    function draw-everything() {
+        root.sheet += 1;
+        root.sheets-owed = 3;
+    }
+
+    changed pixel => { root.draw-everything(); }
+    changed width => { root.draw-everything(); }
+    changed height => { root.draw-everything(); }
+
+    Timer {
+        interval: Tokens.motion-fast;
+        running: root.sheets-owed > 0;
+        triggered => {
+            root.sheet += 1;
+            root.sheets-owed -= 1;
+        }
+    }
+
+    Rectangle {
+        background: Math.mod(root.sheet, 2) == 0 ? transparent : Tokens.color-bg.transparentize(1);
+    }
+
+    sidebar := Sidebar {
+        x: 0;
+        y: 0;
+        width: Metrics.sidebar;
+        height: parent.height;
+        pages: root.pages;
+        current: root.page;
+        selected(name) => { root.page-selected(name); }
+    }
+
+    Rectangle {
+        x: Metrics.sidebar;
+        y: 0;
+        width: parent.width - Metrics.sidebar;
+        height: parent.height;
+
+        if root.page == "network": NetworkPage { }
+        if root.page == "bluetooth": BluetoothPage { }
+        if root.page == "sound": SoundPage { }
+        if root.page == "display": DisplayPage { }
+        if root.page == "power": PowerPage { }
+        if root.page == "date-time": DateTimePage { }
+        if root.page == "keyboard": KeyboardPage { }
+        if root.page == "mouse": PointerPage { }
+        if root.page == "notifications": NotificationsPage { }
+        if root.page == "about": AboutPage { }
+    }
+
+    if ChooserState.open: ChooserLayer {
+        title: ChooserState.title;
+        searchable: ChooserState.searchable;
+        placeholder: ChooserState.placeholder;
+        empty: ChooserState.empty;
+        items: ChooserState.items;
+        current <=> ChooserState.current;
+        generation: ChooserState.generation;
+        chosen(id) => { ChooserState.chosen(id); }
+        cancelled => { ChooserState.cancelled(); }
+        filtered(text) => { ChooserState.filtered(text); }
+    }
+
+    if DialogState.open: DialogLayer {
+        spec: DialogState.spec;
+        countdown: DialogState.countdown;
+        busy: DialogState.busy;
+        wipe: DialogState.wipe;
+        confirmed(text) => { DialogState.confirmed(text); }
+        cancelled => { DialogState.cancelled(); }
+    }
+}

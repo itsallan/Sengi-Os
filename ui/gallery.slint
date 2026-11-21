@@ -1,6 +1,6 @@
 // Every shared component on one window, for visual review.
 
-import { Tokens, SengiText, SengiLabel, SengiSurface, SengiButton, SengiToggle } from "components.slint";
+import { Tokens, SengiText, SengiLabel, SengiSurface, SengiButton, SengiToggle, SengiClockBlock, SengiPasswordField, SengiProgress, SengiStep, SengiStepState } from "components.slint";
 
 export component Gallery inherits Window {
     title: "Sengi OS components";
@@ -28,6 +28,38 @@ export component Gallery inherits Window {
         HorizontalLayout {
             alignment: start;
             SengiToggle { checked: true; }
+        }
+
+        SengiLabel { text: "Password field"; }
+        HorizontalLayout {
+            spacing: Tokens.space-sm;
+            alignment: start;
+            SengiPasswordField { placeholder: "Password"; }
+            SengiPasswordField { length: 9; active: true; badge: "FR"; }
+            SengiPasswordField { rejected: true; }
+            SengiPasswordField { length: 4; enabled: false; }
+            SengiPasswordField { placeholder: "Checking\u{2026}"; enabled: false; busy: true; }
+        }
+
+        SengiLabel { text: "Clock"; }
+        HorizontalLayout {
+            spacing: Tokens.space-xl;
+            alignment: start;
+            SengiClockBlock { time: "13:07"; date: "Thursday 12 November"; }
+            SengiClockBlock { time: "1:07"; period: "PM"; date: "Thursday 12 November"; }
+        }
+
+        SengiLabel { text: "Progress and steps"; }
+        SengiProgress { width: Tokens.dialog-width; percent: 42; }
+        SengiSurface {
+            width: Tokens.dialog-width;
+            VerticalLayout {
+                SengiStep { text: "Done"; state: SengiStepState.done; }
+                SengiStep { text: "Running, and it can tell how far"; state: SengiStepState.running; percent: 42; }
+                SengiStep { text: "Running"; state: SengiStepState.running; }
+                SengiStep { text: "Waiting"; state: SengiStepState.waiting; }
+                SengiStep { text: "Failed"; state: SengiStepState.failed; }
+            }
         }
 
         SengiLabel { text: "Surface"; }

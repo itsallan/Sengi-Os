@@ -21,6 +21,7 @@ export global Tokens {
     out property <color> color-dock: #1f2126e6;
     out property <color> color-scrim: #00000080;
     out property <color> color-focus-ring: #d9773a;
+    out property <color> color-outline-disabled: #4a4e56;
 
     out property <length> radius: 6px;
     out property <length> border-width: 1px;
@@ -33,6 +34,7 @@ export global Tokens {
     out property <length> space-md: 12px;
     out property <length> space-lg: 16px;
     out property <length> space-xl: 24px;
+    out property <length> space-xxl: 48px;
 
     out property <string> font-family: "Inter";
     out property <string> font-mono: "DejaVu Sans Mono";
@@ -40,6 +42,8 @@ export global Tokens {
     out property <length> font-size-md: 13px;
     out property <length> font-size-lg: 16px;
     out property <length> font-size-xl: 22px;
+    out property <length> font-size-display: 96px;
+    out property <float> font-descent: 24 / 100;
     out property <int> font-weight-regular: 400;
     out property <int> font-weight-medium: 500;
     out property <int> font-weight-bold: 600;
@@ -54,11 +58,34 @@ export global Tokens {
     out property <length> notification-width: 360px;
     out property <length> bar-icon: 16px;
     out property <length> button: 26px;
+    out property <length> password-field-width: 280px;
+    out property <length> password-field-height: 36px;
+    out property <length> password-dot: 8px;
+    out property <length> password-note-height: 20px;
+    out property <length> list-row-height: 42px;
+    out property <length> dialog-width: 360px;
+    out property <length> chooser-width: 480px;
+    out property <int> chooser-lines: 8;
+    out property <length> value-column-sm: 40px;
+    out property <length> value-column-md: 60px;
+    out property <length> value-column-lg: 80px;
+    out property <int> scroll-page-percent: 80;
+    out property <length> settings-window-width: 888px;
+    out property <length> settings-window-height: 600px;
+    out property <length> settings-window-min-width: 720px;
+    out property <length> settings-window-min-height: 480px;
+    out property <length> settings-sidebar-width: 200px;
+    out property <length> settings-page-width: 640px;
+    out property <length> settings-control-width: 200px;
+    out property <length> settings-control-wide: 240px;
 
     out property <duration> motion-fast: 120ms;
     out property <duration> motion-base: 200ms;
     out property <duration> motion-slow: 320ms;
     out property <easing> motion-easing: cubic-bezier(0.2, 0, 0, 1);
     out property <duration> click-guard: 400ms;
+    out property <duration> input-settle: 300ms;
     out property <duration> notification-timeout: 5000ms;
+    out property <duration> lock-prompt-hide: 30000ms;
+    out property <duration> power-confirm: 5000ms;
 }

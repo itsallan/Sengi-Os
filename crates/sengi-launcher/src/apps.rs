@@ -4,11 +4,11 @@
 use std::fmt;
 use std::path::Path;
 
-use crate::desktop::{self, DesktopEntry};
-use crate::env::Env;
-use crate::exec::{self, ExecError};
 use crate::matcher::Candidate;
-use crate::usage::Usage;
+use crate::usage::{self, Usage};
+use sengi_apps::desktop::{self, DesktopEntry};
+use sengi_apps::env::Env;
+use sengi_apps::exec::{self, ExecError};
 
 pub struct Apps {
     entries: Vec<DesktopEntry>,
@@ -36,7 +36,7 @@ impl Apps {
     pub fn load(env: &Env) -> Self {
         Apps {
             entries: desktop::load(env),
-            usage: Usage::load(&env.usage_file()),
+            usage: Usage::load(&usage::file(env)),
         }
     }
 
@@ -60,7 +60,7 @@ impl Apps {
         exec::spawn(&argv, entry.working_dir.as_deref()).map_err(LaunchError::Spawn)?;
         self.usage.record(&entry.id, now);
         // Losing the history is not worth failing a launch that worked.
-        let _ = self.usage.save(&env.usage_file(), now);
+        let _ = self.usage.save(&usage::file(env), now);
         Ok(())
     }
 }
@@ -230,7 +230,7 @@ mod tests {
         // A fresh start reads the usage file back.
         let apps = Apps::load(&env);
         assert_eq!(order(&apps, "", now + 5), vec!["Zulu", "Alpha"]);
-        assert!(env.usage_file().starts_with(tmp.path().join("state")));
+        assert!(usage::file(&env).starts_with(tmp.path().join("state")));
     }
 
     #[test]
@@ -247,7 +247,7 @@ mod tests {
         for index in 0..apps.entries().len() {
             assert!(apps.launch(index, &env, 100).is_err());
         }
-        assert!(!env.usage_file().exists());
+        assert!(!usage::file(&env).exists());
     }
 
     #[test]
@@ -300,6 +300,6 @@ mod tests {
             let error = apps.launch(index, &env, 100).unwrap_err();
             assert!(error.to_string().ends_with("is not installed"), "{error}");
         }
-        assert!(!env.usage_file().exists(), "a failed launch was counted");
+        assert!(!usage::file(&env).exists(), "a failed launch was counted");
     }
 }

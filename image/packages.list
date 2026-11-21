@@ -27,9 +27,13 @@ zstd
 
 # Session
 greetd
+# logind asks polkit whether a user may restart or shut down the machine,
+# or hold off sleep until the screen is locked, and without it refuses
+# everyone but root. Not enabled: logind's first question starts it, which
+# is swayidle's when the session comes up.
+polkitd
 labwc
 xwayland
-swaylock
 swayidle
 swaybg
 foot
@@ -37,6 +41,9 @@ libgl1-mesa-dri
 librsvg2-common
 libfontconfig1
 libxkbcommon0
+# sengi-lock checks the password through PAM, with pam_unix and its helper.
+libpam0g
+libpam-modules
 libx11-data
 hicolor-icon-theme
 fonts-inter
@@ -52,3 +59,17 @@ bluez
 # Apps
 flatpak
 xdg-desktop-portal-gtk
+
+# The installer. sengi-install partitions with sfdisk, makes the file
+# systems, and installs GRUB for both kinds of firmware. All of it stays
+# on the installed system, which needs fsck, and GRUB to take a new kernel.
+# The grub-pc and grub-efi-amd64 packages themselves are left out: they
+# would install a boot loader on whatever machine builds the image.
+fdisk
+dosfstools
+e2fsprogs
+grub-common
+grub2-common
+grub-pc-bin
+grub-efi-amd64-bin
+efibootmgr

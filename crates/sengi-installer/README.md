@@ -1,0 +1,147 @@
+# sengi-installer
+
+The window of the Sengi OS installer. It runs in the live session, asks
+where and for whom to install, shows what that will erase, and follows the
+installation. It never writes to a disk itself: that is
+[sengi-install](../sengi-install/README.md), which it starts as root.
+
+## The pages
+
+1. **Welcome.** What will be asked, and what is not offered yet.
+2. **Region.** The keyboard layout and the time zone. The layout is put
+   into effect in the running session at once, the way Settings does it,
+   so that the password typed two pages later is typed with the layout it
+   will be typed with at the login screen. There is a field to try the
+   keys in. No time zone is chosen for you, and Continue waits until one
+   is; UTC is in the list.
+3. **Disk.** Every disk: its model and size, and under them its node
+   (`/dev/sda`), how it is attached as lsblk reports it (SATA, NVMe, USB),
+   the end of its serial number, and what is on it now. The ones that
+   cannot be chosen are listed the same way, greyed out, with the reason
+   in place of the contents: the stick Sengi OS is running from, a disk
+   with something mounted, in use as swap or under another volume,
+   read-only, or under 8 GB. Nothing is chosen for you. "Look again" reads
+   the disks again. The kernel's "removable" flag is not used for
+   anything: it does not say what is external.
+4. **You.** Your name, a user name (offered from the name until one is
+   typed), the password twice, and a name for the computer. What is wrong
+   with a field is said under it once something has been typed.
+5. **Review.** The disk, what is on it now, that all of it is erased, the
+   account, the computer's name, the layout and the zone.
+6. **Installing**, which becomes **Sengi OS is installed** or **The
+   installation failed**. The nine steps are listed and marked as they
+   run; the copy shows a percentage, counted in bytes on the new disk.
+   The window cannot be closed while this runs. A failure names the disk
+   by its node, the step it stopped at, why, whether the disk had been
+   touched, and where the full record is. The page scrolls, by wheel and
+   by Page Up, Page Down and the arrows.
+
+## Erasing is deliberate
+
+Nothing is changed before the Review page's button is pressed and its
+question answered.
+
+- On the Review page the keyboard starts on Back. The button that goes on,
+  "Erase disk and install…", is drawn as a warning and is not what Return
+  presses.
+- It opens a question of one sentence that names the disk by its model,
+  size, node, attachment and serial number, and says what is on it. There
+  the keyboard starts on Cancel, Escape cancels, and "Erase and install"
+  is in the danger colour.
+- The plan handed to sengi-install carries the size, model, serial number
+  and world-wide name of the disk that was shown. If the device of that
+  name is no longer that disk, sengi-install stops before touching
+  anything.
+
+## How it gets root
+
+The window runs as the live user. To install, it runs
+
+    sudo -n /usr/bin/sengi-install start
+
+and writes the password, then the plan, to its standard input. That program
+starts the installation as a service of its own, `sengi-install.service`,
+and returns. The password is never in an argument, in the environment or
+in the unit's properties; see sengi-install's README for how it reaches
+the service.
+
+`sudo -n` works because the live image lets the `live` user be root without
+a password (`/etc/sudoers.d/live`). That is acceptable only there: whoever
+sits at a live session can already do anything to the machine, and nothing
+on the stick is theirs to protect. The installed system has no such rule,
+no `live` user and no installer, and sengi-install removes all three from
+what it installs. On any other system the window opens and the installation
+fails at once with sudo's refusal.
+
+## What an installation survives
+
+The installation is not a child of the window, of sudo or of the session.
+The window follows it by reading `/run/sengi-install/progress`.
+
+| What happens | The installation |
+|---|---|
+| The window is closed (it refuses while installing), killed or crashes | Goes on. Opening the installer again shows it where it is. |
+| The user logs out, or the session's scope is ended | Goes on. |
+| systemd-oomd ends the heaviest app for want of memory | Goes on: it is not in an app scope, and oomd is told to leave it. |
+| The lid is closed, the machine is idle, someone chooses Restart or Shut down | Held off until it is over: it holds an inhibitor for sleep, idle and shutdown. Root, or a forced power-off, can still override that. |
+| `systemctl stop sengi-install.service`, or a signal to sengi-install | Stops. What was mounted is unmounted; the disk is left half written and can be installed on again. |
+| Power is lost, or the stick is pulled out | Stops where it is. The disk is left half written. Nothing else on the machine is affected. |
+
+Opened while no installation is running, the installer starts at the
+beginning, unless the last one finished: then it shows that, with Restart.
+
+## The password
+
+Typed into the shared password field, which never holds it: the key
+presses are collected in a `PasswordEntry`, the buffer the lock screen and
+the login screen use, kept out of swap and overwritten when it is let go.
+The two fields are compared inside that type. The process is kept out of
+core dumps. When the installation starts the password is written to
+sengi-install's standard input and dropped; the second copy is cleared.
+
+Not protected by this program: the pipe to sengi-install, the file in
+`/run` that program passes it through (root only, in memory, gone as soon
+as the service has opened it), and that program's own copy, which it
+hands to `chpasswd` down a pipe.
+
+## What it reuses
+
+- The shared components in `ui/`, including `SengiPasswordField`, and two
+  that were added for it: `SengiProgress` and `SengiStep`.
+- Settings' window kit (`crates/sengi-settings/ui/kit.slint`): pages,
+  cards, rows, the chooser and the dialog.
+- Settings' code for the list of time zones, the keyboard layouts and
+  their names, and for putting a layout into effect.
+- sengi-install's rules for names, its list of disks and its plan, so that
+  what the window accepts is what the installing program accepts.
+
+## Files
+
+| Path | What |
+|---|---|
+| `src/main.rs` | The program: joins the pages to the model, starts sengi-install |
+| `src/model.rs` | What the pages show, without the toolkit: tested as it is |
+| `ui/installer.slint` | The window |
+| `sengi-installer.desktop` | The entry for the launcher and the dock |
+
+The dock pins it in the live image (`/etc/xdg/sengi-os/dock.toml`); the
+installed system's dock does not have it.
+
+## Looking at it without a disk to erase
+
+A debug build takes `--demo`, which shows three made-up disks and plays an
+installation that touches nothing, and `--demo-fail`, which plays one that
+fails:
+
+    cargo run -p sengi-installer -- --demo
+
+A release build has neither.
+
+## What this does not do
+
+- Install beside another system, encrypt, or lay out partitions by hand.
+- Guess the time zone or the keyboard layout.
+- Offer a language: it is in English.
+- Ask about the strength of the password. An empty one is refused.
+- Connect to a network. Nothing is downloaded: what is installed is what
+  is on the stick.

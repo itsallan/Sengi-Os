@@ -31,23 +31,36 @@ jobs:
         timeout-minutes: 10
         run: |
           sudo -E apt-get $APT_OPTS update -q
-          sudo -E apt-get $APT_OPTS install -y -q --no-install-recommends qemu-system-x86 qemu-utils
+          sudo -E apt-get $APT_OPTS install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf
           # Let the runner's user open KVM. Setting the mode directly cannot
           # hang the way waiting on udev can.
           sudo chmod 666 /dev/kvm || true
           ls -l /dev/kvm || true
       - name: Boot test
         run: scripts/boot-test.sh out/sengi-os-$(cat VERSION)-amd64.iso test-output
+      - name: Install test
+        run: scripts/install-test.sh out/sengi-os-$(cat VERSION)-amd64.iso test-output/install
+      # The same through UEFI, which is how the target machine starts. Its
+      # figures are the ones the release notes lead with.
+      - name: Install test, UEFI
+        run: |
+          SENGI_UEFI=/usr/share/OVMF/OVMF_CODE_4M.fd SENGI_UEFI_VARS=/usr/share/OVMF/OVMF_VARS_4M.fd \
+            scripts/install-test.sh out/sengi-os-$(cat VERSION)-amd64.iso test-output/install-uefi
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           version=$(cat VERSION)
-          scripts/release-notes.sh "$version" test-output/metrics.txt >notes.md
-          for shot in desktop hover session-menu quick-settings terminal launcher lock; do
+          cp test-output/install-uefi/install-metrics.txt install-metrics-uefi.txt
+          cp test-output/install/install-metrics.txt install-metrics-bios.txt
+          scripts/release-notes.sh "$version" test-output/metrics.txt install-metrics-uefi.txt install-metrics-bios.txt >notes.md
+          for shot in desktop hover session-menu quick-settings settings terminal launcher lock lock-caps lock-wrong greeter greeter-wrong; do
             cp "test-output/$shot.png" "sengi-os-$version-$shot.png"
+          done
+          for shot in installer-welcome installer-region-chosen installer-disk-chosen installer-you installer-review installer-confirm installer-progress installer-done installed-login installed-desktop installed-boot-menu; do
+            cp "test-output/install-uefi/$shot.png" "sengi-os-$version-$shot.png"
           done
           gh release create "$GITHUB_REF_NAME" --title "Sengi OS $version" --notes-file notes.md \
             "out/sengi-os-$version-amd64.iso" "out/sengi-os-$version-amd64.iso.sha256" \
             sengi-os-"$version"-*.png \
-            test-output/metrics.txt
+            test-output/metrics.txt install-metrics-uefi.txt install-metrics-bios.txt

@@ -1,0 +1,8 @@
+[package]
+name = "sengi-text"
+description = "Making untrusted text safe to show in the Sengi OS shell"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]

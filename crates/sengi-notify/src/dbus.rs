@@ -8,16 +8,12 @@
 //! on.
 
 use std::fmt;
-use std::os::linux::net::SocketAddrExt;
-use std::os::unix::net::{SocketAddr, UnixStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
-use zbus::address::transport::{Transport, UnixSocket};
-use zbus::blocking::connection::Builder;
 use zbus::blocking::Connection;
 use zbus::fdo::RequestNameFlags;
 use zbus::message::Header;
@@ -369,39 +365,8 @@ impl From<zbus::Error> for StartError {
     }
 }
 
-/// Opens the socket to the session bus ourselves.
-///
-/// Left to zbus, the connect runs on a thread of the `blocking` crate's
-/// pool, and with blocking 1.7.0 that thread never ends: it wakes twice a
-/// second for as long as the process lives. A socket that is already
-/// connected keeps the pool from ever starting.
-fn session_socket() -> zbus::Result<UnixStream> {
-    let address = zbus::Address::session()?;
-    let Transport::Unix(unix) = address.transport() else {
-        return Err(zbus::Error::Unsupported);
-    };
-    let stream = match unix.path() {
-        UnixSocket::File(path) => UnixStream::connect(path)?,
-        UnixSocket::Abstract(name) => {
-            UnixStream::connect_addr(&SocketAddr::from_abstract_name(name.as_encoded_bytes())?)?
-        }
-        _ => return Err(zbus::Error::Unsupported),
-    };
-    Ok(stream)
-}
-
-/// A builder for a connection to the session bus.
-fn session() -> zbus::Result<Builder<'static>> {
-    match session_socket() {
-        Ok(socket) => Ok(Builder::async_io_unix_stream(socket)),
-        // A bus that is not on a unix socket, or not there at all: let
-        // zbus try, and report the error in its own words if it fails.
-        Err(_) => Builder::session(),
-    }
-}
-
 fn connect(link: Link, default_timeout: u64) -> Result<Connection, StartError> {
-    let connection = session()?
+    let connection = sengi_system::connect::session()?
         .serve_at(PATH, Notifications::new(link.clone(), default_timeout))?
         .serve_at(CONTROL_PATH, Control::new(link))?
         .build()?;
@@ -554,7 +519,7 @@ fn call(connection: &Connection, method: &str) -> zbus::Result<()> {
 
 /// Asks the running service to carry out `command`.
 pub fn send(command: Command) -> zbus::Result<()> {
-    let connection = session()?.build()?;
+    let connection = sengi_system::connect::session()?.build()?;
     match command {
         Command::ToggleCentre => call(&connection, "ToggleCentre"),
         Command::DismissAll => call(&connection, "DismissAll"),
@@ -573,7 +538,7 @@ pub fn send(command: Command) -> zbus::Result<()> {
 
 /// Asks the running service whether do-not-disturb is on.
 pub fn dnd_status() -> zbus::Result<bool> {
-    let connection = session()?.build()?;
+    let connection = sengi_system::connect::session()?.build()?;
     let reply = connection.call_method(
         Some(NAME),
         CONTROL_PATH,

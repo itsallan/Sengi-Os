@@ -3,6 +3,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::mem::ManuallyDrop;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -20,6 +21,10 @@ use smithay_client_toolkit::seat::pointer::{
     CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec, ThemedPointer,
 };
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
+use smithay_client_toolkit::session_lock::{
+    SessionLock, SessionLockHandler, SessionLockState, SessionLockSurface,
+    SessionLockSurfaceConfigure,
+};
 use smithay_client_toolkit::shell::wlr_layer::{
     Anchor as WlrAnchor, KeyboardInteractivity, Layer as WlrLayer, LayerShell, LayerShellHandler,
     LayerSurface, LayerSurfaceConfigure,
@@ -28,17 +33,20 @@ use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{
     delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
-    delegate_registry, delegate_seat, delegate_shm, registry_handlers,
+    delegate_registry, delegate_seat, delegate_session_lock, delegate_shm, registry_handlers,
 };
-use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface};
-use wayland_client::{Connection, QueueHandle};
+use wayland_client::protocol::{
+    wl_callback, wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface,
+};
+use wayland_client::{Connection, Dispatch, QueueHandle};
 
 use crate::config::{Anchor, Config, KeyboardMode, Layer, Outputs};
 use crate::convert::{
-    is_modifier, key_repeats, key_text, modifier_fixes, pointer_button, repeats_due, scroll_delta,
-    ModifierState, RepeatTiming,
+    is_modifier, is_special, is_typed_text, key_repeats, key_text, modifier_fixes, pointer_button,
+    repeats_due, scroll_delta, ModifierState, RepeatTiming,
 };
 use crate::frames::{Area, Frames, Painted};
+use crate::lock::{wipe, Keyboard, LockError};
 use crate::outputs::{plan, retry_delay};
 use crate::platform::QuitGuard;
 use crate::surface::{call_hook, Output, Rect, SurfaceHandle, SurfaceShared};
@@ -52,6 +60,12 @@ const FRAME: Duration = Duration::from_millis(16);
 /// compositor drops the callback when the surface's output goes away, and
 /// labwc then shows the surface elsewhere only after its next commit.
 const FRAME_PATIENCE: Duration = Duration::from_secs(1);
+
+/// How long after the compositor's `locked` to wait for every output to
+/// have a frame of ours before calling the session covered regardless.
+/// An output the compositor never sizes a surface for cannot be drawn
+/// on, and by now the compositor has blanked it itself.
+const COVER_PATIENCE: Duration = Duration::from_secs(1);
 
 /// What the app has asked for through its [`Handle`]. Slint callbacks run
 /// while the Wayland state is borrowed, so requests are left here and the
@@ -72,7 +86,16 @@ pub(crate) struct Shared {
     /// Counts app-wide input region changes, like `size_stamp`.
     pub input_stamp: u64,
     pub quit: bool,
+    /// The app has authenticated the user and asked for the session lock
+    /// to be lifted.
+    pub unlock: bool,
+    /// Sees typed text before Slint does and may keep it.
+    pub text_hook: Option<TextHook>,
+    /// Told when Caps Lock or the keyboard layout changes.
+    pub keyboard_hook: Option<Box<dyn FnMut(Keyboard)>>,
 }
+
+pub(crate) type TextHook = Box<dyn FnMut(&str) -> bool>;
 
 /// A component the loop is showing, with its type forgotten.
 pub(crate) trait Instance {
@@ -108,14 +131,65 @@ impl Shared {
 pub(crate) type Built = (Box<dyn Instance>, Rc<MinimalSoftwareWindow>);
 pub(crate) type Builder = Box<dyn FnMut(&Context) -> Result<Built, Box<dyn std::error::Error>>>;
 
-/// One instance of the app's component and the layer surface showing it.
+/// What a surface is to the compositor.
+enum Role {
+    Layer(LayerSurface),
+    Lock(SessionLockSurface),
+}
+
+impl Role {
+    fn wl_surface(&self) -> &wl_surface::WlSurface {
+        match self {
+            Role::Layer(layer) => layer.wl_surface(),
+            Role::Lock(lock) => lock.wl_surface(),
+        }
+    }
+}
+
+/// A session lock being taken or held.
+struct Locking {
+    /// Never dropped. In smithay-client-toolkit 0.19.2 dropping the last
+    /// handle to a session lock sends `destroy`, and `unlock_and_destroy`
+    /// is sent by `SessionLock::unlock` alone. So no drop could unlock;
+    /// but `destroy` on a lock that is held is a protocol error, and on
+    /// one that was refused it is a courtesy this process, which is
+    /// about to exit, does not owe. Leaving the handle alone on every
+    /// path, an unwinding panic included, means the only request this
+    /// program can ever make about a held lock is the unlock it sends on
+    /// purpose.
+    lock: ManuallyDrop<SessionLock>,
+    /// When the compositor said the session is locked, measured from
+    /// `State::started`.
+    locked: Option<Duration>,
+    /// Called once the session is locked and every output shows a frame
+    /// of ours.
+    on_covered: Option<Box<dyn FnOnce()>>,
+    /// The round trip that follows the last first frame is under way.
+    covering: bool,
+    /// The unlock request has been sent.
+    unlock_sent: bool,
+    /// The compositor has seen it.
+    unlocked: bool,
+}
+
+/// What a `wl_display.sync` sent by the lock was waiting for.
+pub(crate) enum Synced {
+    /// The first frame of every lock surface has reached the compositor.
+    Covered,
+    /// The unlock request has.
+    Unlocked,
+}
+
+/// One instance of the app's component and the surface showing it.
 struct Surface {
     component: Box<dyn Instance>,
     window: Rc<MinimalSoftwareWindow>,
     /// The output this instance belongs to. None when the compositor picks.
     output: Option<wl_output::WlOutput>,
     /// None while hidden, or while there is no output to be on.
-    layer: Option<LayerSurface>,
+    role: Option<Role>,
+    /// A frame has been committed to the current surface.
+    drawn: bool,
     /// Logical size, known once the compositor configures the surface.
     width: u32,
     height: u32,
@@ -195,6 +269,13 @@ pub(crate) struct State {
 
     /// Set by a handler that cannot return an error itself; ends the loop.
     failure: Option<Error>,
+
+    /// Set when the surfaces are session lock surfaces.
+    locking: Option<Locking>,
+    /// Caps Lock and the layout, as last heard.
+    keyboard_state: Keyboard,
+    /// Alt or the logo key is held: what is typed is a shortcut, not text.
+    chord: bool,
 }
 
 impl From<Layer> for WlrLayer {
@@ -301,7 +382,14 @@ impl State {
             repeat: None,
             started,
             failure: None,
+            locking: None,
+            keyboard_state: Keyboard::default(),
+            chord: false,
         }
+    }
+
+    pub(crate) fn queue_handle(&self) -> QueueHandle<State> {
+        self.queue.clone()
     }
 
     fn mode(&self) -> Outputs {
@@ -309,9 +397,9 @@ impl State {
     }
 
     fn index_of(&self, surface: &wl_surface::WlSurface) -> Option<usize> {
-        self.surfaces.iter().position(|candidate| {
-            candidate.layer.as_ref().map(|layer| layer.wl_surface()) == Some(surface)
-        })
+        self.surfaces
+            .iter()
+            .position(|candidate| candidate.role.as_ref().map(Role::wl_surface) == Some(surface))
     }
 
     /// Builds one more instance of the app's component.
@@ -339,7 +427,8 @@ impl State {
             component,
             window,
             output,
-            layer: None,
+            role: None,
+            drawn: false,
             width: 0,
             height: 0,
             scale: 1,
@@ -398,7 +487,7 @@ impl State {
         for index in 0..self.surfaces.len() {
             let surface = &self.surfaces[index];
             let stranded = surface.output.is_none()
-                && surface.layer.is_some()
+                && surface.role.is_some()
                 && surface.was_on_screen
                 && surface
                     .entered
@@ -434,6 +523,24 @@ impl State {
     /// Gives the instance a layer surface. Nothing is drawn until the
     /// compositor answers with a configure.
     fn map(&mut self, index: usize) {
+        if let Some(locking) = &self.locking {
+            let surface = &mut self.surfaces[index];
+            let Some(output) = surface.output.as_ref() else {
+                return;
+            };
+            // Nothing is committed here: a lock surface may only be given
+            // a buffer once the compositor has said what size it wants.
+            let lock = locking.lock.create_lock_surface(
+                self.compositor.create_surface(&self.queue),
+                output,
+                &self.queue,
+            );
+            surface.role = Some(Role::Lock(lock));
+            surface.scale = 1;
+            surface.frame_pending = None;
+            surface.own.borrow_mut().scale = 1;
+            return;
+        }
         let shared = self.shared.borrow();
         let config = &shared.config;
         let surface = &mut self.surfaces[index];
@@ -452,7 +559,7 @@ impl State {
             own.wanted_input_region(&shared).as_deref(),
         );
         layer.commit();
-        surface.layer = Some(layer);
+        surface.role = Some(Role::Layer(layer));
         surface.sent = (shared.revision, own.revision);
         // A new surface starts at scale 1 until the compositor says more.
         surface.scale = 1;
@@ -464,10 +571,11 @@ impl State {
     /// Takes the instance off the screen but keeps its component.
     fn unmap(&mut self, index: usize) {
         let surface = &mut self.surfaces[index];
-        let Some(layer) = surface.layer.take() else {
+        let Some(role) = surface.role.take() else {
             return;
         };
         surface.configured = false;
+        surface.drawn = false;
         // The buffers belonged to the surface that is gone.
         surface.frames.clear();
         surface.entered = None;
@@ -475,7 +583,7 @@ impl State {
         // No leave events arrive for a surface that is gone.
         let window = surface.window.clone();
         window.dispatch_event(WindowEvent::PointerExited);
-        if self.focus.as_ref().map(|focus| &focus.surface) == Some(layer.wl_surface()) {
+        if self.focus.as_ref().map(|focus| &focus.surface) == Some(role.wl_surface()) {
             self.focus_lost();
         }
     }
@@ -483,9 +591,13 @@ impl State {
     /// True if the instance is meant to be on screen and is not.
     fn wants_mapping(&self, index: usize) -> bool {
         let surface = &self.surfaces[index];
+        if self.locking.is_some() {
+            // A lock surface is never hidden: it is what covers the output.
+            return surface.role.is_none() && surface.output.is_some();
+        }
         self.shown
             && surface.own.borrow().visible
-            && surface.layer.is_none()
+            && surface.role.is_none()
             && surface.retry.is_none()
             && (surface.output.is_some() || self.outputs.outputs().next().is_some())
     }
@@ -558,7 +670,7 @@ impl State {
     /// if that changed anything on screen.
     fn draw(&mut self, index: usize) {
         let surface = &mut self.surfaces[index];
-        let Some(layer) = &surface.layer else {
+        let Some(role) = &surface.role else {
             return;
         };
         if !surface.configured || surface.width == 0 || surface.height == 0 {
@@ -615,7 +727,7 @@ impl State {
         // Sent on its own it could be committed against the previous
         // buffer, whose size need not be a multiple of the new scale, and
         // that is a protocol error.
-        let wl_surface = layer.wl_surface();
+        let wl_surface = role.wl_surface();
         wl_surface.set_buffer_scale(surface.scale as i32);
         for area in changed {
             wl_surface.damage_buffer(area.x, area.y, area.width, area.height);
@@ -623,7 +735,8 @@ impl State {
         if buffer.attach_to(wl_surface).is_ok() {
             wl_surface.frame(&self.queue, wl_surface.clone());
             surface.frame_pending = Some(self.started.elapsed() + FRAME_PATIENCE);
-            layer.commit();
+            wl_surface.commit();
+            surface.drawn = true;
         }
     }
 
@@ -632,6 +745,16 @@ impl State {
         // Before the commit that asks for keyboard focus: a surface focused
         // while there is no wl_keyboard gets no enter event.
         self.bind_keyboard();
+        if self.locking.is_some() {
+            // Nothing about a lock surface is the app's to change, least
+            // of all whether it is there.
+            for index in 0..self.surfaces.len() {
+                if self.wants_mapping(index) {
+                    self.map(index);
+                }
+            }
+            return;
+        }
         self.shown = self.shared.borrow().visible;
         for index in 0..self.surfaces.len() {
             if !(self.shown && self.surfaces[index].own.borrow().visible) {
@@ -642,7 +765,7 @@ impl State {
         }
         let shared = self.shared.borrow();
         for surface in &mut self.surfaces {
-            if let Some(layer) = &surface.layer {
+            if let Some(Role::Layer(layer)) = &surface.role {
                 let own = surface.own.borrow();
                 let latest = (shared.revision, own.revision);
                 if surface.sent != latest {
@@ -676,13 +799,13 @@ impl State {
 
     fn focus_gained(&mut self, index: usize) {
         let surface = &self.surfaces[index];
-        let Some(layer) = &surface.layer else {
+        let Some(role) = &surface.role else {
             return;
         };
         let window = surface.window.clone();
         let own = surface.own.clone();
         self.focus = Some(Focus {
-            surface: layer.wl_surface().clone(),
+            surface: role.wl_surface().clone(),
             window: window.clone(),
             own: own.clone(),
         });
@@ -695,13 +818,71 @@ impl State {
     /// with no focus on record means an enter event was never sent.
     /// wlroots does this when the first keyboard is plugged in while the
     /// surface is already focused. With one surface on screen there is no
-    /// doubt which one is meant.
+    /// doubt which one is meant. While the session is locked every surface
+    /// is the same lock screen, so any of them will do.
     fn assume_focus(&mut self) {
         let mut mapped =
-            (0..self.surfaces.len()).filter(|&index| self.surfaces[index].layer.is_some());
-        if let (Some(index), None) = (mapped.next(), mapped.next()) {
-            self.focus_gained(index);
+            (0..self.surfaces.len()).filter(|&index| self.surfaces[index].role.is_some());
+        match (mapped.next(), mapped.next()) {
+            (Some(index), None) => self.focus_gained(index),
+            (Some(index), Some(_)) if self.locking.is_some() => self.focus_gained(index),
+            _ => {}
         }
+    }
+
+    /// Once the session is locked and every output has a frame of ours,
+    /// asks the compositor for a reply. When it comes, the frames have
+    /// been taken in and the app is told.
+    fn check_covered(&mut self) {
+        let outputs = self.outputs.outputs().count();
+        // An output with no area, as one that is switched off may be, has
+        // nothing to cover.
+        let settled = self
+            .surfaces
+            .iter()
+            .filter(|surface| {
+                surface.drawn || (surface.configured && (surface.width == 0 || surface.height == 0))
+            })
+            .count();
+        let now = self.started.elapsed();
+        let Some(locking) = &mut self.locking else {
+            return;
+        };
+        let Some(locked) = locking.locked else {
+            return;
+        };
+        if locking.covering || locking.on_covered.is_none() {
+            return;
+        }
+        let all = settled >= outputs && settled >= self.surfaces.len();
+        if !all && now < locked + COVER_PATIENCE {
+            return;
+        }
+        locking.covering = true;
+        self.handle
+            .connection
+            .display()
+            .sync(&self.queue, Synced::Covered);
+    }
+
+    /// Lifts the lock when the app has asked for that. True once the
+    /// compositor has taken the request in and the loop may end.
+    fn check_unlock(&mut self) -> bool {
+        let wanted = self.shared.borrow().unlock;
+        let Some(locking) = &mut self.locking else {
+            return false;
+        };
+        if wanted && locking.locked.is_some() && !locking.unlock_sent {
+            locking.lock.unlock();
+            locking.unlock_sent = true;
+            // The request has to be seen before the process goes, or the
+            // session stays locked with nobody left to unlock it.
+            self.handle
+                .connection
+                .display()
+                .sync(&self.queue, Synced::Unlocked);
+        }
+        locking.unlocked
     }
 
     fn focus_lost(&mut self) {
@@ -761,7 +942,7 @@ impl State {
         // callback. One that has not, because the animation changed nothing
         // visible yet, has to be looked at again.
         let polling = self.surfaces.iter().any(|surface| {
-            surface.layer.is_some()
+            surface.role.is_some()
                 && surface.frame_pending.is_none()
                 && surface.window.has_active_animations()
         });
@@ -773,12 +954,20 @@ impl State {
         let now = self.started.elapsed();
         let repeat = self.repeat.as_ref().map(|repeat| repeat.next);
         let retries = self.surfaces.iter().filter_map(|surface| surface.retry);
+        // Still waiting to call the session covered.
+        let cover = self
+            .locking
+            .as_ref()
+            .filter(|locking| !locking.covering && locking.on_covered.is_some())
+            .and_then(|locking| locking.locked)
+            .map(|locked| locked + COVER_PATIENCE);
         let frames = self
             .surfaces
             .iter()
             .filter_map(|surface| surface.frame_pending);
         let deadline = repeat
             .into_iter()
+            .chain(cover)
             .chain(retries)
             .chain(frames)
             .min()
@@ -792,8 +981,40 @@ impl State {
 
 /// Runs until the app quits or the connection to the compositor is lost.
 pub(crate) fn run(
-    mut event_loop: EventLoop<'static, State>,
+    event_loop: EventLoop<'static, State>,
     mut state: State,
+    builder: Builder,
+) -> Result<(), Error> {
+    run_loop(event_loop, &mut state, builder)
+}
+
+/// Takes the session lock, then runs like [`run`] with one lock surface
+/// per output. `Ok` only after the app asked for the unlock and the
+/// compositor took it.
+pub(crate) fn run_locked(
+    event_loop: EventLoop<'static, State>,
+    mut state: State,
+    manager: SessionLockState,
+    builder: Builder,
+    on_covered: Box<dyn FnOnce()>,
+) -> Result<(), Error> {
+    let lock = manager
+        .lock(&state.queue)
+        .map_err(|_| Error::Lock(LockError::Unsupported))?;
+    state.locking = Some(Locking {
+        lock: ManuallyDrop::new(lock),
+        locked: None,
+        on_covered: Some(on_covered),
+        covering: false,
+        unlock_sent: false,
+        unlocked: false,
+    });
+    run(event_loop, state, builder)
+}
+
+fn run_loop(
+    mut event_loop: EventLoop<'static, State>,
+    state: &mut State,
     builder: Builder,
 ) -> Result<(), Error> {
     state.builder = Some(builder);
@@ -813,14 +1034,22 @@ pub(crate) fn run(
         if let Some(error) = state.failure.take() {
             return Err(error);
         }
-        if state.shared.borrow().quit {
+        if state.check_unlock() {
             return Ok(());
+        }
+        if state.shared.borrow().quit {
+            return match state.locking {
+                // Quitting is not unlocking.
+                Some(_) => Err(Error::Lock(LockError::Abandoned)),
+                None => Ok(()),
+            };
         }
         for index in 0..state.surfaces.len() {
             state.draw(index);
         }
+        state.check_covered();
         event_loop
-            .dispatch(state.timeout(), &mut state)
+            .dispatch(state.timeout(), state)
             .map_err(|error| Error::Wayland(error.to_string()))?;
     }
 }
@@ -949,6 +1178,102 @@ impl LayerShellHandler for State {
     }
 }
 
+impl State {
+    /// Shows typed text to the app's hook, if it has set one. True if the
+    /// hook kept the text, which then goes no further: Slint never sees
+    /// it, nothing is remembered for repeats, and the copy that came with
+    /// the event is overwritten.
+    fn offer_text(&mut self, event: &mut KeyEvent) -> bool {
+        let special = is_special(event.keysym);
+        let Some(text) = event.utf8.as_mut() else {
+            return false;
+        };
+        if !is_typed_text(text, special, self.chord) {
+            return false;
+        }
+        let Some(mut hook) = self.shared.borrow_mut().text_hook.take() else {
+            return false;
+        };
+        let kept = hook(text);
+        self.shared.borrow_mut().text_hook.get_or_insert(hook);
+        if kept {
+            wipe(text);
+        }
+        kept
+    }
+}
+
+impl SessionLockHandler for State {
+    fn locked(&mut self, _: &Connection, _: &QueueHandle<Self>, _: SessionLock) {
+        let now = self.started.elapsed();
+        if let Some(locking) = &mut self.locking {
+            locking.locked = Some(now);
+        }
+    }
+
+    // Before `locked`: another locker holds the session, or the compositor
+    // will not have us. After it: the compositor has ended the lock by
+    // some means of its own. Either way there is nothing left to guard,
+    // and nothing here that may unlock.
+    fn finished(&mut self, _: &Connection, _: &QueueHandle<Self>, _: SessionLock) {
+        let locked = self
+            .locking
+            .as_ref()
+            .is_some_and(|locking| locking.locked.is_some());
+        self.failure = Some(Error::Lock(if locked {
+            LockError::Ended
+        } else {
+            LockError::Refused
+        }));
+    }
+
+    fn configure(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        lock_surface: SessionLockSurface,
+        configure: SessionLockSurfaceConfigure,
+        _: u32,
+    ) {
+        let Some(index) = self.index_of(lock_surface.wl_surface()) else {
+            return;
+        };
+        let surface = &mut self.surfaces[index];
+        (surface.width, surface.height) = configure.new_size;
+        surface.own.borrow_mut().configured = configure.new_size;
+        surface.configured = true;
+        surface.frame_pending = None;
+        self.resize(index);
+        self.surfaces[index].window.request_redraw();
+    }
+}
+
+impl Dispatch<wl_callback::WlCallback, Synced> for State {
+    fn event(
+        state: &mut State,
+        _: &wl_callback::WlCallback,
+        event: wl_callback::Event,
+        waited_for: &Synced,
+        _: &Connection,
+        _: &QueueHandle<State>,
+    ) {
+        let wl_callback::Event::Done { .. } = event else {
+            return;
+        };
+        let Some(locking) = &mut state.locking else {
+            return;
+        };
+        match waited_for {
+            Synced::Covered => {
+                if let Some(covered) = locking.on_covered.take() {
+                    covered();
+                }
+            }
+            Synced::Unlocked => locking.unlocked = true,
+        }
+    }
+}
+
 impl PointerHandler for State {
     fn pointer_frame(
         &mut self,
@@ -1031,14 +1356,21 @@ impl KeyboardHandler for State {
         _: &QueueHandle<Self>,
         _: &wl_keyboard::WlKeyboard,
         _: u32,
-        event: KeyEvent,
+        mut event: KeyEvent,
     ) {
         if self.focus.is_none() {
             self.assume_focus();
         }
         let Some(window) = self.focus.as_ref().map(|focus| focus.window.clone()) else {
+            // Nobody to give it to. It may still be part of a password.
+            if let Some(text) = event.utf8.as_mut() {
+                wipe(text);
+            }
             return;
         };
+        if self.offer_text(&mut event) {
+            return;
+        }
         let Some(text) = key_text(event.keysym, event.utf8.as_deref()) else {
             return;
         };
@@ -1095,8 +1427,23 @@ impl KeyboardHandler for State {
         _: &wl_keyboard::WlKeyboard,
         _: u32,
         modifiers: Modifiers,
-        _: u32,
+        layout: u32,
     ) {
+        // AltGr is neither: it is how many layouts reach ordinary
+        // characters, and what it types is text.
+        self.chord = modifiers.alt || modifiers.logo;
+        let keyboard = Keyboard {
+            caps_lock: modifiers.caps_lock,
+            layout,
+        };
+        if keyboard != self.keyboard_state {
+            self.keyboard_state = keyboard;
+            let hook = self.shared.borrow_mut().keyboard_hook.take();
+            if let Some(mut hook) = hook {
+                hook(keyboard);
+                self.shared.borrow_mut().keyboard_hook.get_or_insert(hook);
+            }
+        }
         let Some(window) = self.focus.as_ref().map(|focus| focus.window.clone()) else {
             return;
         };
@@ -1242,4 +1589,5 @@ delegate_seat!(State);
 delegate_pointer!(State);
 delegate_keyboard!(State);
 delegate_layer!(State);
+delegate_session_lock!(State);
 delegate_registry!(State);

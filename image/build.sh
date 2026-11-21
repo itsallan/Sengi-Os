@@ -22,15 +22,59 @@ mkdir -p "$work/iso/live" "$work/iso/boot/grub" "$out"
 # Our own programs, built against the same Debian the image is made of.
 export CARGO_HOME="$work/cargo" CARGO_TARGET_DIR="$work/target"
 export RUSTFLAGS="--remap-path-prefix=$src=. --remap-path-prefix=$work=/build"
-programs="sengi-bar sengi-dock sengi-focus sengi-launcher sengi-notify sengi-quick"
+programs="sengi-bar sengi-dock sengi-focus sengi-greeter sengi-install sengi-launcher sengi-lock sengi-notify sengi-quick"
 set --
 for program in $programs; do
 	set -- "$@" -p "$program"
 done
 cargo build --release --locked --manifest-path "$src/Cargo.toml" "$@"
+# The launcher starts on demand and has to stay small. This one build shares
+# cargo features between the programs, so a shared crate that lost a feature
+# gate would put a D-Bus stack or an image decoder into it unnoticed. The
+# check finds a crate by the source paths of its panic locations, which
+# survive in the binary: it would find nothing in a build that dropped
+# those. A bare "png" would not do: the font code has a png.rs of its own.
+for marker in zbus resvg '/png-[0-9]'; do
+	if grep -a -q -e "$marker" "$work/target/release/sengi-launcher"; then
+		echo "sengi-launcher has $marker linked in, which it must not" >&2
+		exit 1
+	fi
+done
+# The lock screen holds a password and talks to PAM and to nothing else.
+# A D-Bus stack in it would be code it has no use for, next to a secret.
+if grep -a -q -e zbus "$work/target/release/sengi-lock"; then
+	echo "sengi-lock has zbus linked in, which it must not" >&2
+	exit 1
+fi
+# The login screen holds a password too, and hands it to greetd. It shares
+# code with the lock screen but checks nothing itself, so PAM has no place
+# in it either. A needed library's name is in the binary as it stands.
+for marker in zbus 'libpam\.so'; do
+	if grep -a -q -e "$marker" "$work/target/release/sengi-greeter"; then
+		echo "sengi-greeter has $marker linked in, which it must not" >&2
+		exit 1
+	fi
+done
+# The program that writes the disk runs as root and is handed a password.
+# It runs other programs and speaks to no bus.
+if grep -a -q -e zbus "$work/target/release/sengi-install"; then
+	echo "sengi-install has zbus linked in, which it must not" >&2
+	exit 1
+fi
+# Settings and the installer are ordinary windows, the two programs that
+# want the toolkit's window backend and its font lookup. Built together
+# with the others they would turn those features on for all of them, so
+# they get a build to themselves and the shell's programs stay what they
+# were without it.
+cargo build --release --locked --manifest-path "$src/Cargo.toml" -p sengi-settings -p sengi-installer
+programs="$programs sengi-settings sengi-installer"
 for program in $programs; do
 	install -D -m 0755 "$work/target/release/$program" "$work/overlay/usr/bin/$program"
 done
+install -D -m 0644 "$src/crates/sengi-installer/sengi-installer.desktop" \
+	"$work/overlay/usr/share/applications/sengi-installer.desktop"
+install -D -m 0644 "$src/crates/sengi-settings/sengi-settings.desktop" \
+	"$work/overlay/usr/share/applications/sengi-settings.desktop"
 
 # The compositor preview is a workspace of its own, so Smithay stays out of
 # everyone else's build. No window backend and no test switches in the image.
@@ -50,6 +94,9 @@ mmdebstrap --variant=minbase \
 	--include="$packages" \
 	--aptopt='APT::Install-Recommends "false"' \
 	--aptopt='Acquire::Check-Valid-Until "false"' \
+	--aptopt='Acquire::http::Timeout "30"' \
+	--aptopt='Acquire::https::Timeout "30"' \
+	--aptopt='Acquire::Retries "5"' \
 	--dpkgopt='path-exclude=/usr/share/man/*' \
 	--dpkgopt='path-exclude=/usr/share/doc/*' \
 	--dpkgopt='path-include=/usr/share/doc/*/copyright' \

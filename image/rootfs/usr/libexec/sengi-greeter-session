@@ -1,0 +1,12 @@
+#!/bin/sh
+# Started by greetd, as its own user, whenever nobody is logged in: the
+# login screen and a compositor for it to be shown in.
+#
+# labwc is given a configuration directory of its own. With that it reads
+# nothing from /etc/xdg/labwc and nothing from a home directory, so none
+# of the desktop's key bindings, menus or start-up programs exist here.
+# It ends when the login screen does, which is what lets greetd start the
+# session of whoever logged in.
+. /usr/lib/sengi-os/renderer.sh
+
+exec labwc -C /usr/share/sengi-os/greeter -S /usr/bin/sengi-greeter

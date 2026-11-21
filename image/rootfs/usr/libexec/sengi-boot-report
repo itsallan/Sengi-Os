@@ -24,7 +24,24 @@ echo "SENGI-BOOT desktop_s=$up" >$port
 sleep "${SENGI_IDLE_WAIT:-30}"
 awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2}
 	END {printf "SENGI-IDLE ram_mb=%d\n", (t - a) / 1024}' /proc/meminfo >$port
+# polkit answers logind's questions and is started by the first of them,
+# which comes when the session starts: swayidle asks logind to hold off
+# sleep until the screen is locked. So it is running by now, and what it
+# costs is reported further down. What it must not be is started at boot
+# by anything but a question.
+polkit_state=$(systemctl is-enabled polkit.service 2>&1)
+polkit_wanted=$(systemctl show polkit.service -p WantedBy -p RequiredBy --value | tr -d '\n')
+if [ "$polkit_state" != static ] || [ -n "$polkit_wanted" ]; then
+	echo "SENGI-FAIL polkit.service is started at boot ($polkit_state, wanted by '$polkit_wanted'), not on demand" >$port
+fi
 {
+	# When each piece of the desktop was started, in seconds since boot,
+	# beside the desktop marker above, and when polkit was called for.
+	for prog in labwc sengi-bar sengi-dock swayidle polkitd; do
+		pid=$(pidof -s "$prog") &&
+			awk -v prog="$prog" '{printf "started at %.2f s: %s\n", $22 / 100, prog}' "/proc/$pid/stat"
+	done
+	journalctl -b --no-pager -o short-monotonic 2>&1 | grep -m4 -E 'PolicyKit1|polkit\.service'
 	systemd-analyze time 2>&1
 	systemd-analyze blame 2>&1 | head -15
 	systemd-analyze critical-chain greetd.service 2>&1 | head -12
@@ -49,4 +66,117 @@ fi
 for prog in "$compositor" sengi-bar sengi-dock swayidle swaybg sengi-focus; do
 	pidof "$prog" >/dev/null || echo "SENGI-FAIL $prog is not running" >$port
 done
+# Settings is a program that is started and goes away again. One that is
+# here now, with nobody having opened it, was left behind by the session.
+if pidof sengi-settings >/dev/null; then
+	echo "SENGI-FAIL sengi-settings is running with nothing open" >$port
+fi
+# The lock screen is our own. Nothing may be left of the one it replaced,
+# and without its PAM service it would refuse to lock.
+if command -v swaylock >/dev/null 2>&1 || [ -e /etc/swaylock ] || [ -e /etc/pam.d/swaylock ]; then
+	echo "SENGI-FAIL swaylock is still in the image" >$port
+fi
+[ -x /usr/bin/sengi-lock ] || echo "SENGI-FAIL sengi-lock is not in the image" >$port
+# PAM checks a user's own password through this helper, which reads
+# /etc/shadow by being in its group.
+if ! [ -g /usr/sbin/unix_chkpwd ] || [ "$(stat -c %G /etc/shadow)" != shadow ]; then
+	echo "SENGI-FAIL unix_chkpwd cannot read /etc/shadow, so no password can be checked" >$port
+fi
+[ -u /usr/bin/sudo ] || echo "SENGI-FAIL sudo has lost its setuid bit" >$port
+[ -f /etc/pam.d/sengi-lock ] || echo "SENGI-FAIL sengi-lock has no PAM service" >$port
+if pidof sengi-lock >/dev/null; then
+	echo "SENGI-FAIL sengi-lock is running on a session nobody locked" >$port
+fi
+# The session's start-up script asks it for the idle times.
+lock_after=$(sengi-settings --get power.lock-after 2>/dev/null)
+case $lock_after in
+'' | *[!0-9]*) echo "SENGI-FAIL sengi-settings --get power.lock-after gave '$lock_after', not a number" >$port ;;
+esac
+
+# may_power_off and pss_kb, which the install test's report uses too.
+. /usr/lib/sengi-os/report.sh
+# Restart and Shut down in the session menu go through logind.
+may_power_off live
+# shellcheck disable=SC2046
+echo "SENGI-POLKIT pss_kb=$(pss_kb $(pidof polkitd))" >$port
 echo "SENGI-DONE" >$port
+
+# The boot test goes on to open Settings and close it, and then to lock
+# the screen and unlock it. Say when each one's process is there and when
+# it has gone again, then stop watching.
+watch() {
+	seen=0
+	n=0
+	while [ $n -lt 900 ]; do
+		if pidof "$1" >/dev/null; then
+			[ $seen = 1 ] || echo "$2 running" >$port
+			seen=1
+		elif [ $seen = 1 ]; then
+			echo "$2 gone" >$port
+			break
+		fi
+		sleep 0.2
+		n=$((n + 1))
+	done
+}
+watch sengi-settings SENGI-SETTINGS
+# The test types a wrong password first. Say when PAM has turned it down,
+# so the test need not guess how long that takes.
+journalctl -f -n 0 -o cat -t sengi-lock 2>/dev/null | while IFS= read -r line; do
+	case $line in
+	*'authentication failure'*) echo "SENGI-LOCK refused" >$port ;;
+	esac
+done &
+watch sengi-lock SENGI-LOCK
+
+# Last, the test logs out. greetd then starts the login screen in a
+# compositor of its own, both as its own user. Say when they are up, what
+# they cost and whether they may turn the machine off; then when PAM has
+# turned the wrong password down; then when they have gone and the
+# desktop is back, and for whom.
+greeter() {
+	pgrep -u _greetd -x "$1"
+}
+n=0
+until [ -n "$(greeter sengi-greeter)" ] && [ -n "$(greeter labwc)" ]; do
+	n=$((n + 1))
+	[ $n -lt 900 ] || exit 0
+	sleep 0.2
+done
+# Give it a moment to have drawn, and the session it follows to have gone.
+sleep 3
+if pidof sengi-bar sengi-dock >/dev/null; then
+	echo "SENGI-FAIL the desktop is still running under the login screen" >$port
+fi
+# shellcheck disable=SC2046
+echo "SENGI-GREETER running pss_kb=$(pss_kb $(greeter sengi-greeter) $(greeter labwc))" >$port
+ps -u _greetd -o rss=,args= | sed 's/^/SENGI-INFO _greetd runs: /' >$port
+may_power_off _greetd
+journalctl -f -n 0 -o cat -t greetd 2>/dev/null | while IFS= read -r line; do
+	case $line in
+	*'authentication failure'*) echo "SENGI-GREETER refused" >$port ;;
+	esac
+done &
+echo "SENGI-GREETER ready" >$port
+
+n=0
+while [ -n "$(greeter sengi-greeter)" ]; do
+	n=$((n + 1))
+	[ $n -lt 900 ] || exit 0
+	sleep 0.2
+done
+echo "SENGI-GREETER gone" >$port
+n=0
+until [ -S /run/user/1000/wayland-0 ] && pidof sengi-bar >/dev/null && pidof sengi-dock >/dev/null; do
+	n=$((n + 1))
+	[ $n -lt 150 ] || break
+	sleep 0.2
+done
+sleep 2
+left=$(pgrep -u _greetd -x 'sengi-greeter|labwc' | tr '\n' ' ')
+owner=$(loginctl list-sessions --no-legend | awk '$4 == "seat0" && $6 == "user" {print $3; exit}')
+desktop=down
+if pidof labwc >/dev/null && pidof sengi-bar >/dev/null && pidof sengi-dock >/dev/null; then
+	desktop=up
+fi
+echo "SENGI-GREETER after desktop=$desktop session=${owner:-nobody} left=${left:-nothing}" >$port

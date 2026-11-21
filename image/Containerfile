@@ -8,7 +8,10 @@ FROM docker.io/library/debian:trixie-slim
 ARG SNAPSHOT
 ENV DEBIAN_FRONTEND=noninteractive
 
+# A download that stalls is given up after half a minute and tried again,
+# a few times. Without this apt waits on a dead connection for ever.
 RUN rm -f /etc/apt/sources.list.d/* \
+ && printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "5";\n' >/etc/apt/apt.conf.d/80sengi-timeouts \
  && printf 'deb http://snapshot.debian.org/archive/%s trixie%s main\n' \
       "debian/${SNAPSHOT}" "" "debian/${SNAPSHOT}" -updates "debian-security/${SNAPSHOT}" -security \
       >/etc/apt/sources.list \
@@ -16,7 +19,7 @@ RUN rm -f /etc/apt/sources.list.d/* \
  && apt-get install -y --no-install-recommends \
       mmdebstrap squashfs-tools xorriso mtools dosfstools \
       grub-common grub-pc-bin grub-efi-amd64-bin \
-      ca-certificates zstd faketime rustup gcc libc6-dev pkg-config libfontconfig-dev libxkbcommon-dev \
+      ca-certificates zstd faketime rustup gcc libc6-dev pkg-config libfontconfig-dev libxkbcommon-dev libpam0g-dev \
       libseat-dev libinput-dev libudev-dev libgbm-dev libpixman-1-dev \
  && rm -rf /var/lib/apt/lists/*
 

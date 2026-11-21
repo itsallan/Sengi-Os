@@ -8,14 +8,11 @@ build = "build.rs"
 
 [dependencies]
 sengi-layer = { path = "../sengi-layer" }
+sengi-system = { path = "../sengi-system", features = ["services"] }
+sengi-text = { path = "../sengi-text" }
 # Not the workspace entry: that one pulls in the winit backend. sengi-layer
 # is the backend here and turns on the software renderer.
 slint = { version = "1.18", default-features = false, features = ["compat-1-2", "std"] }
-# The blocking API on zbus's own small executor. No tokio.
-zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
-
-# For prctl: the process is kept out of core dumps. See secret.rs.
-libc = "0.2"
 
 [build-dependencies]
 slint-build.workspace = true

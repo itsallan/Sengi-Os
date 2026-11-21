@@ -1,8 +1,9 @@
 #!/bin/sh
 # Session menu shown from the power button in the bar.
-choice=$(printf 'Lock\nLog out\nRestart\nShut down\n' | sengi-launcher --menu --prompt 'Session')
+choice=$(printf 'Settings\nLock\nLog out\nRestart\nShut down\n' | sengi-launcher --menu --prompt 'Session')
 case $choice in
-Lock) exec swaylock -f ;;
+Settings) exec sengi-run sengi-settings ;;
+Lock) exec sengi-lock -f ;;
 "Log out") exec labwc --exit ;;
 Restart) exec systemctl reboot ;;
 "Shut down") exec systemctl poweroff ;;
