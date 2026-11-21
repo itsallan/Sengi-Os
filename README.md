@@ -111,6 +111,11 @@ one account that uses `sudo` with its password, and a locked root account.
 or another system (dual boot); choosing or laying out partitions by hand.
 Secure Boot has to be off.
 
+**Updates do not install themselves.** An installed Sengi OS does not look
+for updates in the background: the timers Debian uses for that are switched
+off. Until Sengi OS has its own way of offering updates, they come when you
+ask for them, in a terminal: `sudo apt update && sudo apt upgrade`.
+
 To try the installer without a spare machine, give QEMU a blank disk beside
 the ISO:
 
