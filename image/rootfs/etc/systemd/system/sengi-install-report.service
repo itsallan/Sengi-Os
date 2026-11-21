@@ -1,0 +1,9 @@
+[Unit]
+Description=Report an installation and the installed system to the serial port (install test only)
+ConditionCredential=sengi.test.install
+
+[Service]
+ExecStart=/usr/libexec/sengi-install-report
+
+[Install]
+WantedBy=graphical.target

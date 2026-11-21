@@ -1,0 +1,176 @@
+#!/bin/sh
+# Used by the QEMU install test (scripts/install-test.sh). It runs twice:
+# in the live image, where it says when the desktop is up and passes on
+# what the installer writes to its log; and in the system that was
+# installed, where it says when the login screen and then the desktop are
+# up, measures, and checks that what is there is an installed system and
+# not a copy of the live one.
+port=/dev/ttyS0
+
+. /usr/lib/sengi-os/report.sh
+
+# Commands from the host to run first, without rebuilding the image:
+#   -smbios type=11,value=io.systemd.credential:sengi.test.install.pre=COMMANDS
+pre=/run/credentials/@system/sengi.test.install.pre
+if [ -r "$pre" ]; then
+	sh "$pre" 2>&1 | sed 's/^/SENGI-PRE /' >$port
+fi
+
+uptime_s() {
+	read -r up _ </proc/uptime
+	echo "$up"
+}
+
+if [ -d /run/sengi/medium/live ]; then
+	# The live image.
+	until desktop_is_up; do
+		sleep 0.1
+	done
+	echo "SENGI-LIVE desktop_s=$(uptime_s)" >$port
+	n=0
+	until pidof sengi-installer >/dev/null; do
+		n=$((n + 1))
+		[ $n -lt 3000 ] || exit 0
+		sleep 0.2
+	done
+	echo "SENGI-INSTALLER running" >$port
+	# The log has a line for each step as it begins and ends, and one
+	# for how it all ended. The percentages of the copy are left out.
+	log=/var/log/sengi-install.log
+	until [ -f "$log" ]; do
+		pidof sengi-installer >/dev/null || { echo "SENGI-INSTALLER gone" >$port; exit 0; }
+		sleep 0.2
+	done
+	tail -n +1 -F "$log" 2>/dev/null | while IFS= read -r line; do
+		event=${line#*] }
+		case $event in
+		begin\ * | end\ * | warning\ *) echo "SENGI-INSTALL $event" >$port ;;
+		done\ * | failed\ *)
+			echo "SENGI-INSTALL $event" >$port
+			{
+				grep sengi-install /proc/self/mountinfo | sed 's/^/still mounted: /'
+				lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT 2>&1
+				id live 2>&1
+			} | sed 's/^/SENGI-INFO /' >$port
+			# The live session has to be as it was: its user, its
+			# automatic login, nothing of the target left mounted.
+			id live >/dev/null 2>&1 ||
+				echo "SENGI-FAIL the live user is gone from the live session" >$port
+			grep -q initial_session /etc/greetd/config.toml ||
+				echo "SENGI-FAIL the live session lost its automatic login" >$port
+			if grep -q sengi-install /proc/self/mountinfo; then
+				echo "SENGI-FAIL the installer left something mounted" >$port
+			fi
+			desktop_is_up || echo "SENGI-FAIL the live desktop is not running after the installation" >$port
+			echo "SENGI-INSTALL-REPORTED" >$port
+			;;
+		esac
+	done
+	exit 0
+fi
+
+# The installed system. First the login screen: nobody is logged in for
+# anyone here.
+greeter() {
+	pgrep -u _greetd -x "$1" >/dev/null
+}
+n=0
+until greeter sengi-greeter && greeter labwc; do
+	n=$((n + 1))
+	if desktop_is_up; then
+		echo "SENGI-FAIL the desktop came up with nobody having logged in" >$port
+		break
+	fi
+	[ $n -lt 3000 ] || { echo "SENGI-FAIL the login screen did not come up" >$port; break; }
+	sleep 0.1
+done
+echo "SENGI-LOGIN ready_s=$(uptime_s)" >$port
+
+# Then whoever the test logs in as.
+n=0
+until desktop_is_up; do
+	n=$((n + 1))
+	[ $n -lt 3000 ] || { echo "SENGI-FAIL nobody's desktop came up" >$port; exit 0; }
+	sleep 0.1
+done
+echo "SENGI-DESKTOP up_s=$(uptime_s)" >$port
+
+sleep "${SENGI_IDLE_WAIT:-30}"
+awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2}
+	END {printf "SENGI-IDLE ram_mb=%d\n", (t - a) / 1024}' /proc/meminfo >$port
+
+fail() {
+	echo "SENGI-FAIL $*" >$port
+}
+
+user=$(id -un 1000 2>/dev/null)
+root_source=$(findmnt -n -o SOURCE /)
+root_type=$(findmnt -n -o FSTYPE /)
+firmware=bios
+[ -d /sys/firmware/efi ] && firmware=uefi
+layout=$(sed -n 's/^XKB_DEFAULT_LAYOUT=//p' /usr/share/sengi-os/greeter/environment)
+echo "SENGI-INSTALLED user=$user host=$(cat /etc/hostname) zone=$(cat /etc/timezone 2>/dev/null) root=$root_source type=$root_type firmware=$firmware keyboard=$layout" >$port
+
+# The live image's account and its way to root are gone.
+if id live >/dev/null 2>&1; then fail "there is a live user"; fi
+[ ! -e /etc/sudoers.d/live ] || fail "the live user's sudo rule is still there"
+[ ! -d /home/live ] || fail "the live user's home is still there"
+if grep -q initial_session /etc/greetd/config.toml; then fail "greetd still logs somebody in by itself"; fi
+# The account that was made: in the sudo group, and asked for its
+# password by sudo.
+[ -n "$user" ] || fail "nobody has user number 1000"
+case " $(id -nG "$user" 2>/dev/null) " in
+*" sudo "*) ;;
+*) fail "$user is not in the sudo group" ;;
+esac
+asked=$(setpriv --reuid 1000 --regid 1000 --init-groups sudo -n true 2>&1)
+case $asked in
+*"a password is required"*) ;;
+*) fail "sudo did not ask $user for a password: $asked" ;;
+esac
+echo "SENGI-INFO sudo -n as $user: $asked" >$port
+case $(passwd -S root 2>/dev/null) in
+"root L "*) ;;
+*) fail "root is not locked: $(passwd -S root 2>&1)" ;;
+esac
+# The disk, not the live medium.
+case $root_source in
+/dev/*) ;;
+*) fail "the root file system is $root_source, not a disk" ;;
+esac
+[ "$root_type" = ext4 ] || fail "the root file system is $root_type, not ext4"
+[ ! -e /run/sengi ] || fail "the live medium is mounted"
+if grep -q boot=sengi /proc/cmdline; then fail "the kernel was started as the live image's is"; fi
+findmnt -n /boot/efi >/dev/null || fail "the EFI system partition is not mounted at /boot/efi"
+# An identity of its own, and nothing of the installer left.
+case $(cat /etc/machine-id) in
+????????????????????????????????) ;;
+*) fail "the machine has no identifier" ;;
+esac
+for left in /usr/bin/sengi-install /usr/bin/sengi-installer /usr/share/applications/sengi-installer.desktop \
+	/etc/initramfs-tools/scripts/sengi; do
+	[ ! -e "$left" ] || fail "$left is still there"
+done
+if grep -q sengi-installer /etc/xdg/sengi-os/dock.toml; then fail "the installer is still on the dock"; fi
+# zram and oomd, as on the live image.
+swapon --noheadings --show=NAME | grep -q zram || fail "there is no zram swap"
+[ "$(systemctl is-active systemd-oomd)" = active ] || fail "systemd-oomd is not running"
+failed=$(systemctl --failed --no-legend --plain | awk '{print $1}' | tr '\n' ' ')
+[ -z "$failed" ] || fail "units failed: $failed"
+for prog in labwc sengi-bar sengi-dock swayidle sengi-focus; do
+	pidof "$prog" >/dev/null || fail "$prog is not running"
+done
+# Restart and Shut down go through logind, for the new account too.
+may_power_off "$user"
+
+{
+	systemd-analyze time 2>&1
+	systemd-analyze blame 2>&1 | head -12
+	ps -eo rss,comm --sort=-rss | head -24
+	grep -E '^(MemTotal|MemAvailable|Shmem|Slab|Cached|AnonPages):' /proc/meminfo
+	lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT 2>&1
+	cat /proc/cmdline
+	df -h / /boot/efi 2>&1
+	ls -la /boot 2>&1
+} | sed 's/^/SENGI-INFO /' >$port
+echo "SENGI-DONE" >$port

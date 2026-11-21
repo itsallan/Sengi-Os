@@ -38,16 +38,21 @@ jobs:
           ls -l /dev/kvm || true
       - name: Boot test
         run: scripts/boot-test.sh out/sengi-os-$(cat VERSION)-amd64.iso test-output
+      - name: Install test
+        run: scripts/install-test.sh out/sengi-os-$(cat VERSION)-amd64.iso test-output/install
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           version=$(cat VERSION)
-          scripts/release-notes.sh "$version" test-output/metrics.txt >notes.md
+          scripts/release-notes.sh "$version" test-output/metrics.txt test-output/install/install-metrics.txt >notes.md
           for shot in desktop hover session-menu quick-settings settings terminal launcher lock lock-caps lock-wrong greeter greeter-wrong; do
             cp "test-output/$shot.png" "sengi-os-$version-$shot.png"
+          done
+          for shot in installer-welcome installer-region-chosen installer-disk-chosen installer-you installer-review installer-confirm installer-progress installer-done installed-login installed-desktop; do
+            cp "test-output/install/$shot.png" "sengi-os-$version-$shot.png"
           done
           gh release create "$GITHUB_REF_NAME" --title "Sengi OS $version" --notes-file notes.md \
             "out/sengi-os-$version-amd64.iso" "out/sengi-os-$version-amd64.iso.sha256" \
             sengi-os-"$version"-*.png \
-            test-output/metrics.txt
+            test-output/metrics.txt test-output/install/install-metrics.txt
