@@ -1372,13 +1372,19 @@ dependencies = [
  "ab_glyph",
  "calloop 0.14.5",
  "libc",
+ "sengi-config",
  "sengi-tokens",
  "smithay",
  "tracing",
  "wayland-client",
  "wayland-protocols",
+ "wayland-protocols-wlr",
  "xcursor",
 ]
+
+[[package]]
+name = "sengi-config"
+version = "0.7.0"
 
 [[package]]
 name = "sengi-tokens"

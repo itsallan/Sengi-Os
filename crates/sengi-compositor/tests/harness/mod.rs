@@ -41,6 +41,13 @@ impl Compositor {
     /// `locker_stand_in`, which hands the connection it was started on
     /// over to the test, so that the test can be the locker.
     pub fn start(locker: Option<&str>) -> Self {
+        Self::start_with(locker, None, None)
+    }
+
+    /// As `start`, with the settings file `settings` in a configuration
+    /// directory of its own (see `write_settings`), and with `script`
+    /// played as input.
+    pub fn start_with(locker: Option<&str>, settings: Option<&str>, script: Option<&str>) -> Self {
         static COUNT: AtomicU32 = AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!(
             "sengi-test-{}-{}",
@@ -56,9 +63,26 @@ impl Compositor {
         handover
             .set_nonblocking(true)
             .expect("a socket for lockers");
-        let mut child = Command::new(env!("CARGO_BIN_EXE_sengi-compositor"))
-            .args(["--backend", "headless", "--locker", &locker])
+        let config = dir.join("config");
+        std::fs::create_dir_all(config.join("sengi-os")).expect("a configuration directory");
+        if let Some(settings) = settings {
+            std::fs::write(config.join("sengi-os/settings.toml"), settings).expect("settings");
+        }
+        let mut command = Command::new(env!("CARGO_BIN_EXE_sengi-compositor"));
+        command.args(["--backend", "headless", "--locker", &locker]);
+        if let Some(script) = script {
+            let path = dir.join("script");
+            std::fs::write(&path, script).expect("a script");
+            command.arg("--script").arg(path);
+        }
+        let mut child = command
             .env("XDG_RUNTIME_DIR", &dir)
+            // The settings are the test's, not those of whoever runs it.
+            .env("XDG_CONFIG_HOME", &config)
+            .env("XDG_CONFIG_DIRS", dir.join("nowhere"))
+            .env_remove("XKB_DEFAULT_LAYOUT")
+            .env_remove("XKB_DEFAULT_VARIANT")
+            .env_remove("XKB_DEFAULT_OPTIONS")
             .env(HANDOVER, &handover_path)
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("DISPLAY")
@@ -127,7 +151,22 @@ impl Compositor {
             }
             sleep(Duration::from_millis(10));
         }
-        panic!("the compositor started no locker");
+        panic!(
+            "the compositor started no locker; it said: {:?}",
+            self.log.lock().unwrap()
+        );
+    }
+
+    /// Replaces the settings file, the way Settings does when something
+    /// is changed in it.
+    pub fn write_settings(&self, settings: &str) {
+        std::fs::write(self.dir.join("config/sengi-os/settings.toml"), settings).expect("settings");
+    }
+
+    /// The last line the compositor wrote that contains `what`.
+    pub fn said(&self, what: &str) -> Option<String> {
+        let log = self.log.lock().unwrap();
+        log.iter().rev().find(|line| line.contains(what)).cloned()
     }
 
     pub fn signal(&self, name: &str) {
@@ -143,7 +182,12 @@ impl Compositor {
 
     /// What the compositor says about the session lock on SIGUSR1.
     pub fn status(&self) -> String {
-        let count = |log: &Vec<String>| log.iter().filter(|line| line.contains("session ")).count();
+        self.status_line("session ")
+    }
+
+    /// The line of the SIGUSR1 report that contains `what`.
+    pub fn status_line(&self, what: &str) -> String {
+        let count = |log: &Vec<String>| log.iter().filter(|line| line.contains(what)).count();
         let before = count(&self.log.lock().unwrap());
         Command::new("kill")
             .args(["-USR1", &self.child.id().to_string()])
@@ -153,7 +197,7 @@ impl Compositor {
         while Instant::now() < end {
             let log = self.log.lock().unwrap();
             if count(&log) > before {
-                let line = log.iter().rev().find(|line| line.contains("session "));
+                let line = log.iter().rev().find(|line| line.contains(what));
                 return line.cloned().unwrap_or_default();
             }
             drop(log);

@@ -8,7 +8,10 @@ use std::{
     io::Write,
     os::{
         fd::AsFd,
-        unix::net::{UnixListener, UnixStream},
+        unix::{
+            fs::FileExt,
+            net::{UnixListener, UnixStream},
+        },
     },
     path::Path,
     sync::atomic::{AtomicU32, Ordering},
@@ -31,14 +34,21 @@ use wayland_client::{
         wl_shm_pool::WlShmPool,
         wl_surface::WlSurface,
     },
-    Connection, Dispatch, EventQueue, QueueHandle,
+    Connection, Dispatch, EventQueue, QueueHandle, WEnum,
 };
 use wayland_protocols::{
-    ext::idle_notify::v1::client::ext_idle_notifier_v1::ExtIdleNotifierV1,
+    ext::idle_notify::v1::client::{
+        ext_idle_notification_v1::{self, ExtIdleNotificationV1},
+        ext_idle_notifier_v1::ExtIdleNotifierV1,
+    },
     ext::session_lock::v1::client::{
         ext_session_lock_manager_v1::ExtSessionLockManagerV1,
         ext_session_lock_surface_v1::{self, ExtSessionLockSurfaceV1},
         ext_session_lock_v1::{self, ExtSessionLockV1},
+    },
+    wp::idle_inhibit::zv1::client::{
+        zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1,
+        zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1,
     },
     wp::security_context::v1::client::{
         wp_security_context_manager_v1::WpSecurityContextManagerV1,
@@ -49,6 +59,10 @@ use wayland_protocols::{
         xdg_toplevel::XdgToplevel,
         xdg_wm_base::{self, XdgWmBase},
     },
+};
+use wayland_protocols_wlr::output_power_management::v1::client::{
+    zwlr_output_power_manager_v1::ZwlrOutputPowerManagerV1,
+    zwlr_output_power_v1::{self, ZwlrOutputPowerV1},
 };
 
 pub const LOCK_MANAGER: &str = "ext_session_lock_manager_v1";
@@ -66,6 +80,14 @@ pub struct Seen {
     pub keyboard_enters: u32,
     pub keyboard_leaves: u32,
     pub keys: u32,
+    /// Every keymap the compositor sent, as text.
+    pub keymaps: Vec<String>,
+    /// The key repeat last announced: a second, and the delay in ms.
+    pub repeat: Option<(i32, i32)>,
+    /// What each output power object was last told: on or off.
+    pub power: Vec<bool>,
+    pub idled: u32,
+    pub resumed: u32,
     pub frames: u32,
 }
 
@@ -157,6 +179,42 @@ impl Client {
         let keyboard = seat.get_keyboard(&self.handle, ());
         self.roundtrip()?;
         Ok(keyboard)
+    }
+
+    /// Takes control of the power of every output. What each is told
+    /// shows in `seen.power`, in the order of `outputs`.
+    pub fn output_power(&mut self) -> Result<Vec<ZwlrOutputPowerV1>, Failure> {
+        let manager: ZwlrOutputPowerManagerV1 = self.globals.bind(&self.handle, 1..=1, ())?;
+        let controls = self
+            .outputs()
+            .iter()
+            .enumerate()
+            .map(|(index, output)| manager.get_output_power(output, &self.handle, index))
+            .collect();
+        self.roundtrip()?;
+        Ok(controls)
+    }
+
+    /// Asks to be told when nobody has touched anything for `timeout`.
+    pub fn idle_notification(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<ExtIdleNotificationV1, Failure> {
+        let seat: WlSeat = self.globals.bind(&self.handle, 1..=5, ())?;
+        let notifier: ExtIdleNotifierV1 = self.globals.bind(&self.handle, 1..=1, ())?;
+        let notification =
+            notifier.get_idle_notification(timeout.as_millis() as u32, &seat, &self.handle, ());
+        self.roundtrip()?;
+        Ok(notification)
+    }
+
+    /// Holds idleness off for as long as `surface` shows and the result
+    /// is kept.
+    pub fn inhibit_idle(&mut self, surface: &WlSurface) -> Result<ZwpIdleInhibitorV1, Failure> {
+        let manager: ZwpIdleInhibitManagerV1 = self.globals.bind(&self.handle, 1..=1, ())?;
+        let inhibitor = manager.create_inhibitor(surface, &self.handle, ());
+        self.roundtrip()?;
+        Ok(inhibitor)
     }
 
     /// A buffer of one colour, given as 0xAARRGGBB.
@@ -353,6 +411,49 @@ impl Dispatch<WlKeyboard, ()> for Seen {
             wl_keyboard::Event::Enter { .. } => seen.keyboard_enters += 1,
             wl_keyboard::Event::Leave { .. } => seen.keyboard_leaves += 1,
             wl_keyboard::Event::Key { .. } => seen.keys += 1,
+            wl_keyboard::Event::Keymap { fd, size, .. } => {
+                let mut text = vec![0u8; size as usize];
+                let read = File::from(fd).read_at(&mut text, 0).unwrap_or(0);
+                text.truncate(read);
+                seen.keymaps
+                    .push(String::from_utf8_lossy(&text).into_owned());
+            }
+            wl_keyboard::Event::RepeatInfo { rate, delay } => seen.repeat = Some((rate, delay)),
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZwlrOutputPowerV1, usize> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &ZwlrOutputPowerV1,
+        event: zwlr_output_power_v1::Event,
+        index: &usize,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zwlr_output_power_v1::Event::Mode { mode } = event {
+            if seen.power.len() <= *index {
+                seen.power.resize(*index + 1, true);
+            }
+            seen.power[*index] = mode == WEnum::Value(zwlr_output_power_v1::Mode::On);
+        }
+    }
+}
+
+impl Dispatch<ExtIdleNotificationV1, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &ExtIdleNotificationV1,
+        event: ext_idle_notification_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            ext_idle_notification_v1::Event::Idled => seen.idled += 1,
+            ext_idle_notification_v1::Event::Resumed => seen.resumed += 1,
             _ => {}
         }
     }
@@ -377,6 +478,9 @@ delegate_noop!(Seen: WlCompositor);
 delegate_noop!(Seen: WlShmPool);
 delegate_noop!(Seen: ExtSessionLockManagerV1);
 delegate_noop!(Seen: ExtIdleNotifierV1);
+delegate_noop!(Seen: ZwlrOutputPowerManagerV1);
+delegate_noop!(Seen: ZwpIdleInhibitManagerV1);
+delegate_noop!(Seen: ZwpIdleInhibitorV1);
 delegate_noop!(Seen: WpSecurityContextManagerV1);
 delegate_noop!(Seen: WpSecurityContextV1);
 delegate_noop!(Seen: ignore WlShm);

@@ -64,7 +64,7 @@ use smithay::{
             control::{connector, crtc, Device as _, Mode, ModeTypeFlags},
             ClientCapability, Device as _,
         },
-        input::{Device as InputDevice, Libinput},
+        input::{Device as InputDevice, DeviceCapability, Libinput},
         pixman::Image,
         rustix::fs::OFlags,
         wayland_server::Display,
@@ -75,6 +75,7 @@ use smithay::{
 
 use crate::{
     cli::{self, Wanted},
+    config::{Config, Kind},
     gpu, headless, png, render,
     state::State,
     Options,
@@ -157,6 +158,9 @@ struct Screen {
     queued: u64,
     /// The watchdog timer is running.
     watched: bool,
+    /// Switched off because the output was asked to be, see
+    /// `output_power.rs`.
+    dark: bool,
 }
 
 /// How long a queued frame may take to reach the screen before it is
@@ -275,18 +279,58 @@ fn free_crtc(
         .find(|crtc| !taken.contains(crtc))
 }
 
-/// Touchpad defaults: tap to click, traditional scrolling, and no stray
-/// pointer jumps from the palm while typing.
-fn configure(device: &mut InputDevice) {
-    if device.config_tap_finger_count() > 0 {
-        let _ = device.config_tap_set_enabled(true);
+/// Sets a mouse or touchpad to what Settings says for its kind. Devices
+/// that do not point, keyboards for one, have nothing to set.
+fn configure(device: &mut InputDevice, config: &Config) {
+    if !device.has_capability(DeviceCapability::Pointer) {
+        return;
+    }
+    let wanted = config.pointing(Kind::of(device.config_tap_finger_count()));
+    if device.config_accel_is_available() {
+        let _ = device.config_accel_set_speed(wanted.speed);
     }
     if device.config_scroll_has_natural_scroll() {
-        let _ = device.config_scroll_set_natural_scroll_enabled(false);
+        let _ = device.config_scroll_set_natural_scroll_enabled(wanted.natural_scroll);
     }
-    if device.config_dwt_is_available() {
-        let _ = device.config_dwt_set_enabled(true);
+    if let Some(left_handed) = wanted.left_handed {
+        if device.config_left_handed_is_available() {
+            let _ = device.config_left_handed_set(left_handed);
+        }
     }
+    if let Some(tap) = wanted.tap {
+        let _ = device.config_tap_set_enabled(tap);
+    }
+    if let Some(dwt) = wanted.disable_while_typing {
+        if device.config_dwt_is_available() {
+            let _ = device.config_dwt_set_enabled(dwt);
+        }
+    }
+}
+
+/// What a pointing device is set to, read back from the device itself,
+/// for the SIGUSR1 report.
+fn describe(device: &InputDevice) -> Option<String> {
+    if !device.has_capability(DeviceCapability::Pointer) {
+        return None;
+    }
+    let on_off = |on: bool| if on { "on" } else { "off" };
+    let kind = Kind::of(device.config_tap_finger_count());
+    let mut line = format!(
+        "input: {} ({}): speed {:.2}, natural scroll {}, left-handed {}",
+        device.name(),
+        kind.name(),
+        device.config_accel_speed(),
+        on_off(device.config_scroll_natural_scroll_enabled()),
+        on_off(device.config_left_handed()),
+    );
+    if kind == Kind::Touchpad {
+        line.push_str(&format!(
+            ", tap {}, disable while typing {}",
+            on_off(device.config_tap_enabled()),
+            on_off(device.config_dwt_enabled()),
+        ));
+    }
+    Some(line)
 }
 
 /// The render node belonging to a display device, e.g. `/dev/dri/renderD128`
@@ -586,15 +630,35 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         }
     })?;
 
+    // The devices are kept, so that a change in Settings reaches the ones
+    // already plugged in.
+    let devices: Rc<RefCell<Vec<InputDevice>>> = Rc::default();
+    let known = devices.clone();
     handle.insert_source(
         LibinputInputBackend::new(libinput),
-        |mut event, _, state| {
-            if let InputEvent::DeviceAdded { device } = &mut event {
-                configure(device);
+        move |mut event, _, state| {
+            match &mut event {
+                InputEvent::DeviceAdded { device } => {
+                    configure(device, &state.config);
+                    known.borrow_mut().push(device.clone());
+                }
+                InputEvent::DeviceRemoved { device } => {
+                    known.borrow_mut().retain(|kept| kept != device);
+                }
+                _ => {}
             }
             state.process_input_event(event);
         },
     )?;
+    let to_configure = devices.clone();
+    state.configure_inputs = Some(Box::new(move |config| {
+        for device in to_configure.borrow_mut().iter_mut() {
+            configure(device, config);
+        }
+    }));
+    state.describe_inputs = Some(Box::new(move || {
+        devices.borrow().iter().filter_map(describe).collect()
+    }));
 
     // Switching away hands the display and the input devices back; coming
     // back takes them again and repaints everything.
@@ -622,6 +686,8 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
                 // Displays may have come and gone meanwhile.
                 backend.rescan(state);
                 for screen in &mut backend.screens {
+                    // Whatever was dark is switched off afresh.
+                    screen.dark = false;
                     let reset = on_compositor!(&mut screen.compositor, |compositor| {
                         compositor.reset_buffers();
                         compositor.reset_state().map_err(|err| err.to_string())
@@ -672,6 +738,7 @@ fn draw_if_ready(backend: &Shared, state: &mut State) {
     let mut retry = Vec::new();
     let mut hopeless = Vec::new();
     let mut watch = Vec::new();
+    let mut dark = Vec::new();
     {
         let mut backend = backend.borrow_mut();
         if !backend.active {
@@ -696,6 +763,30 @@ fn draw_if_ready(backend: &Shared, state: &mut State) {
             }
         }
         for screen in screens.iter_mut() {
+            if state.output_is_off(&screen.output) {
+                // Asked to be dark. A frame under way lands first.
+                if !screen.dark && screen.in_flight.is_none() {
+                    let cleared = on_compositor!(&mut screen.compositor, |compositor| {
+                        compositor.clear().map_err(|err| err.to_string())
+                    });
+                    if let Err(err) = cleared {
+                        crate::say!("{}: cannot switch off: {err}", screen.output.name());
+                    }
+                    screen.dark = true;
+                    screen.on_glass = None;
+                }
+                if screen.dark {
+                    dark.push(screen.output.clone());
+                }
+                continue;
+            }
+            if screen.dark {
+                // Lit again: the next frame is drawn in full and sets the
+                // mode with it.
+                screen.dark = false;
+                screen.repaint();
+                screen.stale = true;
+            }
             // A screen with a frame under way is drawn when that lands.
             if !screen.stale || screen.in_flight.is_some() || screen.waiting {
                 continue;
@@ -770,6 +861,12 @@ fn draw_if_ready(backend: &Shared, state: &mut State) {
                 *switched_off = true;
             }
         }
+    }
+    // A dark screen shows nothing of the session, which is all a lock
+    // waits for before it tells the locker that the screen is covered.
+    for output in dark {
+        let epoch = state.lock_epoch();
+        state.frame_presented(&output, epoch);
     }
     for (crtc, mut frame) in watch {
         let watching = backend.clone();
@@ -1112,6 +1209,7 @@ impl Drm {
             mode,
             output,
             compositor,
+            dark: false,
             in_flight: None,
             stale: true,
             on_glass: None,

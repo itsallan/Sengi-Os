@@ -30,6 +30,7 @@ use smithay::{
     delegate_cursor_shape, delegate_data_device, delegate_output, delegate_seat, delegate_shm,
     desktop::{layer_map_for_output, PopupManager, Space, Window, WindowSurfaceType},
     input::{
+        keyboard::XkbConfig,
         pointer::{CursorIcon, CursorImageStatus},
         Seat, SeatHandler, SeatState,
     },
@@ -60,6 +61,7 @@ use smithay::{
         compositor::{CompositorClientState, CompositorState},
         cursor_shape::CursorShapeManagerState,
         dmabuf::DmabufState,
+        idle_inhibit::IdleInhibitManagerState,
         idle_notify::{IdleNotificationUserData, IdleNotifierHandler, IdleNotifierState},
         output::{OutputHandler, OutputManagerState},
         security_context::SecurityContextState,
@@ -82,6 +84,7 @@ use smithay::{
 };
 
 use crate::{
+    config::Config,
     cursor::{resize_cursor, Cursors},
     decoration::Theme,
     foreign_toplevel::ForeignToplevelState,
@@ -90,6 +93,7 @@ use crate::{
     keys::{self, Swallowed},
     layout::{self, FocusStack, Rect},
     lock::Lock,
+    output_power::OutputPowerState,
     render, security,
     text::Font,
 };
@@ -102,6 +106,11 @@ pub type DmabufImport = Box<dyn FnMut(&Dmabuf) -> bool>;
 
 /// Refresh rate reported for outputs that have no real one, in mHz.
 pub const REFRESH_MHZ: i32 = 60_000;
+
+/// Sets the pointing devices to what the settings say.
+pub type ConfigureInputs = Box<dyn FnMut(&Config)>;
+/// Says what each pointing device is set to.
+pub type DescribeInputs = Box<dyn Fn() -> Vec<String>>;
 
 pub struct State {
     pub start_time: Instant,
@@ -121,6 +130,17 @@ pub struct State {
     pub lock_count: u64,
     /// Set while a request of the lock's holder is being handled.
     pub lock_request_from_holder: bool,
+    /// What Settings set, as last read.
+    pub config: Config,
+    /// Sets the pointing devices to what the settings say, where the
+    /// backend has devices.
+    pub configure_inputs: Option<ConfigureInputs>,
+    /// One line on each pointing device, for the SIGUSR1 report.
+    pub describe_inputs: Option<DescribeInputs>,
+    pub output_power: OutputPowerState,
+    /// The surfaces that ask for the session not to go idle.
+    pub idle_inhibitors: Vec<WlSurface>,
+    _idle_inhibit_state: IdleInhibitManagerState,
     /// The locker's program file, if there is one to start.
     pub locker_program: Option<PathBuf>,
     /// Set once the connection of the locker we started last has closed.
@@ -232,6 +252,8 @@ impl State {
         let session_lock_state =
             SessionLockManagerState::new::<Self, _>(&dh, crate::lock::started_as_locker);
         let idle_notifier_state = IdleNotifierState::<Self>::new(&dh, event_loop.handle());
+        let idle_inhibit_state = IdleInhibitManagerState::new::<Self>(&dh);
+        let output_power = OutputPowerState::new(&dh);
         let layer_shell_state =
             WlrLayerShellState::new_with_filter::<Self, _>(&dh, security::trusted);
         let security_context_state = SecurityContextState::new::<Self, _>(&dh, security::trusted);
@@ -241,7 +263,20 @@ impl State {
 
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
-        seat.add_keyboard(Default::default(), 300, 30)?;
+        let config = Config::load();
+        let typing = &config.keyboard;
+        // Settings may name a layout this system does not have. A keyboard
+        // with the default layout is better than no session.
+        if seat
+            .add_keyboard(xkb_config(typing), typing.repeat_delay, typing.repeat_rate)
+            .is_err()
+        {
+            crate::say!(
+                "no keymap for layout `{}`, using the default",
+                typing.layout
+            );
+            seat.add_keyboard(Default::default(), typing.repeat_delay, typing.repeat_rate)?;
+        }
         seat.add_pointer();
 
         // The way to log out: `sengi-compositor --exit`, or any of these
@@ -267,6 +302,12 @@ impl State {
                         state.page_flips, state.cursor_plane_frames, state.dmabufs_imported, at.x, at.y
                     );
                     crate::say!("{}", state.lock_status());
+                    crate::say!("{}", state.config.keyboard.describe());
+                    crate::say!("{}", state.output_power_status());
+                    let inputs = state.describe_inputs.as_ref().map(|describe| describe());
+                    for line in inputs.unwrap_or_default() {
+                        crate::say!("{line}");
+                    }
                 }
                 // A program we started has ended; a dead locker must be
                 // noticed without waiting for the next input.
@@ -280,11 +321,9 @@ impl State {
                         state.take_screenshot = Some(shoot);
                     }
                 }
-                // What `labwc --reconfigure` sends. A session must not
-                // end because something asked it to read its settings.
-                Signal::SIGHUP => {
-                    crate::say!("SIGHUP: there is no configuration to read again yet");
-                }
+                // Settings has changed something, and says so the way
+                // `labwc --reconfigure` does.
+                Signal::SIGHUP => state.reload(),
                 _ => state.loop_signal.stop(),
             })?;
 
@@ -341,6 +380,12 @@ impl State {
             hidden_frames_armed: false,
             lock_count: 0,
             lock_request_from_holder: false,
+            config,
+            configure_inputs: None,
+            describe_inputs: None,
+            output_power,
+            idle_inhibitors: Vec::new(),
+            _idle_inhibit_state: idle_inhibit_state,
             locker_program: None,
             locker_gone: None,
             lock_askers: Vec::new(),
@@ -404,6 +449,7 @@ impl State {
             state.popups.cleanup();
             state.sync_pointer_focus();
             state.refresh_foreign_toplevels();
+            state.refresh_idle_inhibit();
             state.reap_children();
             state.watch_locker();
             let _ = state.display_handle.flush_clients();
@@ -547,6 +593,7 @@ impl State {
         }
         self.space.unmap_output(output);
         self.lock_output_removed(output);
+        self.forget_output_power(output);
         self.configure_lock_surfaces();
         if let Some(at) = self.output_globals.iter().position(|(o, _)| o == output) {
             let (_, global) = self.output_globals.remove(at);
@@ -809,10 +856,37 @@ impl State {
         }
     }
 
+    /// Reads the settings again and acts on what changed: SIGHUP.
+    pub fn reload(&mut self) {
+        let mut config = Config::load();
+        let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
+        let (old, new) = (&self.config.keyboard, &config.keyboard);
+        let same_keys =
+            (&old.layout, &old.variant, &old.options) == (&new.layout, &new.variant, &new.options);
+        if !same_keys && keyboard.set_xkb_config(self, xkb_config(new)).is_err() {
+            crate::say!(
+                "no keymap for layout `{}`, keeping the one in use",
+                new.layout
+            );
+            let kept = self.config.keyboard.clone();
+            config.keyboard.layout = kept.layout;
+            config.keyboard.variant = kept.variant;
+            config.keyboard.options = kept.options;
+        }
+        keyboard.change_repeat_info(config.keyboard.repeat_rate, config.keyboard.repeat_delay);
+        if let Some(configure) = self.configure_inputs.as_mut() {
+            configure(&config);
+        }
+        self.config = config;
+        crate::say!("settings read again");
+    }
+
     /// Tells idle watchers such as swayidle that the user did something.
     pub fn note_activity(&mut self) {
         let seat = self.seat.clone();
         self.idle_notifier_state.notify_activity(&seat);
+        // A dark screen comes back with the first key or movement.
+        self.wake_outputs();
         // The cursor moved, a button lit up, a binding did something.
         self.request_redraw();
     }
@@ -849,6 +923,17 @@ pub fn set_activated(window: &Window, active: bool) {
         if toplevel.is_initial_configure_sent() {
             toplevel.send_pending_configure();
         }
+    }
+}
+
+/// The keymap to ask XKB for. Empty names leave the choice to XKB, which
+/// follows the `XKB_DEFAULT_*` variables.
+fn xkb_config(keys: &crate::config::Keyboard) -> XkbConfig<'_> {
+    XkbConfig {
+        layout: &keys.layout,
+        variant: &keys.variant,
+        options: (!keys.options.is_empty()).then(|| keys.options.clone()),
+        ..XkbConfig::default()
     }
 }
 

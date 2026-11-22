@@ -22,6 +22,7 @@ Usage: sengi-compositor [options]
                         with a GPU, pixman without; SENGI_COMPOSITOR_RENDERER
                         sets the same)
       --exit            ask the running compositor to quit (log out)
+      --reload          ask the running compositor to read the settings again
       --lock            ask the running compositor to lock the screen;
                         returns once every screen is covered
   -h, --help            show this help
@@ -106,6 +107,7 @@ pub enum Command {
     Version,
     /// Ask the running compositor to end the session.
     Exit,
+    Reload,
     Lock,
 }
 
@@ -120,6 +122,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             "-V" | "--version" => return Ok(Command::Version),
             "--exit" => return Ok(Command::Exit),
             "--lock" => return Ok(Command::Lock),
+            "--reload" => return Ok(Command::Reload),
             "-s" | "--startup" => options.startup.push(value()?),
             "--backend" => {
                 options.backend = match value()?.as_str() {
@@ -251,6 +254,7 @@ mod tests {
         assert_eq!(run(&["-V"]), Ok(Command::Version));
         assert_eq!(run(&["--exit"]), Ok(Command::Exit));
         assert_eq!(run(&["--lock"]), Ok(Command::Lock));
+        assert_eq!(run(&["--reload"]), Ok(Command::Reload));
     }
 
     #[test]

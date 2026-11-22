@@ -3,6 +3,7 @@
 //! See README.md for what works and what is missing.
 
 mod cli;
+mod config;
 mod cursor;
 mod decoration;
 #[cfg(any(feature = "winit", feature = "drm"))]
@@ -15,6 +16,7 @@ mod frame;
 #[cfg(feature = "drm")]
 mod gpu;
 mod headless;
+mod idle;
 mod input;
 mod keys;
 mod layer;
@@ -22,6 +24,7 @@ mod layout;
 mod lock;
 #[macro_use]
 mod log;
+mod output_power;
 mod png;
 mod render;
 mod script;
@@ -69,7 +72,8 @@ fn main() -> ExitCode {
             crate::tell!("sengi-compositor {}", env!("CARGO_PKG_VERSION"));
             return ExitCode::SUCCESS;
         }
-        Ok(Command::Exit) => return ask_to_exit(),
+        Ok(Command::Exit) => return signal_compositor("TERM"),
+        Ok(Command::Reload) => return signal_compositor("HUP"),
         Ok(Command::Lock) => return ask_to_lock(),
         Err(err) => {
             crate::say!("{err}\n{}", cli::USAGE);
@@ -144,9 +148,11 @@ fn start_clients(state: &mut State, options: &Options) {
     }
 }
 
-/// `--exit`: tells the compositor this was started under to quit, the way
-/// `labwc --exit` does. It finds it through the pid it gave its children.
-fn ask_to_exit() -> ExitCode {
+/// `--exit` and `--reload`: signals the compositor this was started
+/// under, the way `labwc --exit` and `labwc --reconfigure` do theirs. It
+/// finds it through the pid it gave its children. SIGTERM ends the
+/// session, SIGHUP has the settings read again.
+fn signal_compositor(signal: &str) -> ExitCode {
     let pid = std::env::var(state::PID_VARIABLE)
         .ok()
         .filter(|pid| pid.parse::<u32>().is_ok());
@@ -158,7 +164,7 @@ fn ask_to_exit() -> ExitCode {
         return ExitCode::FAILURE;
     };
     match std::process::Command::new("kill")
-        .args(["-TERM", &pid])
+        .args([&format!("-{signal}"), &pid])
         .status()
     {
         Ok(status) if status.success() => ExitCode::SUCCESS,
