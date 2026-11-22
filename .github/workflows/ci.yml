@@ -83,7 +83,8 @@ jobs:
         run: |
           sudo -E apt-get $APT_OPTS update -q
           sudo -E apt-get $APT_OPTS install -y -q --no-install-recommends pkg-config \
-            libxkbcommon-dev libseat-dev libinput-dev libudev-dev libgbm-dev libpixman-1-dev
+            libxkbcommon-dev libseat-dev libinput-dev libudev-dev libgbm-dev libpixman-1-dev \
+            fonts-inter
           rustup show active-toolchain || rustup toolchain install
       - uses: actions/cache@v4
         with:

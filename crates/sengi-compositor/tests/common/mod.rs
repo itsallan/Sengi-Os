@@ -54,6 +54,10 @@ use wayland_protocols::{
         wp_security_context_manager_v1::WpSecurityContextManagerV1,
         wp_security_context_v1::WpSecurityContextV1,
     },
+    xdg::decoration::zv1::client::{
+        zxdg_decoration_manager_v1::{self, ZxdgDecorationManagerV1},
+        zxdg_toplevel_decoration_v1::{self, ZxdgToplevelDecorationV1},
+    },
     xdg::shell::client::{
         xdg_surface::{self, XdgSurface},
         xdg_toplevel::XdgToplevel,
@@ -255,11 +259,29 @@ impl Client {
 
     /// Maps an ordinary window of one colour.
     pub fn window(&mut self, argb: u32) -> Result<(WlSurface, XdgToplevel), Failure> {
+        self.window_as(argb, false)
+    }
+
+    /// A window that asks the compositor to draw its frame.
+    pub fn decorated_window(&mut self, argb: u32) -> Result<(WlSurface, XdgToplevel), Failure> {
+        self.window_as(argb, true)
+    }
+
+    fn window_as(
+        &mut self,
+        argb: u32,
+        decorated: bool,
+    ) -> Result<(WlSurface, XdgToplevel), Failure> {
         let wm_base: XdgWmBase = self.globals.bind(&self.handle, 1..=2, ())?;
         let surface = self.compositor.create_surface(&self.handle, ());
         let xdg_surface = wm_base.get_xdg_surface(&surface, &self.handle, ());
         let toplevel = xdg_surface.get_toplevel(&self.handle, ());
         toplevel.set_title("test window".into());
+        if decorated {
+            let manager: ZxdgDecorationManagerV1 = self.globals.bind(&self.handle, 1..=1, ())?;
+            let decoration = manager.get_toplevel_decoration(&toplevel, &self.handle, ());
+            decoration.set_mode(zxdg_toplevel_decoration_v1::Mode::ServerSide);
+        }
         surface.commit();
         if !self.wait(Duration::from_secs(5), |seen| seen.window_configures > 0) {
             return Err("the window was never configured".into());
@@ -329,6 +351,30 @@ impl Dispatch<WlRegistry, GlobalListContents> for Seen {
         _: &WlRegistry,
         _: <WlRegistry as wayland_client::Proxy>::Event,
         _: &GlobalListContents,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<ZxdgDecorationManagerV1, ()> for Seen {
+    fn event(
+        _: &mut Self,
+        _: &ZxdgDecorationManagerV1,
+        _: zxdg_decoration_manager_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<ZxdgToplevelDecorationV1, ()> for Seen {
+    fn event(
+        _: &mut Self,
+        _: &ZxdgToplevelDecorationV1,
+        _: zxdg_toplevel_decoration_v1::Event,
+        _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {

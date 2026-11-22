@@ -108,7 +108,10 @@ impl Compositor {
         ));
         std::fs::create_dir_all(&dir).expect("a runtime directory");
         let me = std::env::current_exe().expect("the test's own path");
-        let stand_in = format!("{} --exact locker_stand_in --nocapture", me.display());
+        let stand_in = format!(
+            "{} --exact locker_stand_in --include-ignored --nocapture",
+            me.display()
+        );
         let locker = locker.map_or(stand_in, str::to_string);
         let handover_path = dir.join("handover");
         let handover = UnixListener::bind(&handover_path).expect("a socket for lockers");

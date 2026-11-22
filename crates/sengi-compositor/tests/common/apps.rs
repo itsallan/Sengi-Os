@@ -389,8 +389,9 @@ impl Client {
         self.roundtrip()
     }
 
-    /// Copies one frame twice. True when the compositor answers the second
-    /// copy with a protocol error, which closes this connection.
+    /// Copies one frame, waits for it to be ready, then copies it again.
+    /// True when the compositor refuses the second copy with AlreadyUsed,
+    /// which closes this connection.
     pub fn copy_twice(&mut self) -> Result<bool, Failure> {
         let manager: ZwlrScreencopyManagerV1 = self.globals.bind(&self.handle, 1..=1, ())?;
         let output = self.outputs().remove(0);
@@ -414,9 +415,16 @@ impl Client {
             (),
         );
         pool.destroy();
+        let ready = self.seen.more.frame_ready;
         frame.copy(&buffer);
+        if !self.wait(SOON, |seen| seen.more.frame_ready > ready) {
+            return Err("the first copy was never ready".into());
+        }
         frame.copy(&buffer);
-        Ok(self.roundtrip().is_err())
+        Ok(match self.roundtrip() {
+            Ok(()) => false,
+            Err(err) => already_used(&err),
+        })
     }
 
     /// Starts dragging from `origin`, with a square of one colour as the
@@ -691,3 +699,16 @@ delegate_noop!(Seen: ZwlrLayerShellV1);
 delegate_noop!(Seen: WlDataDeviceManager);
 delegate_noop!(Seen: ignore WlDataSource);
 delegate_noop!(Seen: ignore WlDataOffer);
+
+/// Whether `err` is the protocol error that a frame gives when it is copied
+/// a second time.
+fn already_used(err: &Failure) -> bool {
+    use wayland_client::{backend::WaylandError, DispatchError};
+    match err.downcast_ref::<DispatchError>() {
+        Some(DispatchError::Backend(WaylandError::Protocol(protocol))) => {
+            protocol.code == zwlr_screencopy_frame_v1::Error::AlreadyUsed as u32
+                && protocol.object_interface == "zwlr_screencopy_frame_v1"
+        }
+        _ => false,
+    }
+}

@@ -275,7 +275,10 @@ fn a_program_without_the_keyboard_cannot_hold_the_pointer() {
 
 #[test]
 fn a_lock_ends_when_the_keyboard_goes_to_another_program() {
-    let script = "1500 move 640 360\n";
+    // Inside the first window and clear of the second, which is cascaded 30
+    // pixels further in, so only the change of keyboard focus can end the
+    // lock.
+    let script = "1500 move 500 300\n";
     let compositor = Compositor::start_with(None, None, Some(script));
     let mut app = compositor.connect();
     app.keyboard().unwrap();
@@ -292,8 +295,8 @@ fn a_lock_ends_when_the_keyboard_goes_to_another_program() {
         app.wait(SOON, |seen| seen.keyboard_leaves == 1),
         "focus did not leave"
     );
-    // Smithay also unlocks when the new window covers the pointer, so one
-    // or two unlocks are both right; what must not happen is none.
+    // The new window does not cover the pointer, so this unlock is the
+    // keyboard's. What must not happen is none.
     assert!(
         app.wait(SOON, |seen| seen.more.pointer_unlocked >= 1),
         "still locked with the keyboard elsewhere"
@@ -415,7 +418,7 @@ fn a_frame_can_be_copied_once_and_a_second_copy_is_an_error() {
     let _window = client.window(GREEN).unwrap();
     assert!(
         client.copy_twice().unwrap(),
-        "the second copy was not refused"
+        "the second copy was not refused as already used"
     );
 }
 
@@ -435,9 +438,16 @@ fn the_pointer_is_in_a_picture_only_when_asked_for() {
             .map(|(x, y)| picture.at(x, y))
             .collect::<Vec<u32>>()
     };
+    // Without the request the pointer is not in the picture: the area is one
+    // colour, the window's.
+    let plain = around(&without);
+    assert!(
+        plain.iter().all(|&pixel| pixel == plain[0]),
+        "the pointer is in a picture that did not ask for it"
+    );
     assert_ne!(
         around(&with),
-        around(&without),
+        plain,
         "the pointer was not drawn when asked for"
     );
 }
