@@ -339,7 +339,11 @@ impl State {
         } else {
             usable
         };
-        if (size.w > most.w || size.h > most.h) && !window::data(&window).fitted.get() {
+        // A window that fills the screen is the size of the screen.
+        if !fullscreen
+            && (size.w > most.w || size.h > most.h)
+            && !window::data(&window).fitted.get()
+        {
             window::data(&window).fitted.set(true);
             let fit = (size.w.min(most.w.max(1)), size.h.min(most.h.max(1)));
             window::request_size(&window, fit, false);

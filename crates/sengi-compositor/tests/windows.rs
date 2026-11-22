@@ -15,6 +15,7 @@ use wayland_protocols::xdg::shell::client::{
 };
 
 const GREEN: u32 = 0xff20_b020;
+const RED: u32 = 0xffb0_2020;
 
 fn rgb(argb: u32) -> u32 {
     argb & 0x00ff_ffff
@@ -117,4 +118,29 @@ fn a_window_too_large_for_the_screen_is_asked_to_fit_it() {
         w <= 1280 && h <= 720,
         "told to be {w}x{h}, which does not fit the screen"
     );
+}
+
+#[test]
+fn a_window_that_asks_for_fullscreen_before_it_is_shown_is_not_fitted() {
+    let compositor = Compositor::start(None);
+    let mut shell = compositor.connect();
+    let _bar = shell.bar(30, RED).unwrap();
+    let mut app = compositor.connect();
+    let (surface, _xdg, toplevel) = bare_window(&mut app).unwrap();
+    // Fullscreen before its first buffer: the whole screen, bar and all.
+    toplevel.set_fullscreen(None);
+    assert!(app.wait(SOON, |seen| seen
+        .more
+        .toplevel
+        .is_some_and(|(_, _, full)| full)));
+    let buffer = app.buffer(1280, 720, GREEN).unwrap();
+    surface.attach(Some(&buffer), 0, 0);
+    surface.commit();
+    let picture = app.capture().unwrap();
+    assert_eq!(
+        picture.at(5, 5),
+        rgb(GREEN),
+        "the bar is over the fullscreen window"
+    );
+    assert_eq!(picture.at(640, 360), rgb(GREEN));
 }
