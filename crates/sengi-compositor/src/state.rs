@@ -146,6 +146,9 @@ pub struct State {
     /// One line on each pointing device, for the SIGUSR1 report.
     pub describe_inputs: Option<DescribeInputs>,
     pub output_power: OutputPowerState,
+    /// Buttons whose press lit a dark screen and went no further; their
+    /// release goes no further either.
+    pub wake_buttons: Vec<u32>,
     /// The surfaces that ask for the session not to go idle.
     pub idle_inhibitors: Vec<WlSurface>,
     _idle_inhibit_state: IdleInhibitManagerState,
@@ -403,6 +406,7 @@ impl State {
             configure_inputs: None,
             describe_inputs: None,
             output_power,
+            wake_buttons: Vec::new(),
             idle_inhibitors: Vec::new(),
             _idle_inhibit_state: idle_inhibit_state,
             locker_program: None,
@@ -933,14 +937,18 @@ impl State {
         crate::say!("settings read again");
     }
 
-    /// Tells idle watchers such as swayidle that the user did something.
-    pub fn note_activity(&mut self) {
+    /// Tells idle watchers such as swayidle that the user did something,
+    /// and lights whatever screen was switched off. Returns whether one
+    /// was: the key or movement that brings a dark screen back was made
+    /// without seeing anything, and is not passed on to any program.
+    pub fn note_activity(&mut self) -> bool {
         let seat = self.seat.clone();
         self.idle_notifier_state.notify_activity(&seat);
-        // A dark screen comes back with the first key or movement.
+        let woke = self.any_output_off();
         self.wake_outputs();
         // The cursor moved, a button lit up, a binding did something.
         self.request_redraw();
+        woke
     }
 
     /// The front-most layer surface asking for exclusive keyboard focus.

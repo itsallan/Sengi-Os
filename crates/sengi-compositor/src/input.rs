@@ -207,7 +207,7 @@ pub fn cell(location: Point<f64, Logical>) -> (i32, i32) {
 
 impl State {
     pub fn key(&mut self, keycode: Keycode, state: KeyState, time: u32) {
-        self.note_activity();
+        let woke = self.note_activity();
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
         let code = keycode.raw();
         let action = keyboard.input(
@@ -224,6 +224,12 @@ impl State {
                     } else {
                         FilterResult::Forward
                     };
+                }
+                // Pressed to bring a dark screen back, and for nothing
+                // else: not a shortcut and not for the program in front.
+                if woke {
+                    data.swallowed_keys.press(code);
+                    return FilterResult::Intercept(None);
                 }
                 let mods = Mods {
                     logo: modifiers.logo,
@@ -335,7 +341,9 @@ impl State {
 
     /// The user moved the pointer.
     pub fn pointer_motion(&mut self, location: Point<f64, Logical>, time: u32) {
-        self.note_activity();
+        if self.note_activity() {
+            return;
+        }
         self.pointer_seen = true;
         self.place_pointer(location, time);
     }
@@ -390,7 +398,21 @@ impl State {
     }
 
     pub fn pointer_button(&mut self, button: u32, state: ButtonState, time: u32) {
-        self.note_activity();
+        let woke = self.note_activity();
+        match state {
+            // A click on a dark screen lights it and clicks nothing.
+            ButtonState::Pressed if woke => {
+                self.wake_buttons.push(button);
+                return;
+            }
+            ButtonState::Released => {
+                if let Some(at) = self.wake_buttons.iter().position(|held| *held == button) {
+                    self.wake_buttons.remove(at);
+                    return;
+                }
+            }
+            ButtonState::Pressed => {}
+        }
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
         let serial = SERIAL_COUNTER.next_serial();
 

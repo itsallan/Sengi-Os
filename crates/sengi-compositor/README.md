@@ -447,9 +447,11 @@ tells the compositor it is running under: `labwc --reconfigure` there,
 
 `sengi-settings --screen off`, which swayidle runs after the time set in
 `[power]`, switches the outputs off through wlr-output-power-management.
-The compositor lights them again at the first key or pointer movement,
-whether or not anybody asks it to, and a lock that begins while a screen
-is dark does not wait for it. A client can hold idleness off with
+The compositor lights them again at the first key, click, scroll or
+pointer movement, whether or not anybody asks it to. That first one only
+lights the screen: it was made without seeing anything and reaches no
+program and no shortcut (labwc passes it on). A lock that begins while a
+screen is dark does not wait for it, unless switching it off failed. A client can hold idleness off with
 idle-inhibit while its surface is on screen and the session is unlocked.
 
 SIGUSR1 adds to its report a line on the keyboard, one on the outputs

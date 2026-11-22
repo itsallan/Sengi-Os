@@ -180,13 +180,17 @@ fn a_screen_is_switched_off_and_on_by_whoever_asks() {
 
 #[test]
 fn a_key_lights_a_dark_screen_also_under_the_lock() {
-    // A key two seconds in, when everything below has been set up.
-    let compositor = Compositor::start_with(None, None, Some("2000 key enter\n"));
+    // A key two seconds in, when everything below has been set up, and
+    // another when the screen is lit again.
+    let script = "2000 key enter\n3500 key enter\n";
+    let compositor = Compositor::start_with(None, None, Some(script));
     let mut locker = compositor.locker();
+    locker.keyboard().unwrap();
     let lock = locker.lock().unwrap();
     let output = locker.outputs().remove(0);
     let _surface = locker.lock_surface(&lock, &output, 0xffb0_2020).unwrap();
     assert!(locker.wait(SOON, |seen| seen.locked == 1));
+    assert!(locker.wait(SOON, |seen| seen.keyboard_enters == 1));
 
     let mut client = compositor.connect();
     let controls = client.output_power().unwrap();
@@ -197,6 +201,12 @@ fn a_key_lights_a_dark_screen_also_under_the_lock() {
         "the key did not light the screen"
     );
     assert!(compositor.status().contains("session locked"));
+
+    // The key that lit the screen was typed blind and went nowhere, down
+    // or up. The next one is the lock screen's.
+    locker.wait(Duration::from_millis(300), |_| false);
+    assert_eq!(locker.seen.keys, 0, "the waking key reached the locker");
+    assert!(locker.wait(SOON, |seen| seen.keys == 2));
 }
 
 #[test]

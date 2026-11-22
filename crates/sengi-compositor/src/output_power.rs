@@ -6,7 +6,8 @@
 //! compositor only keeps which outputs are asked to be off; the backend
 //! that drives real screens looks at that when it draws. Any input lights
 //! everything again, whoever switched it off: a dark screen that a key
-//! does not bring back looks like a dead machine.
+//! does not bring back looks like a dead machine. That first key, click
+//! or movement only lights the screen; see `State::note_activity`.
 
 use smithay::{
     output::Output,
@@ -76,6 +77,10 @@ impl State {
             }
         }
         self.request_redraw();
+    }
+
+    pub fn any_output_off(&self) -> bool {
+        !self.output_power.off.is_empty()
     }
 
     /// Lights every output that was switched off.

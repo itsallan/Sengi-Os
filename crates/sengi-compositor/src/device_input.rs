@@ -38,6 +38,9 @@ impl State {
                 self.pointer_button(event.button_code(), event.state(), event.time_msec());
             }
             InputEvent::PointerAxis { event } => {
+                if self.note_activity() {
+                    return;
+                }
                 let mut frame = AxisFrame::new(event.time_msec()).source(event.source());
                 for axis in [Axis::Horizontal, Axis::Vertical] {
                     let v120 = event.amount_v120(axis);
