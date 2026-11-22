@@ -413,6 +413,16 @@ greeter_fail=
 dump session
 pointer $((screen_w - 20)) 14
 click
+	# The key only when the guest has seen the screen stay off by itself.
+	if wait_serial 'SENGI-SCREEN still' 20; then
+		still=$(tr -d '\r' <"$out/serial.log" | sed -n 's/.*SENGI-SCREEN still //p' | head -1)
+		case $still in
+		dpms=Off*) ;;
+		*) drives "the screen did not stay off: $still" ;;
+		esac
+	else
+		drives "the guest did not say whether the screen stayed off"
+	fi
 for letter in l o g; do
 	key "$letter" 0.3
 done

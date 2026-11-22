@@ -198,6 +198,11 @@ until [ -n "$(greeter sengi-greeter)" ] && [ -n "$(greeter labwc)" ]; do
 	n=$((n + 1))
 	[ $n -lt 900 ] || exit 0
 	sleep 0.2
+# Left alone it has to stay off. Only when the test has seen that does it
+# press the key, so a screen that came back by itself is not taken for
+# one the key lit.
+sleep 3
+echo "SENGI-SCREEN still dpms=$(dpms)" >$port
 done
 # Give it a moment to have drawn, and the session it follows to have gone.
 sleep 3
