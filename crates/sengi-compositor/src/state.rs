@@ -861,12 +861,15 @@ impl State {
         }
     }
 
-    /// Ends a program we started.
+    /// Ends a program we started, and the group it leads.
     pub fn end_child(&mut self, pid: u32) {
+        // Only a child still in the list is signalled. One that has been
+        // collected may have had its pid reused by now.
         if let Some(child) = self.children.iter_mut().find(|child| child.id() == pid) {
-            // Its group first: what a hung locker started is ours too.
-            // SAFETY: kill takes two integers; a negative pid names the
-            // group the child leads, which it made when it was started.
+            // SAFETY: kill takes two integers. The child is not reaped, so
+            // its pid is still its own and is the id of the group it leads,
+            // which it made when it was started (the programs it started
+            // are in that group too).
             unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
             let _ = child.kill();
         }
