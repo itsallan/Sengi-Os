@@ -496,6 +496,25 @@ mod tests {
     }
 
     #[test]
+    fn the_title_bar_is_sharp_at_a_scale_of_two() {
+        let paint = theme().scaled(2.0);
+        let bar = Titlebar {
+            width: 604,
+            active: true,
+            hovered: None,
+            square: false,
+            cut: false,
+        };
+        let canvas = draw_titlebar(&paint, &bar, None);
+        // Two rows of border at the top, then the fill with no blend between.
+        assert_eq!(canvas.pixel(300, 0), rgba(paint.border));
+        assert_eq!(canvas.pixel(300, 1), rgba(paint.border));
+        for y in 2..(paint.metrics.titlebar as usize) {
+            assert_eq!(canvas.pixel(300, y), rgba(paint.active), "row {y}");
+        }
+    }
+
+    #[test]
     fn fill_and_border_use_the_theme_colours() {
         let theme = theme();
         let active = draw_titlebar(&theme, &bar(true), None);
