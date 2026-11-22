@@ -351,3 +351,24 @@ fn a_bar_grows_with_its_window_at_half_scale() {
         "the bar ends at {bar_right}, the client at {client_right}"
     );
 }
+
+/// The same key that leaves a fullscreen window alone does snap one that is
+/// not fullscreen, so the test above cannot pass just because the key was
+/// dropped.
+#[test]
+fn an_edge_key_snaps_a_window_that_is_not_fullscreen() {
+    let script = "3000 key super+left\n";
+    let compositor = Compositor::start_with(None, None, Some(script));
+    let mut app = compositor.connect();
+    app.keyboard().unwrap();
+    let (_surface, _toplevel) = app.window(GREEN).unwrap();
+    assert!(app.wait(SOON, |seen| seen.keyboard_enters == 1));
+    assert!(
+        app.wait(Duration::from_secs(6), |seen| seen
+            .more
+            .toplevel
+            .is_some_and(|(w, _, _)| w > 300 && w < 700)),
+        "the key did not snap the window: {:?}",
+        app.seen.more.toplevel
+    );
+}
