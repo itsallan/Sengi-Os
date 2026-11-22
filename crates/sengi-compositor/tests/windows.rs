@@ -265,3 +265,24 @@ fn edge_keys_leave_a_fullscreen_window_alone() {
         app.seen.more.toplevel
     );
 }
+
+/// A window wider than the screen, at a scale of two, has its title bar
+/// across the whole screen: the bar is cut to the screen and the cut part is
+/// not left unpainted.
+#[test]
+fn a_window_wider_than_the_screen_has_its_bar_across_it_at_scale_two() {
+    let compositor = Compositor::start_args(&["--scale", "2"], None);
+    let mut app = compositor.connect();
+    app.keyboard().unwrap();
+    let (surface, _toplevel) = app.decorated_window(GREEN).unwrap();
+    assert!(app.wait(SOON, |seen| seen.keyboard_enters == 1));
+    app.paint(&surface, 900, 200, GREEN).unwrap();
+    let picture = app.capture().unwrap();
+    // The bar is physical rows 128 to 187; its fill is not the desktop.
+    let desktop = rgb(picture.at(0, 0));
+    for x in [2, 640, 1000, 1277] {
+        let pixel = rgb(picture.at(x, 140));
+        assert_ne!(pixel, desktop, "no bar at x {x}");
+        assert_ne!(pixel, rgb(GREEN), "the client is over the bar at x {x}");
+    }
+}
