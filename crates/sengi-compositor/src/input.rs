@@ -547,8 +547,10 @@ impl State {
     /// Prepares dragging `window` by its title bar from `pointer`. The
     /// caller installs the grab.
     pub fn start_move(&mut self, window: &Window, pointer: (i32, i32)) {
-        // A maximised window stays where it is.
-        if window::data(window).restore.get().is_some() {
+        // A maximised or fullscreen window stays where it is.
+        if window::data(window).restore.get().is_some()
+            || window::data(window).fullscreen.get().is_some()
+        {
             return;
         }
         let Some(frame) = self.frame_rect(window) else {
@@ -564,6 +566,9 @@ impl State {
     /// Prepares dragging the given edges of `window` from `pointer`. The
     /// caller installs the grab.
     pub fn start_resize(&mut self, window: &Window, edges: Edges, pointer: (i32, i32)) {
+        if window::data(window).fullscreen.get().is_some() {
+            return;
+        }
         if !edges.any() || window::data(window).restore.get().is_some() {
             return;
         }
