@@ -175,7 +175,7 @@ impl Layout {
                 canvas.round_rect(rect.x + card.gap, top, side, side, radius, theme.hover);
                 let x = rect.x + card.gap + (side - bitmap.width as i32) / 2;
                 let y = top + (side - bitmap.height as i32) / 2;
-                canvas.label(bitmap, x, y, ink);
+                canvas.label(bitmap, x, y, theme.text);
                 left = rect.x + card.gap + side + card.gap;
             }
             if let Some(label) = &part.label {
