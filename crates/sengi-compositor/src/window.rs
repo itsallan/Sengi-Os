@@ -425,9 +425,12 @@ impl State {
                 if mapped || toplevel.is_initial_configure_sent() {
                     toplevel.send_configure();
                 }
+                // It is not brought in front for asking: a window behind
+                // stays behind, and under the bar, until the user goes to
+                // it. Otherwise any program could put itself over
+                // everything by asking.
                 if mapped {
                     self.move_window(window, screen.x, screen.y);
-                    self.focus_window(window);
                 }
             }
             (false, Some(restore)) => {

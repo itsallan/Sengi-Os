@@ -127,6 +127,36 @@ fn a_fullscreen_window_covers_the_bar_and_gives_it_back() {
     );
 }
 
+#[test]
+fn a_window_behind_cannot_put_itself_in_front_by_going_fullscreen() {
+    let compositor = Compositor::start(None);
+    let mut shell = compositor.connect();
+    let _bar = shell.bar(30, RED).unwrap();
+    let mut behind = compositor.connect();
+    behind.keyboard().unwrap();
+    let (surface, toplevel) = behind.window(BLUE).unwrap();
+    assert!(behind.wait(SOON, |seen| seen.keyboard_enters == 1));
+    let mut front = compositor.connect();
+    front.keyboard().unwrap();
+    let _window = front.window(GREEN).unwrap();
+    assert!(front.wait(SOON, |seen| seen.keyboard_enters == 1));
+    assert!(behind.wait(SOON, |seen| seen.keyboard_leaves == 1));
+
+    toplevel.set_fullscreen(None);
+    assert!(behind.wait(SOON, |seen| seen.more.toplevel == Some((1280, 720, true))));
+    behind.paint(&surface, 1280, 720, BLUE).unwrap();
+    behind.wait(Duration::from_millis(300), |_| false);
+    // It has the size it asked for, behind: no keyboard, the window in
+    // front still in front, and the bar still over it.
+    assert_eq!(behind.seen.keyboard_enters, 1, "it took the keyboard");
+    front.roundtrip().unwrap();
+    assert_eq!(front.seen.keyboard_leaves, 0);
+    let picture = front.capture().unwrap();
+    assert_eq!(picture.at(640, 360), rgb(GREEN), "it is drawn in front");
+    assert_eq!(picture.at(5, 5), rgb(RED), "it covers the bar");
+    assert_eq!(picture.at(5, 700), rgb(BLUE), "it does not fill the screen");
+}
+
 /// How many pixels of `colour` the row across the middle of the screen has.
 fn across_the_middle(client: &mut common::Client, colour: u32) -> usize {
     let picture = client.capture().unwrap();
