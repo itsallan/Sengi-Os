@@ -86,9 +86,6 @@ pub struct WindowData {
     pub fitted: Cell<bool>,
     /// The screen a window asked to fill before it was first shown.
     pub fullscreen_on: RefCell<Option<Output>>,
-    /// The client area a window had before it was snapped to a side of
-    /// the screen, to go back to when it is moved or snapped back.
-    pub snap_restore: Cell<Option<Rect>>,
     /// Set while the window fills a screen: the client area to go back
     /// to, once it has had one.
     pub fullscreen: Cell<Option<Option<Rect>>>,
@@ -391,10 +388,6 @@ impl State {
 
     pub fn set_maximised(&mut self, window: &Window, maximised: bool) {
         let data = data(window);
-        // Maximising ends a snap; the size before the snap is not kept.
-        if maximised {
-            data.snap_restore.set(None);
-        }
         let Some(toplevel) = window.toplevel() else {
             return;
         };
@@ -568,9 +561,6 @@ impl State {
         } else {
             frame
         };
-        if data.snap_restore.get().is_none() {
-            data.snap_restore.set(self.client_rect(window));
-        }
         data.resize_anchor.set(None);
         self.forget_pointer_state(window);
         toplevel.with_pending_state(|state| {

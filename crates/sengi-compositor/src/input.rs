@@ -569,7 +569,6 @@ impl State {
         {
             return;
         }
-        window::data(window).snap_restore.set(None);
         let Some(frame) = self.frame_rect(window) else {
             return;
         };
