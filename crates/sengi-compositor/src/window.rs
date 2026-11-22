@@ -815,7 +815,7 @@ impl State {
                 rest: SolidColorBuffer::new(rest_size, fill),
                 left: SolidColorBuffer::new((border, side_height), line),
                 right: SolidColorBuffer::new((border, side_height), line),
-                bottom: SolidColorBuffer::new((painted, border), line),
+                bottom: SolidColorBuffer::new((full, border), line),
                 bottom_corners,
                 bottom_top: height - radius,
                 bottom_corner: corner,
@@ -826,7 +826,8 @@ impl State {
             buffers.rest.update(rest_size, fill);
             buffers.left.update((border, side_height), line);
             buffers.right.update((border, side_height), line);
-            buffers.bottom.update((painted, border), line);
+            buffers.titlebar_size = (painted, logical.metrics.titlebar);
+            buffers.bottom.update((full, border), line);
         }
     }
 }
