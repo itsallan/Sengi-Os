@@ -182,6 +182,35 @@ fn main() -> ExitCode {
                 }
             };
         }
+        Action::Set {
+            section,
+            key,
+            value,
+        } => {
+            // The same steps as a change made in the window: the file,
+            // then what the session reads, then the session is told.
+            let mut settings = load_settings(&dirs);
+            let changed = sengi_settings::settings::value_from_text(&section, &key, &value)
+                .and_then(|value| settings.change(&[(section, key, value)]));
+            if let Err(problem) = changed {
+                eprintln!("sengi-settings: {problem}");
+                return ExitCode::from(2);
+            }
+            settings.catch_up();
+            let applied = derive::apply(&dirs, &settings);
+            if applied.changed() {
+                derive::reconfigure();
+            }
+            let problems = applied.problems();
+            for problem in &problems {
+                eprintln!("sengi-settings: {problem}");
+            }
+            return if problems.is_empty() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            };
+        }
         Action::Apply => {
             let applied = derive::apply(&dirs, &load_settings(&dirs));
             let problems = applied.problems();

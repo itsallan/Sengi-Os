@@ -528,15 +528,23 @@ pub fn apply_with(dirs: &Dirs, settings: &Settings, known: &Known) -> Applied {
     }
 }
 
-/// Have the running labwc read its files again. Blocks until the command
-/// has run; call it off the UI thread. Without a labwc to tell (no
-/// `LABWC_PID`) there is nothing to do.
+/// Have the running compositor take the change up. Blocks until the
+/// command has run; call it off the UI thread.
+///
+/// labwc is told to read its files again. sengi-compositor reads the
+/// settings file itself and is told to do that. Each gives the programs
+/// of its session its process number, which is how the one to tell is
+/// known; with neither there is nothing to do.
 pub fn reconfigure() -> bool {
-    if std::env::var_os("LABWC_PID").is_none() {
+    let (program, request) = if std::env::var_os("LABWC_PID").is_some() {
+        ("labwc", "--reconfigure")
+    } else if std::env::var_os("SENGI_COMPOSITOR_PID").is_some() {
+        ("sengi-compositor", "--reload")
+    } else {
         return false;
-    }
-    Command::new("labwc")
-        .arg("--reconfigure")
+    };
+    Command::new(program)
+        .arg(request)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

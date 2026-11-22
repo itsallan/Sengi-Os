@@ -19,6 +19,36 @@ use crate::store::{self, Dirs, Document, Value};
 /// One key and what it should become: section, key, value.
 pub type Change = (String, String, Value);
 
+/// The value `text` stands for when it is given for `section.key` on the
+/// command line: a number, `true` or `false`, a list with commas, or the
+/// text itself, by what kind of setting the key is. Whether the value is
+/// one the key may have is for [`check`] to say.
+pub fn value_from_text(section: &str, key: &str, text: &str) -> Result<Value, String> {
+    let kind = KEYS
+        .iter()
+        .find(|(s, k, _)| *s == section && *k == key)
+        .map(|(_, _, default)| *default)
+        .ok_or(format!("no setting called {section}.{key}"))?;
+    match kind {
+        Default::Number(_) => text
+            .parse()
+            .map(Value::Number)
+            .map_err(|_| format!("{section}.{key} takes a number")),
+        Default::Flag(_) => match text {
+            "true" => Ok(Value::Flag(true)),
+            "false" => Ok(Value::Flag(false)),
+            _ => Err(format!("{section}.{key} takes true or false")),
+        },
+        Default::Text(_) => Ok(Value::text(text)),
+        Default::List(_) => Ok(Value::List(
+            text.split(',')
+                .filter(|item| !item.is_empty())
+                .map(str::to_string)
+                .collect(),
+        )),
+    }
+}
+
 /// What tells one version of a file from the next without reading it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Stamp {
@@ -145,6 +175,30 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_value_on_the_command_line_is_read_by_the_kind_of_its_key() {
+        let value = |section, key, text| value_from_text(section, key, text);
+        assert_eq!(
+            value("keyboard", "layouts", "us,fr(azerty)"),
+            Ok(Value::List(vec![
+                "us".to_string(),
+                "fr(azerty)".to_string()
+            ]))
+        );
+        assert_eq!(
+            value("keyboard", "repeat-rate", "40"),
+            Ok(Value::Number(40))
+        );
+        assert_eq!(
+            value("mouse", "natural-scroll", "true"),
+            Ok(Value::Flag(true))
+        );
+        assert_eq!(value("keyboard", "switch", ""), Ok(Value::text("")));
+        assert!(value("keyboard", "repeat-rate", "fast").is_err());
+        assert!(value("mouse", "natural-scroll", "yes").is_err());
+        assert!(value("mouse", "wheels", "4").is_err());
+    }
     use crate::testutil::TempDir;
 
     fn settings(system: &str, user: &str) -> Settings {
