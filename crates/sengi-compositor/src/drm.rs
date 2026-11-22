@@ -164,6 +164,9 @@ struct Screen {
     /// Switched off because the output was asked to be, see
     /// `output_power.rs`.
     dark: bool,
+    /// Asked to be dark but could not be switched off. It is drawn as
+    /// usual, and not asked again until the output has been on.
+    stays_lit: bool,
 }
 
 /// How long a queued frame may take to reach the screen before it is
@@ -812,27 +815,37 @@ fn draw_if_ready(backend: &Shared, state: &mut State) {
         for screen in screens.iter_mut() {
             if state.output_is_off(&screen.output) {
                 // Asked to be dark. A frame under way lands first.
-                if !screen.dark && screen.in_flight.is_none() {
+                if !screen.dark && !screen.stays_lit && screen.in_flight.is_none() {
                     let cleared = on_compositor!(&mut screen.compositor, |compositor| {
                         compositor.clear().map_err(|err| err.to_string())
                     });
-                    if let Err(err) = cleared {
-                        crate::say!("{}: cannot switch off: {err}", screen.output.name());
+                    match cleared {
+                        Ok(()) => {
+                            screen.dark = true;
+                            screen.on_glass = None;
+                        }
+                        // It still shows what it showed, so it is not
+                        // dark and must not count as covered: it goes on
+                        // being drawn like a lit one, lock screen and all.
+                        Err(err) => {
+                            crate::say!("{}: cannot switch off: {err}", screen.output.name());
+                            screen.stays_lit = true;
+                        }
                     }
-                    screen.dark = true;
-                    screen.on_glass = None;
                 }
                 if screen.dark {
                     dark.push(screen.output.clone());
+                    continue;
                 }
-                continue;
-            }
-            if screen.dark {
-                // Lit again: the next frame is drawn in full and sets the
-                // mode with it.
-                screen.dark = false;
-                screen.repaint();
-                screen.stale = true;
+            } else {
+                screen.stays_lit = false;
+                if screen.dark {
+                    // Lit again: the next frame is drawn in full and sets
+                    // the mode with it.
+                    screen.dark = false;
+                    screen.repaint();
+                    screen.stale = true;
+                }
             }
             // A screen with a frame under way is drawn when that lands.
             if !screen.stale || screen.in_flight.is_some() || screen.waiting {
@@ -1257,6 +1270,7 @@ impl Drm {
             output,
             compositor,
             dark: false,
+            stays_lit: false,
             in_flight: None,
             stale: true,
             on_glass: None,
