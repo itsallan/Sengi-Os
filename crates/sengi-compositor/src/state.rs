@@ -168,6 +168,8 @@ pub struct State {
     _relative_pointer_state: RelativePointerManagerState,
     /// What every output is scaled by: `--scale`.
     pub output_scale: f64,
+    /// The program that has the keyboard.
+    pub keyboard_client: Option<ClientId>,
     /// The surface whose pointer constraint is in force.
     pub constrained: Option<WlSurface>,
     /// What a drag carries along under the pointer.
@@ -442,6 +444,7 @@ impl State {
             _pointer_constraints_state: PointerConstraintsState::new::<Self>(&dh2),
             _relative_pointer_state: RelativePointerManagerState::new::<Self>(&dh2),
             output_scale: 1.0,
+            keyboard_client: None,
             constrained: None,
             drag_icon: None,
             idle_inhibitors: Vec::new(),
@@ -1193,7 +1196,10 @@ impl SeatHandler for State {
         // The clipboard follows the keyboard.
         let client = focused.and_then(|surface| self.display_handle.get_client(surface.id()).ok());
         set_data_device_focus(&self.display_handle, seat, client.clone());
-        set_primary_focus(&self.display_handle, seat, client);
+        set_primary_focus(&self.display_handle, seat, client.clone());
+        // And so does the right to hold the pointer.
+        self.keyboard_client = client.map(|client| client.id());
+        self.settle_pointer_constraint();
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {

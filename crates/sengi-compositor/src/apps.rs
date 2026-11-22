@@ -129,16 +129,10 @@ impl FractionalScaleHandler for State {
 }
 
 impl PointerConstraintsHandler for State {
-    fn new_constraint(&mut self, surface: &WlSurface, pointer: &PointerHandle<Self>) {
-        // It takes effect at once where the pointer is already on the
-        // surface, and otherwise when it gets there.
-        if pointer.current_focus().as_ref() == Some(surface) {
-            with_pointer_constraint(surface, pointer, |constraint| {
-                if let Some(constraint) = constraint {
-                    constraint.activate();
-                }
-            });
-        }
+    fn new_constraint(&mut self, _surface: &WlSurface, _pointer: &PointerHandle<Self>) {
+        // It takes effect at once where that is allowed, and otherwise
+        // when it becomes so.
+        self.settle_pointer_constraint();
     }
 
     fn cursor_position_hint(
@@ -222,27 +216,51 @@ impl State {
         self.settle_pointer_constraint();
     }
 
-    /// After the pointer has moved: a constraint on the surface it is now
-    /// on begins, and one on a surface it has left ends.
+    /// Brings the pointer constraint in line with how things stand. Called
+    /// when the pointer has moved, when the keyboard has gone to another
+    /// program, when a constraint is asked for and when the session locks.
+    ///
+    /// A program may hold the pointer only while it is the one in use:
+    /// its surface is under the pointer, it has the keyboard, the session
+    /// is not locked, and the pointer is inside the region the constraint
+    /// names, if it names one. Otherwise any window the pointer passed
+    /// over could trap it. A constraint in force ends as soon as the
+    /// first three no longer hold.
     pub fn settle_pointer_constraint(&mut self) {
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
-        let focus = pointer.current_focus();
-        if let Some(left) = self
-            .constrained
-            .take_if(|held| Some(&*held) != focus.as_ref())
-        {
-            with_pointer_constraint(&left, &pointer, |constraint| {
-                if let Some(constraint) = constraint.filter(|constraint| constraint.is_active()) {
-                    constraint.deactivate();
-                }
+        let here = pointer.current_location();
+        let allowed = (!self.is_locked())
+            .then(|| self.surface_under(here))
+            .flatten()
+            .filter(|(surface, _)| {
+                let owner = self.display_handle.get_client(surface.id()).ok();
+                owner.is_some() && owner.map(|client| client.id()) == self.keyboard_client
             });
+        let on = allowed.as_ref().map(|(surface, _)| surface);
+        if let Some(left) = self.constrained.take_if(|held| Some(&*held) != on) {
+            if left.is_alive() {
+                with_pointer_constraint(&left, &pointer, |constraint| {
+                    if let Some(constraint) = constraint.filter(|held| held.is_active()) {
+                        constraint.deactivate();
+                    }
+                });
+            }
         }
-        let Some(surface) = focus else { return };
+        let Some((surface, origin)) = allowed else {
+            return;
+        };
+        let within = (here - origin).to_i32_round();
         with_pointer_constraint(&surface, &pointer, |constraint| {
-            if let Some(constraint) = constraint {
-                if !constraint.is_active() {
-                    constraint.activate();
-                }
+            let Some(constraint) = constraint else { return };
+            if constraint.is_active() {
+                self.constrained = Some(surface.clone());
+                return;
+            }
+            let in_region = constraint
+                .region()
+                .is_none_or(|region| region.contains(within));
+            if in_region {
+                constraint.activate();
                 self.constrained = Some(surface.clone());
             }
         });
@@ -266,7 +284,12 @@ impl ClientDndGrabHandler for State {
     }
 }
 
-impl ServerDndGrabHandler for State {}
+impl ServerDndGrabHandler for State {
+    fn cancelled(&mut self, _seat: Seat<Self>) {
+        self.drag_icon = None;
+        self.request_redraw();
+    }
+}
 
 delegate_primary_selection!(State);
 delegate_xdg_activation!(State);

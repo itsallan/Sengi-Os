@@ -217,6 +217,15 @@ impl Compositor {
         std::fs::write(self.dir.join("config/sengi-os/settings.toml"), settings).expect("settings");
     }
 
+    /// Every line the compositor wrote that contains `what`.
+    pub fn said_all(&self, what: &str) -> Vec<String> {
+        let log = self.log.lock().unwrap();
+        log.iter()
+            .filter(|line| line.contains(what))
+            .cloned()
+            .collect()
+    }
+
     /// The last line the compositor wrote that contains `what`.
     pub fn said(&self, what: &str) -> Option<String> {
         let log = self.log.lock().unwrap();

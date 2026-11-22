@@ -20,6 +20,7 @@ use wayland_client::{
         wl_data_source::WlDataSource,
         wl_output::{self, WlOutput},
         wl_pointer::{self, WlPointer},
+        wl_region::WlRegion,
         wl_seat::WlSeat,
         wl_shm,
         wl_surface::WlSurface,
@@ -93,6 +94,7 @@ pub struct More {
     /// Each relative motion: dx and dy.
     pub relative: Vec<(f64, f64)>,
     pub pointer_locked: u32,
+    pub pointer_unlocked: u32,
     pub pointer_confined: u32,
     /// What a screen copy frame wants for a buffer: width, height, stride.
     pub frame_buffer: Option<(u32, u32, u32)>,
@@ -231,6 +233,29 @@ impl Client {
             surface,
             pointer,
             None,
+            Lifetime::Persistent,
+            &self.handle,
+            (),
+        );
+        self.roundtrip()?;
+        Ok(locked)
+    }
+
+    /// As `lock_pointer`, but only once the pointer is inside this part of
+    /// the surface: left, top, width, height.
+    pub fn lock_pointer_within(
+        &mut self,
+        surface: &WlSurface,
+        pointer: &WlPointer,
+        (x, y, width, height): (i32, i32, i32, i32),
+    ) -> Result<ZwpLockedPointerV1, Failure> {
+        let constraints: ZwpPointerConstraintsV1 = self.globals.bind(&self.handle, 1..=1, ())?;
+        let region = self.compositor.create_region(&self.handle, ());
+        region.add(x, y, width, height);
+        let locked = constraints.lock_pointer(
+            surface,
+            pointer,
+            Some(&region),
             Lifetime::Persistent,
             &self.handle,
             (),
@@ -536,8 +561,10 @@ impl Dispatch<ZwpLockedPointerV1, ()> for Seen {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let zwp_locked_pointer_v1::Event::Locked = event {
-            seen.more.pointer_locked += 1;
+        match event {
+            zwp_locked_pointer_v1::Event::Locked => seen.more.pointer_locked += 1,
+            zwp_locked_pointer_v1::Event::Unlocked => seen.more.pointer_unlocked += 1,
+            _ => {}
         }
     }
 }
@@ -621,6 +648,7 @@ delegate_noop!(Seen: ignore ZwpPrimarySelectionSourceV1);
 delegate_noop!(Seen: XdgActivationV1);
 delegate_noop!(Seen: WpFractionalScaleManagerV1);
 delegate_noop!(Seen: ZwpPointerConstraintsV1);
+delegate_noop!(Seen: WlRegion);
 delegate_noop!(Seen: ZwpRelativePointerManagerV1);
 delegate_noop!(Seen: ZwlrScreencopyManagerV1);
 delegate_noop!(Seen: ZwlrLayerShellV1);

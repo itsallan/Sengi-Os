@@ -511,6 +511,10 @@ impl SessionLockHandler for State {
         });
         self.update_keyboard_focus();
         self.refocus_pointer();
+        // Nothing of the session holds the pointer under the lock, and
+        // nothing of a drag is left on the screen.
+        self.settle_pointer_constraint();
+        self.drag_icon = None;
         self.request_redraw();
     }
 

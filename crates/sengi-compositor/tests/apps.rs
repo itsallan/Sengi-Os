@@ -252,6 +252,79 @@ fn a_locked_pointer_stays_put_and_its_movement_is_still_told() {
 }
 
 #[test]
+fn a_program_without_the_keyboard_cannot_hold_the_pointer() {
+    // The pointer goes onto a bar, whose program asks to lock it there.
+    let script = "1500 move 100 10\n2600 nudge 50 0\n";
+    let compositor = Compositor::start_with(None, None, Some(script));
+    let mut shell = compositor.connect();
+    let pointer = shell.pointer().unwrap();
+    let (bar, _layer) = shell.bar(30, RED).unwrap();
+    let _relative = shell.relative_pointer(&pointer).unwrap();
+    let mut app = compositor.connect();
+    app.keyboard().unwrap();
+    let _window = app.window(GREEN).unwrap();
+    assert!(app.wait(SOON, |seen| seen.keyboard_enters == 1));
+    assert!(shell.wait(SOON, |seen| seen.more.pointer_enters == 1));
+    let _lock = shell.lock_pointer(&bar, &pointer).unwrap();
+
+    assert!(shell.wait(SOON, |seen| seen.more.relative.len() == 1));
+    assert_eq!(shell.seen.more.pointer_locked, 0, "it was given the lock");
+    let said = compositor.status_line("pointer at");
+    assert!(said.contains("pointer at 150,10"), "{said}");
+}
+
+#[test]
+fn a_lock_ends_when_the_keyboard_goes_to_another_program() {
+    let script = "1500 move 640 360\n";
+    let compositor = Compositor::start_with(None, None, Some(script));
+    let mut app = compositor.connect();
+    app.keyboard().unwrap();
+    let pointer = app.pointer().unwrap();
+    let (surface, _toplevel) = app.window(GREEN).unwrap();
+    assert!(app.wait(SOON, |seen| seen.keyboard_enters == 1));
+    assert!(app.wait(SOON, |seen| seen.more.pointer_enters == 1));
+    let _lock = app.lock_pointer(&surface, &pointer).unwrap();
+    assert!(app.wait(SOON, |seen| seen.more.pointer_locked == 1));
+
+    let mut other = compositor.connect();
+    let _window = other.window(BLUE).unwrap();
+    assert!(
+        app.wait(SOON, |seen| seen.keyboard_leaves == 1),
+        "focus did not leave"
+    );
+    // Smithay also unlocks when the new window covers the pointer, so one
+    // or two unlocks are both right; what must not happen is none.
+    assert!(
+        app.wait(SOON, |seen| seen.more.pointer_unlocked >= 1),
+        "still locked with the keyboard elsewhere"
+    );
+}
+
+#[test]
+fn a_lock_with_a_region_waits_for_the_pointer_to_be_in_it() {
+    // The window's top left corner is at 490,260. The first movement
+    // takes the pointer into the corner the lock names, the second would
+    // take it out again.
+    let script = "1500 move 640 360\n2600 nudge -140 -90\n3400 nudge 30 0\n";
+    let compositor = Compositor::start_with(None, None, Some(script));
+    let mut app = compositor.connect();
+    let pointer = app.pointer().unwrap();
+    let (surface, _toplevel) = app.window(GREEN).unwrap();
+    let _relative = app.relative_pointer(&pointer).unwrap();
+    assert!(app.wait(SOON, |seen| seen.more.pointer_enters == 1));
+    let _lock = app
+        .lock_pointer_within(&surface, &pointer, (0, 0, 20, 20))
+        .unwrap();
+    app.wait(Duration::from_millis(300), |_| false);
+    assert_eq!(app.seen.more.pointer_locked, 0, "locked outside its region");
+
+    assert!(app.wait(SOON, |seen| seen.more.relative.len() == 2));
+    assert_eq!(app.seen.more.pointer_locked, 1);
+    let said = compositor.status_line("pointer at");
+    assert!(said.contains("pointer at 500,270"), "{said}");
+}
+
+#[test]
 fn a_confined_pointer_does_not_leave_its_window() {
     // The window is 300 wide around the middle: 500 to the right is out
     // of it, 20 is not.
