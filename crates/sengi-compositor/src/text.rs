@@ -11,6 +11,8 @@ use crate::decoration::TextBitmap;
 
 /// Titles longer than this many pixels are cut off; no title bar is wider.
 const MAX_WIDTH: f32 = 4096.0;
+/// The most characters `Font::fit` measures.
+const FITTED_CHARS: usize = 300;
 
 /// How deep font directories are searched.
 const MAX_DEPTH: usize = 4;
@@ -110,22 +112,37 @@ impl Font {
 
     /// `text` as one line that is at most `max_width` pixels wide. What does
     /// not fit is cut short and ends with an ellipsis, so that a long title
-    /// reads as cut rather than as stopping at a letter.
+    /// reads as cut rather than as stopping at a letter. Nothing past
+    /// `FITTED_CHARS` characters is measured: a title is never that long,
+    /// and a client should not be able to make this slow.
     pub fn fit(&self, text: &str, max_width: usize) -> TextBitmap {
-        let whole = self.render(text);
-        if whole.width <= max_width {
-            return whole;
+        let characters: Vec<char> = text.chars().take(FITTED_CHARS + 1).collect();
+        let cut = characters.len() > FITTED_CHARS;
+        let whole: String = characters.iter().take(FITTED_CHARS).collect();
+        let bitmap = self.render(&whole);
+        if !cut && bitmap.width <= max_width {
+            return bitmap;
         }
-        let characters: Vec<char> = text.chars().collect();
-        for keep in (0..characters.len()).rev() {
+        // The longest kept part that fits with its ellipsis: the width only
+        // grows with the kept part, so a binary search finds it.
+        let ellipsised = |keep: usize| {
             let mut shorter: String = characters[..keep].iter().collect();
             shorter.push('\u{2026}');
-            let bitmap = self.render(&shorter);
-            if bitmap.width <= max_width {
-                return bitmap;
+            shorter
+        };
+        let (mut low, mut high) = (0, characters.len().min(FITTED_CHARS).saturating_sub(1));
+        let mut best = None;
+        while low < high {
+            let keep = (low + high).div_ceil(2);
+            let candidate = self.render(&ellipsised(keep));
+            if candidate.width <= max_width {
+                low = keep;
+                best = Some(candidate);
+            } else {
+                high = keep - 1;
             }
         }
-        self.render("\u{2026}")
+        best.unwrap_or_else(|| self.render("\u{2026}"))
     }
 
     /// One line of text, as tall as the font's ascent plus descent.
@@ -239,10 +256,16 @@ mod tests {
 mod fit_tests {
     use super::*;
 
+    // Needs the typeface installed, like the test above: fonts-inter is in
+    // the image and the CI runner installs it. Without it the test fails
+    // unless SENGI_TEST_WITHOUT_FONTS is set.
     #[test]
     fn a_long_title_is_cut_with_an_ellipsis_and_a_short_one_is_whole() {
         let Some(font) = Font::load("Inter", 500, 13) else {
-            eprintln!("skipped: no Inter installed to measure with");
+            assert!(
+                std::env::var_os("SENGI_TEST_WITHOUT_FONTS").is_some(),
+                "Inter is not installed (fonts-inter); set SENGI_TEST_WITHOUT_FONTS=1 to skip"
+            );
             return;
         };
         let long = "a title that is far too long for the room a window gives it";
@@ -251,5 +274,25 @@ mod fit_tests {
         assert!(fitted.width < font.render(long).width);
         let short = font.fit("Terminal", 400);
         assert_eq!(short.width, font.render("Terminal").width);
+    }
+
+    #[test]
+    fn a_title_of_any_length_is_cut_to_the_room_quickly() {
+        let Some(font) = Font::load("Inter", 500, 13) else {
+            assert!(
+                std::env::var_os("SENGI_TEST_WITHOUT_FONTS").is_some(),
+                "Inter is not installed (fonts-inter); set SENGI_TEST_WITHOUT_FONTS=1 to skip"
+            );
+            return;
+        };
+        let endless = "word ".repeat(10_000);
+        let fitted = font.fit(&endless, 120);
+        assert!(
+            fitted.width <= 120 && fitted.width > 0,
+            "{} wide",
+            fitted.width
+        );
+        // No room at all: still an answer, not a panic.
+        let _ = font.fit(&endless, 0);
     }
 }
