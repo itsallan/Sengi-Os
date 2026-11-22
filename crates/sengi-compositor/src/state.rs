@@ -752,6 +752,13 @@ impl State {
         }
     }
 
+    /// Ends a program we started.
+    pub fn end_child(&mut self, pid: u32) {
+        if let Some(child) = self.children.iter_mut().find(|child| child.id() == pid) {
+            let _ = child.kill();
+        }
+    }
+
     /// The programs we started that are still running.
     pub fn child_pids(&self) -> Vec<u32> {
         self.children.iter().map(Child::id).collect()

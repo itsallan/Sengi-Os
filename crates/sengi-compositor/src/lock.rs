@@ -43,6 +43,7 @@ use smithay::{
             ext_session_lock_v1::{self, ExtSessionLockV1},
         },
         wayland_server::{
+            backend::protocol::ProtocolError,
             delegate_dispatch, delegate_global_dispatch,
             protocol::{wl_output::WlOutput, wl_surface::WlSurface},
             Client, DataInit, Dispatch, DisplayHandle, Resource,
@@ -155,6 +156,20 @@ fn answer(mut asker: UnixStream, locked: bool) {
 /// request is answered with a failure.
 const LOCK_TRIES: u32 = 3;
 
+/// How long a locker may run before it has the session lock.
+const LOCKER_TIME: Duration = Duration::from_secs(10);
+
+/// `LOCKER_TIME`, or what the tests set in its place.
+fn locker_time() -> Duration {
+    if cfg!(feature = "test-hooks") {
+        let set = std::env::var("SENGI_COMPOSITOR_LOCKER_TIME_MS").ok();
+        if let Some(millis) = set.and_then(|text| text.parse().ok()) {
+            return Duration::from_millis(millis);
+        }
+    }
+    LOCKER_TIME
+}
+
 /// How long to wait before starting a locker for a session whose locker
 /// died, and between attempts if that one fails too.
 const RELOCK_DELAY: Duration = Duration::from_secs(1);
@@ -210,14 +225,52 @@ impl State {
             locker: Some(gone.clone()),
             ..ClientState::default()
         };
-        if let Err(err) = self.display_handle.insert_client(ours, Arc::new(data)) {
-            crate::say!("cannot take the locker on: {err}");
+        let client = match self.display_handle.insert_client(ours, Arc::new(data)) {
+            Ok(client) => client,
+            Err(err) => {
+                crate::say!("cannot take the locker on: {err}");
+                return;
+            }
+        };
+        let Some(pid) = self.spawn_program(&program, &arguments, Some(theirs)) else {
+            return;
+        };
+        self.locker_pids.push(pid);
+        self.locker_gone = Some(gone);
+        // A locker that neither locks nor leaves would keep everybody
+        // waiting, and keep the next one from being started.
+        let timer = Timer::from_duration(locker_time());
+        let _ = self.loop_handle.insert_source(timer, move |_, _, state| {
+            state.locker_overdue(pid, &client);
+            TimeoutAction::Drop
+        });
+    }
+
+    /// The time a locker has to take the lock is up. One that is still
+    /// running without the session in its hands is ended, and its
+    /// connection with it, which also ends whatever it left behind that
+    /// holds the other end. What follows is what follows any locker
+    /// that went away without locking.
+    fn locker_overdue(&mut self, pid: u32, client: &Client) {
+        let running = self.child_pids();
+        self.locker_pids.retain(|pid| running.contains(pid));
+        if !self.locker_pids.contains(&pid) || self.lock_holder() == Holder::Alive {
             return;
         }
-        if let Some(pid) = self.spawn_program(&program, &arguments, Some(theirs)) {
-            self.locker_pids.push(pid);
-            self.locker_gone = Some(gone);
-        }
+        crate::say!(
+            "the locker did not lock within {:?}; ending it",
+            locker_time()
+        );
+        self.end_child(pid);
+        client.kill(
+            &self.display_handle,
+            ProtocolError {
+                code: 0,
+                object_id: 1,
+                object_interface: "wl_display".into(),
+                message: "the session was not locked in time".into(),
+            },
+        );
     }
 
     /// Somebody asked for the screen to be locked, through

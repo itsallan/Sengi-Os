@@ -126,6 +126,25 @@ fn a_locker_that_dies_before_locking_is_started_again() {
 }
 
 #[test]
+fn a_locker_that_hangs_is_ended_and_does_not_block_the_next() {
+    // It never connects and never leaves.
+    let (locker, count) = counting_locker("hangs", "exec sleep 60");
+    let compositor = Compositor::start_in(
+        Some(&locker),
+        None,
+        None,
+        &[("SENGI_COMPOSITOR_LOCKER_TIME_MS", "300")],
+    );
+    let asked = compositor.ask_for_lock().wait().unwrap();
+    assert!(!asked.success());
+    assert_eq!(runs(&count), 3, "each try is ended and the next started");
+    assert!(compositor.status().contains("session unlocked"));
+    // Nothing is left in the way of a later request.
+    assert!(!compositor.ask_for_lock().wait().unwrap().success());
+    assert_eq!(runs(&count), 6);
+}
+
+#[test]
 fn a_second_lock_object_cannot_unlock() {
     let compositor = Compositor::start(None);
     let (mut locker, _held) = locked(&compositor);
