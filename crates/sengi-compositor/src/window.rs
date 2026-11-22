@@ -32,6 +32,36 @@ use crate::{
     state::{set_activated, State},
 };
 
+/// The widest title bar, in logical pixels, that is painted on a screen
+/// `screen_w` pixels wide at `scale`. A scale that is not a positive number
+/// counts as one.
+fn painted_limit(screen_w: i32, scale: f64, floor: i32) -> i32 {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    ((f64::from(screen_w) / scale).ceil() as i32).max(floor)
+}
+
+#[cfg(test)]
+mod painted_tests {
+    use super::painted_limit;
+
+    #[test]
+    fn the_title_cap_is_the_screen_in_logical_pixels_at_any_scale() {
+        assert_eq!(painted_limit(1280, 1.0, 100), 1280);
+        assert_eq!(painted_limit(1280, 2.0, 100), 640);
+        // Below one the screen is larger in logical pixels, not smaller.
+        assert_eq!(painted_limit(1280, 0.5, 100), 2560);
+        // A scale of 60 is far past anything the compositor takes; the floor
+        // still holds, and nothing divides by zero.
+        assert_eq!(painted_limit(1280, 60.0, 100), 100);
+        assert_eq!(painted_limit(1280, 0.0, 100), 1280);
+        assert_eq!(painted_limit(1280, f64::NAN, 100), 1280);
+    }
+}
+
 /// The title last rasterised: its text, the room it had, and its pixels.
 pub type TitleCache = Option<(String, usize, Option<Rc<TextBitmap>>)>;
 
@@ -650,13 +680,12 @@ impl State {
 
     /// The widest title bar that is painted as a texture.
     fn max_painted_width(&self) -> i32 {
-        // In logical pixels: the screen's width at its scale.
-        let scale = self.output_scale.max(1.0);
+        let floor = self.theme.metrics.min_frame_width();
         self.output()
             .and_then(|output| output.current_mode())
-            .map(|mode| (f64::from(mode.size.w) / scale).ceil() as i32)
+            .map(|mode| painted_limit(mode.size.w, self.output_scale, floor))
             .unwrap_or(FALLBACK_PAINTED_WIDTH)
-            .max(self.theme.metrics.min_frame_width())
+            .max(floor)
     }
 
     /// The title of `window` as pixels, cut to `room` pixels with an
