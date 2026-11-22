@@ -434,8 +434,9 @@ tells the compositor it is running under: `labwc --reconfigure` there,
 
 - `[keyboard]`: `layouts` and `switch` make the keymap, `repeat-delay` and
   `repeat-rate` the key repeat (600 ms and 25 a second unless set, as
-  under labwc). With nothing set XKB's defaults apply, and with them the
-  `XKB_DEFAULT_*` variables from the environment file. A layout the
+  under labwc). The layout is always named to XKB, plain `us` too, so
+  that the `XKB_DEFAULT_*` variables the session was started with, which
+  are those of the last login, never stand in for it. A layout the
   system does not have leaves the keymap as it was and says so in the
   journal. The layout in use is told to clients the usual way, so the
   lock screen shows it.

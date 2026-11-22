@@ -22,6 +22,16 @@ fn locker_stand_in() {
     harness::hand_over();
 }
 
+/// The keymap a compositor started with these settings and variables
+/// gives its clients.
+fn keymap_of(settings: Option<&str>, variables: &[(&str, &str)]) -> String {
+    let compositor = Compositor::start_in(None, settings, None, variables);
+    let mut client = compositor.connect();
+    client.keyboard().unwrap();
+    assert!(client.wait(SOON, |seen| !seen.keymaps.is_empty()));
+    client.seen.keymaps.remove(0)
+}
+
 #[test]
 fn the_keyboard_starts_as_settings_has_it() {
     let compositor = Compositor::start_with(None, Some(TWO_LAYOUTS), None);
@@ -30,7 +40,8 @@ fn the_keyboard_starts_as_settings_has_it() {
     assert!(client.wait(SOON, |seen| !seen.keymaps.is_empty()));
     let keymap = client.seen.keymaps.last().unwrap();
     assert!(keymap.contains("German"), "the second layout is German");
-    assert!(keymap.contains("ISO_Next_Group"), "the switch is in it");
+    let without_switch = keymap_of(Some("[keyboard]\nlayouts = [\"us\", \"de\"]\n"), &[]);
+    assert_ne!(keymap, &without_switch, "the switch is in it");
     assert_eq!(client.seen.repeat, Some((40, 250)));
 }
 
@@ -68,6 +79,48 @@ fn a_change_in_settings_reaches_the_keyboard_on_a_hangup() {
     assert!(client.wait(SOON, |seen| seen.keymaps.len() == 3));
     assert!(!client.seen.keymaps[2].contains("German"));
     assert!(client.wait(SOON, |seen| seen.repeat == Some((25, 600))));
+}
+
+#[test]
+fn going_back_to_the_plain_layout_does_not_fall_back_on_the_environment() {
+    // As after a login with German set: Settings wrote the variables for
+    // the session, and they stay in the compositor's environment.
+    let german = "[keyboard]\nlayouts = [\"de\"]\nswitch = \"grp:alt_shift_toggle\"\n";
+    let compositor = Compositor::start_in(
+        None,
+        Some(german),
+        None,
+        &[
+            ("XKB_DEFAULT_LAYOUT", "de"),
+            ("XKB_DEFAULT_OPTIONS", "grp:alt_shift_toggle"),
+        ],
+    );
+    let mut client = compositor.connect();
+    client.keyboard().unwrap();
+    assert!(client.wait(SOON, |seen| seen.keymaps.len() == 1));
+    assert!(client.seen.keymaps[0].contains("German"));
+
+    compositor.write_settings("");
+    compositor.signal("HUP");
+    assert!(
+        client.wait(SOON, |seen| seen.keymaps.len() == 2),
+        "no new keymap came"
+    );
+    assert!(!client.seen.keymaps[1].contains("German"));
+    assert_eq!(
+        client.seen.keymaps[1],
+        keymap_of(None, &[]),
+        "not the keymap of a session with nothing set"
+    );
+}
+
+#[test]
+fn settings_decide_the_keyboard_not_the_environment() {
+    let variables = [
+        ("XKB_DEFAULT_LAYOUT", "de"),
+        ("XKB_DEFAULT_OPTIONS", "grp:alt_shift_toggle"),
+    ];
+    assert_eq!(keymap_of(None, &variables), keymap_of(None, &[]));
 }
 
 #[test]

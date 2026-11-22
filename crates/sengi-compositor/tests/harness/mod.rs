@@ -44,10 +44,29 @@ impl Compositor {
         Self::start_with(locker, None, None)
     }
 
+    /// As `start_with`, with `variables` in the compositor's environment.
+    pub fn start_in(
+        locker: Option<&str>,
+        settings: Option<&str>,
+        script: Option<&str>,
+        variables: &[(&str, &str)],
+    ) -> Self {
+        Self::launch(locker, settings, script, variables)
+    }
+
     /// As `start`, with the settings file `settings` in a configuration
     /// directory of its own (see `write_settings`), and with `script`
     /// played as input.
     pub fn start_with(locker: Option<&str>, settings: Option<&str>, script: Option<&str>) -> Self {
+        Self::launch(locker, settings, script, &[])
+    }
+
+    fn launch(
+        locker: Option<&str>,
+        settings: Option<&str>,
+        script: Option<&str>,
+        variables: &[(&str, &str)],
+    ) -> Self {
         static COUNT: AtomicU32 = AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!(
             "sengi-test-{}-{}",
@@ -83,6 +102,7 @@ impl Compositor {
             .env_remove("XKB_DEFAULT_LAYOUT")
             .env_remove("XKB_DEFAULT_VARIANT")
             .env_remove("XKB_DEFAULT_OPTIONS")
+            .envs(variables.iter().copied())
             .env(HANDOVER, &handover_path)
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("DISPLAY")

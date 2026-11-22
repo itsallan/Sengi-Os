@@ -16,8 +16,11 @@ pub struct Config {
 }
 
 /// The layouts as XKB takes them: names, variants and options, each a
-/// list with commas. All empty means XKB's own defaults, which follow the
-/// `XKB_DEFAULT_*` variables.
+/// list with commas. From the settings the layout is always named, `us`
+/// too: an empty name would have XKB fall back on the `XKB_DEFAULT_*`
+/// variables in the compositor's own environment, which were right at
+/// login and are not after a change. An empty layout stands for exactly
+/// that, the environment's keyboard.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Keyboard {
     pub layout: String,
@@ -97,12 +100,7 @@ impl Config {
 
     pub fn from_settings(settings: &Settings) -> Config {
         let layouts = settings.layouts();
-        let switch = settings.text("keyboard", "switch");
-        let plain = layouts.is_empty()
-            || (layouts.len() == 1 && layouts[0].layout == "us" && layouts[0].variant.is_empty());
-        let (layout, variant) = if plain && switch.is_empty() {
-            (String::new(), String::new())
-        } else if layouts.is_empty() {
+        let (layout, variant) = if layouts.is_empty() {
             ("us".to_string(), String::new())
         } else {
             let join = |pick: fn(&sengi_config::settings::Layout) -> &str| {
@@ -114,7 +112,7 @@ impl Config {
             keyboard: Keyboard {
                 layout,
                 variant,
-                options: switch,
+                options: settings.text("keyboard", "switch"),
                 repeat_delay: settings.number("keyboard", "repeat-delay").clamp(1, 10_000) as i32,
                 repeat_rate: settings.number("keyboard", "repeat-rate").clamp(0, 1_000) as i32,
             },
@@ -186,9 +184,9 @@ mod tests {
     }
 
     #[test]
-    fn with_nothing_set_xkb_decides_and_the_defaults_are_settings_own() {
+    fn with_nothing_set_the_layout_is_named_and_the_defaults_are_settings_own() {
         let config = config("");
-        assert_eq!(config.keyboard.layout, "");
+        assert_eq!(config.keyboard.layout, "us");
         assert_eq!(config.keyboard.variant, "");
         assert_eq!(config.keyboard.options, "");
         assert_eq!(config.keyboard.repeat_delay, 600);

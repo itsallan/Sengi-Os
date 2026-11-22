@@ -926,13 +926,17 @@ pub fn set_activated(window: &Window, active: bool) {
     }
 }
 
-/// The keymap to ask XKB for. Empty names leave the choice to XKB, which
-/// follows the `XKB_DEFAULT_*` variables.
+/// The keymap to ask XKB for. A named layout comes with its variants and
+/// options as they are, empty ones too, so that nothing is filled in from
+/// the `XKB_DEFAULT_*` variables. No layout leaves all of it to those.
 fn xkb_config(keys: &crate::config::Keyboard) -> XkbConfig<'_> {
+    if keys.layout.is_empty() {
+        return XkbConfig::default();
+    }
     XkbConfig {
         layout: &keys.layout,
         variant: &keys.variant,
-        options: (!keys.options.is_empty()).then(|| keys.options.clone()),
+        options: Some(keys.options.clone()),
         ..XkbConfig::default()
     }
 }
