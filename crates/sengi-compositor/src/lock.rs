@@ -151,6 +151,10 @@ fn answer(mut asker: UnixStream, locked: bool) {
     let _ = asker.write_all(if locked { b"locked\n" } else { b"failed\n" });
 }
 
+/// How many times a locker is started for one request to lock before the
+/// request is answered with a failure.
+const LOCK_TRIES: u32 = 3;
+
 /// How long to wait before starting a locker for a session whose locker
 /// died, and between attempts if that one fails too.
 const RELOCK_DELAY: Duration = Duration::from_secs(1);
@@ -233,6 +237,9 @@ impl State {
             answer(asker, false);
             return;
         }
+        if self.lock_askers.is_empty() {
+            self.lock_tries = 1;
+        }
         self.lock_askers.push(asker);
         self.spawn_locker();
     }
@@ -244,9 +251,10 @@ impl State {
         }
     }
 
-    /// Those who asked for a lock that is not going to come are told so:
-    /// the locker we started for them has gone, its connection too, and
-    /// the session is not in a locker's hands.
+    /// The locker we started for those who asked has gone, its connection
+    /// too, and the session is not in a locker's hands. A locker can die
+    /// of something that passes, so it is started again, `LOCK_TRIES`
+    /// times in all; after that those who asked are told it failed.
     fn give_up_on_lock(&mut self) {
         if self.lock_askers.is_empty() || self.lock_holder() == Holder::Alive {
             return;
@@ -255,7 +263,17 @@ impl State {
             .locker_gone
             .as_ref()
             .is_none_or(|gone| gone.load(Ordering::Relaxed));
-        if connection_gone && self.locker_pids.is_empty() {
+        if !connection_gone || !self.locker_pids.is_empty() {
+            return;
+        }
+        if self.lock_tries < LOCK_TRIES {
+            self.lock_tries += 1;
+            crate::say!(
+                "the locker went away without locking; starting it again ({} of {LOCK_TRIES})",
+                self.lock_tries
+            );
+            self.spawn_locker();
+        } else {
             self.answer_lock_askers(false);
         }
     }

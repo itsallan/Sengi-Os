@@ -147,6 +147,8 @@ pub struct State {
     pub locker_gone: Option<Arc<AtomicBool>>,
     /// Those who asked for the lock and have not been answered yet.
     pub lock_askers: Vec<UnixStream>,
+    /// How many lockers have been started for them so far.
+    pub lock_tries: u32,
     /// Where `--lock` is asked for; the file goes when we do.
     _control: ControlSocket,
     /// Switches to another virtual terminal, where the backend can.
@@ -389,6 +391,7 @@ impl State {
             locker_program: None,
             locker_gone: None,
             lock_askers: Vec::new(),
+            lock_tries: 0,
             _control: control,
             switch_vt: None,
             page_flips: 0,

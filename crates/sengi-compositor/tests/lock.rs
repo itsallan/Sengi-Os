@@ -73,13 +73,56 @@ fn whoever_asked_for_the_lock_is_answered_once_it_holds() {
     assert!(status.contains("1 lock surface"), "{status}");
 }
 
+/// A locker for the compositor to start: a shell script that notes each
+/// run in a file and then does `then`. Returns the `--locker` command and
+/// the file.
+fn counting_locker(name: &str, then: &str) -> (String, std::path::PathBuf) {
+    let base = std::env::temp_dir().join(format!("sengi-test-{name}-{}", std::process::id()));
+    let (script, runs) = (base.with_extension("sh"), base.with_extension("runs"));
+    let _ = std::fs::remove_file(&runs);
+    let text = format!("echo run >>'{}'\n{then}\n", runs.display());
+    std::fs::write(&script, text).unwrap();
+    (format!("/bin/sh {}", script.display()), runs)
+}
+
+fn runs(file: &std::path::Path) -> usize {
+    std::fs::read_to_string(file).map_or(0, |text| text.lines().count())
+}
+
 #[test]
-fn a_lock_that_does_not_come_is_reported() {
-    // A locker that leaves without locking anything.
-    let compositor = Compositor::start(Some("/bin/true"));
+fn a_lock_that_does_not_come_is_reported_after_three_tries() {
+    // A locker that leaves without locking anything, every time.
+    let (locker, count) = counting_locker("never", "exit 1");
+    let compositor = Compositor::start(Some(&locker));
     let asked = compositor.ask_for_lock().wait().unwrap();
     assert!(!asked.success());
+    assert_eq!(runs(&count), 3);
     assert!(compositor.status().contains("session unlocked"));
+
+    // The next request starts over.
+    assert!(!compositor.ask_for_lock().wait().unwrap().success());
+    assert_eq!(runs(&count), 6);
+}
+
+#[test]
+fn a_locker_that_dies_before_locking_is_started_again() {
+    // Twice it dies at once; the third is the test's stand-in.
+    let me = std::env::current_exe().unwrap();
+    let then = format!(
+        "[ \"$(wc -l <\"$0.runs\")\" -ge 3 ] || exit 1\nexec '{}' --exact locker_stand_in --nocapture",
+        me.display()
+    );
+    let (locker, count) = counting_locker("flaky", &then.replace("$0.runs", "$RUNS"));
+    let compositor = Compositor::start_in(
+        Some(&locker),
+        None,
+        None,
+        &[("RUNS", count.to_str().unwrap())],
+    );
+    let mut asker = compositor.ask_for_lock();
+    let (_locker, _held) = hold(compositor.next_locker());
+    assert!(asker.wait().unwrap().success());
+    assert_eq!(runs(&count), 3);
 }
 
 #[test]
