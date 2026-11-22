@@ -791,9 +791,16 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         screens_lit.as_millis()
     );
     state.request_redraw();
-    // When the loop ends everything is dropped, which gives the display
-    // and the terminal back.
-    state.run(event_loop)
+    let ended = state.run(event_loop);
+    // Everything is dropped now, which gives the display and the terminal
+    // back. Smithay would first try to put the display back as it found
+    // it and to switch the screens off, and by then logind has taken the
+    // device away again, so both only ever failed, loudly. Whoever gets
+    // the display next, the login screen or a session or the console,
+    // sets its own mode. Told that the device is no longer ours, Smithay
+    // leaves it alone.
+    backend.borrow_mut().device.pause();
+    ended
 }
 
 fn draw_if_ready(backend: &Shared, state: &mut State) {
