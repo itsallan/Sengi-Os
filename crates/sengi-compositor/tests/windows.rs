@@ -313,3 +313,41 @@ fn a_wide_window_has_its_bottom_border_across_the_screen_at_scale_two() {
         assert!(below.contains(&border), "no bottom border at x {x}: {below:x?}");
     }
 }
+
+/// At a scale of one half, a client that grows by one logical pixel where
+/// the physical width does not change still has its bar as wide as the
+/// frame: the bar's size is refreshed with the frame, not kept from before.
+#[test]
+fn a_bar_grows_with_its_window_at_half_scale() {
+    let compositor = Compositor::start_args(&["--scale", "0.5"], None);
+    let mut app = compositor.connect();
+    app.keyboard().unwrap();
+    let (surface, _toplevel) = app.decorated_window(GREEN).unwrap();
+    assert!(app.wait(SOON, |seen| seen.keyboard_enters == 1));
+    app.paint(&surface, 301, 200, GREEN).unwrap();
+    app.paint(&surface, 302, 200, GREEN).unwrap();
+    let picture = app.capture().unwrap();
+    let mid = picture.width / 2;
+    let client_top = (0..picture.height)
+        .find(|&y| rgb(picture.at(mid, y)) == rgb(GREEN))
+        .expect("the client is on screen");
+    let client_right = (0..picture.width)
+        .rev()
+        .find(|&x| rgb(picture.at(x, client_top + 3)) == rgb(GREEN))
+        .expect("the client is on screen");
+    let bar_row = client_top - 4;
+    let bar_colour = sengi_tokens::Tokens::builtin()
+        .color("color.surface")
+        .expect("the tokens define the title bar colour");
+    let bar_colour = u32::from(bar_colour.r) << 16
+        | u32::from(bar_colour.g) << 8
+        | u32::from(bar_colour.b);
+    let bar_right = (0..picture.width)
+        .rev()
+        .find(|&x| rgb(picture.at(x, bar_row)) == bar_colour)
+        .expect("the bar is on screen");
+    assert!(
+        bar_right > client_right,
+        "the bar ends at {bar_right}, the client at {client_right}"
+    );
+}
