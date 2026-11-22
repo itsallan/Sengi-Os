@@ -135,8 +135,8 @@ impl State {
     }
 
     fn copy_frame(&mut self, wanted: &Frame, buffer: &WlBuffer) -> bool {
-        // Locked since the frame was asked for: not any more.
-        if self.is_locked() {
+        // Locked, or on the login screen, since the frame was asked for.
+        if self.is_locked() || self.login_screen {
             return false;
         }
         let Some(mut capture) = self.capture.take() else {
