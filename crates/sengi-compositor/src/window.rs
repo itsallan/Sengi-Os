@@ -27,6 +27,7 @@ use smithay::{
 use crate::{
     decoration::{self, TextBitmap, Theme, Titlebar},
     frame::{self, Edges},
+    keys::Edge,
     layout::Rect,
     state::{set_activated, State},
 };
@@ -47,6 +48,12 @@ pub struct WindowData {
     pub minimised: Cell<Option<(i32, i32)>>,
     /// The client asked to be maximised before its first buffer.
     pub start_maximised: Cell<bool>,
+    /// Set once a window too large for the screen has been asked to be
+    /// smaller, so that it is mapped whatever it answers the second time.
+    pub fitted: Cell<bool>,
+    /// The client area a window had before it was snapped to a side of
+    /// the screen, to go back to when it is moved or snapped back.
+    pub snap_restore: Cell<Option<Rect>>,
     /// Set while the window fills a screen: the client area to go back
     /// to, once it has had one.
     pub fullscreen: Cell<Option<Option<Rect>>>,
@@ -325,6 +332,10 @@ impl State {
 
     pub fn set_maximised(&mut self, window: &Window, maximised: bool) {
         let data = data(window);
+        // Maximising ends a snap; the size before the snap is not kept.
+        if maximised {
+            data.snap_restore.set(None);
+        }
         let Some(toplevel) = window.toplevel() else {
             return;
         };
@@ -463,6 +474,121 @@ impl State {
             .last()
             .filter(|window| data(window).fullscreen.get().is_some())
             .cloned()
+    }
+
+    /// The usable part of the screen `window` is on, inset by the gap
+    /// labwc keeps from the edges for these actions.
+    fn snap_area(&self, window: &Window) -> Option<Rect> {
+        let frame = self.frame_rect(window)?;
+        let usable = self.usable_area_near(frame);
+        let gap = self.edge_gap();
+        Some(Rect::new(
+            usable.x + gap,
+            usable.y + gap,
+            usable.w - 2 * gap,
+            usable.h - 2 * gap,
+        ))
+    }
+
+    /// The gap labwc keeps between windows and the screen edges, from the
+    /// same token its rc.xml takes.
+    fn edge_gap(&self) -> i32 {
+        i32::try_from(self.tokens.px("space.xs").unwrap_or(0)).unwrap_or(0)
+    }
+
+    /// Gives `window` the frame `frame`, without changing whether it is
+    /// maximised. Remembers the size before the first snap.
+    fn fill_frame(&mut self, window: &Window, frame: Rect) {
+        let data = data(window);
+        let Some(toplevel) = window.toplevel() else {
+            return;
+        };
+        let client = if data.decorated.get() {
+            self.theme.metrics.client(frame)
+        } else {
+            frame
+        };
+        if data.snap_restore.get().is_none() {
+            data.snap_restore.set(self.client_rect(window));
+        }
+        data.resize_anchor.set(None);
+        self.forget_pointer_state(window);
+        toplevel.with_pending_state(|state| {
+            state.size = Some((client.w, client.h).into());
+        });
+        toplevel.send_configure();
+        self.move_window(window, client.x, client.y);
+        self.request_redraw();
+    }
+
+    /// Fills half of the screen on `edge`, as labwc's SnapToEdge does. A
+    /// maximised window is first given back its size.
+    pub fn snap_to_edge(&mut self, window: &Window, edge: Edge) {
+        if data(window).restore.get().is_some() {
+            self.set_maximised(window, false);
+        }
+        let Some(area) = self.snap_area(window) else {
+            return;
+        };
+        let gap = self.edge_gap();
+        let frame = match edge {
+            Edge::Left => Rect::new(area.x, area.y, area.w / 2 - gap / 2, area.h),
+            Edge::Right => {
+                let at = area.w / 2 + gap / 2;
+                Rect::new(area.x + at, area.y, area.w - at, area.h)
+            }
+            Edge::Up => Rect::new(area.x, area.y, area.w, area.h / 2 - gap / 2),
+            Edge::Down => {
+                let at = area.h / 2 + gap / 2;
+                Rect::new(area.x, area.y + at, area.w, area.h - at)
+            }
+        };
+        self.fill_frame(window, frame);
+    }
+
+    /// Moves `window` to the edge of the screen on `edge`, keeping its
+    /// size, as labwc's MoveToEdge does with no other window in the way.
+    pub fn move_to_edge(&mut self, window: &Window, edge: Edge) {
+        if data(window).restore.get().is_some() {
+            return;
+        }
+        let (Some(frame), Some(area)) = (self.frame_rect(window), self.snap_area(window)) else {
+            return;
+        };
+        let (x, y) = match edge {
+            Edge::Left => (area.x, frame.y),
+            Edge::Right => (area.right() - frame.w, frame.y),
+            Edge::Up => (frame.x, area.y),
+            Edge::Down => (frame.x, area.bottom() - frame.h),
+        };
+        self.move_frame_to(window, x, y);
+    }
+
+    /// The window was let go of after a move, at `location`: at the top
+    /// edge of its screen it is maximised, at a side it is snapped to that
+    /// side, as labwc does with its default range of one pixel and
+    /// topMaximize.
+    pub fn snap_after_move(&mut self, window: &Window, location: (f64, f64)) {
+        const RANGE: f64 = 1.0;
+        let Some(output) = self.output_at(location.into()) else {
+            return;
+        };
+        let Some(screen) = self.space.output_geometry(&output) else {
+            return;
+        };
+        let (x, y) = location;
+        let (left, top) = (f64::from(screen.loc.x), f64::from(screen.loc.y));
+        let right = left + f64::from(screen.size.w);
+        let bottom = top + f64::from(screen.size.h);
+        if y <= top + RANGE {
+            self.set_maximised(window, true);
+        } else if x <= left + RANGE {
+            self.snap_to_edge(window, Edge::Left);
+        } else if x >= right - RANGE {
+            self.snap_to_edge(window, Edge::Right);
+        } else if y >= bottom - RANGE {
+            self.snap_to_edge(window, Edge::Down);
+        }
     }
 
     pub fn toggle_maximise(&mut self, window: &Window) {

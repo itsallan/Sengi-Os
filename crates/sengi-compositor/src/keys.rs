@@ -7,6 +7,14 @@ const SPACE: u32 = 0x0020;
 const RETURN: u32 = 0xff0d;
 const TAB: u32 = 0xff09;
 const F4: u32 = 0xffc1;
+const LEFT: u32 = 0xff51;
+const UP: u32 = 0xff52;
+const RIGHT: u32 = 0xff53;
+const DOWN: u32 = 0xff54;
+/// The volume and mute keys of most keyboards.
+const AUDIO_LOWER: u32 = 0x1008_ff11;
+const AUDIO_MUTE: u32 = 0x1008_ff12;
+const AUDIO_RAISE: u32 = 0x1008_ff13;
 /// What Shift+Tab produces.
 const ISO_LEFT_TAB: u32 = 0xfe20;
 /// XF86Switch_VT_1; the other eleven follow it.
@@ -34,6 +42,30 @@ pub enum Action {
     PreviousWindow,
     /// Ctrl+Alt+F1 to F12, which xkb turns into one keysym each.
     SwitchVt(i32),
+    /// Super+A: maximise, or back.
+    Maximise,
+    /// Super+an arrow: half of the screen on that side.
+    Snap(Edge),
+    /// Alt+an arrow: the window to that edge of the screen.
+    MoveToEdge(Edge),
+    Volume(Volume),
+}
+
+/// A side of a screen, for snapping and moving windows to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Edge {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// What the volume keys do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Volume {
+    Up,
+    Down,
+    Mute,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +99,12 @@ pub fn binding(mods: Mods, keysym: u32) -> Option<Action> {
     if let Some(vt) = vt_for(keysym) {
         return Some(Action::SwitchVt(vt));
     }
+    match keysym {
+        AUDIO_RAISE => return Some(Action::Volume(Volume::Up)),
+        AUDIO_LOWER => return Some(Action::Volume(Volume::Down)),
+        AUDIO_MUTE => return Some(Action::Volume(Volume::Mute)),
+        _ => {}
+    }
     let letter = char::from_u32(keysym)
         .filter(char::is_ascii_alphabetic)
         .map(|c| c.to_ascii_lowercase());
@@ -75,6 +113,11 @@ pub fn binding(mods: Mods, keysym: u32) -> Option<Action> {
 
     if only_logo {
         return match (keysym, letter) {
+            (LEFT, _) => Some(Action::Snap(Edge::Left)),
+            (RIGHT, _) => Some(Action::Snap(Edge::Right)),
+            (UP, _) => Some(Action::Snap(Edge::Up)),
+            (DOWN, _) => Some(Action::Snap(Edge::Down)),
+            (_, Some('a')) => Some(Action::Maximise),
             (SPACE, _) => Some(Action::Launcher),
             (RETURN, _) => Some(Action::Terminal),
             (_, Some('l')) => Some(Action::Lock),
@@ -84,6 +127,15 @@ pub fn binding(mods: Mods, keysym: u32) -> Option<Action> {
     }
     if only_alt && !mods.shift && keysym == F4 {
         return Some(Action::CloseWindow);
+    }
+    if only_alt && !mods.shift {
+        match keysym {
+            LEFT => return Some(Action::MoveToEdge(Edge::Left)),
+            RIGHT => return Some(Action::MoveToEdge(Edge::Right)),
+            UP => return Some(Action::MoveToEdge(Edge::Up)),
+            DOWN => return Some(Action::MoveToEdge(Edge::Down)),
+            _ => {}
+        }
     }
     if only_alt && (keysym == TAB || keysym == ISO_LEFT_TAB) {
         return Some(if mods.shift {
@@ -108,10 +160,24 @@ pub fn command(action: Action) -> Option<&'static str> {
             "if command -v sengi-run >/dev/null 2>&1; then exec sengi-run foot; else exec foot; fi",
         ),
         // The locker is configurable and tracked, see `State::spawn_locker`.
+        // wpctl is what PipeWire's session manager ships; the sink is the
+        // one the session chose.
+        Action::Volume(Volume::Up) => Some(
+            "wpctl set-mute @DEFAULT_AUDIO_SINK@ 0; wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+",
+        ),
+        Action::Volume(Volume::Down) => {
+            Some("wpctl set-mute @DEFAULT_AUDIO_SINK@ 0; wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-")
+        }
+        Action::Volume(Volume::Mute) => Some("wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"),
+        // The locker is configurable and tracked, see `State::spawn_locker`.
+        // The window actions are carried out by `State::run_action`.
         Action::Lock
         | Action::CloseWindow
         | Action::NextWindow
         | Action::PreviousWindow
+        | Action::Maximise
+        | Action::Snap(_)
+        | Action::MoveToEdge(_)
         | Action::SwitchVt(_) => None,
     }
 }
@@ -166,6 +232,31 @@ mod tests {
         ctrl: false,
         shift: false,
     };
+
+    #[test]
+    fn super_a_maximises_and_super_arrows_snap() {
+        assert_eq!(binding(LOGO, 'a' as u32), Some(Action::Maximise));
+        assert_eq!(binding(LOGO, LEFT), Some(Action::Snap(Edge::Left)));
+        assert_eq!(binding(LOGO, DOWN), Some(Action::Snap(Edge::Down)));
+        // Alt with an arrow moves the window to that edge.
+        assert_eq!(binding(ALT, RIGHT), Some(Action::MoveToEdge(Edge::Right)));
+        let alt_shift = Mods { shift: true, ..ALT };
+        assert_eq!(binding(alt_shift, RIGHT), None);
+    }
+
+    #[test]
+    fn the_volume_keys_run_wpctl_whatever_the_modifiers() {
+        assert_eq!(
+            binding(Mods::default(), AUDIO_RAISE),
+            Some(Action::Volume(Volume::Up))
+        );
+        assert_eq!(
+            binding(LOGO, AUDIO_MUTE),
+            Some(Action::Volume(Volume::Mute))
+        );
+        let up = command(Action::Volume(Volume::Up)).unwrap();
+        assert!(up.contains("wpctl set-volume") && up.contains("5%+"));
+    }
 
     #[test]
     fn super_bindings_match_the_labwc_configuration() {

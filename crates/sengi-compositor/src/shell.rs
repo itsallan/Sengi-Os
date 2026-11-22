@@ -328,6 +328,24 @@ impl State {
             return;
         }
 
+        // A window that would not fit the usable area is asked to be smaller
+        // first, and mapped when it has answered. Asked once: a client that
+        // will not shrink is placed as it is.
+        let fullscreen = window::data(&window).fullscreen.get().is_some();
+        let decorated_now = window::wants_server_decoration(&window) && !fullscreen;
+        let usable = self.usable_area();
+        let most = if decorated_now {
+            self.theme.metrics.client(usable)
+        } else {
+            usable
+        };
+        if (size.w > most.w || size.h > most.h) && !window::data(&window).fitted.get() {
+            window::data(&window).fitted.set(true);
+            let fit = (size.w.min(most.w.max(1)), size.h.min(most.h.max(1)));
+            window::request_size(&window, fit, false);
+            return;
+        }
+
         self.pending_windows.remove(index);
         let fullscreen = window::data(&window).fullscreen.get().is_some();
         let decorated = window::wants_server_decoration(&window) && !fullscreen;

@@ -306,12 +306,27 @@ impl State {
                 self.cycle = Some((order, index));
             }
             Action::Lock => self.spawn_locker(),
+            Action::Maximise => {
+                if let Some(window) = self.focus_stack.current().cloned() {
+                    self.toggle_maximise(&window);
+                }
+            }
+            Action::Snap(edge) => {
+                if let Some(window) = self.focus_stack.current().cloned() {
+                    self.snap_to_edge(&window, edge);
+                }
+            }
+            Action::MoveToEdge(edge) => {
+                if let Some(window) = self.focus_stack.current().cloned() {
+                    self.move_to_edge(&window, edge);
+                }
+            }
             Action::SwitchVt(vt) => {
                 if let Some(switch) = self.switch_vt.as_mut() {
                     switch(vt);
                 }
             }
-            Action::Launcher | Action::Terminal => {}
+            Action::Launcher | Action::Terminal | Action::Volume(_) => {}
         }
     }
 
@@ -547,12 +562,14 @@ impl State {
     /// Prepares dragging `window` by its title bar from `pointer`. The
     /// caller installs the grab.
     pub fn start_move(&mut self, window: &Window, pointer: (i32, i32)) {
-        // A maximised or fullscreen window stays where it is.
+        // A maximised or fullscreen window stays where it is. A snapped
+        // one is let go of, and is its own size from now on.
         if window::data(window).restore.get().is_some()
             || window::data(window).fullscreen.get().is_some()
         {
             return;
         }
+        window::data(window).snap_restore.set(None);
         let Some(frame) = self.frame_rect(window) else {
             return;
         };
@@ -633,7 +650,10 @@ impl State {
                     self.press_button(&window, button);
                 }
             }
-            Some(Drag::Move { .. }) | None => {}
+            Some(Drag::Move { window, .. }) => {
+                self.snap_after_move(&window, (location.x, location.y));
+            }
+            None => {}
         }
     }
 
