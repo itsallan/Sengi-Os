@@ -295,29 +295,38 @@ pub struct Titlebar {
     pub cut: bool,
 }
 
-/// Paints the bottom of a window's frame, from its bottom corners up: the
-/// border along the bottom and up the sides, rounded at the corners with
-/// `radius`, and the desktop outside those corners, where the client's own
-/// square corners would otherwise show. Everything is in pixels; the part
-/// above the corners is left clear, so the client shows through it.
-pub fn draw_bottom(
-    width: i32,
-    height: i32,
+/// One bottom corner of a window's frame, `size` pixels square: the border
+/// around the rounded corner at `radius`, the desktop outside it, where the
+/// client's own square corner would otherwise show. The left corner is at
+/// the left of the canvas, or the right one when `right` is set. The rest of
+/// the canvas is the border, or clear above it, so the client shows through.
+pub fn draw_bottom_corner(
+    size: i32,
     radius: f32,
     border: i32,
     edge: Rgba,
     desktop: Rgba,
+    right: bool,
 ) -> Canvas {
-    let (width, height) = (width.max(1), height.max(1));
-    let mut canvas = Canvas::new(width as usize, height as usize);
+    let size = size.max(1);
+    let mut canvas = Canvas::new(size as usize, size as usize);
     let inner_radius = (radius - border as f32).max(0.0);
-    let outer = Rounded::new(Rect::new(0, 0, width, height), [0.0, 0.0, radius, radius]);
+    let (outer_radii, inner_radii, inner_x) = if right {
+        ([0.0, 0.0, radius, 0.0], [0.0, 0.0, inner_radius, 0.0], 0)
+    } else {
+        (
+            [0.0, 0.0, 0.0, radius],
+            [0.0, 0.0, 0.0, inner_radius],
+            border,
+        )
+    };
+    let outer = Rounded::new(Rect::new(0, 0, size, size), outer_radii);
     let inner = Rounded::new(
-        Rect::new(border, 0, width - 2 * border, height - border),
-        [0.0, 0.0, inner_radius, inner_radius],
+        Rect::new(inner_x, 0, size - border, size - border),
+        inner_radii,
     );
-    for y in 0..height as usize {
-        for x in 0..width as usize {
+    for y in 0..size as usize {
+        for x in 0..size as usize {
             let outside = outer.coverage(x, y);
             let inside = inner.coverage(x, y);
             canvas.blend(x, y, desktop, 1.0 - outside);
@@ -443,15 +452,32 @@ mod tests {
             b: 255,
             a: 255,
         };
-        let canvas = draw_bottom(40, 12, 6.0, 2, edge, desktop);
         // Red, green, blue, alpha.
-        for corner in [canvas.pixel(0, 11), canvas.pixel(39, 11)] {
-            assert!(corner[2] > 200 && corner[0] < 60, "corner {corner:?}");
-        }
-        let middle = canvas.pixel(20, 11);
-        assert!(middle[0] > 200 && middle[2] < 60, "bottom edge {middle:?}");
-        // Above the corners, the client shows through.
-        assert_eq!(canvas.pixel(20, 0)[3], 0);
+        let is_desktop = |p: [u8; 4]| p[2] > 200 && p[0] < 60;
+        let is_edge = |p: [u8; 4]| p[0] > 200 && p[2] < 60;
+        let left = draw_bottom_corner(8, 6.0, 2, edge, desktop, false);
+        assert!(
+            is_desktop(left.pixel(0, 7)),
+            "left corner {:?}",
+            left.pixel(0, 7)
+        );
+        assert!(
+            is_edge(left.pixel(7, 7)),
+            "bottom edge at the right of the piece"
+        );
+        assert!(is_edge(left.pixel(4, 7)), "bottom edge");
+        assert_eq!(left.pixel(7, 0)[3], 0, "the client shows above the corner");
+        let right = draw_bottom_corner(8, 6.0, 2, edge, desktop, true);
+        assert!(
+            is_desktop(right.pixel(7, 7)),
+            "right corner {:?}",
+            right.pixel(7, 7)
+        );
+        assert!(
+            is_edge(right.pixel(0, 7)),
+            "bottom edge at the left of the piece"
+        );
+        assert_eq!(right.pixel(0, 0)[3], 0, "the client shows above the corner");
     }
 
     #[test]

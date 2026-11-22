@@ -289,12 +289,9 @@ fn frame<R>(
         ),
         (&buffers.left, at(-metrics.border, 0)),
         (&buffers.right, at(size.w, 0)),
+        (&buffers.bottom, at(-metrics.border, size.h)),
     ];
-    // The bottom is the solid strip only when its corners are square; the
-    // rounded one is drawn in front of the client instead.
-    let bottom =
-        (buffers.bottom_rounded.is_none()).then(|| (&buffers.bottom, at(-metrics.border, size.h)));
-    for (buffer, position) in sides.into_iter().chain(bottom) {
+    for (buffer, position) in sides {
         elements.push(OutputElement::Solid(SolidColorRenderElement::from_buffer(
             buffer,
             position.to_physical_precise_round(scale),
@@ -328,23 +325,26 @@ fn frame_corners<R>(
     let Some(buffers) = slot.as_ref() else {
         return;
     };
-    let Some(corners) = buffers.bottom_rounded.as_ref() else {
+    let Some(corners) = buffers.bottom_corners.as_ref() else {
         return;
     };
     let border = state.theme.metrics.border;
-    let at = Point::<i32, Logical>::from((location.x - border, location.y + buffers.bottom_top));
-    let element = MemoryRenderBufferRenderElement::from_buffer(
-        renderer,
-        at.to_f64().to_physical_precise_round(scale),
-        corners,
-        None,
-        None,
-        Some(Size::from(buffers.bottom_size)),
-        Kind::Unspecified,
-    );
-    match element {
-        Ok(element) => elements.push(OutputElement::Memory(element)),
-        Err(err) => crate::say!("cannot draw the window corners: {err:?}"),
+    let left = Point::<i32, Logical>::from((location.x - border, location.y + buffers.bottom_top));
+    for (corner, offset) in corners.iter().zip([0, buffers.bottom_right]) {
+        let at = left + Point::from((offset, 0));
+        let element = MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            at.to_f64().to_physical_precise_round(scale),
+            corner,
+            None,
+            None,
+            Some(Size::from((buffers.bottom_corner, buffers.bottom_corner))),
+            Kind::Unspecified,
+        );
+        match element {
+            Ok(element) => elements.push(OutputElement::Memory(element)),
+            Err(err) => crate::say!("cannot draw the window corners: {err:?}"),
+        }
     }
 }
 

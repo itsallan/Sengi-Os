@@ -82,12 +82,15 @@ pub struct FrameBuffers {
     pub left: SolidColorBuffer,
     pub right: SolidColorBuffer,
     pub bottom: SolidColorBuffer,
-    /// The bottom corners, when they are rounded: drawn in front of the
-    /// client, where the corners of its own square area are covered.
-    pub bottom_rounded: Option<MemoryRenderBuffer>,
-    /// Where that is, from the top of the frame's client area, and its size.
+    /// The left and right bottom corners, when they are rounded: drawn in
+    /// front of the client, where the corners of its own square area are
+    /// covered. Each is `bottom_corner` pixels square.
+    pub bottom_corners: Option<[MemoryRenderBuffer; 2]>,
+    /// Where they are, from the top of the frame's client area.
     pub bottom_top: i32,
-    pub bottom_size: (i32, i32),
+    /// Their size, and how far the right one is from the left one.
+    pub bottom_corner: i32,
+    pub bottom_right: i32,
 }
 
 pub fn data(window: &Window) -> &WindowData {
@@ -715,7 +718,9 @@ impl State {
         let rest_size = (full - painted, logical.metrics.titlebar);
         // Square corners at the bottom when the window fills the screen.
         let radius = if square { 0 } else { logical.radius };
-        let side_height = height - radius;
+        // The size of each bottom corner: the radius and the border.
+        let corner = logical.radius + border;
+        let side_height = (height - radius).max(0);
         let shape = (full, height, square);
         // Where the title may go: between the buttons and the frame's edge.
         let room = to_pixels(painted)
@@ -740,27 +745,32 @@ impl State {
                 Transform::Normal,
                 None,
             );
-            let bottom_rounded = (!square).then(|| {
+            // Two small corners, whatever the window's width: the client
+            // sets that, so nothing here may grow with it.
+            let bottom_corners = (!square).then(|| {
                 let desktop = self
                     .tokens
                     .color("color.desktop")
                     .expect("tokens define color.desktop");
-                let corners = decoration::draw_bottom(
-                    to_pixels(full),
-                    to_pixels(radius + border),
-                    to_pixels(radius) as f32,
-                    to_pixels(border),
-                    logical.border,
-                    desktop,
-                );
-                MemoryRenderBuffer::from_slice(
-                    &corners.into_pixels(),
-                    Fourcc::Argb8888,
-                    (to_pixels(full).max(1), to_pixels(radius + border).max(1)),
-                    1,
-                    Transform::Normal,
-                    None,
-                )
+                let size = to_pixels(corner).max(1);
+                [false, true].map(|right| {
+                    let picture = decoration::draw_bottom_corner(
+                        size,
+                        to_pixels(radius) as f32,
+                        to_pixels(border),
+                        logical.border,
+                        desktop,
+                        right,
+                    );
+                    MemoryRenderBuffer::from_slice(
+                        &picture.into_pixels(),
+                        Fourcc::Argb8888,
+                        (size, size),
+                        1,
+                        Transform::Normal,
+                        None,
+                    )
+                })
             });
             *slot = Some(FrameBuffers {
                 look: (bar, title),
@@ -770,17 +780,18 @@ impl State {
                 rest: SolidColorBuffer::new(rest_size, fill),
                 left: SolidColorBuffer::new((border, side_height), line),
                 right: SolidColorBuffer::new((border, side_height), line),
-                bottom: SolidColorBuffer::new((full, border), line),
-                bottom_rounded,
+                bottom: SolidColorBuffer::new((painted, border), line),
+                bottom_corners,
                 bottom_top: height - radius,
-                bottom_size: (full, radius + border),
+                bottom_corner: corner,
+                bottom_right: (full - corner).max(0),
             });
         }
         if let Some(buffers) = slot.as_mut() {
             buffers.rest.update(rest_size, fill);
             buffers.left.update((border, side_height), line);
             buffers.right.update((border, side_height), line);
-            buffers.bottom.update((full, border), line);
+            buffers.bottom.update((painted, border), line);
         }
     }
 }
