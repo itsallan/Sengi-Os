@@ -514,6 +514,7 @@ impl SessionLockHandler for State {
         // Nothing of the session holds the pointer under the lock, and
         // nothing of a drag is left on the screen.
         self.settle_pointer_constraint();
+        self.drag_ended();
         self.drag_icon = None;
         self.request_redraw();
     }

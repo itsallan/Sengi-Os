@@ -649,16 +649,18 @@ impl State {
                     self.press_button(&window, button);
                 }
             }
-            Some(Drag::Move { window, .. }) => {
+            // Nothing is snapped or maximised under the lock.
+            Some(Drag::Move { window, .. }) if !self.is_locked() => {
                 self.snap_after_move(&window, (location.x, location.y));
             }
+            Some(Drag::Move { .. }) => {}
             None => {}
         }
     }
 
     /// The grab is gone, by release or because something took the pointer
     /// away (the lock, a popup). Whatever was in progress stops here.
-    fn drag_ended(&mut self) {
+    pub fn drag_ended(&mut self) {
         if let Some(Drag::Resize { window, .. }) = self.drag.take() {
             window::finish_resize(&window);
         }
