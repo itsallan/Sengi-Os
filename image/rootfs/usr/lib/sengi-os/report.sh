@@ -45,14 +45,35 @@ desktop_is_up() {
 	return 1
 }
 
-# The compositor the desktop session is running on. Ours only ever runs
-# for a session; labwc is also what the login screen is shown in.
+# The compositor the desktop session of user number 1000 is running on.
+# The login screen runs in one of its own, as its own user, and that one
+# is not meant here. The kernel keeps fifteen letters of a program's name.
 session_compositor() {
-	if pidof sengi-compositor >/dev/null; then
+	if pgrep -u 1000 -x sengi-composito >/dev/null; then
 		echo sengi-compositor
 	else
 		echo labwc
 	fi
+}
+
+# Its process number; nothing if it is not running.
+session_compositor_pid() {
+	pgrep -u 1000 -x "$(session_compositor | cut -c1-15)" | head -n 1
+}
+
+# The compositor the login screen is shown in, when there is one, and the
+# process numbers of the login screen and that compositor together.
+greeter_compositor() {
+	if pgrep -u _greetd -x sengi-composito >/dev/null; then
+		echo sengi-compositor
+	elif pgrep -u _greetd -x labwc >/dev/null; then
+		echo labwc
+	else
+		return 1
+	fi
+}
+greeter_pids() {
+	pgrep -u _greetd -x 'sengi-greeter|labwc|sengi-composito'
 }
 
 # Runs a command as the person logged in on the live image, inside their
@@ -61,7 +82,7 @@ session_compositor() {
 # gives it, which is how Settings knows whom to tell of a change.
 as_live() {
 	desktop_is_up || return 1
-	compositor_pid=$(pgrep -u live -x "$(session_compositor | cut -c1-15)" | head -n 1)
+	compositor_pid=$(session_compositor_pid)
 	pid_name=LABWC_PID
 	[ "$(session_compositor)" = labwc ] || pid_name=SENGI_COMPOSITOR_PID
 	runuser -u live -- env HOME=/home/live XDG_RUNTIME_DIR=/run/user/1000 \

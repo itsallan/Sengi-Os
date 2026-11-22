@@ -538,3 +538,7 @@ if [ "$(echo "$boot_s $budget_boot_s" | awk '{print ($1 >= $2)}')" = 1 ]; then
 	fail=1
 fi
 exit $fail
+if [ -n "$forward_fail" ]; then
+	echo "FAIL: $forward_fail" >&2
+	fail=1
+fi
