@@ -538,8 +538,8 @@ impl State {
         Some(Rect::new(
             usable.x + gap,
             usable.y + gap,
-            usable.w - 2 * gap,
-            usable.h - 2 * gap,
+            (usable.w - 2 * gap).max(1),
+            (usable.h - 2 * gap).max(1),
         ))
     }
 
@@ -552,6 +552,7 @@ impl State {
     /// Gives `window` the frame `frame`, without changing whether it is
     /// maximised. Remembers the size before the first snap.
     fn fill_frame(&mut self, window: &Window, frame: Rect) {
+        let frame = Rect::new(frame.x, frame.y, frame.w.max(1), frame.h.max(1));
         let data = data(window);
         let Some(toplevel) = window.toplevel() else {
             return;
