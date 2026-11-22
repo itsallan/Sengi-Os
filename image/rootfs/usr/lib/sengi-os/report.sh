@@ -54,3 +54,16 @@ session_compositor() {
 		echo labwc
 	fi
 }
+
+# Runs a command as the person logged in on the live image, inside their
+# desktop session as far as the environment goes: the session's socket,
+# and the compositor's process number under the name each compositor
+# gives it, which is how Settings knows whom to tell of a change.
+as_live() {
+	desktop_is_up || return 1
+	compositor_pid=$(pgrep -u live -x "$(session_compositor | cut -c1-15)" | head -n 1)
+	pid_name=LABWC_PID
+	[ "$(session_compositor)" = labwc ] || pid_name=SENGI_COMPOSITOR_PID
+	runuser -u live -- env HOME=/home/live XDG_RUNTIME_DIR=/run/user/1000 \
+		WAYLAND_DISPLAY="${socket##*/}" "$pid_name=$compositor_pid" "$@"
+}

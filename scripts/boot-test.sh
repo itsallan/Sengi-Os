@@ -340,6 +340,68 @@ else
 	lock_fail="sengi-lock did not start on Super+L"
 fi
 
+# What Settings drives, changed without logging out. The guest makes each
+# change the way the Settings window does and says what came of it (see
+# sengi-boot-report); here the keys are pressed and the answers judged.
+drives_fail=
+drives() {
+	drives_fail=${drives_fail:-$1}
+}
+# A second keyboard layout, German, and Alt+Shift to switch to it. The
+# terminal still has the keyboard. On the German layout the Z key types
+# a y, and the guest sees which file "touch z" made.
+if wait_serial 'SENGI-KEYBOARD set exit=0' 60; then
+	sleep 1
+	key alt-shift 1
+	for letter in t o u c h spc z; do
+		key "$letter" 0.3
+	done
+	key ret 1
+	shot keyboard-layout
+	wait_serial 'SENGI-KEYBOARD typed=' 40 || true
+	typed=$(tr -d '\r' <"$out/serial.log" | sed -n 's/.*SENGI-KEYBOARD typed=//p' | head -1)
+	[ "$typed" = y ] ||
+		drives "with a German layout switched to, the Z key typed ${typed:-nothing}, not y"
+else
+	drives "a second keyboard layout could not be set through sengi-settings"
+fi
+# A pointer setting. Only sengi-compositor can be asked what its devices
+# are set to.
+if wait_serial 'SENGI-POINTER done' 40; then
+	grep -q 'SENGI-POINTER set exit=0' "$out/serial.log" ||
+		drives "natural scrolling could not be set through sengi-settings"
+	if [ "$want" = sengi-compositor ] &&
+		! grep -q 'SENGI-POINTER device .*natural scroll on' "$out/serial.log"; then
+		drives "no pointing device took natural scrolling up"
+	fi
+else
+	drives "the guest did not get as far as the pointer setting"
+fi
+# The screen off and on. Under sengi-compositor a key has to light it.
+if wait_serial 'SENGI-SCREEN asked' 40; then
+	asked=$(tr -d '\r' <"$out/serial.log" | sed -n 's/.*SENGI-SCREEN asked //p' | head -1)
+	case $asked in
+	"exit=0 dpms=Off"*) ;;
+	*) drives "asked to switch the screen off: $asked" ;;
+	esac
+	sleep 1
+	shot screen-off
+	key shift 1
+	wait_serial 'SENGI-SCREEN lit' 30 || true
+	lit=$(tr -d '\r' <"$out/serial.log" | sed -n 's/.*SENGI-SCREEN lit //p' | head -1)
+	case $lit in
+	"by=key dpms=On"*) ;;
+	"by=request dpms=On"*)
+		[ "$want" = labwc ] || drives "a key did not light the screen again: $lit"
+		;;
+	*) drives "the screen did not come back on: ${lit:-no answer}" ;;
+	esac
+	sleep 1
+	shot screen-on
+else
+	drives "the guest did not get as far as switching the screen off"
+fi
+
 # The login screen: log out through the session menu, get the password
 # wrong, get it right. The guest says when the login screen and its
 # compositor are up, when PAM has refused, and what is running once the
@@ -447,6 +509,10 @@ if [ -n "$settings_fail" ]; then
 fi
 if [ -n "$lock_fail" ]; then
 	echo "FAIL: $lock_fail" >&2
+	fail=1
+fi
+if [ -n "$drives_fail" ]; then
+	echo "FAIL: $drives_fail" >&2
 	fail=1
 fi
 if [ -n "$greeter_fail" ]; then

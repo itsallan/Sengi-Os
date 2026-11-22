@@ -122,6 +122,69 @@ journalctl -f -n 0 -o cat -t sengi-lock 2>/dev/null | while IFS= read -r line; d
 done &
 watch sengi-lock SENGI-LOCK
 
+# Then three things Settings drives, each changed the way the window
+# changes it and without logging out. What came of it is reported as it
+# was found; the test knows what to expect of which compositor.
+#
+# A second keyboard layout and a key to switch to it. The test switches
+# and types "touch z" into the terminal: on the German layout that key
+# gives a y, and the file's name says which it was.
+rm -f /home/live/y /home/live/z
+as_live sengi-settings --set keyboard.switch grp:alt_shift_toggle
+as_live sengi-settings --set keyboard.layouts us,de
+echo "SENGI-KEYBOARD set exit=$?" >$port
+typed=nothing
+n=0
+while [ $n -lt 150 ]; do
+	if [ -e /home/live/y ]; then typed=y; break; fi
+	if [ -e /home/live/z ]; then typed=z; break; fi
+	sleep 0.2
+	n=$((n + 1))
+done
+echo "SENGI-KEYBOARD typed=$typed" >$port
+as_live sengi-settings --set keyboard.layouts us
+as_live sengi-settings --set keyboard.switch ''
+rm -f /home/live/y /home/live/z
+
+# A pointer setting. sengi-compositor says on SIGUSR1 what each device is
+# set to, as libinput has it; labwc has no way of being asked.
+as_live sengi-settings --set mouse.natural-scroll true
+echo "SENGI-POINTER set exit=$?" >$port
+if [ "$compositor" = sengi-compositor ]; then
+	sleep 0.5
+	kill -USR1 "$(pgrep -u live -x sengi-composito | head -n 1)"
+	sleep 0.5
+	journalctl -b --no-pager -o cat -t sengi-compositor | grep 'input: ' | tail -n 4 |
+		sed 's/.*input: /SENGI-POINTER device /' >$port
+fi
+as_live sengi-settings --set mouse.natural-scroll false
+echo "SENGI-POINTER done" >$port
+
+# The screen off, as the idle timer asks for it, and on again. The kernel
+# says whether the panel is driven. The test presses a key: under
+# sengi-compositor that lights the screen; labwc leaves that to swayidle,
+# which has not timed out here, so it is asked.
+dpms() {
+	cat /sys/class/drm/card*-*/dpms 2>/dev/null | tr '\n' ' '
+}
+as_live sengi-settings --screen off
+status=$?
+sleep 1
+echo "SENGI-SCREEN asked exit=$status dpms=$(dpms)" >$port
+lit=request
+n=0
+while [ $n -lt 40 ]; do
+	case $(dpms) in
+	*Off*) ;;
+	*) lit=key; break ;;
+	esac
+	sleep 0.2
+	n=$((n + 1))
+done
+[ "$lit" = key ] || as_live sengi-settings --screen on
+sleep 1
+echo "SENGI-SCREEN lit by=$lit dpms=$(dpms)" >$port
+
 # Last, the test logs out. greetd then starts the login screen in a
 # compositor of its own, both as its own user. Say when they are up, what
 # they cost and whether they may turn the machine off; then when PAM has
