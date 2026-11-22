@@ -65,9 +65,11 @@ use wayland_protocols_wlr::output_power_management::v1::client::{
     zwlr_output_power_v1::{self, ZwlrOutputPowerV1},
 };
 
+pub mod apps;
+
 pub const LOCK_MANAGER: &str = "ext_session_lock_manager_v1";
 
-type Failure = Box<dyn std::error::Error>;
+pub type Failure = Box<dyn std::error::Error>;
 
 /// What the compositor has told this client so far.
 #[derive(Default)]
@@ -89,6 +91,9 @@ pub struct Seen {
     pub idled: u32,
     pub resumed: u32,
     pub frames: u32,
+    /// The serial of the latest keyboard focus.
+    pub enter_serial: Option<u32>,
+    pub more: apps::More,
 }
 
 pub struct Client {
@@ -408,7 +413,10 @@ impl Dispatch<WlKeyboard, ()> for Seen {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            wl_keyboard::Event::Enter { .. } => seen.keyboard_enters += 1,
+            wl_keyboard::Event::Enter { serial, .. } => {
+                seen.keyboard_enters += 1;
+                seen.enter_serial = Some(serial);
+            }
             wl_keyboard::Event::Leave { .. } => seen.keyboard_leaves += 1,
             wl_keyboard::Event::Key { .. } => seen.keys += 1,
             wl_keyboard::Event::Keymap { fd, size, .. } => {
@@ -487,5 +495,3 @@ delegate_noop!(Seen: ignore WlShm);
 delegate_noop!(Seen: ignore WlBuffer);
 delegate_noop!(Seen: ignore WlSurface);
 delegate_noop!(Seen: ignore WlSeat);
-delegate_noop!(Seen: ignore WlOutput);
-delegate_noop!(Seen: ignore XdgToplevel);

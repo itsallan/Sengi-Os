@@ -35,7 +35,7 @@ use smithay::{
         pointer::{CursorIcon, CursorImageStatus},
         Seat, SeatHandler, SeatState,
     },
-    output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel},
+    output::{Mode as OutputMode, Output, PhysicalProperties, Scale as OutputScale, Subpixel},
     reexports::{
         calloop::{
             generic::Generic,
@@ -62,15 +62,16 @@ use smithay::{
         compositor::{CompositorClientState, CompositorState},
         cursor_shape::CursorShapeManagerState,
         dmabuf::DmabufState,
+        fractional_scale::FractionalScaleManagerState,
         idle_inhibit::IdleInhibitManagerState,
         idle_notify::{IdleNotificationUserData, IdleNotifierHandler, IdleNotifierState},
         output::{OutputHandler, OutputManagerState},
+        pointer_constraints::PointerConstraintsState,
+        relative_pointer::RelativePointerManagerState,
         security_context::SecurityContextState,
         selection::{
-            data_device::{
-                set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler, DataDeviceState,
-                ServerDndGrabHandler,
-            },
+            data_device::{set_data_device_focus, DataDeviceHandler, DataDeviceState},
+            primary_selection::{set_primary_focus, PrimarySelectionState},
             SelectionHandler,
         },
         session_lock::SessionLockManagerState,
@@ -81,6 +82,8 @@ use smithay::{
         shm::{ShmHandler, ShmState},
         socket::ListeningSocketSource,
         tablet_manager::TabletSeatHandler,
+        viewporter::ViewporterState,
+        xdg_activation::XdgActivationState,
     },
 };
 
@@ -153,6 +156,22 @@ pub struct State {
     /// Buttons whose press lit a dark screen and went no further; their
     /// release goes no further either.
     pub wake_buttons: Vec<u32>,
+    /// Draws an output into memory for a screenshot.
+    pub capture: Option<crate::screencopy::Capture>,
+    _screencopy_state: crate::screencopy::ScreencopyState,
+    pub primary_selection_state: PrimarySelectionState,
+    pub xdg_activation_state: XdgActivationState,
+    // Held so their globals stay.
+    _viewporter_state: ViewporterState,
+    _fractional_scale_state: FractionalScaleManagerState,
+    _pointer_constraints_state: PointerConstraintsState,
+    _relative_pointer_state: RelativePointerManagerState,
+    /// What every output is scaled by: `--scale`.
+    pub output_scale: f64,
+    /// The surface whose pointer constraint is in force.
+    pub constrained: Option<WlSurface>,
+    /// What a drag carries along under the pointer.
+    pub drag_icon: Option<WlSurface>,
     /// The surfaces that ask for the session not to go idle.
     pub idle_inhibitors: Vec<WlSurface>,
     _idle_inhibit_state: IdleInhibitManagerState,
@@ -394,6 +413,7 @@ impl State {
         }
 
         let cursors = Cursors::new(&theme);
+        let dh2 = dh.clone();
 
         Ok(Self {
             start_time: Instant::now(),
@@ -413,6 +433,17 @@ impl State {
             login_screen: false,
             session_child: None,
             wake_buttons: Vec::new(),
+            capture: None,
+            _screencopy_state: crate::screencopy::ScreencopyState::new(&dh2),
+            primary_selection_state: PrimarySelectionState::new::<Self>(&dh2),
+            xdg_activation_state: XdgActivationState::new::<Self>(&dh2),
+            _viewporter_state: ViewporterState::new::<Self>(&dh2),
+            _fractional_scale_state: FractionalScaleManagerState::new::<Self>(&dh2),
+            _pointer_constraints_state: PointerConstraintsState::new::<Self>(&dh2),
+            _relative_pointer_state: RelativePointerManagerState::new::<Self>(&dh2),
+            output_scale: 1.0,
+            constrained: None,
+            drag_icon: None,
             idle_inhibitors: Vec::new(),
             _idle_inhibit_state: idle_inhibit_state,
             locker_program: None,
@@ -610,7 +641,20 @@ impl State {
             size,
             refresh: refresh_mhz,
         };
-        output.change_current_state(Some(mode), Some(transform), None, Some((x, 0).into()));
+        // A whole number is announced to clients as it is; anything else
+        // they hear as the next whole number up, unless they ask for the
+        // fraction.
+        let scale = if self.output_scale.fract() == 0.0 {
+            OutputScale::Integer(self.output_scale as i32)
+        } else {
+            OutputScale::Fractional(self.output_scale)
+        };
+        output.change_current_state(
+            Some(mode),
+            Some(transform),
+            Some(scale),
+            Some((x, 0).into()),
+        );
         output.set_preferred(mode);
         self.space.map_output(&output, (x, 0));
         output
@@ -1148,7 +1192,8 @@ impl SeatHandler for State {
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
         // The clipboard follows the keyboard.
         let client = focused.and_then(|surface| self.display_handle.get_client(surface.id()).ok());
-        set_data_device_focus(&self.display_handle, seat, client);
+        set_data_device_focus(&self.display_handle, seat, client.clone());
+        set_primary_focus(&self.display_handle, seat, client);
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
@@ -1175,9 +1220,6 @@ impl DataDeviceHandler for State {
         &self.data_device_state
     }
 }
-
-impl ClientDndGrabHandler for State {}
-impl ServerDndGrabHandler for State {}
 
 impl OutputHandler for State {}
 

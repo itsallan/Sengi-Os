@@ -31,6 +31,11 @@ pub enum Action {
         x: f64,
         y: f64,
     },
+    /// The pointing device moved by this much, as a mouse reports it.
+    Nudge {
+        dx: f64,
+        dy: f64,
+    },
     /// A pointer button by its evdev code.
     Button {
         code: u32,
@@ -144,6 +149,15 @@ pub fn parse(text: &str) -> Result<Vec<Step>, String> {
                         push(Action::Move { x, y })
                     }
                     _ => return Err(err("move needs X and Y")),
+                }
+            }
+            "nudge" => {
+                let mut numbers = argument.split_whitespace().map(str::parse::<f64>);
+                match (numbers.next(), numbers.next(), numbers.next()) {
+                    (Some(Ok(dx)), Some(Ok(dy)), None) if dx.is_finite() && dy.is_finite() => {
+                        push(Action::Nudge { dx, dy })
+                    }
+                    _ => return Err(err("nudge needs DX and DY")),
                 }
             }
             "press" | "release" | "click" => {

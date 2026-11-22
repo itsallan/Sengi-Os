@@ -351,6 +351,7 @@ impl State {
         }
         self.pointer_seen = true;
         self.place_pointer(location, time);
+        self.settle_pointer_constraint();
     }
 
     pub fn place_pointer(&mut self, location: Point<f64, Logical>, time: u32) {
@@ -678,6 +679,20 @@ impl State {
 
     /// What is at `location`, front to back: overlay and top layers,
     /// windows with their frames, then bottom and background layers.
+    /// The client surface at `location`, with where its origin is on the
+    /// desktop.
+    pub fn surface_under(
+        &self,
+        location: Point<f64, Logical>,
+    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        match self.target_at(location) {
+            Some(Target::Surface {
+                surface, origin, ..
+            }) => Some((surface, origin)),
+            _ => None,
+        }
+    }
+
     fn target_at(&self, location: Point<f64, Logical>) -> Option<Target> {
         if self.is_locked() {
             // The lock surface covers its output; nothing else exists.
@@ -699,7 +714,18 @@ impl State {
                 origin,
             })
         };
-        layer(&[Layer::Overlay, Layer::Top])
+        // As it is drawn: a window in front that fills its screen is over
+        // the top layer, where it covers the bar and the dock.
+        let filling = || {
+            let window = self.fullscreen_in_front()?;
+            let rect = self.client_rect(&window)?;
+            let (x, y) = cell(location);
+            let inside = x >= rect.x && x < rect.right() && y >= rect.y && y < rect.bottom();
+            inside.then(|| self.window_target_at(location))?
+        };
+        layer(&[Layer::Overlay])
+            .or_else(filling)
+            .or_else(|| layer(&[Layer::Top]))
             .or_else(|| self.window_target_at(location))
             .or_else(|| layer(&[Layer::Bottom, Layer::Background]))
     }

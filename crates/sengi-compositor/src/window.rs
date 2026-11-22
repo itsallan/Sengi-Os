@@ -12,6 +12,7 @@ use smithay::{
         renderer::element::{memory::MemoryRenderBuffer, solid::SolidColorBuffer},
     },
     desktop::Window,
+    output::Output,
     reexports::wayland_protocols::xdg::{
         decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
         shell::server::xdg_toplevel::State as ToplevelState,
@@ -46,6 +47,9 @@ pub struct WindowData {
     pub minimised: Cell<Option<(i32, i32)>>,
     /// The client asked to be maximised before its first buffer.
     pub start_maximised: Cell<bool>,
+    /// Set while the window fills a screen: the client area to go back
+    /// to, once it has had one.
+    pub fullscreen: Cell<Option<Option<Rect>>>,
     pub frame: RefCell<Option<FrameBuffers>>,
     /// The title last rasterised and its pixels, if the typeface is there.
     pub title: RefCell<Option<(String, Option<Rc<TextBitmap>>)>>,
@@ -324,6 +328,11 @@ impl State {
         let Some(toplevel) = window.toplevel() else {
             return;
         };
+        // A window that fills the screen is left as it is.
+        if data.fullscreen.get().is_some() {
+            toplevel.send_configure();
+            return;
+        }
         let target = match (maximised, data.restore.get()) {
             (true, None) => {
                 let Some(current) = self.client_rect(window) else {
@@ -366,6 +375,91 @@ impl State {
                 self.move_frame_to(window, frame.x, frame.y);
             }
         }
+    }
+
+    /// The screen a window fills when it goes fullscreen: the one named,
+    /// else the one most of it is on, else the first.
+    fn fullscreen_rect(&self, window: &Window, output: Option<Output>) -> Option<Rect> {
+        let output = output
+            .or_else(|| {
+                let frame = self.frame_rect(window)?;
+                let middle = (
+                    f64::from(frame.x + frame.w / 2),
+                    f64::from(frame.y + frame.h / 2),
+                );
+                self.output_at(middle.into())
+            })
+            .or_else(|| self.output())?;
+        let screen = self.space.output_geometry(&output)?;
+        Some(Rect::new(
+            screen.loc.x,
+            screen.loc.y,
+            screen.size.w,
+            screen.size.h,
+        ))
+    }
+
+    /// Makes `window` fill a screen, without a frame and over the bar and
+    /// the dock for as long as it is the window in front, or puts it back
+    /// where it was. Before the window is on screen this only tells the
+    /// client; `map_fullscreen` places it when its first buffer comes.
+    pub fn set_fullscreen(&mut self, window: &Window, fullscreen: bool, output: Option<Output>) {
+        let data = data(window);
+        let Some(toplevel) = window.toplevel() else {
+            return;
+        };
+        let mapped = self.space.element_location(window).is_some();
+        match (fullscreen, data.fullscreen.get()) {
+            (true, None) => {
+                let Some(screen) = self.fullscreen_rect(window, output) else {
+                    return;
+                };
+                data.fullscreen.set(Some(self.client_rect(window)));
+                data.decorated.set(false);
+                data.resize_anchor.set(None);
+                self.forget_pointer_state(window);
+                toplevel.with_pending_state(|state| {
+                    state.states.set(ToplevelState::Fullscreen);
+                    state.size = Some((screen.w, screen.h).into());
+                });
+                if mapped || toplevel.is_initial_configure_sent() {
+                    toplevel.send_configure();
+                }
+                if mapped {
+                    self.move_window(window, screen.x, screen.y);
+                    self.focus_window(window);
+                }
+            }
+            (false, Some(restore)) => {
+                data.fullscreen.set(None);
+                data.decorated.set(wants_server_decoration(window));
+                toplevel.with_pending_state(|state| {
+                    state.states.unset(ToplevelState::Fullscreen);
+                    state.size = restore.map(|rect| (rect.w, rect.h).into());
+                });
+                toplevel.send_configure();
+                if let (true, Some(rect)) = (mapped, restore) {
+                    self.move_window(window, rect.x, rect.y);
+                }
+            }
+            // Already as asked; still owed an answer once it can have one.
+            _ if mapped => {
+                toplevel.send_configure();
+            }
+            _ => {}
+        }
+        self.request_redraw();
+    }
+
+    /// The window in front, if it fills its screen. That one alone is
+    /// drawn over the bar and the dock; any other window brought in front
+    /// of it brings them back.
+    pub fn fullscreen_in_front(&self) -> Option<Window> {
+        self.space
+            .elements()
+            .last()
+            .filter(|window| data(window).fullscreen.get().is_some())
+            .cloned()
     }
 
     pub fn toggle_maximise(&mut self, window: &Window) {

@@ -70,6 +70,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
     let mut event_loop: EventLoop<State> = EventLoop::try_new()?;
     let display = Display::new()?;
     let mut state = State::new(&mut event_loop, display)?;
+    state.output_scale = f64::from(options.scale_120) / 120.0;
 
     let (width, height) = options.size;
     let output = state.add_output(
@@ -94,6 +95,22 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         started: Instant::now(),
         last_frame: None,
         frame_pending: false,
+    }));
+
+    // A picture for whoever asks: the frame drawn once more, apart from
+    // the buffer the ordinary frames go into.
+    let pictured = backend.clone();
+    state.capture = Some(Box::new(move |state, output| {
+        let mut backend = pictured.borrow_mut();
+        let size = backend.size;
+        let renderer = &mut backend.renderer;
+        let mut damage = OutputDamageTracker::from_output(output);
+        let mut image: Image<'static, 'static> =
+            renderer.create_buffer(Fourcc::Xrgb8888, size).ok()?;
+        let mut target = renderer.bind(&mut image).ok()?;
+        render::output(state, output, renderer, &mut target, 0, &mut damage).ok()?;
+        let rgb = read_rgb(renderer, &target, size).ok()?;
+        Some((size.w, size.h, rgb))
     }));
 
     // Nothing runs on a clock: a frame is drawn when the state asks for one.
@@ -212,6 +229,10 @@ fn play(backend: &Shared, state: &mut State) -> TimeoutAction {
                 state.key(Keycode::new(code + 8), key_state(pressed), time);
             }
             Action::Move { x, y } => state.pointer_motion((x, y).into(), time),
+            Action::Nudge { dx, dy } => {
+                let delta = (dx, dy).into();
+                state.pointer_moved(delta, delta, u64::from(time) * 1000, time);
+            }
             Action::Button { code, pressed } => {
                 state.pointer_button(code, button_state(pressed), time);
             }

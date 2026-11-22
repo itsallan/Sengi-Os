@@ -474,6 +474,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
     let mut event_loop: EventLoop<State> = EventLoop::try_new()?;
     let display = Display::new()?;
     let mut state = State::new(&mut event_loop, display)?;
+    state.output_scale = f64::from(options.scale_120) / 120.0;
     let handle = event_loop.handle();
 
     let path = udev::primary_gpu(&seat)?
@@ -744,6 +745,18 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
             }
         }
     })?;
+
+    // A picture of one screen for a client that asks for one.
+    let pictured = backend.clone();
+    state.capture = Some(Box::new(move |state, output| {
+        let mut backend = pictured.borrow_mut();
+        let Drm {
+            renderer, screens, ..
+        } = &mut *backend;
+        let screen = screens.iter().find(|screen| &screen.output == output)?;
+        let (size, rgb) = screen.picture(renderer, state).ok()?;
+        Some((size.w, size.h, rgb))
+    }));
 
     if let Some(path) = options.screenshot.clone() {
         let on_signal = backend.clone();

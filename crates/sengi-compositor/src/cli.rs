@@ -16,6 +16,8 @@ Usage: sengi-compositor [options]
                         when started from a desktop session, the screen when
                         started on a terminal, headless otherwise)
       --size WxH        output size in pixels (default 1280x720)
+      --scale FACTOR    how much larger everything is drawn, for dense
+                        screens: 2, or a fraction such as 1.5 (default 1)
       --screenshot PNG  save the last frame to PNG on exit (headless, drm);
                         with --backend drm also on every SIGUSR2
       --exit-after SEC  stop after SEC seconds
@@ -64,6 +66,8 @@ pub fn parse_renderer(name: &str) -> Option<Wanted> {
 pub struct Options {
     pub backend: Backend,
     pub size: (i32, i32),
+    /// The output scale in 120ths, the unit fractional-scale counts in.
+    pub scale_120: u32,
     pub startup: Vec<String>,
     pub session: Option<String>,
     pub greeter: bool,
@@ -98,6 +102,7 @@ impl Default for Options {
         Self {
             backend: Backend::Auto,
             size: (1280, 720),
+            scale_120: 120,
             startup: Vec::new(),
             session: None,
             greeter: false,
@@ -146,6 +151,15 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
                 }
             }
             "--size" => options.size = parse_size(&value()?)?,
+            "--scale" => {
+                let text = value()?;
+                options.scale_120 = text
+                    .parse()
+                    .ok()
+                    .filter(|scale: &f64| (0.5..=4.0).contains(scale))
+                    .map(|scale| (scale * 120.0).round() as u32)
+                    .ok_or_else(|| format!("--scale takes a number from 0.5 to 4, not {text}"))?;
+            }
             "--screenshot" => options.screenshot = Some(PathBuf::from(value()?)),
             "--script" if cfg!(feature = "test-hooks") => {
                 options.script = Some(PathBuf::from(value()?))
@@ -250,6 +264,7 @@ mod tests {
             Ok(Command::Run(Options {
                 backend: Backend::Headless,
                 size: (1920, 1080),
+                scale_120: 120,
                 startup: vec!["foot".into(), "sengi-bar".into()],
                 session: None,
                 greeter: false,

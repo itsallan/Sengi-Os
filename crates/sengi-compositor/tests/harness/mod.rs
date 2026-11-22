@@ -68,6 +68,11 @@ impl Compositor {
         Self::launch(None, None, script, variables, &arguments)
     }
 
+    /// Starts the compositor with more on its command line.
+    pub fn start_args(arguments: &[&str], script: Option<&str>) -> Self {
+        Self::launch(None, None, script, &[], arguments)
+    }
+
     /// Waits for the compositor to end by itself; whether it did, and
     /// without an error.
     pub fn ended(&mut self) -> bool {

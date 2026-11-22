@@ -10,7 +10,8 @@ use wayland_protocols::ext::idle_notify::v1::client::ext_idle_notifier_v1::ExtId
 
 /// The globals that reach beyond a client's own windows.
 const IDLE_NOTIFIER: &str = "ext_idle_notifier_v1";
-const PRIVILEGED: [&str; 4] = [
+const PRIVILEGED: [&str; 5] = [
+    common::apps::SCREENCOPY,
     "zwlr_layer_shell_v1",
     "zwlr_foreign_toplevel_manager_v1",
     IDLE_NOTIFIER,

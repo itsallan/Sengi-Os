@@ -26,7 +26,7 @@ use smithay::{
     input::pointer::{CursorImageStatus, CursorImageSurfaceData},
     output::Output,
     reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::{Logical, Physical, Point, Rectangle, Scale},
+    utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale},
     wayland::{
         compositor::{with_states, SurfaceData},
         shell::wlr_layer::Layer,
@@ -98,15 +98,36 @@ where
         return (elements, state.color(state.theme.inactive));
     }
 
-    // Overlay and top layers, windows, bottom and background layers.
-    layers(
-        output,
-        [Layer::Overlay, Layer::Top],
-        renderer,
-        scale,
-        &mut elements,
-    );
-    for window in state.space.elements().rev() {
+    // What a drag carries along, right under the cursor.
+    if let Some(icon) = state.drag_icon.as_ref().filter(|icon| icon.alive()) {
+        let pointer = state.seat.get_pointer().expect("seat has a pointer");
+        let at = (pointer.current_location() - origin.to_f64()).to_i32_round::<i32>();
+        elements.extend(render_elements_from_surface_tree(
+            renderer,
+            icon,
+            at.to_physical_precise_round(scale),
+            scale,
+            1.0,
+            Kind::Unspecified,
+        ));
+    }
+
+    // The overlay layer; a window in front that fills its screen; the
+    // top layer, where the bar and the dock are; the other windows; the
+    // bottom and background layers.
+    let filling = state.fullscreen_in_front();
+    layers(output, &[Layer::Overlay], renderer, scale, &mut elements);
+    // `None` stands for the top layer.
+    let mut order: Vec<Option<&Window>> = Vec::new();
+    order.extend(filling.as_ref().map(Some));
+    order.push(None);
+    let behind = |window: &&Window| Some(*window) != filling.as_ref();
+    order.extend(state.space.elements().rev().filter(behind).map(Some));
+    for item in order {
+        let Some(window) = item else {
+            layers(output, &[Layer::Top], renderer, scale, &mut elements);
+            continue;
+        };
         let Some(location) = state.space.element_location(window) else {
             continue;
         };
@@ -124,7 +145,7 @@ where
     }
     layers(
         output,
-        [Layer::Bottom, Layer::Background],
+        &[Layer::Bottom, Layer::Background],
         renderer,
         scale,
         &mut elements,
@@ -134,7 +155,7 @@ where
 
 fn layers<R>(
     output: &Output,
-    kinds: [Layer; 2],
+    kinds: &[Layer],
     renderer: &mut R,
     scale: Scale<f64>,
     elements: &mut Vec<OutputElement<R>>,
@@ -144,7 +165,7 @@ fn layers<R>(
 {
     let map = layer_map_for_output(output);
     for kind in kinds {
-        for layer in map.layers_on(kind).rev() {
+        for layer in map.layers_on(*kind).rev() {
             let Some(geometry) = map.layer_geometry(layer) else {
                 continue;
             };

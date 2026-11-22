@@ -86,10 +86,11 @@ impl XdgShellHandler for State {
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         // Tell the client what its own buttons can ask for: there is no
-        // fullscreen and no window menu.
+        // window menu.
         surface.with_pending_state(|state| {
             state.capabilities.set(WmCapabilities::Maximize);
             state.capabilities.set(WmCapabilities::Minimize);
+            state.capabilities.set(WmCapabilities::Fullscreen);
         });
         self.pending_windows
             .push(Window::new_wayland_window(surface));
@@ -169,6 +170,25 @@ impl XdgShellHandler for State {
     fn minimize_request(&mut self, surface: ToplevelSurface) {
         if let Some(window) = self.window_for_surface(surface.wl_surface()) {
             self.set_minimised(&window, true);
+        }
+    }
+
+    fn fullscreen_request(
+        &mut self,
+        surface: ToplevelSurface,
+        output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+    ) {
+        if let Some(window) = self.window_for_surface(surface.wl_surface()) {
+            let output = output
+                .as_ref()
+                .and_then(smithay::output::Output::from_resource);
+            self.set_fullscreen(&window, true, output);
+        }
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        if let Some(window) = self.window_for_surface(surface.wl_surface()) {
+            self.set_fullscreen(&window, false, None);
         }
     }
 
@@ -283,7 +303,8 @@ impl State {
                     self.unmap_window(&window);
                     return;
                 }
-                let decorated = window::wants_server_decoration(&window);
+                let decorated = window::wants_server_decoration(&window)
+                    && window::data(&window).fullscreen.get().is_none();
                 if window::data(&window).decorated.replace(decorated) != decorated {
                     self.decoration_changed(&window);
                 }
@@ -308,8 +329,36 @@ impl State {
         }
 
         self.pending_windows.remove(index);
-        let decorated = window::wants_server_decoration(&window);
+        let fullscreen = window::data(&window).fullscreen.get().is_some();
+        let decorated = window::wants_server_decoration(&window) && !fullscreen;
         window::data(&window).decorated.set(decorated);
+
+        if fullscreen {
+            // It asked to fill the screen before it had a size. Leaving
+            // fullscreen gives it a window two thirds of the free area.
+            let usable = self.usable_area();
+            let frame = Rect::new(
+                usable.x + usable.w / 6,
+                usable.y + usable.h / 6,
+                usable.w * 2 / 3,
+                usable.h * 2 / 3,
+            );
+            let restore = if window::wants_server_decoration(&window) {
+                self.theme.metrics.client(frame)
+            } else {
+                frame
+            };
+            window::data(&window).fullscreen.set(Some(Some(restore)));
+            let origin = self
+                .output()
+                .and_then(|output| self.space.output_geometry(&output))
+                .map(|screen| (screen.loc.x, screen.loc.y))
+                .unwrap_or_default();
+            self.placed += 1;
+            self.space.map_element(window.clone(), origin, true);
+            self.focus_window(&window);
+            return;
+        }
 
         if window::data(&window).start_maximised.replace(false) {
             // It asked to be maximised before it had a size: it goes
@@ -411,6 +460,7 @@ impl State {
         data.minimised.set(None);
         data.resize_anchor.set(None);
         data.start_maximised.set(false);
+        data.fullscreen.set(None);
         if let Some(toplevel) = window.toplevel() {
             toplevel.reset_initial_configure_sent();
         }

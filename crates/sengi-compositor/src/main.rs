@@ -2,6 +2,7 @@
 //!
 //! See README.md for what works and what is missing.
 
+mod apps;
 mod cli;
 mod config;
 mod cursor;
@@ -27,6 +28,7 @@ mod log;
 mod output_power;
 mod png;
 mod render;
+mod screencopy;
 mod script;
 mod security;
 mod shell;

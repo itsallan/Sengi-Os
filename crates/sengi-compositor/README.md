@@ -272,6 +272,35 @@ swaylock, swayidle, sengi-focus, wlrctl and gtk3-widget-factory:
   and our own cursor draw, the host cursor is hidden, the maximise button
   works), not yet by a person on a real desktop.
 
+### What ordinary programs expect
+
+Checked by `tests/apps.rs` against the running compositor; where it
+matters what was drawn, the test takes a picture of the screen through
+wlr-screencopy and looks at the pixels.
+
+- Primary selection: what one program selects is offered to whichever
+  has the keyboard.
+- xdg-activation: a program that has the keyboard, and shows it with the
+  serial of that focus, gets a token that brings a window forward within
+  ten seconds; a launcher does that for what it starts. A token asked for
+  without the keyboard, with an old serial or made up brings nothing
+  forward, so a program in the background cannot put itself in front.
+- Fullscreen: a window that asks fills its screen without a frame and is
+  drawn over the top layer, bar and dock included, for as long as it is
+  the window in front; leaving puts it back where it was. A window that
+  asks before it is first shown starts that way.
+- viewporter and fractional-scale, and `--scale FACTOR` for all outputs: 2
+  is announced as it is, 1.5 as 2 to those who cannot take a fraction and
+  as 1.5 to those who ask.
+- Pointer constraints and relative pointer: a locked pointer stays where
+  it is and its movement is still reported; a confined one does not leave
+  its surface or the region named. A constraint begins when the pointer
+  is on the surface and ends when it leaves.
+- wlr-screencopy, version 1, into shared-memory buffers, a whole output or
+  a part of it. Refused while the session is locked, and not offered to
+  sandboxed clients. The picture always includes the cursor.
+- The picture a drag carries is drawn under the pointer.
+
 ## What does not work
 
 - Nothing has run on real hardware. Unseen there: GLES on i915, the
@@ -295,7 +324,8 @@ swaylock, swayidle, sengi-focus, wlrctl and gtk3-widget-factory:
   libseat's builtin backend. The image probably has the same limit under
   labwc; polkit or seatd would lift it.
 - The bottom corners of a window are square and there are no shadows.
-- Fullscreen requests are ignored (and `wm_capabilities` says so).
+- A fullscreen window has no key binding of ours to leave it by; labwc
+  has none by default either. The program's own key does it.
 - The bar's power icon starts `sengi-power`, which was not available to
   test; the click reaches the bar.
 - Clients that do not speak xdg-decoration (GTK) keep their own title bars.
@@ -317,13 +347,13 @@ swaylock, swayidle, sengi-focus, wlrctl and gtk3-widget-factory:
 - Nested under winit the host's keyboard layout is not followed.
 - No dmabuf on the pixman path, so GPU clients fall back to software
   there. No `wl_drm`; Mesa finds the device through dmabuf feedback.
-- Missing protocols: primary selection, xdg-activation, fractional-scale,
-  viewporter, text-input, screencopy, output management,
-  pointer constraints and relative pointer (games, remote desktops),
-  virtual keyboard and pointer, ext-foreign-toplevel-list.
-- The icon of a drag-and-drop is not drawn; the drop itself works.
+- Missing protocols: text-input, output management, virtual keyboard and
+  pointer, ext-foreign-toplevel-list, ext-image-copy-capture (screen
+  copies are wlr-screencopy's, which is what grim in Debian stable uses).
 - No XWayland.
-- No HiDPI scale: frames and cursors are drawn for scale 1.
+- With `--scale` other than 1, title bars and the cursor are drawn for
+  scale 1 and enlarged, so they are the right size but soft. Nothing sets
+  the scale yet but the command line.
 - Clients started with `-s` or a key binding are not stopped when the
   compositor exits; they quit on their own when the socket closes.
 - Frame time has not been measured.
