@@ -281,7 +281,8 @@ fn frame<R>(
         Err(err) => crate::say!("cannot draw a title bar: {err:?}"),
     }
 
-    let painted = buffers.look.0.width;
+    // The logical width of the bar, as the frame is laid out in.
+    let painted = buffers.titlebar_size.0;
     let sides = [
         (
             &buffers.rest,
@@ -289,6 +290,8 @@ fn frame<R>(
         ),
         (&buffers.left, at(-metrics.border, 0)),
         (&buffers.right, at(size.w, 0)),
+        // Drawn after the client, so it is behind it; the corners in front
+        // cover its ends.
         (&buffers.bottom, at(-metrics.border, size.h)),
     ];
     for (buffer, position) in sides {
