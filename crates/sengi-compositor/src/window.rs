@@ -465,7 +465,9 @@ impl State {
     /// Makes `window` fill a screen, without a frame and over the bar and
     /// the dock for as long as it is the window in front, or puts it back
     /// where it was. Before the window is on screen this only tells the
-    /// client; `map_fullscreen` places it when its first buffer comes.
+    /// client. Its first map places it on its screen and focuses it, in
+    /// `shell.rs`: the one time a fullscreen window is brought to the front
+    /// without being asked to be.
     pub fn set_fullscreen(&mut self, window: &Window, fullscreen: bool, output: Option<Output>) {
         let data = data(window);
         let Some(toplevel) = window.toplevel() else {
