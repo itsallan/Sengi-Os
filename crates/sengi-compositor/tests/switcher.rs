@@ -151,7 +151,10 @@ fn the_switcher_shows_each_window_with_the_selected_one_lit() {
 
 #[test]
 fn the_switcher_does_not_open_while_locked() {
+    // The keys are scripted for five seconds in. The lock has to come before
+    // them, or the test would pass without locking anything.
     let script = "5000 keydown alt\n5100 key tab\n5300 keyup alt\n";
+    let started = std::time::Instant::now();
     let compositor = Compositor::start_with(None, None, Some(script));
     let mut clients = three_windows(&compositor);
     let mut locker = compositor.locker();
@@ -159,6 +162,10 @@ fn the_switcher_does_not_open_while_locked() {
     let output = locker.outputs().remove(0);
     let _surface = locker.lock_surface(&lock, &output, RED).unwrap();
     assert!(locker.wait(SOON, |seen| seen.locked == 1));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the lock came after the scripted keys"
+    );
     let before = focus_counts(&mut clients);
     clients[0].wait(Duration::from_secs(5), |_| false);
     assert_eq!(
@@ -273,11 +280,6 @@ fn a_right_click_on_a_title_bar_opens_the_window_menu() {
     let _window = app.decorated_window(GREEN).unwrap();
     app.wait(Duration::from_secs(4), |_| false);
     let picture = app.capture().unwrap();
-    assert_eq!(
-        rgb(picture.at(712, 262)),
-        CARD,
-        "no window menu on the title bar"
-    );
     // Four rows of 42 pixels, with the padding around them: 184 tall.
     assert_eq!(
         rgb(picture.at(712, 258 + 184 - 4)),
@@ -300,5 +302,58 @@ fn a_right_click_on_a_window_opens_no_menu() {
         rgb(picture.at(704, 404)),
         rgb(GREEN),
         "a menu opened on a window"
+    );
+}
+
+/// A click on a window with no card open reaches the window: the control for
+/// the test below, which proves the client sees a click at all.
+#[test]
+fn a_click_on_a_window_reaches_it() {
+    let script = "1500 move 600 350\n1600 click left\n";
+    let compositor = Compositor::start_with(None, None, Some(script));
+    let mut app = compositor.connect();
+    let _window = app.window(GREEN).unwrap();
+    let _pointer = app.pointer().unwrap();
+    assert!(app.wait(Duration::from_secs(4), |seen| seen
+        .more
+        .button_serial
+        .is_some()));
+}
+
+/// The press that closes a menu is not a click on the window under it.
+#[test]
+fn a_click_that_closes_the_menu_does_not_reach_the_window_under_it() {
+    let script = "1500 move 200 200\n1600 click right\n1800 move 600 350\n2000 click left\n";
+    let compositor = Compositor::start_with(None, None, Some(script));
+    let mut app = compositor.connect();
+    let _window = app.window(GREEN).unwrap();
+    let _pointer = app.pointer().unwrap();
+    assert!(!app.wait(Duration::from_secs(4), |seen| seen
+        .more
+        .button_serial
+        .is_some()));
+}
+
+/// A window menu does not outlive its window.
+#[test]
+fn a_window_menu_closes_when_its_window_goes() {
+    let script = "1500 move 700 258\n1600 click right\n";
+    let compositor = Compositor::start_with(None, None, Some(script));
+    let mut app = compositor.connect();
+    let (surface, toplevel) = app.decorated_window(GREEN).unwrap();
+    app.wait(Duration::from_secs(4), |_| false);
+    assert_eq!(
+        rgb(app.capture().unwrap().at(712, 300)),
+        CARD,
+        "no window menu to close"
+    );
+    toplevel.destroy();
+    surface.destroy();
+    app.roundtrip().unwrap();
+    app.wait(Duration::from_secs(1), |_| false);
+    assert_eq!(
+        rgb(app.capture().unwrap().at(712, 300)),
+        DESKTOP,
+        "the menu outlived its window"
     );
 }

@@ -77,6 +77,15 @@ pub fn menu(theme: &Theme, font: Option<&Font>, rows: &[Row]) -> Layout {
     }
 }
 
+/// How many tiles fit in a row on a screen this wide, each no narrower than
+/// its badge and a little of a title. Windows past that are left out.
+pub fn switcher_capacity(theme: &Theme, screen_width: i32) -> usize {
+    let card = theme.card;
+    let min_tile = 2 * card.badge + 4 * card.gap;
+    let avail = screen_width - 2 * card.margin - 2 * card.pad_x;
+    ((avail + card.gap) / (min_tile + card.gap)).max(1) as usize
+}
+
 /// The switcher: one tile per window, in a row, centred by the caller.
 /// Tiles share the screen between them, up to a menu's width each.
 pub fn switcher(theme: &Theme, font: Option<&Font>, tiles: &[Tile], screen_width: i32) -> Layout {
@@ -189,4 +198,26 @@ impl Layout {
 
 fn contains(rect: Rect, x: i32, y: i32) -> bool {
     x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_switcher_never_wider_than_the_screen_allows() {
+        let theme = Theme::from_tokens(&sengi_tokens::Tokens::builtin());
+        for screen in [800, 1280, 1920, 3840] {
+            let count = switcher_capacity(&theme, screen);
+            assert!(count >= 1);
+            let tiles: Vec<Tile> = (0..count)
+                .map(|_| Tile {
+                    title: "a title",
+                    badge: 'x',
+                })
+                .collect();
+            let layout = switcher(&theme, None, &tiles, screen);
+            assert!(layout.width <= screen, "{count} tiles on {screen} px");
+        }
+    }
 }

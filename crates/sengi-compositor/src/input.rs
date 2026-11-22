@@ -451,6 +451,10 @@ impl State {
                     self.wake_buttons.remove(at);
                     return;
                 }
+                if let Some(at) = self.overlay_buttons.iter().position(|held| *held == button) {
+                    self.overlay_buttons.remove(at);
+                    return;
+                }
             }
             ButtonState::Pressed => {}
         }
@@ -458,7 +462,14 @@ impl State {
         let serial = SERIAL_COUNTER.next_serial();
 
         if state == ButtonState::Pressed && !pointer.is_grabbed() {
+            let card = self.overlay_open();
             self.press(button, pointer.current_location(), serial);
+            if card {
+                // The card took this press, so the client under the pointer
+                // is not clicked, and neither is its release.
+                self.overlay_buttons.push(button);
+                return;
+            }
         }
 
         // Presses on a frame reach no client, the pointer has no focus

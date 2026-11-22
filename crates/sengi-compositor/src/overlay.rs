@@ -116,12 +116,14 @@ impl State {
         if !self.may_open_overlay() {
             return;
         }
-        let windows: Vec<Window> = self
+        let mut windows: Vec<Window> = self
             .focus_stack
             .recent_first()
             .into_iter()
             .filter(|window| self.space.element_location(window).is_some())
             .collect();
+        let capacity = self.switcher_capacity();
+        windows.truncate(capacity);
         if windows.is_empty() {
             return;
         }
@@ -135,6 +137,36 @@ impl State {
         };
         self.overlay = Some(Overlay::Switcher { windows, selected });
         self.request_redraw();
+    }
+
+    /// How many tiles the switcher can show on the first output, the most
+    /// recent windows first. The rest are not offered.
+    fn switcher_capacity(&self) -> usize {
+        let Some(output) = self.output() else {
+            return 1;
+        };
+        let Some(geometry) = self.space.output_geometry(&output) else {
+            return 1;
+        };
+        let screen_w = (f64::from(geometry.size.w) * self.output_scale).round() as i32;
+        card::switcher_capacity(&self.paint_theme, screen_w)
+    }
+
+    /// A window went away: the switcher stops offering it, and a menu for its
+    /// title bar closes with it.
+    pub fn forget_overlay_window(&mut self, window: &Window) {
+        let closes = match &self.overlay {
+            Some(Overlay::Switcher { windows, .. }) => windows.contains(window),
+            Some(Overlay::Menu {
+                kind: MenuKind::Window(menu),
+                ..
+            }) => menu == window,
+            _ => false,
+        };
+        if closes {
+            self.overlay = None;
+            self.request_redraw();
+        }
     }
 
     /// Moves the switcher's selection on, or back.
@@ -249,7 +281,9 @@ impl State {
             Some(Overlay::Switcher { windows, .. }) => {
                 if let Some(index) = hit {
                     if let Some(window) = windows.get(index).cloned() {
-                        self.focus_window(&window);
+                        if self.space.element_location(&window).is_some() {
+                            self.focus_window(&window);
+                        }
                     }
                 }
             }
@@ -267,6 +301,9 @@ impl State {
 
     /// The pointer moved: a menu selects the item under it.
     pub fn overlay_motion(&mut self, location: (f64, f64)) {
+        if !matches!(self.overlay, Some(Overlay::Menu { .. })) {
+            return;
+        }
         let Some(output) = self.output() else {
             return;
         };

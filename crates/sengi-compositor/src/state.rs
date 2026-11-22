@@ -156,6 +156,9 @@ pub struct State {
     /// Buttons whose press lit a dark screen and went no further; their
     /// release goes no further either.
     pub wake_buttons: Vec<u32>,
+    /// Buttons whose press an open card took; their release is not sent to
+    /// a client either, as the client never saw the press.
+    pub overlay_buttons: Vec<u32>,
     /// Draws an output into memory for a screenshot.
     pub capture: Option<crate::screencopy::Capture>,
     _screencopy_state: crate::screencopy::ScreencopyState,
@@ -442,6 +445,7 @@ impl State {
             login_screen: false,
             session_child: None,
             wake_buttons: Vec::new(),
+            overlay_buttons: Vec::new(),
             capture: None,
             _screencopy_state: crate::screencopy::ScreencopyState::new(&dh2),
             primary_selection_state: PrimarySelectionState::new::<Self>(&dh2),
@@ -752,6 +756,7 @@ impl State {
         self.space.unmap_elem(window);
         self.minimised.retain(|w| w != window);
         self.forget_pointer_state(window);
+        self.forget_overlay_window(window);
         if !self.focus_stack.remove(window) {
             return;
         }
