@@ -142,7 +142,16 @@ impl Font {
                 high = keep - 1;
             }
         }
-        best.unwrap_or_else(|| self.render("\u{2026}"))
+        best.unwrap_or_else(|| {
+            // Not even the ellipsis fits: nothing is shown, rather than a
+            // wider mark than the room.
+            let dots = self.render("\u{2026}");
+            if dots.width <= max_width {
+                dots
+            } else {
+                TextBitmap::default()
+            }
+        })
     }
 
     /// One line of text, as tall as the font's ascent plus descent.
@@ -292,7 +301,7 @@ mod fit_tests {
             "{} wide",
             fitted.width
         );
-        // No room at all: still an answer, not a panic.
-        let _ = font.fit(&endless, 0);
+        // No room at all: nothing, and no panic.
+        assert_eq!(font.fit(&endless, 0).width, 0);
     }
 }
