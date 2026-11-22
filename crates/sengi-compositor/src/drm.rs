@@ -20,7 +20,10 @@ use std::{
     ffi::{c_char, CStr},
     fs::File,
     io::{BufWriter, Read as _},
-    os::unix::fs::MetadataExt,
+    os::{
+        fd::{AsFd, AsRawFd},
+        unix::fs::MetadataExt,
+    },
     path::{Path, PathBuf},
     process::{Command, Stdio},
     rc::Rc,
@@ -333,6 +336,37 @@ fn describe(device: &InputDevice) -> Option<String> {
     Some(line)
 }
 
+/// Whether the display device is a virtio GPU that its host gave no 3D,
+/// which is what a plain virtual machine has. GL on it could only be
+/// Mesa's software rasteriser, and that is known without loading Mesa to
+/// ask. The question is the driver's own, so it is only put to that driver.
+fn virtio_without_3d(fd: &DrmDeviceFd) -> bool {
+    #[repr(C)]
+    struct GetParam {
+        param: u64,
+        value: u64,
+    }
+    // DRM_IOCTL_VIRTGPU_GETPARAM and VIRTGPU_PARAM_3D_FEATURES.
+    const GETPARAM: libc::c_ulong = 0xC010_6443;
+    const FEATURES_3D: u64 = 1;
+
+    let is_virtio = fd
+        .get_driver()
+        .is_ok_and(|driver| driver.name().to_string_lossy() == "virtio_gpu");
+    if !is_virtio {
+        return false;
+    }
+    let mut has_3d: libc::c_int = 0;
+    let mut ask = GetParam {
+        param: FEATURES_3D,
+        value: &raw mut has_3d as u64,
+    };
+    // SAFETY: the kernel reads the two words of `ask` and writes one int
+    // where its second word points, both of which outlive the call.
+    let answered = unsafe { libc::ioctl(fd.as_fd().as_raw_fd(), GETPARAM, &raw mut ask) } == 0;
+    answered && has_3d == 0
+}
+
 /// The render node belonging to a display device, e.g. `/dev/dri/renderD128`
 /// for `/dev/dri/card0`.
 fn render_node(card: &Path) -> Option<PathBuf> {
@@ -429,6 +463,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
     // waits for the kernel's SIGUSR1 and SIGUSR2 to switch terminals, and a
     // helper forked after the state has blocked those for its own use never
     // sees them: the switch then silently does not happen.
+    let started = Instant::now();
     let (mut session, session_events) =
         LibSeatSession::new().map_err(|err| format!("cannot open a seat session: {err}"))?;
     let seat = session.seat();
@@ -463,6 +498,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         }
     }
     let (device, device_events) = DrmDevice::new(fd.clone(), true)?;
+    let display_opened = started.elapsed();
 
     // GPU or CPU: the command line, then the environment, then whatever
     // the hardware turns out to be.
@@ -478,9 +514,11 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         .and_then(|meta| udev::driver(meta.rdev()).ok().flatten())
         .map(|driver| driver.to_string_lossy().into_owned());
     let node = render_node(&path);
-    let (choice, mut why) = gpu::choose(wanted, driver.as_deref(), node.is_some(), || {
+    let no_3d = virtio_without_3d(&fd);
+    let (choice, mut why) = gpu::choose(wanted, driver.as_deref(), node.is_some(), no_3d, || {
         probe_in_child(node.as_deref()?)
     });
+    let renderer_chosen = started.elapsed();
     let renderer = match choice {
         gpu::Renderer::Pixman => None,
         gpu::Renderer::Gles => match gles_renderer(&fd) {
@@ -534,6 +572,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
     if backend.screens.is_empty() {
         return Err("no connected display".into());
     }
+    let screens_lit = started.elapsed();
     crate::say!(
         "{} ({}); renderer: {} ({why})",
         path.display(),
@@ -727,6 +766,14 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
     }
 
     crate::start_clients(&mut state, &options);
+    // Where the time to a desktop goes, for whoever measures the start.
+    crate::say!(
+        "started in {} ms: display opened at {}, renderer chosen at {}, screens lit at {}",
+        started.elapsed().as_millis(),
+        display_opened.as_millis(),
+        renderer_chosen.as_millis(),
+        screens_lit.as_millis()
+    );
     state.request_redraw();
     // When the loop ends everything is dropped, which gives the display
     // and the terminal back.

@@ -40,12 +40,15 @@ pub fn is_software_gl(renderer: &str) -> bool {
 /// Picks the renderer and says why, for the log.
 ///
 /// `driver` is the display device's kernel driver, `render_node` whether it
-/// has a render node at all, and `probe` asks what GL would run on, which
-/// is only called when nothing cheaper has settled it.
+/// has a render node at all, `virtual_without_3d` that it is a virtual
+/// GPU whose host gave it no 3D, and `probe` asks what GL would run on,
+/// which is only called when nothing cheaper has settled it: it loads
+/// Mesa in a child, half a second on a machine that has just started.
 pub fn choose(
     wanted: Wanted,
     driver: Option<&str>,
     render_node: bool,
+    virtual_without_3d: bool,
     probe: impl FnOnce() -> Option<String>,
 ) -> (Renderer, String) {
     match wanted {
@@ -61,6 +64,9 @@ pub fn choose(
             Renderer::Pixman,
             format!("the {driver} driver has no acceleration"),
         );
+    }
+    if virtual_without_3d {
+        return (Renderer::Pixman, "the virtual GPU has no 3D".into());
     }
     match probe() {
         None => (Renderer::Pixman, "GL could not be started".into()),
@@ -94,22 +100,22 @@ mod tests {
     #[test]
     fn an_explicit_choice_is_obeyed_without_probing() {
         assert_eq!(
-            choose(Wanted::Pixman, Some("i915"), true, never).0,
+            choose(Wanted::Pixman, Some("i915"), true, false, never).0,
             Renderer::Pixman
         );
         assert_eq!(
-            choose(Wanted::Gles, Some("bochs-drm"), false, never).0,
+            choose(Wanted::Gles, Some("bochs-drm"), false, false, never).0,
             Renderer::Gles
         );
     }
 
     #[test]
     fn devices_that_cannot_be_accelerated_are_not_probed() {
-        let (renderer, why) = choose(Wanted::Auto, Some("i915"), false, never);
+        let (renderer, why) = choose(Wanted::Auto, Some("i915"), false, false, never);
         assert_eq!(renderer, Renderer::Pixman);
         assert!(why.contains("render node"));
 
-        let (renderer, why) = choose(Wanted::Auto, Some("bochs-drm"), true, never);
+        let (renderer, why) = choose(Wanted::Auto, Some("bochs-drm"), true, false, never);
         assert_eq!(renderer, Renderer::Pixman);
         assert!(why.contains("bochs-drm"));
     }
@@ -117,17 +123,27 @@ mod tests {
     #[test]
     fn hardware_gl_is_used_and_software_gl_refused() {
         let hardware = || Some("Mesa Intel(R) HD Graphics 620 (KBL GT2)".to_string());
-        let (renderer, why) = choose(Wanted::Auto, Some("i915"), true, hardware);
+        let (renderer, why) = choose(Wanted::Auto, Some("i915"), true, false, hardware);
         assert_eq!(renderer, Renderer::Gles);
         assert!(why.contains("HD Graphics 620"));
 
         // virtio-gpu has a render node with and without a GPU behind it.
         let software = || Some("llvmpipe (LLVM 19.1.7, 256 bits)".to_string());
-        let (renderer, why) = choose(Wanted::Auto, Some("virtio_gpu"), true, software);
+        let (renderer, why) = choose(Wanted::Auto, Some("virtio_gpu"), true, false, software);
         assert_eq!(renderer, Renderer::Pixman);
         assert!(why.contains("llvmpipe"));
 
-        let (renderer, _) = choose(Wanted::Auto, Some("virtio_gpu"), true, || None);
+        let (renderer, _) = choose(Wanted::Auto, Some("virtio_gpu"), true, false, || None);
         assert_eq!(renderer, Renderer::Pixman);
+    }
+
+    #[test]
+    fn a_virtual_gpu_without_3d_is_not_probed() {
+        let (renderer, why) = choose(Wanted::Auto, Some("virtio_gpu"), true, true, never);
+        assert_eq!(renderer, Renderer::Pixman);
+        assert!(why.contains("no 3D"));
+        // Asked for by name, GLES is still tried.
+        let (renderer, _) = choose(Wanted::Gles, Some("virtio_gpu"), true, true, never);
+        assert_eq!(renderer, Renderer::Gles);
     }
 }
