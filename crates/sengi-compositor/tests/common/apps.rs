@@ -295,11 +295,17 @@ impl Client {
 
     /// A picture of the first output. An error if the compositor refuses.
     pub fn capture(&mut self) -> Result<Picture, Failure> {
+        self.capture_with(0)
+    }
+
+    /// A picture of the first output, with the pointer in it if `overlay`
+    /// is not zero.
+    pub fn capture_with(&mut self, overlay: i32) -> Result<Picture, Failure> {
         let manager: ZwlrScreencopyManagerV1 = self.globals.bind(&self.handle, 1..=1, ())?;
         let output = self.outputs().remove(0);
         self.seen.more.frame_buffer = None;
         let (ready, failed) = (self.seen.more.frame_ready, self.seen.more.frame_failed);
-        let frame = manager.capture_output(0, &output, &self.handle, ());
+        let frame = manager.capture_output(overlay, &output, &self.handle, ());
         self.wait(SOON, |seen| {
             seen.more.frame_buffer.is_some() || seen.more.frame_failed > failed
         });
@@ -381,6 +387,36 @@ impl Client {
         surface.damage(0, 0, width, height);
         surface.commit();
         self.roundtrip()
+    }
+
+    /// Copies one frame twice. True when the compositor answers the second
+    /// copy with a protocol error, which closes this connection.
+    pub fn copy_twice(&mut self) -> Result<bool, Failure> {
+        let manager: ZwlrScreencopyManagerV1 = self.globals.bind(&self.handle, 1..=1, ())?;
+        let output = self.outputs().remove(0);
+        self.seen.more.frame_buffer = None;
+        let frame = manager.capture_output(0, &output, &self.handle, ());
+        self.wait(SOON, |seen| seen.more.frame_buffer.is_some());
+        let Some((width, height, stride)) = self.seen.more.frame_buffer else {
+            return Err("no frame to copy".into());
+        };
+        let file = scratch_file((stride * height) as usize)?;
+        let pool = self
+            .shm
+            .create_pool(file.as_fd(), (stride * height) as i32, &self.handle, ());
+        let buffer = pool.create_buffer(
+            0,
+            width as i32,
+            height as i32,
+            stride as i32,
+            wl_shm::Format::Xrgb8888,
+            &self.handle,
+            (),
+        );
+        pool.destroy();
+        frame.copy(&buffer);
+        frame.copy(&buffer);
+        Ok(self.roundtrip().is_err())
     }
 
     /// Starts dragging from `origin`, with a square of one colour as the

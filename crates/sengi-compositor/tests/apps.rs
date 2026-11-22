@@ -407,3 +407,37 @@ fn what_is_dragged_is_drawn_under_the_pointer() {
     );
     assert_ne!(picture.at(640, 360), rgb(BLUE));
 }
+
+#[test]
+fn a_frame_can_be_copied_once_and_a_second_copy_is_an_error() {
+    let compositor = Compositor::start(None);
+    let mut client = compositor.connect();
+    let _window = client.window(GREEN).unwrap();
+    assert!(
+        client.copy_twice().unwrap(),
+        "the second copy was not refused"
+    );
+}
+
+#[test]
+fn the_pointer_is_in_a_picture_only_when_asked_for() {
+    let compositor = Compositor::start_with(None, None, Some("1500 move 640 360\n"));
+    let mut client = compositor.connect();
+    let _pointer = client.pointer().unwrap();
+    let _window = client.window(GREEN).unwrap();
+    assert!(client.wait(SOON, |seen| seen.more.pointer_enters == 1));
+    client.wait(Duration::from_millis(800), |_| false);
+    let without = client.capture_with(0).unwrap();
+    let with = client.capture_with(1).unwrap();
+    let around = |picture: &common::apps::Picture| {
+        (630..650)
+            .flat_map(|x| (350..370).map(move |y| (x, y)))
+            .map(|(x, y)| picture.at(x, y))
+            .collect::<Vec<u32>>()
+    };
+    assert_ne!(
+        around(&with),
+        around(&without),
+        "the pointer was not drawn when asked for"
+    );
+}

@@ -105,12 +105,14 @@ fn buffer(pixels: &[u8], width: i32, height: i32) -> MemoryRenderBuffer {
 }
 
 impl Cursors {
-    pub fn new(theme: &Theme) -> Self {
+    /// The cursors at `scale` times the theme's size, as the screen needs.
+    pub fn new(theme: &Theme, scale: f64) -> Self {
         let name = env::var("XCURSOR_THEME").unwrap_or_else(|_| "default".into());
-        let size = env::var("XCURSOR_SIZE")
+        let base: u32 = env::var("XCURSOR_SIZE")
             .ok()
             .and_then(|size| size.parse().ok())
             .unwrap_or(DEFAULT_SIZE);
+        let size = (f64::from(base) * scale).round().max(1.0) as u32;
 
         let arrow = draw_fallback(theme);
         let side = arrow.width() as i32;

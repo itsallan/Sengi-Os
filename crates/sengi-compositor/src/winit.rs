@@ -33,7 +33,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
     let mut event_loop: EventLoop<State> = EventLoop::try_new()?;
     let display = Display::new()?;
     let mut state = State::new(&mut event_loop, display)?;
-    state.output_scale = f64::from(options.scale_120) / 120.0;
+    state.set_output_scale(f64::from(options.scale_120) / 120.0);
 
     let (width, height) = options.size;
     let attributes = Window::default_attributes()

@@ -81,6 +81,33 @@ impl Theme {
     }
 }
 
+impl Theme {
+    /// This theme at `scale` times its size, for painting on a screen of
+    /// that scale: every length is in that screen's pixels, so the frame
+    /// comes out sharp. Layout and hit testing keep the unscaled theme.
+    pub fn scaled(&self, scale: f64) -> Theme {
+        let px = |v: i32| (f64::from(v) * scale).round() as i32;
+        let m = &self.metrics;
+        Theme {
+            metrics: Metrics {
+                titlebar: px(m.titlebar),
+                border: px(m.border),
+                button: px(m.button),
+                gap: px(m.gap),
+                padding: px(m.padding),
+                grip: px(m.grip),
+                corner: px(m.corner),
+            },
+            radius: px(self.radius),
+            glyph: px(self.glyph),
+            glyph_stroke: px(self.glyph_stroke).max(1),
+            fallback_cursor: px(self.fallback_cursor),
+            font_px: px(self.font_px as i32) as u32,
+            ..self.clone()
+        }
+    }
+}
+
 /// Text already turned into pixels: one coverage byte per pixel.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TextBitmap {

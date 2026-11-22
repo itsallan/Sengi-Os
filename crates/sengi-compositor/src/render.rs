@@ -190,17 +190,21 @@ fn cursor<R>(
     R: Renderer + ImportAll + ImportMem,
     R::TextureId: Clone + Send + Texture + 'static,
 {
+    if !state.draw_cursor {
+        return;
+    }
     let pointer = state.seat.get_pointer().expect("seat has a pointer");
     let location = pointer.current_location() - origin.to_f64();
     match state.cursor() {
         CursorImageStatus::Hidden => {}
         CursorImageStatus::Named(icon) => {
+            // The sprite is in the screen's pixels already, so its hotspot
+            // is taken off in those too.
             let sprite = state.cursors.get(icon);
-            let hotspot =
-                Point::<f64, Logical>::from((sprite.hotspot.0 as f64, sprite.hotspot.1 as f64));
+            let hotspot = Point::<i32, Physical>::from((sprite.hotspot.0, sprite.hotspot.1));
             let element = MemoryRenderBufferRenderElement::from_buffer(
                 renderer,
-                (location - hotspot).to_physical_precise_round(scale),
+                (location.to_physical_precise_round(scale) - hotspot).to_f64(),
                 &sprite.buffer,
                 None,
                 None,

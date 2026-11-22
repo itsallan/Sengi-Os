@@ -58,6 +58,8 @@ pub struct Frame {
     part: (i32, i32, i32, i32),
     /// A frame is copied once; a second copy of it is an error.
     used: std::sync::atomic::AtomicBool,
+    /// Whether the pointer is in the picture.
+    overlay: bool,
 }
 
 /// The part of a `width` by `height` picture that a client's rectangle
@@ -96,6 +98,7 @@ impl State {
         frame: New<ZwlrScreencopyFrameV1>,
         output: &smithay::reexports::wayland_server::protocol::wl_output::WlOutput,
         rectangle: Option<(i32, i32, i32, i32)>,
+        overlay: bool,
         data_init: &mut DataInit<'_, Self>,
     ) {
         let output = Output::from_resource(output);
@@ -120,6 +123,7 @@ impl State {
                         output,
                         part,
                         used: std::sync::atomic::AtomicBool::new(false),
+                        overlay,
                     }),
                 );
                 let (width, height) = (part.2 as u32, part.3 as u32);
@@ -138,7 +142,10 @@ impl State {
         let Some(mut capture) = self.capture.take() else {
             return false;
         };
+        // The pointer is in the picture only if the client asked for it.
+        let drawn = std::mem::replace(&mut self.draw_cursor, wanted.overlay);
         let picture = capture(self, &wanted.output);
+        self.draw_cursor = drawn;
         self.capture = Some(capture);
         let Some((width, height, rgb)) = picture else {
             return false;
@@ -202,19 +209,29 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for State {
         data_init: &mut DataInit<'_, Self>,
     ) {
         match request {
-            zwlr_screencopy_manager_v1::Request::CaptureOutput { frame, output, .. } => {
-                state.begin_frame(frame, &output, None, data_init);
+            zwlr_screencopy_manager_v1::Request::CaptureOutput {
+                frame,
+                overlay_cursor,
+                output,
+            } => {
+                state.begin_frame(frame, &output, None, overlay_cursor != 0, data_init);
             }
             zwlr_screencopy_manager_v1::Request::CaptureOutputRegion {
                 frame,
                 output,
+                overlay_cursor,
                 x,
                 y,
                 width,
                 height,
-                ..
             } => {
-                state.begin_frame(frame, &output, Some((x, y, width, height)), data_init);
+                state.begin_frame(
+                    frame,
+                    &output,
+                    Some((x, y, width, height)),
+                    overlay_cursor != 0,
+                    data_init,
+                );
             }
             _ => {}
         }

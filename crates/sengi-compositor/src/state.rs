@@ -244,6 +244,11 @@ pub struct State {
     /// Programs we started and still have to collect when they exit.
     children: Vec<Child>,
     pub cursors: Cursors,
+    /// The theme at the screen's own scale: what frames are painted with.
+    pub paint_theme: Theme,
+    /// Whether the pointer is drawn in the picture a screen copy takes,
+    /// which a client asks for with overlay_cursor.
+    pub draw_cursor: bool,
     /// The cursor the client under the pointer asked for.
     pub client_cursor: CursorImageStatus,
     /// The cursor for the frame part under the pointer, if it has its own.
@@ -414,7 +419,8 @@ impl State {
             );
         }
 
-        let cursors = Cursors::new(&theme);
+        let cursors = Cursors::new(&theme, 1.0);
+        let paint_theme = theme.clone();
         let dh2 = dh.clone();
 
         Ok(Self {
@@ -484,6 +490,8 @@ impl State {
             cycle: None,
             children: Vec::new(),
             cursors,
+            paint_theme,
+            draw_cursor: true,
             client_cursor: CursorImageStatus::default_named(),
             frame_cursor: None,
             pointer_seen: false,
@@ -1006,6 +1014,21 @@ impl State {
         if keyboard.current_focus() != target {
             keyboard.set_focus(self, target, SERIAL_COUNTER.next_serial());
         }
+    }
+
+    /// Sets the scale every output is drawn at. Frames, title text and the
+    /// cursor are then painted in the screen's own pixels.
+    pub fn set_output_scale(&mut self, scale: f64) {
+        self.output_scale = scale;
+        self.paint_theme = self.theme.scaled(scale);
+        self.font = Font::load(
+            &self.paint_theme.font_family,
+            self.paint_theme.font_weight,
+            self.paint_theme.font_px,
+        );
+        // No redraw here: this runs before any output exists, and a frame
+        // drawn then would show nothing. The backends ask once they have one.
+        self.cursors = Cursors::new(&self.paint_theme, scale);
     }
 
     /// Reads the settings again and acts on what changed: SIGHUP.
