@@ -225,12 +225,9 @@ fn the_frame_is_the_expected_size_at_scale_one() {
     assert_eq!(title_bar_rows("1"), height);
 }
 
-/// Twice the rows at a scale of two, which the frame should be drawn at. It
-/// is not yet: the bar's top and bottom rows come out as blends with the
-/// desktop and the client, so the bar is about half a pixel off at that
-/// scale. Run with --ignored to see it.
+/// Twice the rows at a scale of two. The run stops at a blended row, so a
+/// bar with a soft edge at either end comes out short.
 #[test]
-#[ignore = "known: the title bar is blurred at its edges at a scale of two"]
 fn the_frame_is_the_expected_size_at_scale_two() {
     let height = sengi_tokens::Tokens::builtin()
         .px("size.titlebar-height")

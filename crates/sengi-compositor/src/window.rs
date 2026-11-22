@@ -763,7 +763,7 @@ impl State {
                 &canvas.into_pixels(),
                 Fourcc::Argb8888,
                 size,
-                1,
+                scale.round().max(1.0) as i32,
                 Transform::Normal,
                 None,
             );
@@ -788,7 +788,7 @@ impl State {
                         &picture.into_pixels(),
                         Fourcc::Argb8888,
                         (size, size),
-                        1,
+                        scale.round().max(1.0) as i32,
                         Transform::Normal,
                         None,
                     )
