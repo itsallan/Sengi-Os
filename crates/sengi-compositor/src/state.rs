@@ -820,6 +820,8 @@ impl State {
     ) -> Option<u32> {
         let mut command = Command::new(program);
         command
+            // Its own process group, so that ending it ends what it started.
+            .process_group(0)
             .args(arguments)
             .env("WAYLAND_DISPLAY", &self.socket_name)
             .env(PID_VARIABLE, std::process::id().to_string());
@@ -854,6 +856,10 @@ impl State {
     /// Ends a program we started.
     pub fn end_child(&mut self, pid: u32) {
         if let Some(child) = self.children.iter_mut().find(|child| child.id() == pid) {
+            // Its group first: what a hung locker started is ours too.
+            // SAFETY: kill takes two integers; a negative pid names the
+            // group the child leads, which it made when it was started.
+            unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
             let _ = child.kill();
         }
     }

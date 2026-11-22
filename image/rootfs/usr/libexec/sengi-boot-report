@@ -132,10 +132,13 @@ as_live sengi-lock -f
 status=$?
 held=
 if [ "$compositor" = sengi-compositor ]; then
+	# Only what the compositor says after this request is its answer: an
+	# older report of the session would look the same.
+	before=$(journalctl -b --no-pager -o cat -t sengi-compositor | grep -c 'session ')
 	kill -USR1 "$(session_compositor_pid)"
 	sleep 0.5
-	held=$(journalctl -b --no-pager -o cat -t sengi-compositor | grep 'session ' | tail -n 1 |
-		sed 's/.*session /session /')
+	held=$(journalctl -b --no-pager -o cat -t sengi-compositor | grep 'session ' |
+		tail -n +"$((before + 1))" | tail -n 1 | sed 's/.*session /session /')
 fi
 echo "SENGI-FORWARD exit=$status $held" >$port
 n=0

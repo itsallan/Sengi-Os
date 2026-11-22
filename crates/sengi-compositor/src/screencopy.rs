@@ -22,7 +22,7 @@ use smithay::{
         wayland_server::{
             backend::GlobalId,
             protocol::{wl_buffer::WlBuffer, wl_shm::Format},
-            Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New,
+            Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
         },
     },
     wayland::shm::with_buffer_contents_mut,
@@ -56,6 +56,8 @@ impl ScreencopyState {
 pub struct Frame {
     output: Output,
     part: (i32, i32, i32, i32),
+    /// A frame is copied once; a second copy of it is an error.
+    used: std::sync::atomic::AtomicBool,
 }
 
 /// The part of a `width` by `height` picture that a client's rectangle
@@ -110,8 +112,16 @@ impl State {
             _ => None,
         };
         match (output, part) {
-            (Some(output), Some(part)) if !self.is_locked() => {
-                let frame = data_init.init(frame, Some(Frame { output, part }));
+            // Not on the login screen, which nobody has logged in to.
+            (Some(output), Some(part)) if !self.is_locked() && !self.login_screen => {
+                let frame = data_init.init(
+                    frame,
+                    Some(Frame {
+                        output,
+                        part,
+                        used: std::sync::atomic::AtomicBool::new(false),
+                    }),
+                );
                 let (width, height) = (part.2 as u32, part.3 as u32);
                 frame.buffer(Format::Xrgb8888, width, height, width * 4);
             }
@@ -222,20 +232,30 @@ impl Dispatch<ZwlrScreencopyFrameV1, Option<Frame>> for State {
         _data_init: &mut DataInit<'_, Self>,
     ) {
         if let zwlr_screencopy_frame_v1::Request::Copy { buffer } = request {
-            match wanted {
-                Some(wanted) if state.copy_frame(wanted, &buffer) => {
-                    let mut now = libc::timespec {
-                        tv_sec: 0,
-                        tv_nsec: 0,
-                    };
-                    // SAFETY: the kernel fills in the one struct given.
-                    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut now) };
-                    let seconds = now.tv_sec as u64;
-                    frame.flags(Flags::empty());
-                    frame.ready((seconds >> 32) as u32, seconds as u32, now.tv_nsec as u32);
-                }
-                _ => frame.failed(),
+            let Some(wanted) = wanted else {
+                frame.failed();
+                return;
+            };
+            if wanted.used.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                frame.post_error(
+                    zwlr_screencopy_frame_v1::Error::AlreadyUsed,
+                    "this frame has been copied already",
+                );
+                return;
             }
+            if !state.copy_frame(wanted, &buffer) {
+                frame.failed();
+                return;
+            }
+            let mut now = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            // SAFETY: the kernel fills in the one struct given.
+            unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut now) };
+            let seconds = now.tv_sec as u64;
+            frame.flags(Flags::empty());
+            frame.ready((seconds >> 32) as u32, seconds as u32, now.tv_nsec as u32);
         }
     }
 }

@@ -72,7 +72,8 @@ own_compositor() {
 	trap - TERM HUP INT
 	read -r up _ </proc/uptime
 	lasted=$((${up%.*} - started))
-	if [ "$status" -eq 0 ] || [ "$lasted" -ge 10 ]; then
+	# Told to stop is not a failure to start: labwc must not take over.
+	if [ "$status" -eq 0 ] || [ "$stopping" = 1 ] || [ "$lasted" -ge 10 ]; then
 		exit "$status"
 	fi
 	echo "sengi-compositor gave up after $lasted s with status $status, starting labwc instead" |
