@@ -20,7 +20,7 @@ pub struct Config {
 /// too: an empty name would have XKB fall back on the `XKB_DEFAULT_*`
 /// variables in the compositor's own environment, which were right at
 /// login and are not after a change. An empty layout stands for exactly
-/// that, the environment's keyboard.
+/// that, the environment's keyboard, and is what the login screen uses.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Keyboard {
     pub layout: String,
@@ -130,6 +130,18 @@ impl Config {
         }
     }
 
+    /// The keyboard as the environment has it, with Settings' defaults
+    /// for the rest: for the login screen, which runs as a user of its
+    /// own with no settings, and gets its layout from the installer
+    /// through `XKB_DEFAULT_*`.
+    pub fn from_environment() -> Config {
+        let mut config = Config::from_settings(&Settings::default());
+        config.keyboard.layout.clear();
+        config.keyboard.variant.clear();
+        config.keyboard.options.clear();
+        config
+    }
+
     /// What a device of `kind` is set to.
     pub fn pointing(&self, kind: Kind) -> Pointing {
         match kind {
@@ -195,6 +207,13 @@ mod tests {
         assert!(!config.mouse.natural_scroll);
         assert!(config.touchpad.tap);
         assert!(config.touchpad.disable_while_typing);
+    }
+
+    #[test]
+    fn the_environments_keyboard_is_an_empty_layout() {
+        let config = Config::from_environment();
+        assert_eq!(config.keyboard.layout, "");
+        assert_eq!(config.keyboard.repeat_delay, 600);
     }
 
     #[test]

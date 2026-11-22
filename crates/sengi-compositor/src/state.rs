@@ -146,6 +146,10 @@ pub struct State {
     /// One line on each pointing device, for the SIGUSR1 report.
     pub describe_inputs: Option<DescribeInputs>,
     pub output_power: OutputPowerState,
+    /// Running as the login screen's compositor, see `become_login_screen`.
+    pub login_screen: bool,
+    /// The program of `--session`: when it ends, so do we.
+    session_child: Option<u32>,
     /// Buttons whose press lit a dark screen and went no further; their
     /// release goes no further either.
     pub wake_buttons: Vec<u32>,
@@ -406,6 +410,8 @@ impl State {
             configure_inputs: None,
             describe_inputs: None,
             output_power,
+            login_screen: false,
+            session_child: None,
             wake_buttons: Vec::new(),
             idle_inhibitors: Vec::new(),
             _idle_inhibit_state: idle_inhibit_state,
@@ -813,8 +819,45 @@ impl State {
     /// Collects the programs that have exited, so they do not stay around
     /// as zombies.
     fn reap_children(&mut self) {
-        self.children
-            .retain_mut(|child| !matches!(child.try_wait(), Ok(Some(_))));
+        let session = self.session_child;
+        let mut session_ended = false;
+        self.children.retain_mut(|child| {
+            let ended = matches!(child.try_wait(), Ok(Some(_)));
+            session_ended |= ended && Some(child.id()) == session;
+            !ended
+        });
+        if session_ended {
+            self.session_child = None;
+            self.loop_signal.stop();
+            self.loop_signal.wakeup();
+        }
+    }
+
+    /// `--session`: runs `command` and ends with it, the way a login
+    /// screen's compositor has to for the login to go on.
+    pub fn run_session(&mut self, command: &str) {
+        self.session_child = self.spawn(command);
+        if self.session_child.is_none() {
+            self.failed = true;
+            self.loop_signal.stop();
+        }
+    }
+
+    /// `--greeter`: the compositor the login screen is shown in. Nobody is
+    /// logged in, so there is nothing a key binding may start, nothing to
+    /// lock, and nobody's settings to follow: the keyboard is the one the
+    /// environment names, where the installer put the layout that was
+    /// chosen. Terminals can still be switched.
+    pub fn become_login_screen(&mut self) {
+        self.login_screen = true;
+        self.locker_program = None;
+        let config = Config::from_environment();
+        let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
+        if keyboard.set_xkb_config(self, XkbConfig::default()).is_err() {
+            crate::say!("no keymap for the keyboard the environment names");
+        }
+        keyboard.change_repeat_info(config.keyboard.repeat_rate, config.keyboard.repeat_delay);
+        self.config = config;
     }
 
     /// What to draw at the pointer right now.
@@ -914,6 +957,10 @@ impl State {
 
     /// Reads the settings again and acts on what changed: SIGHUP.
     pub fn reload(&mut self) {
+        // The login screen follows nobody's settings.
+        if self.login_screen {
+            return;
+        }
         let mut config = Config::load();
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
         let (old, new) = (&self.config.keyboard, &config.keyboard);

@@ -240,8 +240,13 @@ impl State {
                 let symbol = keys::binding_symbol(key.modified_sym().raw(), keycode.raw());
                 match keys::binding(mods, symbol) {
                     // No shortcuts on the lock screen, every key is the
-                    // locker's; except leaving for another terminal.
-                    Some(action) if data.is_locked() && !matches!(action, Action::SwitchVt(_)) => {
+                    // locker's; except leaving for another terminal. The
+                    // same on the login screen, where nobody is logged in
+                    // for a shortcut to start anything for.
+                    Some(action)
+                        if (data.is_locked() || data.login_screen)
+                            && !matches!(action, Action::SwitchVt(_)) =>
+                    {
                         FilterResult::Forward
                     }
                     Some(action) => {

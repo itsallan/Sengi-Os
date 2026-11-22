@@ -141,10 +141,17 @@ fn display_reachable() -> bool {
 fn start_clients(state: &mut State, options: &Options) {
     crate::tell!("{}", state.socket_name.to_string_lossy());
 
-    let locker = options.locker.as_deref().unwrap_or(keys::DEFAULT_LOCKER);
-    state.set_locker(locker);
+    if options.greeter {
+        state.become_login_screen();
+    } else {
+        let locker = options.locker.as_deref().unwrap_or(keys::DEFAULT_LOCKER);
+        state.set_locker(locker);
+    }
     for command in &options.startup {
         state.spawn(command);
+    }
+    if let Some(command) = &options.session {
+        state.run_session(command);
     }
 }
 

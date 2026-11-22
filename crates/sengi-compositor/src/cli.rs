@@ -6,6 +6,12 @@ pub const USAGE: &str = "\
 Usage: sengi-compositor [options]
 
   -s, --startup CMD     run CMD with sh once the compositor is ready
+      --session CMD     run CMD with sh once the compositor is ready, and
+                        exit when it ends
+      --greeter         be the login screen's compositor: no key bindings
+                        but those that switch terminals, no locker, and
+                        the keyboard of the environment (XKB_DEFAULT_*),
+                        not of anybody's settings
       --backend NAME    headless, winit, drm or auto (default auto: a window
                         when started from a desktop session, the screen when
                         started on a terminal, headless otherwise)
@@ -59,6 +65,8 @@ pub struct Options {
     pub backend: Backend,
     pub size: (i32, i32),
     pub startup: Vec<String>,
+    pub session: Option<String>,
+    pub greeter: bool,
     pub screenshot: Option<PathBuf>,
     pub exit_after: Option<Duration>,
     pub script: Option<PathBuf>,
@@ -91,6 +99,8 @@ impl Default for Options {
             backend: Backend::Auto,
             size: (1280, 720),
             startup: Vec::new(),
+            session: None,
+            greeter: false,
             screenshot: None,
             exit_after: None,
             script: None,
@@ -124,6 +134,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             "--lock" => return Ok(Command::Lock),
             "--reload" => return Ok(Command::Reload),
             "-s" | "--startup" => options.startup.push(value()?),
+            "--session" => options.session = Some(value()?),
+            "--greeter" => options.greeter = true,
             "--backend" => {
                 options.backend = match value()?.as_str() {
                     "auto" => Backend::Auto,
@@ -239,6 +251,8 @@ mod tests {
                 backend: Backend::Headless,
                 size: (1920, 1080),
                 startup: vec!["foot".into(), "sengi-bar".into()],
+                session: None,
+                greeter: false,
                 screenshot: Some("out.png".into()),
                 exit_after: Some(Duration::from_millis(2500)),
                 script: Some("steps.txt".into()),
@@ -252,6 +266,14 @@ mod tests {
     fn help_and_version_win() {
         assert_eq!(run(&["--size", "1x1", "--help"]), Ok(Command::Help));
         assert_eq!(run(&["-V"]), Ok(Command::Version));
+        let Ok(Command::Run(login)) = run(&["--greeter", "--session", "sengi-greeter --now"])
+        else {
+            panic!("the login screen's options are not taken");
+        };
+        assert!(login.greeter);
+        assert_eq!(login.session.as_deref(), Some("sengi-greeter --now"));
+        assert!(!Options::default().greeter);
+        assert!(run(&["--session"]).is_err());
         assert_eq!(run(&["--exit"]), Ok(Command::Exit));
         assert_eq!(run(&["--lock"]), Ok(Command::Lock));
         assert_eq!(run(&["--reload"]), Ok(Command::Reload));

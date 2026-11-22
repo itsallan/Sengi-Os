@@ -51,14 +51,41 @@ impl Compositor {
         script: Option<&str>,
         variables: &[(&str, &str)],
     ) -> Self {
-        Self::launch(locker, settings, script, variables)
+        Self::launch(locker, settings, script, variables, &[])
+    }
+
+    /// Starts the compositor as the login screen's, with `session` as
+    /// the program it runs and ends with.
+    pub fn start_login_screen(
+        session: Option<&str>,
+        script: Option<&str>,
+        variables: &[(&str, &str)],
+    ) -> Self {
+        let mut arguments = vec!["--greeter"];
+        if let Some(session) = session {
+            arguments.extend(["--session", session]);
+        }
+        Self::launch(None, None, script, variables, &arguments)
+    }
+
+    /// Waits for the compositor to end by itself; whether it did, and
+    /// without an error.
+    pub fn ended(&mut self) -> bool {
+        let end = Instant::now() + SOON;
+        while Instant::now() < end {
+            if let Ok(Some(status)) = self.child.try_wait() {
+                return status.success();
+            }
+            sleep(Duration::from_millis(10));
+        }
+        false
     }
 
     /// As `start`, with the settings file `settings` in a configuration
     /// directory of its own (see `write_settings`), and with `script`
     /// played as input.
     pub fn start_with(locker: Option<&str>, settings: Option<&str>, script: Option<&str>) -> Self {
-        Self::launch(locker, settings, script, &[])
+        Self::launch(locker, settings, script, &[], &[])
     }
 
     fn launch(
@@ -66,6 +93,7 @@ impl Compositor {
         settings: Option<&str>,
         script: Option<&str>,
         variables: &[(&str, &str)],
+        arguments: &[&str],
     ) -> Self {
         static COUNT: AtomicU32 = AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!(
@@ -89,6 +117,7 @@ impl Compositor {
         }
         let mut command = Command::new(env!("CARGO_BIN_EXE_sengi-compositor"));
         command.args(["--backend", "headless", "--locker", &locker]);
+        command.args(arguments);
         if let Some(script) = script {
             let path = dir.join("script");
             std::fs::write(&path, script).expect("a script");
