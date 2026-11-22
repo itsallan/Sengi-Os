@@ -207,3 +207,35 @@ fn the_frame_is_drawn_at_the_screens_scale_and_not_enlarged() {
         "every frame pixel is doubled: the frame is enlarged"
     );
 }
+
+/// Snapping and moving to an edge leave a fullscreen window where it is, and
+/// taking it out of fullscreen gives back the size it had.
+#[test]
+fn edge_keys_leave_a_fullscreen_window_alone() {
+    let script = "3000 key super+left\n3300 key alt+left\n";
+    let compositor = Compositor::start_with(None, None, Some(script));
+    let mut app = compositor.connect();
+    app.keyboard().unwrap();
+    let (_surface, toplevel) = app.window(GREEN).unwrap();
+    assert!(app.wait(SOON, |seen| seen.keyboard_enters == 1));
+    assert_eq!(told(&app), Some((300, 200)));
+    toplevel.set_fullscreen(None);
+    assert!(
+        app.wait(SOON, |seen| seen.more.toplevel == Some((1280, 720, true))),
+        "not told to fill the screen: {:?}",
+        app.seen.more.toplevel
+    );
+    // Both keys come after the window has gone fullscreen.
+    app.wait(Duration::from_secs(4), |_| false);
+    assert_eq!(
+        app.seen.more.toplevel,
+        Some((1280, 720, true)),
+        "an edge key changed a fullscreen window"
+    );
+    toplevel.unset_fullscreen();
+    assert!(
+        app.wait(SOON, |seen| seen.more.toplevel == Some((300, 200, false))),
+        "not given back its size: {:?}",
+        app.seen.more.toplevel
+    );
+}

@@ -551,6 +551,9 @@ impl State {
     /// Fills half of the screen on `edge`, as labwc's SnapToEdge does. A
     /// maximised window is first given back its size.
     pub fn snap_to_edge(&mut self, window: &Window, edge: Edge) {
+        if data(window).fullscreen.get().is_some() {
+            return;
+        }
         if data(window).restore.get().is_some() {
             self.set_maximised(window, false);
         }
@@ -577,6 +580,9 @@ impl State {
     /// size, as labwc's MoveToEdge does with no other window in the way.
     pub fn move_to_edge(&mut self, window: &Window, edge: Edge) {
         if data(window).restore.get().is_some() {
+            return;
+        }
+        if data(window).fullscreen.get().is_some() {
             return;
         }
         let (Some(frame), Some(area)) = (self.frame_rect(window), self.snap_area(window)) else {
