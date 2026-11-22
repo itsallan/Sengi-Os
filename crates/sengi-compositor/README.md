@@ -87,11 +87,9 @@ Started programs get `WAYLAND_DISPLAY` and `SENGI_COMPOSITOR_PID`, which
 the session's restart loops watch. From inside the session,
 `sengi-compositor --exit` (or SIGTERM) logs out and gives the terminal
 back, and `sengi-compositor --lock` locks the screen and returns once
-every screen is covered. SIGHUP, which `labwc --reconfigure` would send,
-is noted in the log and otherwise ignored: there is nothing to read again
-yet. Ctrl+Alt+F1..F12 switch virtual terminals. The keyboard layout follows
-`XKB_DEFAULT_LAYOUT` and the other `XKB_DEFAULT_*` variables, which
-`sengi-session` takes from the environment file Settings writes.
+every screen is covered. `sengi-compositor --reload` (or SIGHUP, which is
+also what `labwc --reconfigure` sends) has the settings read again, see
+"What Settings sets" below. Ctrl+Alt+F1..F12 switch virtual terminals.
 
 `--backend drm --screenshot PNG` saves what is drawn, by rendering the same
 frame once more into memory, whenever the compositor gets SIGUSR2, and at
@@ -316,13 +314,11 @@ swaylock, swayidle, sengi-focus, wlrctl and gtk3-widget-factory:
 - Maximising moves the window at once but the client redraws a moment later.
 - Title text is unkerned (Inter keeps kerning in GPOS), has no fallback
   fonts, and long titles are cut off without an ellipsis.
-- Keyboard layout is fixed to the xkb default (US). Nested under winit the
-  host layout is not followed.
+- Nested under winit the host's keyboard layout is not followed.
 - No dmabuf on the pixman path, so GPU clients fall back to software
   there. No `wl_drm`; Mesa finds the device through dmabuf feedback.
 - Missing protocols: primary selection, xdg-activation, fractional-scale,
-  viewporter, text-input, screencopy, output management, output power
-  management (so nothing can blank the panel when idle), idle-inhibit,
+  viewporter, text-input, screencopy, output management,
   pointer constraints and relative pointer (games, remote desktops),
   virtual keyboard and pointer, ext-foreign-toplevel-list.
 - The icon of a drag-and-drop is not drawn; the drop itself works.
@@ -364,14 +360,14 @@ and so counts as dirty.
    switching under logind, the touchpad, suspend, idle RAM and frame time.
 2. Arranging screens and choosing modes, windows and popups that know
    which screen they are on.
-3. Output power management, so swayidle can blank the panel.
+3. Seeing the panel really go dark and come back on the laptop.
 4. screencopy (grim, and the CI screenshot), output management, primary
-   selection, xdg-activation, fractional scale, idle-inhibit, pointer
-   constraints and relative pointer.
+   selection, xdg-activation, fractional scale, pointer constraints and
+   relative pointer.
 5. Fullscreen, popup constraining, edge snapping, an Alt+Tab switcher,
    drag-and-drop icons.
 6. Rounded bottom corners and shadows.
-7. Keyboard layout, key bindings and input settings from configuration.
+7. Key bindings from configuration.
 8. XWayland, started on demand.
 9. Measure idle RAM and time to first frame against labwc on the target
    machine.
@@ -427,9 +423,43 @@ this session (swayidle, the session menu, quick settings) passes the
 request on with `sengi-compositor --lock` and so behaves as it does under
 labwc: `sengi-lock -f` returns once the screen is locked.
 
-Settings' keyboard repeat and pointer settings do not reach the
-compositor yet. They live in labwc's `rc.xml`, and Settings tells only a
-running labwc to read it again.
+### What Settings sets
+
+The compositor reads `sengi-os/settings.toml` itself, the file Settings
+writes, at start and again on SIGHUP. Settings still writes labwc's
+`rc.xml` and `environment` from the same settings, for labwc; the
+compositor reads neither for these. When something is changed, Settings
+tells the compositor it is running under: `labwc --reconfigure` there,
+`sengi-compositor --reload` here, so a change takes effect at once.
+
+- `[keyboard]`: `layouts` and `switch` make the keymap, `repeat-delay` and
+  `repeat-rate` the key repeat (600 ms and 25 a second unless set, as
+  under labwc). With nothing set XKB's defaults apply, and with them the
+  `XKB_DEFAULT_*` variables from the environment file. A layout the
+  system does not have leaves the keymap as it was and says so in the
+  journal. The layout in use is told to clients the usual way, so the
+  lock screen shows it.
+- `[mouse]`: `speed`, `natural-scroll`, `left-handed`, for every pointing
+  device that cannot be tapped.
+- `[touchpad]`: `speed`, `natural-scroll`, `tap-to-click`,
+  `disable-while-typing`, for those that can.
+
+`sengi-settings --screen off`, which swayidle runs after the time set in
+`[power]`, switches the outputs off through wlr-output-power-management.
+The compositor lights them again at the first key or pointer movement,
+whether or not anybody asks it to, and a lock that begins while a screen
+is dark does not wait for it. A client can hold idleness off with
+idle-inhibit while its surface is on screen and the session is unlocked.
+
+SIGUSR1 adds to its report a line on the keyboard, one on the outputs
+and one for each pointing device, read back from libinput:
+
+    keyboard: layout us,de, variant ,, options grp:alt_shift_toggle, repeat 25 a second after 600 ms
+    outputs: eDP-1 on
+    input: SynPS/2 Synaptics TouchPad (touchpad): speed 0.00, natural scroll off, left-handed off, tap on, disable while typing on
+
+Not seen: any of the touchpad settings on a touchpad (a VM has none),
+and a panel really going dark.
 
 Seen in a QEMU guest booted from the image's preview entry (no GPU there,
 so pixman on dumb buffers, and no LLVM mapped): swaybg, sengi-bar,
@@ -536,6 +566,10 @@ untrusted programs in a sandbox is what protects against them.
 - `src/shell.rs`: wl_compositor, xdg-shell and xdg-decoration.
 - `src/layer.rs`: layer-shell.
 - `src/foreign_toplevel.rs`: wlr-foreign-toplevel-management.
+- `src/config.rs`: what is taken from the settings file. Pure,
+  unit-tested.
+- `src/output_power.rs`: switching outputs off and on for clients.
+- `src/idle.rs`: idle-inhibit.
 - `src/lock.rs`: session lock and who may use it.
 - `src/security.rs`: security contexts and what sandboxed clients are
   kept from.
