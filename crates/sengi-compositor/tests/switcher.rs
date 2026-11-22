@@ -216,3 +216,89 @@ fn an_item_of_the_root_menu_runs_its_action() {
     let _ = std::fs::remove_file(&script);
     assert_eq!(count, 1, "the Lock item did not run the locker");
 }
+
+/// Pictures of the switcher and the menus, for looking at: written as PPM
+/// files to the directory named by SENGI_SHOTS. Not run by a plain test run.
+#[test]
+#[ignore = "takes pictures for looking at; needs SENGI_SHOTS"]
+fn pictures_of_the_switcher_and_the_menus() {
+    let dir = std::path::PathBuf::from(std::env::var_os("SENGI_SHOTS").expect("SENGI_SHOTS"));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // The switcher, held with the middle window selected.
+    let script = "3000 keydown alt\n3100 key tab\n9000 keyup alt\n";
+    let compositor = Compositor::start_with(None, None, Some(script));
+    let mut clients = three_windows(&compositor);
+    clients[0].wait(Duration::from_secs(5), |_| false);
+    clients[0]
+        .capture()
+        .unwrap()
+        .write_ppm(&dir.join("switcher.ppm"))
+        .unwrap();
+    drop(clients);
+    drop(compositor);
+
+    // The root menu, opened on the empty desktop.
+    let script = "1500 move 200 200\n1600 click right\n";
+    let compositor = Compositor::start_with(None, None, Some(script));
+    let mut app = compositor.connect();
+    let _window = app.window(GREEN).unwrap();
+    app.wait(Duration::from_secs(4), |_| false);
+    app.capture()
+        .unwrap()
+        .write_ppm(&dir.join("desktop-menu.ppm"))
+        .unwrap();
+    drop(app);
+    drop(compositor);
+
+    // The window menu, opened on the title bar of a window in the middle.
+    let script = "1500 move 700 258\n1600 click right\n";
+    let compositor = Compositor::start_with(None, None, Some(script));
+    let mut app = compositor.connect();
+    let _window = app.decorated_window(GREEN).unwrap();
+    app.wait(Duration::from_secs(4), |_| false);
+    app.capture()
+        .unwrap()
+        .write_ppm(&dir.join("window-menu.ppm"))
+        .unwrap();
+}
+
+/// A right-click on a window's title bar opens its menu with the pointer at
+/// its top left corner: four rows, and no line between them.
+#[test]
+fn a_right_click_on_a_title_bar_opens_the_window_menu() {
+    let script = "1500 move 700 258\n1600 click right\n";
+    let compositor = Compositor::start_with(None, None, Some(script));
+    let mut app = compositor.connect();
+    let _window = app.decorated_window(GREEN).unwrap();
+    app.wait(Duration::from_secs(4), |_| false);
+    let picture = app.capture().unwrap();
+    assert_eq!(
+        rgb(picture.at(712, 262)),
+        CARD,
+        "no window menu on the title bar"
+    );
+    // Four rows of 42 pixels, with the padding around them: 184 tall.
+    assert_eq!(
+        rgb(picture.at(712, 258 + 184 - 4)),
+        CARD,
+        "the menu is too short"
+    );
+    assert_ne!(rgb(picture.at(712, 258 + 190)), CARD, "the menu runs on");
+}
+
+/// A right-click on the client area of a window opens nothing.
+#[test]
+fn a_right_click_on_a_window_opens_no_menu() {
+    let script = "1500 move 700 400\n1600 click right\n";
+    let compositor = Compositor::start_with(None, None, Some(script));
+    let mut app = compositor.connect();
+    let _window = app.window(GREEN).unwrap();
+    app.wait(Duration::from_secs(4), |_| false);
+    let picture = app.capture().unwrap();
+    assert_eq!(
+        rgb(picture.at(704, 404)),
+        rgb(GREEN),
+        "a menu opened on a window"
+    );
+}

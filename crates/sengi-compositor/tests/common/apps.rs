@@ -117,6 +117,15 @@ impl Picture {
         let i = ((y * self.width + x) * 4) as usize;
         u32::from_le_bytes([self.xrgb[i], self.xrgb[i + 1], self.xrgb[i + 2], 0])
     }
+
+    /// Writes the picture as a binary PPM, to look at.
+    pub fn write_ppm(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let mut out = format!("P6\n{} {}\n255\n", self.width, self.height).into_bytes();
+        for pixel in self.xrgb.as_chunks::<4>().0 {
+            out.extend_from_slice(&[pixel[2], pixel[1], pixel[0]]);
+        }
+        std::fs::write(path, out)
+    }
 }
 
 fn scratch_file(bytes: usize) -> Result<File, Failure> {
