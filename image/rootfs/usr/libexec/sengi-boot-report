@@ -217,6 +217,36 @@ done
 sleep 1
 echo "SENGI-SCREEN lit by=$lit dpms=$(dpms)" >$port
 
+# What foot said of the compositor when the test opened a terminal. It
+# names each thing it would use and does not find. Its words reach the
+# journal only under sengi-compositor, which starts it; there it must
+# have spoken, of the things still missing, and not of these three.
+if [ "$compositor" = sengi-compositor ]; then
+	said=$(journalctl -b --no-pager -o cat -t sengi-compositor | grep -E 'warn: wayland\.c')
+	spoke=$(printf '%s\n' "$said" | grep -c .)
+	missing=$(printf '%s\n' "$said" |
+		grep -c -E 'primary selection|XDG activation|fractional scaling')
+	echo "SENGI-FOOT spoke=$spoke missing=$missing" >$port
+else
+	echo "SENGI-FOOT skipped" >$port
+fi
+
+# A terminal that asks to fill the screen from the start, for the test to
+# see over the bar and the dock, and then closed again. The test has to
+# have taken its picture of the desktop first.
+sleep 6
+as_live foot --fullscreen --app-id sengi-fullscreen-test sleep 600 >/dev/null 2>&1 &
+sleep 3
+if pgrep -u live -f 'app-id sengi-fullscreen-test' >/dev/null; then
+	echo "SENGI-FULLSCREEN up" >$port
+else
+	echo "SENGI-FULLSCREEN failed" >$port
+fi
+sleep 6
+pkill -u live -f 'app-id sengi-fullscreen-test'
+sleep 2
+echo "SENGI-FULLSCREEN down" >$port
+
 # Last, the test logs out. greetd then starts the login screen in a
 # compositor of its own, both as its own user. Say when they are up, what
 # they cost and whether they may turn the machine off; then when PAM has

@@ -439,6 +439,64 @@ else
 	drives "the guest did not get as far as switching the screen off"
 fi
 
+# What programs expect of the compositor. foot says at start what it
+# misses; under sengi-compositor those words are in the journal, and
+# three of them must be gone while foot still spoke of others.
+apps_fail=
+apps() {
+	apps_fail=${apps_fail:-$1}
+}
+if wait_serial 'SENGI-FOOT ' 20; then
+	foot=$(tr -d '\r' <"$out/serial.log" | sed -n 's/.*SENGI-FOOT //p' | head -1)
+	if [ "$want" = sengi-compositor ]; then
+		case $foot in
+		"spoke=0 "*) apps "foot said nothing of the compositor, so nothing is known: $foot" ;;
+		*"missing=0") ;;
+		*) apps "foot still misses primary selection, activation or fractional scale: $foot" ;;
+		esac
+	fi
+else
+	apps "the guest did not get as far as what foot said"
+fi
+# A terminal over the whole screen: the bar's rows and the dock's have to
+# change, and be as they were once it is closed. Rows of a dump are three
+# bytes a pixel after a short header.
+strip() {
+	size=$(wc -c <"$out/$1.ppm")
+	header=$((size - screen_w * screen_h * 3))
+	tail -c +$((header + $2 * screen_w * 3 + 1)) "$out/$1.ppm" |
+		head -c $(($3 * screen_w * 3)) >"$out/$1.strip"
+}
+strip_differs() {
+	strip "$1" "$3" "$4"
+	strip "$2" "$3" "$4"
+	cmp -l "$out/$1.strip" "$out/$2.strip" 2>/dev/null | wc -l
+}
+dump plain
+if wait_serial 'SENGI-FULLSCREEN up' 30; then
+	dump filled
+	shot fullscreen
+	bar_bytes=$(strip_differs plain filled 0 24)
+	dock_bytes=$(strip_differs plain filled $((screen_h - 60)) 50)
+	[ "$bar_bytes" -ge 1000 ] ||
+		apps "the bar still shows over a fullscreen window ($bar_bytes bytes of it changed)"
+	[ "$dock_bytes" -ge 3000 ] ||
+		apps "the dock still shows over a fullscreen window ($dock_bytes bytes of it changed)"
+	if wait_serial 'SENGI-FULLSCREEN down' 30; then
+		sleep 1
+		dump emptied
+		shot fullscreen-left
+		# The bar's clock may have moved on a minute; nothing else has.
+		[ "$(differs plain emptied)" -lt 20000 ] ||
+			apps "the desktop did not come back after a fullscreen window closed"
+	else
+		apps "the fullscreen terminal was not closed"
+	fi
+else
+	apps "a terminal could not be started fullscreen"
+fi
+rm -f "$out"/*.strip
+
 # The login screen: log out through the session menu, get the password
 # wrong, get it right. The guest says when the login screen and its
 # compositor are up, when PAM has refused, and what is running once the
@@ -557,6 +615,10 @@ if [ -n "$lock_fail" ]; then
 fi
 if [ -n "$forward_fail" ]; then
 	echo "FAIL: $forward_fail" >&2
+	fail=1
+fi
+if [ -n "$apps_fail" ]; then
+	echo "FAIL: $apps_fail" >&2
 	fail=1
 fi
 if [ -n "$drives_fail" ]; then
