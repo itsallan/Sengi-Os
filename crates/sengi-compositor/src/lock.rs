@@ -57,7 +57,7 @@ use smithay::{
 };
 
 use crate::{
-    state::{ClientState, State},
+    state::{ClientState, State, MAX_LOCK_ASKERS},
     window,
 };
 
@@ -286,7 +286,9 @@ impl State {
             answer(asker, true);
             return;
         }
-        if self.locker_program.is_none() {
+        // No locker to start, or more waiting already than any session
+        // has reason for.
+        if self.locker_program.is_none() || self.lock_askers.len() >= MAX_LOCK_ASKERS {
             answer(asker, false);
             return;
         }

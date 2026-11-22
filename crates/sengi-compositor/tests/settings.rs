@@ -149,6 +149,9 @@ fn a_started_session_survives_settings_it_cannot_use() {
     let mut client = compositor.connect();
     client.keyboard().unwrap();
     assert!(client.wait(SOON, |seen| !seen.keymaps.is_empty()));
+    // What it says it uses is what it uses, not the name it was given.
+    let said = compositor.status_line("keyboard:");
+    assert!(said.contains("layout (default)"), "{said}");
 }
 
 #[test]

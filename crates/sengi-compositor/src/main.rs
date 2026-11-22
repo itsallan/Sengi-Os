@@ -155,7 +155,8 @@ fn start_clients(state: &mut State, options: &Options) {
 fn signal_compositor(signal: &str) -> ExitCode {
     let pid = std::env::var(state::PID_VARIABLE)
         .ok()
-        .filter(|pid| pid.parse::<u32>().is_ok());
+        // Never 0: to `kill` that is everything in our own process group.
+        .filter(|pid| pid.parse::<u32>().is_ok_and(|pid| pid > 0));
     let Some(pid) = pid else {
         crate::say!(
             "{} is not set; not started from a session?",

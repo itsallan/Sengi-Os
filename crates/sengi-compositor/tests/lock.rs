@@ -145,6 +145,27 @@ fn a_locker_that_hangs_is_ended_and_does_not_block_the_next() {
 }
 
 #[test]
+fn connections_that_say_nothing_do_not_hold_up_a_request_to_lock() {
+    use std::os::unix::fs::PermissionsExt;
+    let compositor = Compositor::start(None);
+    let control = compositor.socket.with_extension("control");
+    let mode = std::fs::metadata(&control).unwrap().permissions().mode();
+    assert_eq!(
+        mode & 0o777,
+        0o600,
+        "the control socket is the user's alone"
+    );
+
+    let silent: Vec<_> = (0..40)
+        .map(|_| std::os::unix::net::UnixStream::connect(&control).unwrap())
+        .collect();
+    let mut asker = compositor.ask_for_lock();
+    let (_locker, _held) = hold(compositor.next_locker());
+    assert!(asker.wait().unwrap().success());
+    drop(silent);
+}
+
+#[test]
 fn a_second_lock_object_cannot_unlock() {
     let compositor = Compositor::start(None);
     let (mut locker, _held) = locked(&compositor);

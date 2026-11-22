@@ -1,13 +1,14 @@
 //! Compositor state shared by every backend.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     error::Error,
     ffi::OsString,
     io::Read,
     os::{
         fd::AsRawFd,
         unix::{
+            fs::PermissionsExt,
             net::{UnixListener, UnixStream},
             process::CommandExt,
         },
@@ -41,7 +42,7 @@ use smithay::{
             ping::Ping,
             signals::{Signal, Signals},
             timer::{TimeoutAction, Timer},
-            EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction,
+            EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction, RegistrationToken,
         },
         wayland_protocols::ext::idle_notify::v1::server::{
             ext_idle_notification_v1::ExtIdleNotificationV1,
@@ -107,6 +108,13 @@ pub type DmabufImport = Box<dyn FnMut(&Dmabuf) -> bool>;
 /// Refresh rate reported for outputs that have no real one, in mHz.
 pub const REFRESH_MHZ: i32 = 60_000;
 
+/// How many connections to the control socket may be open without
+/// having asked for anything.
+const MAX_CONTROL_WAITING: usize = 16;
+
+/// How many requests to lock may be waiting for their answer.
+pub const MAX_LOCK_ASKERS: usize = 32;
+
 /// Sets the pointing devices to what the settings say.
 pub type ConfigureInputs = Box<dyn FnMut(&Config)>;
 /// Says what each pointing device is set to.
@@ -147,6 +155,10 @@ pub struct State {
     pub locker_gone: Option<Arc<AtomicBool>>,
     /// Those who asked for the lock and have not been answered yet.
     pub lock_askers: Vec<UnixStream>,
+    /// Connections to the control socket that have not said yet what
+    /// they want, oldest first.
+    control_waiting: VecDeque<(u64, RegistrationToken)>,
+    control_count: u64,
     /// How many lockers have been started for them so far.
     pub lock_tries: u32,
     /// Where `--lock` is asked for; the file goes when we do.
@@ -265,8 +277,8 @@ impl State {
 
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
-        let config = Config::load();
-        let typing = &config.keyboard;
+        let mut config = Config::load();
+        let typing = &mut config.keyboard;
         // Settings may name a layout this system does not have. A keyboard
         // with the default layout is better than no session.
         if seat
@@ -277,6 +289,11 @@ impl State {
                 "no keymap for layout `{}`, using the default",
                 typing.layout
             );
+            // What is in use is the default, and that is what is kept as
+            // the keyboard's state: the name that was refused is not.
+            typing.layout.clear();
+            typing.variant.clear();
+            typing.options.clear();
             seat.add_keyboard(Default::default(), typing.repeat_delay, typing.repeat_rate)?;
         }
         seat.add_pointer();
@@ -345,7 +362,7 @@ impl State {
             Generic::new(control.listener.try_clone()?, Interest::READ, Mode::Level),
             |_, listener, state| {
                 while let Ok((stream, _)) = listener.accept() {
-                    state.control_request(stream);
+                    state.control_connected(stream);
                 }
                 Ok(PostAction::Continue)
             },
@@ -391,6 +408,8 @@ impl State {
             locker_program: None,
             locker_gone: None,
             lock_askers: Vec::new(),
+            control_waiting: VecDeque::new(),
+            control_count: 0,
             lock_tries: 0,
             _control: control,
             switch_vt: None,
@@ -698,15 +717,38 @@ impl State {
         }
     }
 
-    /// One request on the control socket: a word and a newline.
-    fn control_request(&mut self, mut stream: UnixStream) {
-        // Whoever asks writes at once. One that does not is not waited for.
-        let _ = stream.set_nonblocking(false);
-        let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(100)));
-        let mut word = [0u8; 16];
-        let read = stream.read(&mut word).unwrap_or(0);
-        if word[..read].trim_ascii() == b"lock" {
-            self.lock_requested(stream);
+    /// Somebody connected to the control socket. What they ask is read
+    /// when it has arrived, so one who connects and says nothing holds
+    /// nothing up; and only so many may be silent at once, the oldest
+    /// making room for the newest.
+    fn control_connected(&mut self, stream: UnixStream) {
+        if stream.set_nonblocking(true).is_err() {
+            return;
+        }
+        while self.control_waiting.len() >= MAX_CONTROL_WAITING {
+            if let Some((_, oldest)) = self.control_waiting.pop_front() {
+                self.loop_handle.remove(oldest);
+            }
+        }
+        self.control_count += 1;
+        let id = self.control_count;
+        let source = Generic::new(stream, Interest::READ, Mode::Level);
+        let inserted = self
+            .loop_handle
+            .insert_source(source, move |_, stream, state| {
+                state.control_waiting.retain(|(waiting, _)| *waiting != id);
+                let mut word = [0u8; 16];
+                let mut from: &UnixStream = stream;
+                let read = from.read(&mut word).unwrap_or(0);
+                if word[..read].trim_ascii() == b"lock" {
+                    if let Ok(asker) = stream.try_clone() {
+                        state.lock_requested(asker);
+                    }
+                }
+                Ok(PostAction::Remove)
+            });
+        if let Ok(token) = inserted {
+            self.control_waiting.push_back((id, token));
         }
     }
 
@@ -989,6 +1031,9 @@ impl ControlSocket {
         // One left behind by a compositor that was killed.
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path)?;
+        // The directory already keeps other users out. This says so on
+        // the socket too, wherever it has been put.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
         listener.set_nonblocking(true)?;
         Ok(Self { listener, path })
     }
