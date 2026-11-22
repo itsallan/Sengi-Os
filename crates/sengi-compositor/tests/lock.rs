@@ -336,3 +336,38 @@ fn a_hangup_does_not_end_the_session() {
     assert!(compositor.status().contains("session unlocked"));
     assert!(compositor.connect().roundtrip().is_ok());
 }
+
+/// A locker that hangs has its children ended with it: the one it started
+/// in the background is not left running.
+#[test]
+fn a_hung_locker_takes_the_children_it_started_with_it() {
+    let pid_file = std::env::temp_dir().join(format!("sengi-test-child-{}", std::process::id()));
+    let then = format!("sleep 60 & echo $! > '{}'\nsleep 60", pid_file.display());
+    let (locker, _runs) = counting_locker("tree", &then);
+    let compositor = Compositor::start_in(
+        Some(&locker),
+        None,
+        None,
+        &[("SENGI_COMPOSITOR_LOCKER_TIME_MS", "300")],
+    );
+    let asked = compositor.ask_for_lock().wait().unwrap();
+    assert!(!asked.success());
+    let pid: i32 = std::fs::read_to_string(&pid_file)
+        .expect("the locker started its child")
+        .trim()
+        .parse()
+        .expect("a process number");
+    let _ = std::fs::remove_file(&pid_file);
+    // Gone, or no more than a zombie that nothing has collected yet.
+    let state = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|stat| {
+            stat.rsplit(") ")
+                .next()
+                .and_then(|rest| rest.chars().next())
+        });
+    assert!(
+        state.is_none_or(|state| state == 'Z'),
+        "the child is still running in state {state:?}"
+    );
+}

@@ -144,3 +144,66 @@ fn a_window_that_asks_for_fullscreen_before_it_is_shown_is_not_fitted() {
     );
     assert_eq!(picture.at(640, 360), rgb(GREEN));
 }
+
+/// The pixels of a window dragged with Super held, released at the top
+/// edge, which maximises it.
+#[test]
+fn a_window_let_go_at_the_top_edge_is_maximised() {
+    let script = "1500 keydown super\n1600 move 640 360\n1700 press left\n2000 move 640 0\n2200 release left\n2400 keyup super\n";
+    let compositor = Compositor::start_with(None, None, Some(script));
+    let mut app = compositor.connect();
+    app.keyboard().unwrap();
+    let _window = app.window(GREEN).unwrap();
+    assert!(
+        app.wait(Duration::from_secs(5), |seen| seen
+            .more
+            .toplevel
+            .is_some_and(|(w, _, _)| w > 1000)),
+        "not maximised by letting go at the top: {:?}",
+        app.seen.more.toplevel
+    );
+}
+
+#[test]
+fn a_window_let_go_at_the_left_edge_takes_the_left_half() {
+    let script = "1500 keydown super\n1600 move 640 360\n1700 press left\n2000 move 0 360\n2200 release left\n2400 keyup super\n";
+    let compositor = Compositor::start_with(None, None, Some(script));
+    let mut app = compositor.connect();
+    app.keyboard().unwrap();
+    let (surface, _toplevel) = app.window(GREEN).unwrap();
+    assert!(app.wait(Duration::from_secs(5), |seen| seen
+        .more
+        .toplevel
+        .is_some_and(|(w, _, _)| w > 300 && w < 700)));
+    let (w, h, _) = app.seen.more.toplevel.unwrap();
+    app.paint(&surface, w, h, GREEN).unwrap();
+    let picture = app.capture().unwrap();
+    assert_eq!(picture.at(5, 360), rgb(GREEN), "not on the left");
+    assert_ne!(picture.at(1270, 360), rgb(GREEN), "it covers the right");
+}
+
+/// At a scale of two, what is drawn on the frame is drawn at that scale and
+/// not enlarged: an enlarged picture has every pair of neighbouring pixels
+/// equal, and a sharp title does not.
+#[test]
+fn the_frame_is_drawn_at_the_screens_scale_and_not_enlarged() {
+    let compositor = Compositor::start_args(&["--scale", "2"], None);
+    let mut app = compositor.connect();
+    let _window = app.window(GREEN).unwrap();
+    let picture = app.capture().unwrap();
+    let background = picture.at(0, 0);
+    let mut pairs = 0;
+    for y in 0..picture.height {
+        for x in (0..picture.width.saturating_sub(1)).step_by(2) {
+            let (a, b) = (picture.at(x, y), picture.at(x + 1, y));
+            let plain = |c: u32| c != background && c != rgb(GREEN);
+            if plain(a) && plain(b) && a != b {
+                pairs += 1;
+            }
+        }
+    }
+    assert!(
+        pairs > 0,
+        "every frame pixel is doubled: the frame is enlarged"
+    );
+}
