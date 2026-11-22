@@ -772,6 +772,10 @@ impl State {
             let (title, text) = self.title_bitmap(window, room.max(0) as usize);
             let canvas = decoration::draw_titlebar(paint, &bar, text.as_deref());
             let size = (bar.width.max(1), paint.metrics.titlebar.max(1));
+            // The buffer carries the output's scale, rounded. That is what keeps
+            // the edges sharp at a scale of two. Below one the buffer is drawn
+            // at half size and the bar is partly unpainted: a known limit, see
+            // the ignored half-scale test in tests/windows.rs.
             let titlebar = MemoryRenderBuffer::from_slice(
                 &canvas.into_pixels(),
                 Fourcc::Argb8888,
