@@ -73,7 +73,7 @@ greeter() {
 	pgrep -u _greetd -x "$1" >/dev/null
 }
 n=0
-until greeter sengi-greeter && greeter labwc; do
+until greeter sengi-greeter && greeter_compositor >/dev/null; do
 	n=$((n + 1))
 	if desktop_is_up; then
 		echo "SENGI-FAIL the desktop came up with nobody having logged in" >$port

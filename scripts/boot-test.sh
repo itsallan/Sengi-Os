@@ -340,6 +340,34 @@ else
 	lock_fail="sengi-lock did not start on Super+L"
 fi
 
+# The lock asked for by running sengi-lock, as the idle timer and the
+# session menu do. Under sengi-compositor that goes through the
+# compositor, which the guest then asks what it holds.
+forward_fail=
+if wait_serial 'SENGI-FORWARD exit=' 40; then
+	sleep 1
+	shot lock-forwarded
+	forwarded=$(tr -d '\r' <"$out/serial.log" | sed -n 's/.*SENGI-FORWARD exit=//p' | head -1)
+	case $forwarded in
+	0*) ;;
+	*) forward_fail="sengi-lock -f run in the session ended with $forwarded" ;;
+	esac
+	if [ "$want" = sengi-compositor ]; then
+		case $forwarded in
+		*"session locked"*"locker told yes"*) ;;
+		*) forward_fail=${forward_fail:-"after sengi-lock -f the compositor says: $forwarded"} ;;
+		esac
+	fi
+	for letter in l i v e; do
+		key "$letter" 0.3
+	done
+	key ret 1
+	wait_serial 'SENGI-FORWARD unlocked' 20 ||
+		forward_fail=${forward_fail:-"the screen locked by sengi-lock -f did not unlock"}
+else
+	forward_fail="sengi-lock -f run in the session did not come back"
+fi
+
 # What Settings drives, changed without logging out. The guest makes each
 # change the way the Settings window does and says what came of it (see
 # sengi-boot-report); here the keys are pressed and the answers judged.
@@ -384,8 +412,17 @@ if wait_serial 'SENGI-SCREEN asked' 40; then
 	"exit=0 dpms=Off"*) ;;
 	*) drives "asked to switch the screen off: $asked" ;;
 	esac
-	sleep 1
 	shot screen-off
+	# The key only when the guest has seen the screen stay off by itself.
+	if wait_serial 'SENGI-SCREEN still' 20; then
+		still=$(tr -d '\r' <"$out/serial.log" | sed -n 's/.*SENGI-SCREEN still //p' | head -1)
+		case $still in
+		dpms=Off*) ;;
+		*) drives "the screen did not stay off: $still" ;;
+		esac
+	else
+		drives "the guest did not say whether the screen stayed off"
+	fi
 	key shift 1
 	wait_serial 'SENGI-SCREEN lit' 30 || true
 	lit=$(tr -d '\r' <"$out/serial.log" | sed -n 's/.*SENGI-SCREEN lit //p' | head -1)
@@ -413,16 +450,6 @@ greeter_fail=
 dump session
 pointer $((screen_w - 20)) 14
 click
-	# The key only when the guest has seen the screen stay off by itself.
-	if wait_serial 'SENGI-SCREEN still' 20; then
-		still=$(tr -d '\r' <"$out/serial.log" | sed -n 's/.*SENGI-SCREEN still //p' | head -1)
-		case $still in
-		dpms=Off*) ;;
-		*) drives "the screen did not stay off: $still" ;;
-		esac
-	else
-		drives "the guest did not say whether the screen stayed off"
-	fi
 for letter in l o g; do
 	key "$letter" 0.3
 done
@@ -458,6 +485,11 @@ if wait_serial 'SENGI-GREETER ready' 60; then
 		key "$letter" 0.3
 	done
 	key ret 1
+	# The login screen follows the same choice of compositor as the session.
+	shown_in=$(tr -d '\r' <"$out/serial.log" |
+		sed -n 's/.*SENGI-GREETER running .*compositor=\([a-z-]*\).*/\1/p' | head -1)
+	[ "$shown_in" = "$want" ] ||
+		greeter_fail=${greeter_fail:-"the login screen is shown in ${shown_in:-nothing known}, not $want"}
 	if wait_serial 'SENGI-GREETER after' 60; then
 		sleep 1
 		shot logged-in
@@ -477,6 +509,8 @@ else
 	shot greeter
 	greeter_fail="the login screen did not appear after logging out"
 fi
+# The guest's last lines, on how the display was handed over.
+wait_serial 'SENGI-HANDOVER reported' 10 || true
 rm -f "$out"/*.ppm "$out"/*.band
 stop
 
@@ -521,6 +555,10 @@ if [ -n "$lock_fail" ]; then
 	echo "FAIL: $lock_fail" >&2
 	fail=1
 fi
+if [ -n "$forward_fail" ]; then
+	echo "FAIL: $forward_fail" >&2
+	fail=1
+fi
 if [ -n "$drives_fail" ]; then
 	echo "FAIL: $drives_fail" >&2
 	fail=1
@@ -538,7 +576,3 @@ if [ "$(echo "$boot_s $budget_boot_s" | awk '{print ($1 >= $2)}')" = 1 ]; then
 	fail=1
 fi
 exit $fail
-if [ -n "$forward_fail" ]; then
-	echo "FAIL: $forward_fail" >&2
-	fail=1
-fi
