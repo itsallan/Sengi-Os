@@ -32,6 +32,12 @@ use crate::{
     state::{set_activated, State},
 };
 
+/// The width of a frame around a client `width` wide. The client picks that
+/// width, so the sum is saturated rather than trusted not to overflow.
+fn frame_span(width: i32, border: i32) -> i32 {
+    width.saturating_add(border.saturating_mul(2))
+}
+
 /// The widest title bar, in logical pixels, that is painted on a screen
 /// `screen_w` pixels wide at `scale`. A scale that is not a positive number
 /// counts as one.
@@ -46,7 +52,14 @@ fn painted_limit(screen_w: i32, scale: f64, floor: i32) -> i32 {
 
 #[cfg(test)]
 mod painted_tests {
-    use super::painted_limit;
+    use super::{frame_span, painted_limit};
+
+    #[test]
+    fn a_huge_client_width_does_not_overflow_the_frame() {
+        assert_eq!(frame_span(i32::MAX, 2), i32::MAX);
+        assert_eq!(frame_span(i32::MAX - 1, 1), i32::MAX);
+        assert_eq!(frame_span(300, 1), 302);
+    }
 
     #[test]
     fn the_title_cap_is_the_screen_in_logical_pixels_at_any_scale() {
@@ -720,7 +733,7 @@ impl State {
         // The client picks the window's width, so it must not pick how much
         // memory the title bar takes: nothing wider than the screen is
         // painted, the remainder is a flat fill.
-        let full = width + 2 * border;
+        let full = frame_span(width, border);
         let painted = full.min(self.max_painted_width());
         let active = self.focus_stack.current() == Some(window);
         let square = data(window).restore.get().is_some();
