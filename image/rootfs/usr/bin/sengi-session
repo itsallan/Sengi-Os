@@ -10,81 +10,17 @@ export MOZ_ENABLE_WAYLAND=1
 # so they are written again here in case an update changed the system's.
 sengi-settings --apply 2>/dev/null || true
 
-# labwc reads its environment file itself: the user's, or else the
-# system's. Settings and the installer keep the keyboard layout, the
-# cursor size and the time zone there. For our own compositor the same
-# file is read here, so that it and everything it starts have them.
-read_environment() {
-	file=${XDG_CONFIG_HOME:-$HOME/.config}/labwc/environment
-	[ -r "$file" ] || file=/etc/xdg/labwc/environment
-	[ -r "$file" ] || return 0
-	while IFS= read -r line || [ -n "$line" ]; do
-		case $line in
-		'#'* | '') continue ;;
-		*=*) ;;
-		*) continue ;;
-		esac
-		name=${line%%=*}
-		case $name in
-		'' | [0-9]* | *[!A-Za-z0-9_]*) continue ;;
-		esac
-		export "$name=${line#*=}"
-	done <"$file"
-}
+# Which compositor is asked for, and how ours is run.
+. /usr/lib/sengi-os/compositor.sh
 
-# Our own compositor in labwc's place. It is run as a child so that one
-# that cannot start falls back to labwc below, once, instead of leaving a
-# black screen.
-own() {
-	read_environment
-	read -r up _ </proc/uptime
-	started=${up%.*}
-	systemd-cat -t sengi-compositor \
-		sengi-compositor --backend drm --locker '/usr/bin/sengi-lock -f' \
-		-s '. /usr/lib/sengi-os/session-start' &
-	pid=$!
-	# greetd ends the session by signalling this shell. The signal cuts the
-	# wait short, so wait once more for the compositor to shut down.
-	stopping=0
-	trap 'stopping=1; kill -TERM "$pid" 2>/dev/null' TERM HUP INT
-	status=0
-	wait "$pid" || status=$?
-	if [ "$stopping" = 1 ]; then
-		status=0
-		wait "$pid" || status=$?
-	fi
-	trap - TERM HUP INT
-	read -r up _ </proc/uptime
-	lasted=$((${up%.*} - started))
-	if [ "$status" -eq 0 ] || [ "$lasted" -ge 10 ]; then
-		exit "$status"
-	fi
-	echo "sengi-compositor gave up after $lasted s with status $status, starting labwc instead" |
-		systemd-cat -t sengi-session -p warning
-}
-
-# labwc is the compositor unless ours is asked for, which is done in one
-# of three ways:
-#   - the word sengi.compositor=own on the kernel command line: the live
-#     image's "sengi-compositor preview" boot entry, or the word added by
-#     hand to any entry (press E on it in the boot menu). For that start.
-#   - a file /etc/sengi-os/compositor that says "own": on an installed
-#     system, for every login until the file is removed.
-#   - a file /run/sengi-os.compositor that says the same: until the next
-#     start. The boot test makes it.
-wanted=labwc
-read -r cmdline <"${SENGI_CMDLINE:-/proc/cmdline}"
-case " $cmdline " in
-*" sengi.compositor=own "*) wanted=own ;;
-esac
-for choice in /run/sengi-os.compositor /etc/sengi-os/compositor; do
-	word=
-	if [ -r "$choice" ]; then
-		read -r word <"$choice" || true
-	fi
-	[ "$word" != own ] || wanted=own
-done
-[ "$wanted" != own ] || own
+if [ "$(wanted_compositor)" = own ]; then
+	# labwc reads its environment file itself: the user's, or else the
+	# system's. The cursor size and the time zone are kept there.
+	environment=${XDG_CONFIG_HOME:-$HOME/.config}/labwc/environment
+	[ -r "$environment" ] || environment=/etc/xdg/labwc/environment
+	export_environment "$environment"
+	own_compositor --locker '/usr/bin/sengi-lock -f' -s '. /usr/lib/sengi-os/session-start'
+fi
 
 # Picks the software renderer where there is no GPU to use.
 . /usr/lib/sengi-os/renderer.sh

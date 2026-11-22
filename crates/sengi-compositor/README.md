@@ -384,8 +384,10 @@ libpixman-1-dev libxkbcommon-dev`; EGL and GLES are loaded at run time and
 need no headers. Every library it links against is already in the image
 because labwc needs it too, and the build stops if that ever changes.
 
-labwc stays the default. `/usr/bin/sengi-session` starts the session on
-sengi-compositor instead when it is asked to, in one of three ways:
+labwc stays the default. The session (`/usr/bin/sengi-session`) and the
+login screen (`/usr/libexec/sengi-greeter-session`) are started on
+sengi-compositor instead when it is asked for, in one of three ways,
+which `/usr/lib/sengi-os/compositor.sh` looks at for both:
 
 - The word `sengi.compositor=own` on the kernel command line. The live
   image's boot menu has an entry "Sengi OS (sengi-compositor preview)"
@@ -398,9 +400,9 @@ sengi-compositor instead when it is asked to, in one of three ways:
 - A file `/run/sengi-os.compositor` that says `own`, until the next start.
   The boot test makes it.
 
-It then reads the environment file labwc would read (the user's
+The session then reads the environment file labwc would read (the user's
 `~/.config/labwc/environment`, or else `/etc/xdg/labwc/environment`) for
-the keyboard layout, the cursor size and the time zone, and runs
+the cursor size and the time zone, and runs
 
     sengi-compositor --backend drm --locker '/usr/bin/sengi-lock -f' \
         -s '. /usr/lib/sengi-os/session-start'
@@ -422,6 +424,26 @@ its own; see "Who may do what". `sengi-lock` started by anything else in
 this session (swayidle, the session menu, quick settings) passes the
 request on with `sengi-compositor --lock` and so behaves as it does under
 labwc: `sengi-lock -f` returns once the screen is locked.
+
+### The login screen
+
+greetd starts `sengi-greeter-session` as its own user whenever nobody is
+logged in. With sengi-compositor asked for, that runs
+
+    sengi-compositor --backend drm --greeter --session /usr/bin/sengi-greeter
+
+`--session` ends the compositor when the login screen ends, which is what
+lets greetd start the session of whoever logged in. `--greeter` leaves
+out every key binding except the ones that switch terminals, and the
+locker, so nothing can be started as greetd's user from the keyboard;
+and it takes the keyboard from `XKB_DEFAULT_*`, which the script exports
+from `/usr/share/sengi-os/greeter/environment`, the file the installer
+writes the chosen layout to. If the compositor gives up within ten
+seconds, the login screen is started in labwc instead, as the session is.
+
+The login screen's compositor and the session's follow each other on the
+same terminal. Each gets the display from logind when it starts and
+hands it back when it ends.
 
 ### What Settings sets
 
