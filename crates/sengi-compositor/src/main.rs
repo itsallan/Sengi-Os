@@ -3,6 +3,7 @@
 //! See README.md for what works and what is missing.
 
 mod apps;
+mod card;
 mod cli;
 mod config;
 mod cursor;
@@ -26,6 +27,7 @@ mod lock;
 #[macro_use]
 mod log;
 mod output_power;
+mod overlay;
 mod png;
 mod render;
 mod screencopy;

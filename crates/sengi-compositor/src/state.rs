@@ -240,7 +240,8 @@ pub struct State {
     pub swallowed_keys: Swallowed,
     /// Alt+Tab in progress: the windows in the order they had when it
     /// started, and which one is selected.
-    pub cycle: Option<(Vec<Window>, usize)>,
+    /// The window switcher or a menu, when one is open.
+    pub overlay: Option<crate::overlay::Overlay>,
     /// Programs we started and still have to collect when they exit.
     children: Vec<Child>,
     pub cursors: Cursors,
@@ -487,7 +488,7 @@ impl State {
             titlebar_press: None,
             pointer_stale: false,
             swallowed_keys: Swallowed::default(),
-            cycle: None,
+            overlay: None,
             children: Vec::new(),
             cursors,
             paint_theme,

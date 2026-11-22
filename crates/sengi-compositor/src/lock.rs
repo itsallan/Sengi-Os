@@ -496,7 +496,7 @@ impl SessionLockHandler for State {
         }
         self.hovered_button = None;
         self.frame_cursor = None;
-        self.cycle = None;
+        self.overlay = None;
         self.layer_focus = None;
 
         self.lock_count += 1;

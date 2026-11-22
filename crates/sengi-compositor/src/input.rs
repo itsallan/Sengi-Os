@@ -22,8 +22,9 @@ use smithay::{
 use crate::{
     cursor::resize_cursor,
     frame::{self, Button, Edges, Hit},
-    keys::{self, Action, Mods},
+    keys::{self, Action, Mods, Step},
     layout::Rect,
+    overlay::{MenuKind, Overlay},
     state::State,
     window,
 };
@@ -238,7 +239,28 @@ impl State {
                     shift: modifiers.shift,
                 };
                 let symbol = keys::binding_symbol(key.modified_sym().raw(), keycode.raw());
-                match keys::binding(mods, symbol) {
+                let binding = keys::binding(mods, symbol);
+                // While the switcher or a menu is open each key is its own:
+                // it moves, chooses or closes, and nothing reaches the
+                // program in front. Alt+Tab still moves the switcher.
+                if data.overlay_open() {
+                    let keysym = key.modified_sym().raw();
+                    let picked = match (binding, keysym) {
+                        (Some(action @ (Action::NextWindow | Action::PreviousWindow)), _) => {
+                            Some(action)
+                        }
+                        (_, keys::ESCAPE) => Some(Action::Overlay(Step::Cancel)),
+                        (_, keys::RETURN | keys::KP_ENTER) => Some(Action::Overlay(Step::Activate)),
+                        (_, keys::UP) => Some(Action::Overlay(Step::Up)),
+                        (_, keys::DOWN) => Some(Action::Overlay(Step::Down)),
+                        (_, keys::LEFT) => Some(Action::Overlay(Step::Previous)),
+                        (_, keys::RIGHT) => Some(Action::Overlay(Step::Next)),
+                        _ => None,
+                    };
+                    data.swallowed_keys.press(code);
+                    return FilterResult::Intercept(picked);
+                }
+                match binding {
                     // No shortcuts on the lock screen, every key is the
                     // locker's; except leaving for another terminal. The
                     // same on the login screen, where nobody is logged in
@@ -260,9 +282,10 @@ impl State {
         if let Some(action) = action.flatten() {
             self.run_action(action);
         }
-        // Letting go of Alt settles on the window Alt+Tab stopped at.
-        if !keyboard.modifier_state().alt {
-            self.cycle = None;
+        // Letting go of Alt settles on the window the switcher has selected.
+        if !keyboard.modifier_state().alt && matches!(self.overlay, Some(Overlay::Switcher { .. }))
+        {
+            self.run_action(Action::Overlay(Step::Activate));
         }
     }
 
@@ -286,25 +309,21 @@ impl State {
             }
             Action::NextWindow | Action::PreviousWindow => {
                 let forward = action == Action::NextWindow;
-                let (order, index) = self
-                    .cycle
-                    .take()
-                    .unwrap_or_else(|| (self.focus_stack.recent_first(), 0));
-                // Windows may have closed since the cycle began.
-                let order: Vec<Window> = order
-                    .into_iter()
-                    .filter(|w| self.space.element_location(w).is_some())
-                    .collect();
-                let index = keys::cycle(
-                    order.len(),
-                    index.min(order.len().saturating_sub(1)),
-                    forward,
-                );
-                if let Some(window) = order.get(index).cloned() {
-                    self.focus_window(&window);
+                match self.overlay {
+                    Some(Overlay::Switcher { .. }) => self.step_switcher(forward),
+                    // A menu is open: Alt+Tab is not for it.
+                    Some(Overlay::Menu { .. }) => {}
+                    None => self.open_switcher(forward),
                 }
-                self.cycle = Some((order, index));
             }
+            Action::Overlay(step) => match step {
+                Step::Next => self.step_switcher(true),
+                Step::Previous => self.step_switcher(false),
+                Step::Up => self.move_menu(-1),
+                Step::Down => self.move_menu(1),
+                Step::Activate => self.activate_overlay(),
+                Step::Cancel => self.close_overlay(),
+            },
             Action::Lock => self.spawn_locker(),
             Action::Maximise => {
                 if let Some(window) = self.focus_stack.current().cloned() {
@@ -367,6 +386,7 @@ impl State {
         self.pointer_seen = true;
         self.place_pointer(location, time);
         self.settle_pointer_constraint();
+        self.overlay_motion((location.x, location.y));
     }
 
     pub fn place_pointer(&mut self, location: Point<f64, Logical>, time: u32) {
@@ -462,6 +482,12 @@ impl State {
         if self.is_locked() {
             return;
         }
+        // A card that is open takes the press: an item is done, and a press
+        // anywhere else closes it.
+        if self.overlay_open() {
+            self.overlay_press((location.x, location.y));
+            return;
+        }
         let (x, y) = cell(location);
         let target = self.target_at(location);
 
@@ -495,6 +521,35 @@ impl State {
                     self.grab_for_drag(start, serial);
                     return;
                 }
+            }
+        }
+
+        // Right-click on a title bar opens the window's menu, and on the
+        // desktop the root menu. The bar and the dock are not the desktop.
+        if button == BTN_RIGHT {
+            let at = (location.x, location.y);
+            let on_desktop = match &target {
+                None => true,
+                Some(Target::Surface { window: None, .. }) => self
+                    .layer_surface_under(location, &[Layer::Top, Layer::Overlay])
+                    .is_none(),
+                _ => false,
+            };
+            match &target {
+                Some(Target::Frame {
+                    window,
+                    hit: Hit::Titlebar,
+                }) => {
+                    let window = window.clone();
+                    self.focus_window(&window);
+                    self.open_menu(MenuKind::Window(window), at);
+                    return;
+                }
+                _ if on_desktop => {
+                    self.open_menu(MenuKind::Desktop, at);
+                    return;
+                }
+                _ => {}
             }
         }
 

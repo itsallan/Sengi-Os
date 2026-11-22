@@ -4,13 +4,15 @@
 
 /// Keysyms used by the bindings. Letters are their ASCII codes.
 const SPACE: u32 = 0x0020;
-const RETURN: u32 = 0xff0d;
+pub const RETURN: u32 = 0xff0d;
+pub const KP_ENTER: u32 = 0xff8d;
+pub const ESCAPE: u32 = 0xff1b;
 const TAB: u32 = 0xff09;
 const F4: u32 = 0xffc1;
-const LEFT: u32 = 0xff51;
-const UP: u32 = 0xff52;
-const RIGHT: u32 = 0xff53;
-const DOWN: u32 = 0xff54;
+pub const LEFT: u32 = 0xff51;
+pub const UP: u32 = 0xff52;
+pub const RIGHT: u32 = 0xff53;
+pub const DOWN: u32 = 0xff54;
 /// The volume and mute keys of most keyboards.
 const AUDIO_LOWER: u32 = 0x1008_ff11;
 const AUDIO_MUTE: u32 = 0x1008_ff12;
@@ -49,6 +51,19 @@ pub enum Action {
     /// Alt+an arrow: the window to that edge of the screen.
     MoveToEdge(Edge),
     Volume(Volume),
+    /// A key while the switcher or a menu is open.
+    Overlay(Step),
+}
+
+/// What a key does to the switcher or a menu that is open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    Next,
+    Previous,
+    Up,
+    Down,
+    Activate,
+    Cancel,
 }
 
 /// A side of a screen, for snapping and moving windows to it.
@@ -175,6 +190,7 @@ pub fn command(action: Action) -> Option<&'static str> {
         | Action::CloseWindow
         | Action::NextWindow
         | Action::PreviousWindow
+        | Action::Overlay(_)
         | Action::Maximise
         | Action::Snap(_)
         | Action::MoveToEdge(_)

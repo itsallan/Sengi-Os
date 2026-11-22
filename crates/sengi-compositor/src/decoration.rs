@@ -11,6 +11,25 @@ use crate::{
     layout::Rect,
 };
 
+/// The sizes of the cards the compositor draws over the desktop: the
+/// switcher and the menus. All of them are tokens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CardMetrics {
+    /// Width of a menu.
+    pub menu_width: i32,
+    /// Height of a row of a menu, and of a tile of the switcher.
+    pub row: i32,
+    /// Space inside a card around its rows or tiles, across and down.
+    pub pad_x: i32,
+    pub pad_y: i32,
+    /// Space between tiles, and between a row and the card's edge.
+    pub gap: i32,
+    /// Side of the square a window's badge is drawn in.
+    pub badge: i32,
+    /// Space left clear around a card at the edges of the screen.
+    pub margin: i32,
+}
+
 #[derive(Debug, Clone)]
 pub struct Theme {
     pub metrics: Metrics,
@@ -30,6 +49,11 @@ pub struct Theme {
     pub text_muted: Rgba,
     pub border: Rgba,
     pub danger: Rgba,
+    pub accent: Rgba,
+    pub accent_text: Rgba,
+    /// The surface a card of settings sits on, one step above the bar.
+    pub raised: Rgba,
+    pub card: CardMetrics,
 }
 
 impl Theme {
@@ -77,6 +101,18 @@ impl Theme {
             text_muted: color("color.text-muted"),
             border: color("color.border"),
             danger: color("color.danger"),
+            accent: color("color.accent"),
+            accent_text: color("color.accent-text"),
+            raised: color("color.surface-raised"),
+            card: CardMetrics {
+                menu_width: px("size.menu-width"),
+                row: px("size.list-row-height"),
+                pad_x: px("space.md"),
+                pad_y: px("space.sm"),
+                gap: px("space.sm"),
+                badge: px("size.button"),
+                margin: px("space.lg"),
+            },
         }
     }
 }
@@ -103,6 +139,18 @@ impl Theme {
             glyph_stroke: px(self.glyph_stroke).max(1),
             fallback_cursor: px(self.fallback_cursor),
             font_px: px(self.font_px as i32) as u32,
+            accent: self.accent,
+            accent_text: self.accent_text,
+            raised: self.raised,
+            card: CardMetrics {
+                menu_width: px(self.card.menu_width),
+                row: px(self.card.row),
+                pad_x: px(self.card.pad_x),
+                pad_y: px(self.card.pad_y),
+                gap: px(self.card.gap),
+                badge: px(self.card.badge),
+                margin: px(self.card.margin),
+            },
             ..self.clone()
         }
     }
@@ -200,6 +248,10 @@ impl Canvas {
         self.width
     }
 
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
     pub fn into_pixels(self) -> Vec<u8> {
         self.pixels
     }
@@ -264,6 +316,17 @@ impl Canvas {
                 self.blend(x, y, color, width / 2.0 + 0.5 - distance);
             }
         }
+    }
+
+    /// A rectangle with corners rounded at `radius`, filled with `colour`.
+    pub fn round_rect(&mut self, x: i32, y: i32, w: i32, h: i32, radius: f32, colour: Rgba) {
+        self.fill(Rounded::new(Rect::new(x, y, w, h), [radius; 4]), colour);
+    }
+
+    /// A line of text, its top left at `(left, top)`, in `colour`.
+    pub fn label(&mut self, bitmap: &TextBitmap, left: i32, top: i32, colour: Rgba) {
+        let right = self.width as i32;
+        self.text(bitmap, left, top, right, colour);
     }
 
     fn text(&mut self, bitmap: &TextBitmap, left: i32, top: i32, clip_right: i32, color: Rgba) {
