@@ -17,6 +17,7 @@
 pub mod backoff;
 pub mod cli;
 pub mod entry;
+pub mod forward;
 #[cfg(feature = "pam")]
 pub mod pam;
 pub mod screen;
