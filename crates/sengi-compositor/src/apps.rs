@@ -46,6 +46,9 @@ use crate::state::State;
 /// How long a token stays good for bringing a window forward.
 const ACTIVATION_TIME: Duration = Duration::from_secs(10);
 
+/// How many unused tokens one program may hold.
+const TOKENS_EACH: usize = 8;
+
 impl PrimarySelectionHandler for State {
     fn primary_selection_state(&self) -> &PrimarySelectionState {
         &self.primary_selection_state
@@ -62,7 +65,19 @@ impl XdgActivationHandler for State {
     /// the launcher that is being typed into, a window the user is in.
     /// Anything else gets a token that activates nothing, which is what
     /// keeps a program in the background from putting itself in front.
-    fn token_created(&mut self, _token: XdgActivationToken, data: XdgActivationTokenData) -> bool {
+    /// Tokens that were never used go when their time is up, and no
+    /// program holds more than a few at once.
+    fn token_created(&mut self, token: XdgActivationToken, data: XdgActivationTokenData) -> bool {
+        self.xdg_activation_state
+            .retain_tokens(|_, held| held.timestamp.elapsed() <= ACTIVATION_TIME);
+        let held = self
+            .xdg_activation_state
+            .tokens()
+            .filter(|(other, held)| **other != token && held.client_id == data.client_id)
+            .count();
+        if held >= TOKENS_EACH {
+            return false;
+        }
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
         let Some((serial, seat)) = data.serial else {
             return false;
@@ -82,10 +97,13 @@ impl XdgActivationHandler for State {
 
     fn request_activation(
         &mut self,
-        _token: XdgActivationToken,
+        token: XdgActivationToken,
         token_data: XdgActivationTokenData,
         surface: WlSurface,
     ) {
+        // Good for one window, once: whoever else learns the token later
+        // has nothing.
+        self.xdg_activation_state.remove_token(&token);
         if token_data.timestamp.elapsed() > ACTIVATION_TIME || self.is_locked() {
             return;
         }

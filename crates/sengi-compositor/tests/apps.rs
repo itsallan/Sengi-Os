@@ -84,6 +84,35 @@ fn only_the_program_in_front_can_bring_a_window_forward() {
         behind.wait(SOON, |seen| seen.keyboard_enters == 2),
         "the window was not brought forward"
     );
+
+    // The token is spent: the first program cannot come back with it.
+    front.activate(&token, &front_surface).unwrap();
+    front.wait(Duration::from_millis(300), |_| false);
+    assert_eq!(front.seen.keyboard_enters, 1, "a token worked twice");
+}
+
+#[test]
+fn a_program_holds_only_so_many_unused_tokens() {
+    let compositor = Compositor::start(None);
+    let mut behind = compositor.connect();
+    behind.keyboard().unwrap();
+    let (behind_surface, _toplevel) = behind.window(GREEN).unwrap();
+    let mut front = compositor.connect();
+    front.keyboard().unwrap();
+    let (front_surface, _toplevel) = front.window(BLUE).unwrap();
+    assert!(front.wait(SOON, |seen| seen.keyboard_enters == 1));
+
+    // Eight are good. What comes after is a token in name only.
+    let serial = front.seen.enter_serial;
+    let tokens: Vec<String> = (0..9)
+        .map(|_| front.activation_token(&front_surface, serial).unwrap())
+        .collect();
+    assert!(behind.wait(SOON, |seen| seen.keyboard_enters == 1));
+    behind.activate(&tokens[8], &behind_surface).unwrap();
+    behind.wait(Duration::from_millis(300), |_| false);
+    assert_eq!(behind.seen.keyboard_enters, 1, "the ninth token worked");
+    behind.activate(&tokens[7], &behind_surface).unwrap();
+    assert!(behind.wait(SOON, |seen| seen.keyboard_enters == 2));
 }
 
 #[test]
