@@ -286,3 +286,30 @@ fn a_window_wider_than_the_screen_has_its_bar_across_it_at_scale_two() {
         assert_ne!(pixel, rgb(GREEN), "the client is over the bar at x {x}");
     }
 }
+
+/// A window wider than the screen, at a scale of two, has its bottom border
+/// across the whole screen, not only up to where its bar is cut.
+#[test]
+fn a_wide_window_has_its_bottom_border_across_the_screen_at_scale_two() {
+    let border = sengi_tokens::Tokens::builtin()
+        .color("color.border")
+        .expect("the tokens define the border colour");
+    let border = u32::from(border.r) << 16 | u32::from(border.g) << 8 | u32::from(border.b);
+    let compositor = Compositor::start_args(&["--scale", "2"], None);
+    let mut app = compositor.connect();
+    app.keyboard().unwrap();
+    let (surface, _toplevel) = app.decorated_window(GREEN).unwrap();
+    assert!(app.wait(SOON, |seen| seen.keyboard_enters == 1));
+    app.paint(&surface, 900, 200, GREEN).unwrap();
+    let picture = app.capture().unwrap();
+    for x in [2, 640, 1000, 1277] {
+        let last_client = (0..picture.height)
+            .rev()
+            .find(|&y| rgb(picture.at(x, y)) == rgb(GREEN))
+            .expect("the client is on screen");
+        let below: Vec<u32> = (last_client + 1..last_client + 6)
+            .map(|y| rgb(picture.at(x, y)))
+            .collect();
+        assert!(below.contains(&border), "no bottom border at x {x}: {below:x?}");
+    }
+}
