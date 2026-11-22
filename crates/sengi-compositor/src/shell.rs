@@ -371,8 +371,10 @@ impl State {
                 frame
             };
             window::data(&window).fullscreen.set(Some(Some(restore)));
-            let origin = self
-                .output()
+            // On the screen it asked for, else the first.
+            let asked = window::data(&window).fullscreen_on.borrow().clone();
+            let origin = asked
+                .or_else(|| self.output())
                 .and_then(|output| self.space.output_geometry(&output))
                 .map(|screen| (screen.loc.x, screen.loc.y))
                 .unwrap_or_default();

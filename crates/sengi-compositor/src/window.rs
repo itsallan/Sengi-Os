@@ -51,6 +51,8 @@ pub struct WindowData {
     /// Set once a window too large for the screen has been asked to be
     /// smaller, so that it is mapped whatever it answers the second time.
     pub fitted: Cell<bool>,
+    /// The screen a window asked to fill before it was first shown.
+    pub fullscreen_on: RefCell<Option<Output>>,
     /// The client area a window had before it was snapped to a side of
     /// the screen, to go back to when it is moved or snapped back.
     pub snap_restore: Cell<Option<Rect>>,
@@ -197,6 +199,15 @@ impl State {
             (false, Some(location)) => {
                 data.minimised.set(None);
                 self.minimised.retain(|w| w != window);
+                // Asked to fill the screen while it was hidden: it comes
+                // back filling it, on the screen it was asked for.
+                let location = if data.fullscreen.get().is_some() {
+                    let asked = data.fullscreen_on.borrow().clone();
+                    self.fullscreen_rect(window, asked)
+                        .map_or(location, |screen| (screen.x, screen.y))
+                } else {
+                    location
+                };
                 self.space.map_element(window.clone(), location, true);
             }
             _ => {}
@@ -422,6 +433,7 @@ impl State {
         let mapped = self.space.element_location(window).is_some();
         match (fullscreen, data.fullscreen.get()) {
             (true, None) => {
+                *data.fullscreen_on.borrow_mut() = output.clone();
                 let Some(screen) = self.fullscreen_rect(window, output) else {
                     return;
                 };
