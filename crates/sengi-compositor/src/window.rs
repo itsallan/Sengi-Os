@@ -32,6 +32,9 @@ use crate::{
     state::{set_activated, State},
 };
 
+/// The title last rasterised: its text, the room it had, and its pixels.
+pub type TitleCache = Option<(String, usize, Option<Rc<TextBitmap>>)>;
+
 #[derive(Default)]
 pub struct WindowData {
     /// The compositor draws the title bar and border.
@@ -60,19 +63,31 @@ pub struct WindowData {
     /// to, once it has had one.
     pub fullscreen: Cell<Option<Option<Rect>>>,
     pub frame: RefCell<Option<FrameBuffers>>,
-    /// The title last rasterised and its pixels, if the typeface is there.
-    pub title: RefCell<Option<(String, Option<Rc<TextBitmap>>)>>,
+    /// The title last rasterised, the room it had and its pixels, if the
+    /// typeface is there.
+    pub title: RefCell<TitleCache>,
 }
 
 /// The textures of a frame, kept until the frame looks different.
 pub struct FrameBuffers {
     pub look: (Titlebar, String),
+    /// Width, height and whether square: what the bottom is shaped for.
+    pub shape: (i32, i32, bool),
+    /// The title bar, in the screen's pixels.
     pub titlebar: MemoryRenderBuffer,
+    /// Its size in logical pixels.
+    pub titlebar_size: (i32, i32),
     /// Plain fill for the part of a very wide title bar that is not painted.
     pub rest: SolidColorBuffer,
     pub left: SolidColorBuffer,
     pub right: SolidColorBuffer,
     pub bottom: SolidColorBuffer,
+    /// The bottom corners, when they are rounded: drawn in front of the
+    /// client, where the corners of its own square area are covered.
+    pub bottom_rounded: Option<MemoryRenderBuffer>,
+    /// Where that is, from the top of the frame's client area, and its size.
+    pub bottom_top: i32,
+    pub bottom_size: (i32, i32),
 }
 
 pub fn data(window: &Window) -> &WindowData {
@@ -626,34 +641,47 @@ impl State {
 
     /// The widest title bar that is painted as a texture.
     fn max_painted_width(&self) -> i32 {
+        // In logical pixels: the screen's width at its scale.
+        let scale = self.output_scale.max(1.0);
         self.output()
             .and_then(|output| output.current_mode())
-            .map(|mode| mode.size.w)
+            .map(|mode| (f64::from(mode.size.w) / scale).ceil() as i32)
             .unwrap_or(FALLBACK_PAINTED_WIDTH)
             .max(self.theme.metrics.min_frame_width())
     }
 
-    /// The title of `window` as pixels. Text is rasterised once per title,
-    /// not once per repaint of the bar.
-    fn title_bitmap(&self, window: &Window) -> (String, Option<Rc<TextBitmap>>) {
+    /// The title of `window` as pixels, cut to `room` pixels with an
+    /// ellipsis if it does not fit. Rasterised once per title and room.
+    fn title_bitmap(&self, window: &Window, room: usize) -> (String, Option<Rc<TextBitmap>>) {
         let mut cache = data(window).title.borrow_mut();
-        let fresh = cache
-            .as_ref()
-            .is_some_and(|(text, _)| with_title(window, |title| title == text));
+        let fresh = cache.as_ref().is_some_and(|(text, cached_room, _)| {
+            *cached_room == room && with_title(window, |title| title == text)
+        });
         if !fresh {
             let text = with_title(window, str::to_string);
-            let bitmap = self.font.as_ref().map(|font| Rc::new(font.render(&text)));
-            *cache = Some((text, bitmap));
+            let bitmap = self
+                .font
+                .as_ref()
+                .map(|font| Rc::new(font.fit(&text, room)));
+            *cache = Some((text, room, bitmap));
         }
-        cache.clone().unwrap_or_default()
+        cache
+            .as_ref()
+            .map(|(text, _, bitmap)| (text.clone(), bitmap.clone()))
+            .unwrap_or_default()
     }
 
     /// Makes sure the frame textures of `window` match how it should look
-    /// now. `width` and `height` are the client size. Nothing is painted or
-    /// allocated while the look stays the same.
+    /// now. `width` and `height` are the client size, in logical pixels.
+    /// The frame is painted at the screen's scale, with the theme scaled to
+    /// match, so it is as sharp there as the screen allows. Nothing is
+    /// painted or allocated while the look stays the same.
     pub fn refresh_frame(&self, window: &Window, width: i32, height: i32) {
-        let theme: &Theme = &self.theme;
-        let border = theme.metrics.border;
+        let logical: &Theme = &self.theme;
+        let paint: &Theme = &self.paint_theme;
+        let scale = self.output_scale;
+        let to_pixels = |v: i32| (f64::from(v) * scale).round() as i32;
+        let border = logical.metrics.border;
         let hovered = match &self.hovered_button {
             Some((hovered, button)) if hovered == window => Some(*button),
             _ => None,
@@ -664,25 +692,40 @@ impl State {
         let full = width + 2 * border;
         let painted = full.min(self.max_painted_width());
         let active = self.focus_stack.current() == Some(window);
+        let square = data(window).restore.get().is_some();
         let bar = Titlebar {
-            width: painted,
+            width: to_pixels(painted),
             active,
             hovered,
-            square: data(window).restore.get().is_some(),
+            square,
             cut: painted < full,
         };
-        let fill = self.color(if active { theme.active } else { theme.inactive });
-        let line = self.color(theme.border);
-        let rest_size = (full - painted, theme.metrics.titlebar);
+        let fill = self.color(if active {
+            logical.active
+        } else {
+            logical.inactive
+        });
+        let line = self.color(logical.border);
+        let rest_size = (full - painted, logical.metrics.titlebar);
+        // Square corners at the bottom when the window fills the screen.
+        let radius = if square { 0 } else { logical.radius };
+        let side_height = height - radius;
+        let shape = (full, height, square);
+        // Where the title may go: between the buttons and the frame's edge.
+        let room = to_pixels(painted)
+            - (paint.metrics.buttons_end() + paint.metrics.padding)
+            - (paint.metrics.padding + paint.metrics.border);
 
         let mut slot = data(window).frame.borrow_mut();
         let unchanged = slot.as_ref().is_some_and(|buffers| {
-            buffers.look.0 == bar && with_title(window, |title| title == buffers.look.1)
+            buffers.look.0 == bar
+                && buffers.shape == shape
+                && with_title(window, |title| title == buffers.look.1)
         });
         if !unchanged {
-            let (title, text) = self.title_bitmap(window);
-            let canvas = decoration::draw_titlebar(theme, &bar, text.as_deref());
-            let size = (bar.width.max(1), theme.metrics.titlebar.max(1));
+            let (title, text) = self.title_bitmap(window, room.max(0) as usize);
+            let canvas = decoration::draw_titlebar(paint, &bar, text.as_deref());
+            let size = (bar.width.max(1), paint.metrics.titlebar.max(1));
             let titlebar = MemoryRenderBuffer::from_slice(
                 &canvas.into_pixels(),
                 Fourcc::Argb8888,
@@ -691,20 +734,46 @@ impl State {
                 Transform::Normal,
                 None,
             );
-            let side = || SolidColorBuffer::new((border, height), line);
+            let bottom_rounded = (!square).then(|| {
+                let desktop = self
+                    .tokens
+                    .color("color.desktop")
+                    .expect("tokens define color.desktop");
+                let corners = decoration::draw_bottom(
+                    to_pixels(full),
+                    to_pixels(radius + border),
+                    to_pixels(radius) as f32,
+                    to_pixels(border),
+                    logical.border,
+                    desktop,
+                );
+                MemoryRenderBuffer::from_slice(
+                    &corners.into_pixels(),
+                    Fourcc::Argb8888,
+                    (to_pixels(full).max(1), to_pixels(radius + border).max(1)),
+                    1,
+                    Transform::Normal,
+                    None,
+                )
+            });
             *slot = Some(FrameBuffers {
                 look: (bar, title),
+                shape,
                 titlebar,
+                titlebar_size: (painted, logical.metrics.titlebar),
                 rest: SolidColorBuffer::new(rest_size, fill),
-                left: side(),
-                right: side(),
+                left: SolidColorBuffer::new((border, side_height), line),
+                right: SolidColorBuffer::new((border, side_height), line),
                 bottom: SolidColorBuffer::new((full, border), line),
+                bottom_rounded,
+                bottom_top: height - radius,
+                bottom_size: (full, radius + border),
             });
         }
         if let Some(buffers) = slot.as_mut() {
             buffers.rest.update(rest_size, fill);
-            buffers.left.update((border, height), line);
-            buffers.right.update((border, height), line);
+            buffers.left.update((border, side_height), line);
+            buffers.right.update((border, side_height), line);
             buffers.bottom.update((full, border), line);
         }
     }

@@ -26,7 +26,7 @@ use smithay::{
     input::pointer::{CursorImageStatus, CursorImageSurfaceData},
     output::Output,
     reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale},
+    utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale, Size},
     wayland::{
         compositor::{with_states, SurfaceData},
         shell::wlr_layer::Layer,
@@ -132,6 +132,8 @@ where
             continue;
         };
         let location = location - origin;
+        // The rounded bottom corners go in front of the client's own area.
+        frame_corners(state, window, location, renderer, scale, &mut elements);
         // Surface coordinates start at the buffer, not at the window
         // geometry the location refers to.
         let surface_origin = location - window.geometry().loc;
@@ -271,7 +273,7 @@ fn frame<R>(
         &buffers.titlebar,
         None,
         None,
-        None,
+        Some(Size::from(buffers.titlebar_size)),
         Kind::Unspecified,
     );
     match titlebar {
@@ -287,9 +289,12 @@ fn frame<R>(
         ),
         (&buffers.left, at(-metrics.border, 0)),
         (&buffers.right, at(size.w, 0)),
-        (&buffers.bottom, at(-metrics.border, size.h)),
     ];
-    for (buffer, position) in sides {
+    // The bottom is the solid strip only when its corners are square; the
+    // rounded one is drawn in front of the client instead.
+    let bottom =
+        (buffers.bottom_rounded.is_none()).then(|| (&buffers.bottom, at(-metrics.border, size.h)));
+    for (buffer, position) in sides.into_iter().chain(bottom) {
         elements.push(OutputElement::Solid(SolidColorRenderElement::from_buffer(
             buffer,
             position.to_physical_precise_round(scale),
@@ -297,6 +302,49 @@ fn frame<R>(
             1.0,
             Kind::Unspecified,
         )));
+    }
+}
+
+/// The rounded bottom corners of `window`'s frame, which go in front of its
+/// client. Nothing when the corners are square.
+fn frame_corners<R>(
+    state: &State,
+    window: &Window,
+    location: Point<i32, Logical>,
+    renderer: &mut R,
+    scale: Scale<f64>,
+    elements: &mut Vec<OutputElement<R>>,
+) where
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Clone + Send + Texture + 'static,
+{
+    let data = window::data(window);
+    if !data.decorated.get() {
+        return;
+    }
+    let size = window.geometry().size;
+    state.refresh_frame(window, size.w, size.h);
+    let slot = data.frame.borrow();
+    let Some(buffers) = slot.as_ref() else {
+        return;
+    };
+    let Some(corners) = buffers.bottom_rounded.as_ref() else {
+        return;
+    };
+    let border = state.theme.metrics.border;
+    let at = Point::<i32, Logical>::from((location.x - border, location.y + buffers.bottom_top));
+    let element = MemoryRenderBufferRenderElement::from_buffer(
+        renderer,
+        at.to_f64().to_physical_precise_round(scale),
+        corners,
+        None,
+        None,
+        Some(Size::from(buffers.bottom_size)),
+        Kind::Unspecified,
+    );
+    match element {
+        Ok(element) => elements.push(OutputElement::Memory(element)),
+        Err(err) => crate::say!("cannot draw the window corners: {err:?}"),
     }
 }
 

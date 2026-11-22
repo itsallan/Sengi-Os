@@ -295,6 +295,38 @@ pub struct Titlebar {
     pub cut: bool,
 }
 
+/// Paints the bottom of a window's frame, from its bottom corners up: the
+/// border along the bottom and up the sides, rounded at the corners with
+/// `radius`, and the desktop outside those corners, where the client's own
+/// square corners would otherwise show. Everything is in pixels; the part
+/// above the corners is left clear, so the client shows through it.
+pub fn draw_bottom(
+    width: i32,
+    height: i32,
+    radius: f32,
+    border: i32,
+    edge: Rgba,
+    desktop: Rgba,
+) -> Canvas {
+    let (width, height) = (width.max(1), height.max(1));
+    let mut canvas = Canvas::new(width as usize, height as usize);
+    let inner_radius = (radius - border as f32).max(0.0);
+    let outer = Rounded::new(Rect::new(0, 0, width, height), [0.0, 0.0, radius, radius]);
+    let inner = Rounded::new(
+        Rect::new(border, 0, width - 2 * border, height - border),
+        [0.0, 0.0, inner_radius, inner_radius],
+    );
+    for y in 0..height as usize {
+        for x in 0..width as usize {
+            let outside = outer.coverage(x, y);
+            let inside = inner.coverage(x, y);
+            canvas.blend(x, y, desktop, 1.0 - outside);
+            canvas.blend(x, y, edge, (outside - inside).max(0.0));
+        }
+    }
+    canvas
+}
+
 /// Paints a title bar: `width` by the title bar height, premultiplied ARGB.
 pub fn draw_titlebar(theme: &Theme, bar: &Titlebar, title: Option<&TextBitmap>) -> Canvas {
     let metrics = &theme.metrics;
@@ -395,6 +427,31 @@ mod tests {
             square: false,
             cut: false,
         }
+    }
+
+    #[test]
+    fn the_bottom_corners_are_the_desktop_and_the_edge_is_the_border() {
+        let edge = Rgba {
+            r: 255,
+            g: 0,
+            b: 0,
+            a: 255,
+        };
+        let desktop = Rgba {
+            r: 0,
+            g: 0,
+            b: 255,
+            a: 255,
+        };
+        let canvas = draw_bottom(40, 12, 6.0, 2, edge, desktop);
+        // Red, green, blue, alpha.
+        for corner in [canvas.pixel(0, 11), canvas.pixel(39, 11)] {
+            assert!(corner[2] > 200 && corner[0] < 60, "corner {corner:?}");
+        }
+        let middle = canvas.pixel(20, 11);
+        assert!(middle[0] > 200 && middle[2] < 60, "bottom edge {middle:?}");
+        // Above the corners, the client shows through.
+        assert_eq!(canvas.pixel(20, 0)[3], 0);
     }
 
     #[test]

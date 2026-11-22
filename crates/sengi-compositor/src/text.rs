@@ -108,6 +108,26 @@ impl Font {
         Some(Self { font, scale })
     }
 
+    /// `text` as one line that is at most `max_width` pixels wide. What does
+    /// not fit is cut short and ends with an ellipsis, so that a long title
+    /// reads as cut rather than as stopping at a letter.
+    pub fn fit(&self, text: &str, max_width: usize) -> TextBitmap {
+        let whole = self.render(text);
+        if whole.width <= max_width {
+            return whole;
+        }
+        let characters: Vec<char> = text.chars().collect();
+        for keep in (0..characters.len()).rev() {
+            let mut shorter: String = characters[..keep].iter().collect();
+            shorter.push('\u{2026}');
+            let bitmap = self.render(&shorter);
+            if bitmap.width <= max_width {
+                return bitmap;
+            }
+        }
+        self.render("\u{2026}")
+    }
+
     /// One line of text, as tall as the font's ascent plus descent.
     pub fn render(&self, text: &str) -> TextBitmap {
         let scaled = self.font.as_scaled(self.scale);
@@ -212,5 +232,24 @@ mod tests {
         assert_eq!(short.coverage.len(), short.width * short.height);
         assert!(short.coverage.contains(&255));
         assert_eq!(font.render("").width, 1);
+    }
+}
+
+#[cfg(test)]
+mod fit_tests {
+    use super::*;
+
+    #[test]
+    fn a_long_title_is_cut_with_an_ellipsis_and_a_short_one_is_whole() {
+        let Some(font) = Font::load("Inter", 500, 13) else {
+            eprintln!("skipped: no Inter installed to measure with");
+            return;
+        };
+        let long = "a title that is far too long for the room a window gives it";
+        let fitted = font.fit(long, 120);
+        assert!(fitted.width <= 120, "{} wide", fitted.width);
+        assert!(fitted.width < font.render(long).width);
+        let short = font.fit("Terminal", 400);
+        assert_eq!(short.width, font.render("Terminal").width);
     }
 }
