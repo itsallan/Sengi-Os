@@ -185,17 +185,16 @@ fn a_right_click_on_the_desktop_opens_the_root_menu_in_order() {
     let _window = app.window(GREEN).unwrap();
     app.wait(Duration::from_secs(3), |_| false);
     let picture = app.capture().unwrap();
-    // The card is 234 pixels tall from the pointer at (200, 200): six rows,
-    // with a line between Settings and Lock at 134 down its inside. The
-    // line is the third group of rows, so it sits between the third and
-    // fourth row.
+    // The card is 130 pixels tall from the pointer at (200, 200): five rows
+    // of 22 between 6 of padding and an 8 pixel space for the line between
+    // Settings and Lock, which is 76 down.
     assert_eq!(rgb(picture.at(204, 204)), CARD, "no card at the pointer");
-    let line = (330..=348)
+    let line = (270..=282)
         .filter(|&y| rgb(picture.at(260, y)) == EDGE)
         .count();
     assert!(line >= 1, "no separator between Settings and Lock");
     assert_eq!(
-        rgb(picture.at(260, 200 + 234 + 4)),
+        rgb(picture.at(260, 200 + 130 + 4)),
         DESKTOP,
         "the card runs on"
     );
@@ -212,8 +211,8 @@ fn an_item_of_the_root_menu_runs_its_action() {
     )
     .unwrap();
     let locker = format!("/bin/sh {}", script.display());
-    // Lock is the fifth row, from 142 to 184 down a card at (200, 200).
-    let steps = "1500 move 200 200\n1600 click right\n1800 move 300 363\n1900 click left\n";
+    // Lock is the fourth row, from 80 to 102 down a card at (200, 200).
+    let steps = "1500 move 200 200\n1600 click right\n1800 move 300 291\n1900 click left\n";
     let compositor = Compositor::start_in(Some(&locker), None, Some(steps), &[]);
     let mut app = compositor.connect();
     let _window = app.window(GREEN).unwrap();
@@ -280,13 +279,13 @@ fn a_right_click_on_a_title_bar_opens_the_window_menu() {
     let _window = app.decorated_window(GREEN).unwrap();
     app.wait(Duration::from_secs(4), |_| false);
     let picture = app.capture().unwrap();
-    // Four rows of 42 pixels, with the padding around them: 184 tall.
+    // Four rows of 22 pixels, with the padding around them: 100 tall.
     assert_eq!(
-        rgb(picture.at(712, 258 + 184 - 4)),
+        rgb(picture.at(712, 258 + 100 - 4)),
         CARD,
         "the menu is too short"
     );
-    assert_ne!(rgb(picture.at(712, 258 + 190)), CARD, "the menu runs on");
+    assert_ne!(rgb(picture.at(712, 258 + 106)), CARD, "the menu runs on");
 }
 
 /// A right-click on the client area of a window opens nothing.

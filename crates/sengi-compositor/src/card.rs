@@ -43,35 +43,38 @@ pub fn menu(theme: &Theme, font: Option<&Font>, rows: &[Row]) -> Layout {
     let card = theme.card;
     let width = card.menu_width;
     let mut parts = Vec::new();
-    let mut y = card.pad_y;
+    let pad = card.menu_pad;
+    let mut y = pad;
     for row in rows {
         match row {
             Row::Item(label) => {
                 let text = font.map(|font| {
-                    font.fit(label, (width - 2 * (card.gap + card.pad_x)).max(0) as usize)
+                    font.fit(label, (width - 2 * (pad + card.pad_x)).max(0) as usize)
                 });
                 parts.push(Part {
-                    rect: Rect::new(card.gap, y, width - 2 * card.gap, card.row),
+                    rect: Rect::new(pad, y, width - 2 * pad, card.menu_row),
                     separator: false,
                     label: text,
                     badge: None,
                 });
-                y += card.row;
+                y += card.menu_row;
             }
             Row::Separator => {
+                // The line is pulled in from the ends of the rows above.
+                let x = pad + card.menu_inset;
                 parts.push(Part {
-                    rect: Rect::new(card.gap, y, width - 2 * card.gap, card.pad_y),
+                    rect: Rect::new(x, y, width - 2 * x, card.gap),
                     separator: true,
                     label: None,
                     badge: None,
                 });
-                y += card.pad_y;
+                y += card.gap;
             }
         }
     }
     Layout {
         width,
-        height: y + card.pad_y,
+        height: y + pad,
         parts,
         tiles: false,
     }
@@ -177,7 +180,9 @@ impl Layout {
                 canvas.round_rect(rect.x, rect.y, rect.w, rect.h, radius, theme.accent);
             }
             let ink = if lit { theme.accent_text } else { theme.text };
-            let mut left = rect.x + card.gap + card.pad_x;
+            // A menu's text starts one padding in from its row.
+            let inset = if self.tiles { card.gap } else { 0 };
+            let mut left = rect.x + inset + card.pad_x;
             if let Some(bitmap) = &part.badge {
                 let side = card.badge;
                 let top = rect.y + (rect.h - side) / 2;
@@ -203,6 +208,20 @@ fn contains(rect: Rect, x: i32, y: i32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn menu_rows_are_22_pixels_in_6_of_padding_with_pulled_in_separators() {
+        let theme = Theme::from_tokens(&sengi_tokens::Tokens::builtin());
+        let layout = menu(&theme, None, &[Row::Item("a"), Row::Separator, Row::Item("b")]);
+        let rows: Vec<_> = layout.parts.iter().map(|part| part.rect).collect();
+        let width = theme.card.menu_width;
+        assert_eq!(rows[0], Rect::new(6, 6, width - 12, 22));
+        // The line is six pixels in from the row's ends.
+        assert_eq!(rows[1].x, 12);
+        assert_eq!(rows[1].w, width - 24);
+        assert_eq!(rows[2], Rect::new(6, 6 + 22 + rows[1].h, width - 12, 22));
+        assert_eq!(layout.height, 6 + 22 + rows[1].h + 22 + 6);
+    }
 
     #[test]
     fn the_switcher_never_wider_than_the_screen_allows() {

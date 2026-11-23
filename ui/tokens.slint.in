@@ -49,6 +49,9 @@ export global Tokens {
     out property <int> font-weight-bold: @{type.weight-bold};
 
     out property <length> bar-height: @{size.bar-height}px;
+    out property <length> menu-row: @{menu.row}px;
+    out property <length> menu-padding: @{menu.padding}px;
+    out property <length> menu-separator-inset: @{menu.separator-inset}px;
     out property <length> dock-icon: @{size.dock-icon}px;
     out property <length> dock-padding: @{size.dock-padding}px;
     out property <length> dock-item: @{dock.icon}px;
