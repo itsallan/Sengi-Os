@@ -158,6 +158,13 @@ jobs:
         run: |
           SENGI_UEFI=/usr/share/OVMF/OVMF_CODE_4M.fd SENGI_UEFI_VARS=/usr/share/OVMF/OVMF_VARS_4M.fd \
             scripts/install-test.sh out/sengi-os-$(cat VERSION)-amd64.iso test-output/install-uefi
+      # And on sengi-compositor, live and installed, under both firmwares.
+      - name: Install test, sengi-compositor
+        run: SENGI_COMPOSITOR=own scripts/install-test.sh out/sengi-os-$(cat VERSION)-amd64.iso test-output/install-own
+      - name: Install test, sengi-compositor, UEFI
+        run: |
+          SENGI_COMPOSITOR=own SENGI_UEFI=/usr/share/OVMF/OVMF_CODE_4M.fd SENGI_UEFI_VARS=/usr/share/OVMF/OVMF_VARS_4M.fd \
+            scripts/install-test.sh out/sengi-os-$(cat VERSION)-amd64.iso test-output/install-own-uefi
       - name: Summary
         if: always()
         run: |
