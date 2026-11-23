@@ -194,6 +194,15 @@ const FLIP_TIME: Duration = Duration::from_secs(1);
 /// session is locked: what it still shows must not stay on the glass.
 const FAILURES_UNDER_LOCK: u32 = 3;
 
+/// After this many failed frames in a row on a screen, with the session not
+/// locked, the renderer is given up: GLES is rebuilt as pixman, and if pixman
+/// fails as often the compositor exits non-zero so that the session falls
+/// back to labwc. The retry delay grows by one refresh per failure, so 20
+/// failures take about 3.5 s at 60 Hz: a hiccup while a display is plugged
+/// or switched is long over by then, and a GPU that cannot draw is not
+/// waited on for ever. Failures are counted from the last frame that worked.
+const FAILURES_BEFORE_REBUILD: u32 = 20;
+
 /// How long one refresh of `output` takes.
 fn refresh_interval(output: &Output) -> Duration {
     let millihertz = output
@@ -976,6 +985,9 @@ fn draw_if_ready(backend: &Shared, state: &mut State) {
     let mut hopeless = Vec::new();
     let mut watch = Vec::new();
     let mut dark = Vec::new();
+    // Some screen has failed too often; and whether all lit ones have.
+    let mut exhausted = false;
+    let mut all_exhausted = false;
     {
         let mut backend = backend.borrow_mut();
         if !backend.active {
@@ -1042,6 +1054,10 @@ fn draw_if_ready(backend: &Shared, state: &mut State) {
                 hopeless.push(screen.crtc);
                 continue;
             }
+            if !state.is_locked() && screen.failures >= FAILURES_BEFORE_REBUILD {
+                exhausted = true;
+                continue;
+            }
             screen.stale = false;
             let epoch = state.lock_epoch();
             match screen.frame(renderer, state, epoch) {
@@ -1090,6 +1106,12 @@ fn draw_if_ready(backend: &Shared, state: &mut State) {
                 }
             }
         }
+        if exhausted {
+            all_exhausted = screens
+                .iter()
+                .filter(|screen| !screen.dark)
+                .all(|screen| screen.failures >= FAILURES_BEFORE_REBUILD);
+        }
         for crtc in hopeless {
             if let Some(at) = screens.iter().position(|screen| screen.crtc == crtc) {
                 let mut screen = screens.remove(at);
@@ -1107,6 +1129,21 @@ fn draw_if_ready(backend: &Shared, state: &mut State) {
                 state.remove_output(&screen.output);
                 *switched_off = true;
             }
+        }
+    }
+    if exhausted {
+        let mut backend = backend.borrow_mut();
+        if matches!(backend.renderer, Renderer::Gles { .. }) {
+            crate::say!("frames keep failing on GLES, drawing on the CPU instead");
+            if let Err(err) = backend.use_pixman() {
+                crate::say!("cannot draw on the CPU either: {err}");
+                give_up(state);
+            } else {
+                state.request_redraw();
+            }
+        } else if all_exhausted {
+            crate::say!("frames keep failing on every screen, giving up");
+            give_up(state);
         }
     }
     // A dark screen shows nothing of the session, which is all a lock
@@ -1229,6 +1266,13 @@ fn draw_if_ready(backend: &Shared, state: &mut State) {
     }
 }
 
+/// Ends the compositor with an error, for whoever started it to take over.
+fn give_up(state: &mut State) {
+    state.failed = true;
+    state.loop_signal.stop();
+    state.loop_signal.wakeup();
+}
+
 impl Screen {
     /// Forgets what the buffers hold and what was queued, so that the next
     /// frame is drawn in full and committed afresh.
@@ -1328,6 +1372,29 @@ impl Screen {
 }
 
 impl Drm {
+    /// Draws on the CPU from now on: every lit screen is set up again with
+    /// buffers of pixman's kind, in the mode it has. Clients that handed
+    /// over GPU buffers can no longer be shown, and are not offered more.
+    fn use_pixman(&mut self) -> Result<(), Box<dyn Error>> {
+        let renderer = PixmanRenderer::new()?;
+        let old = std::mem::take(&mut self.screens);
+        let mut again = Vec::new();
+        for screen in old {
+            if screen.in_flight.is_some() {
+                self.stale_flips.push(screen.crtc);
+            }
+            again.push((screen.connector, screen.modes, screen.mode, screen.output));
+            // Dropped here, which lets go of its CRTC.
+        }
+        self.renderer = Renderer::Pixman(Box::new(renderer));
+        for (connector, modes, mode, output) in again {
+            let info = self.device.get_connector(connector, true)?;
+            let screen = self.screen_for(&info, &modes, mode, &output)?;
+            self.screens.push(screen);
+        }
+        Ok(())
+    }
+
     /// Lights displays that were plugged in and lets go of ones that were
     /// pulled. A display that was switched off in Settings stays off.
     fn rescan(&mut self, state: &mut State) {
