@@ -18,7 +18,6 @@ use std::{
 use smithay::{
     backend::{
         allocator::Fourcc,
-        input::{ButtonState, KeyState, Keycode},
         renderer::{
             damage::OutputDamageTracker,
             pixman::{PixmanRenderer, PixmanTarget},
@@ -318,37 +317,15 @@ fn play(backend: &Shared, state: &mut State) -> TimeoutAction {
         };
         let Some(step) = step else { break };
 
-        let key_state = |pressed| match pressed {
-            true => KeyState::Pressed,
-            false => KeyState::Released,
-        };
-        let button_state = |pressed| match pressed {
-            true => ButtonState::Pressed,
-            false => ButtonState::Released,
-        };
         match step.action {
-            Action::Key { code, pressed } => {
-                // xkb keycodes are evdev codes plus eight.
-                state.key(Keycode::new(code + 8), key_state(pressed), time);
-            }
-            Action::Move { x, y } => state.pointer_motion((x, y).into(), time),
-            Action::Nudge { dx, dy } => {
-                let delta = (dx, dy).into();
-                state.pointer_moved(delta, delta, u64::from(time) * 1000, time);
-            }
-            Action::Button { code, pressed } => {
-                state.pointer_button(code, button_state(pressed), time);
-            }
             // The picture has to show the steps before it, so draw now
             // whether or not a frame was due.
             Action::Screenshot(path) => draw(backend, state, Some(&path)),
-            Action::Spawn(command) => {
-                state.spawn(&command);
-            }
             Action::Exit => {
                 state.loop_signal.stop();
                 return TimeoutAction::Drop;
             }
+            input => state.perform(&input, time),
         }
     }
 

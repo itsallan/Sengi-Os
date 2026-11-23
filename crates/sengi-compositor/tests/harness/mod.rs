@@ -51,7 +51,7 @@ impl Compositor {
         script: Option<&str>,
         variables: &[(&str, &str)],
     ) -> Self {
-        Self::launch(locker, settings, script, variables, &[])
+        Self::launch(locker, settings, script, variables, &[], None)
     }
 
     /// Starts the compositor as the login screen's, with `session` as
@@ -65,12 +65,36 @@ impl Compositor {
         if let Some(session) = session {
             arguments.extend(["--session", session]);
         }
-        Self::launch(None, None, script, variables, &arguments)
+        Self::launch(None, None, script, variables, &arguments, None)
     }
 
     /// Starts the compositor with more on its command line.
     pub fn start_args(arguments: &[&str], script: Option<&str>) -> Self {
-        Self::launch(None, None, script, &[], arguments)
+        Self::launch(None, None, script, &[], arguments, None)
+    }
+
+    /// Starts the compositor with more on its command line, and the saved
+    /// layout of the outputs `layout`, saved after `save_ms` milliseconds.
+    pub fn start_with_layout(arguments: &[&str], layout: Option<&str>, save_ms: &str) -> Self {
+        Self::launch(
+            None,
+            None,
+            None,
+            &[("SENGI_COMPOSITOR_OUTPUT_SAVE_MS", save_ms)],
+            arguments,
+            layout,
+        )
+    }
+
+    /// Puts a layout of the outputs where the compositor keeps it, as an
+    /// edit by hand would.
+    pub fn write_layout(&self, text: &str) {
+        std::fs::write(self.dir.join("config/sengi-os/outputs.toml"), text).expect("a layout");
+    }
+
+    /// The layout of the outputs the compositor has saved, if it has.
+    pub fn saved_layout(&self) -> Option<String> {
+        std::fs::read_to_string(self.dir.join("config/sengi-os/outputs.toml")).ok()
     }
 
     /// Waits for the compositor to end by itself; whether it did, and
@@ -90,7 +114,7 @@ impl Compositor {
     /// directory of its own (see `write_settings`), and with `script`
     /// played as input.
     pub fn start_with(locker: Option<&str>, settings: Option<&str>, script: Option<&str>) -> Self {
-        Self::launch(locker, settings, script, &[], &[])
+        Self::launch(locker, settings, script, &[], &[], None)
     }
 
     fn launch(
@@ -99,6 +123,7 @@ impl Compositor {
         script: Option<&str>,
         variables: &[(&str, &str)],
         arguments: &[&str],
+        layout: Option<&str>,
     ) -> Self {
         static COUNT: AtomicU32 = AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!(
@@ -122,6 +147,9 @@ impl Compositor {
         std::fs::create_dir_all(config.join("sengi-os")).expect("a configuration directory");
         if let Some(settings) = settings {
             std::fs::write(config.join("sengi-os/settings.toml"), settings).expect("settings");
+        }
+        if let Some(layout) = layout {
+            std::fs::write(config.join("sengi-os/outputs.toml"), layout).expect("a layout");
         }
         let mut command = Command::new(env!("CARGO_BIN_EXE_sengi-compositor"));
         command.args(["--backend", "headless", "--locker", &locker]);
@@ -257,6 +285,13 @@ impl Compositor {
             .strip_prefix("ok ")
             .unwrap_or_else(|| panic!("plugging {what}: {answer}"))
             .to_string()
+    }
+
+    /// Does one step of input now, as a script line without its time:
+    /// `move 100 100`, `press left`, `key super+a`.
+    pub fn input(&self, step: &str) {
+        let answer = self.control(&format!("do {step}"));
+        assert_eq!(answer, "ok", "input {step}");
     }
 
     pub fn unplug(&self, name: &str) {

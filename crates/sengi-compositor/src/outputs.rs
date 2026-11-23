@@ -749,11 +749,26 @@ impl State {
 }
 
 impl State {
-    /// `plug WxH [NAME] [panel]` or `unplug NAME`, from the control socket,
-    /// where the backend lets screens come and go. The answer is one line.
-    pub fn test_output_request(&mut self, line: &str) -> String {
+    /// What the tests ask through the control socket: `plug WxH [NAME]
+    /// [panel]` and `unplug NAME` where the backend lets screens come and
+    /// go, and `do STEP` for a step of input as a script has it. The answer
+    /// is one line.
+    pub fn test_request(&mut self, line: &str) -> String {
         let mut words = line.split_whitespace();
         let request = match words.next() {
+            // Input as a script has it, done now: `do move 100 100`.
+            Some("do") => {
+                let steps =
+                    crate::script::parse(&format!("0 {}", words.collect::<Vec<_>>().join(" ")));
+                let Ok(steps) = steps else {
+                    return "failed: not a step\n".into();
+                };
+                let time = self.start_time.elapsed().as_millis() as u32;
+                for step in steps {
+                    self.perform(&step.action, time);
+                }
+                return "ok\n".into();
+            }
             Some("plug") => {
                 let size = words.next().and_then(|text| {
                     let (w, h) = text.split_once('x')?;

@@ -116,6 +116,42 @@ fn key_by_name(name: &str) -> Option<u32> {
         })
 }
 
+impl crate::state::State {
+    /// Does what a step of input says, now. Not for the steps that need a
+    /// backend: a picture, and the end.
+    pub fn perform(&mut self, action: &Action, time: u32) {
+        use smithay::backend::input::{ButtonState, KeyState, Keycode};
+        match action {
+            Action::Key { code, pressed } => {
+                let state = if *pressed {
+                    KeyState::Pressed
+                } else {
+                    KeyState::Released
+                };
+                // xkb keycodes are evdev codes plus eight.
+                self.key(Keycode::new(code + 8), state, time);
+            }
+            Action::Move { x, y } => self.pointer_motion((*x, *y).into(), time),
+            Action::Nudge { dx, dy } => {
+                let delta = (*dx, *dy).into();
+                self.pointer_moved(delta, delta, u64::from(time) * 1000, time);
+            }
+            Action::Button { code, pressed } => {
+                let state = if *pressed {
+                    ButtonState::Pressed
+                } else {
+                    ButtonState::Released
+                };
+                self.pointer_button(*code, state, time);
+            }
+            Action::Spawn(command) => {
+                self.spawn(command);
+            }
+            Action::Screenshot(_) | Action::Exit => {}
+        }
+    }
+}
+
 pub fn parse(text: &str) -> Result<Vec<Step>, String> {
     let mut steps = Vec::new();
     let mut last = Duration::ZERO;

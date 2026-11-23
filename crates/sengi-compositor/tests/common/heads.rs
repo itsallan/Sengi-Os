@@ -264,6 +264,8 @@ impl Client {
 
     /// Every output as `wl_output` shows it, by name.
     pub fn plain_outputs(&mut self) -> Result<Vec<Plain>, Failure> {
+        // What went away since is heard of first.
+        self.settle()?;
         self.seen.heads.plain.clear();
         let names: Vec<u32> = self.globals.contents().with_list(|list| {
             list.iter()

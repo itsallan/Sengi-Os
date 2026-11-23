@@ -837,9 +837,9 @@ impl State {
                         state.lock_requested(asker);
                     }
                 } else if cfg!(feature = "test-hooks") {
-                    // Plugs and unplugs screens for the tests.
+                    // Plugs and unplugs screens and gives input, for the tests.
                     if let Ok(mut asker) = stream.try_clone() {
-                        let answer = state.test_output_request(&String::from_utf8_lossy(line));
+                        let answer = state.test_request(&String::from_utf8_lossy(line));
                         let _ = std::io::Write::write_all(&mut asker, answer.as_bytes());
                     }
                 }
