@@ -27,7 +27,8 @@ is still the default; nothing here changes what starts unless asked.
   if that file is not there in 15 seconds the compositor is ended, and one
   that exits with an error within ten seconds is replaced too, the login
   screen as well as the session. After any error exit the rest of that boot
-  uses labwc.
+  uses labwc, provided /run/sengi-os exists and can be written, which the
+  image sees to.
 - If drawing keeps failing, 20 frames in a row, the compositor switches to
   drawing on the CPU, and if that fails it exits with an error, which the
   fallback above then covers.

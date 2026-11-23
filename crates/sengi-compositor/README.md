@@ -414,7 +414,9 @@ Known gaps, as of today.
   seconds it is given up for the session, and programs started after that
   get no `DISPLAY`. It stays up for the whole session on purpose, whether
   or not an X11 window is open, and is brought back, on the same number, by
-  the next program the compositor starts if it dies. Only the socket in
+  the next program the compositor starts if it dies. Until then a program
+  that was started before it died, and is given the DISPLAY, is refused
+  when it connects. Only the socket in
   /tmp/.X11-unix is used, not the abstract one, so a sandboxed program
   cannot reach it by sharing the network. Its windows get the same frame,
   title and switcher entry as the others, read from Motif hints and
@@ -515,7 +517,19 @@ the session writes a line to the journal (`-t sengi-session`) and starts
 labwc instead, once. After any error exit that was not asked for, late ones
 too, `/run/sengi-os/compositor-failed` is written, and the rest of that
 boot, the login screen included, uses labwc, so that a crash does not turn
-into a loop of login screens. `scripts/test-compositor-sh.sh` tests the
+into a loop of login screens. That holds only if `/run/sengi-os` exists
+and can be written, which the image's tmpfiles.d entry makes so (open to
+every user, as the login screen and the session run as different ones; on
+a machine with one user the only thing another user could do with it is
+send the rest of the boot to labwc). The note also overrides an explicit
+`sengi.compositor=own` for the rest of that boot; reboot, or remove
+`/run/sengi-os/compositor-failed`, to try ours again.
+
+An installed system has no labwc entry in its boot menu: the installer's
+GRUB has only the text-mode entry. To get labwc there, press E on the
+entry in GRUB and add `sengi.compositor=labwc` to the `linux` line, or
+log in from the text-mode entry and write `labwc` into
+`/etc/sengi-os/compositor`. `scripts/test-compositor-sh.sh` tests the
 script against a fake compositor.
 
 `/usr/lib/sengi-os/session-start` is the one start-up script of the
