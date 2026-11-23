@@ -59,6 +59,9 @@ struct Snap {
 
 struct SentHead {
     output: Output,
+    /// A head that takes any size has one mode object, for the size it
+    /// has now and with no rate, which is how Settings knows it.
+    any_size: bool,
     resource: ZwlrOutputHeadV1,
     modes: Vec<(OutputMode, ZwlrOutputModeV1)>,
     sent: Snap,
@@ -158,36 +161,11 @@ fn send_head(
             head.serial_number(known.serial.clone());
         }
     }
-    let mut modes = Vec::new();
-    // A head that takes any size has no modes to list.
-    if state.head(output).is_some_and(|known| !known.any_size) {
-        let preferred = output.preferred_mode();
-        for mode in output.modes() {
-            let version = manager.version().min(MODE_VERSION);
-            let Ok(object) = client
-                .create_resource::<ZwlrOutputModeV1, (Output, OutputMode), State>(
-                    display,
-                    version,
-                    (output.clone(), mode),
-                )
-            else {
-                continue;
-            };
-            head.mode(&object);
-            object.size(mode.size.w, mode.size.h);
-            if mode.refresh > 0 {
-                object.refresh(mode.refresh);
-            }
-            if preferred == Some(mode) {
-                object.preferred();
-            }
-            modes.push((mode, object));
-        }
-    }
     let mut sent = SentHead {
         output: output.clone(),
+        any_size: state.head(output).is_some_and(|known| known.any_size),
         resource: head,
-        modes,
+        modes: Vec::new(),
         sent: Snap {
             enabled: false,
             mode: None,
@@ -196,6 +174,7 @@ fn send_head(
             scale: 0,
         },
     };
+    sent.sync_modes(display);
     // Whatever differs from "nothing" is the whole state.
     sent.send_changes(snap);
     if sent.resource.version() >= 4 {
@@ -205,6 +184,64 @@ fn send_head(
 }
 
 impl SentHead {
+    /// Brings the mode objects up to date with what the output has: a mode
+    /// that appeared (a window resized, a custom size given) is announced,
+    /// one that went is finished. Returns whether anything was.
+    fn sync_modes(&mut self, display: &DisplayHandle) -> bool {
+        let Some(client) = self.resource.client() else {
+            return false;
+        };
+        let output = self.output.clone();
+        let wanted: Vec<OutputMode> = if self.any_size {
+            output
+                .current_mode()
+                .map(|mode| OutputMode {
+                    size: mode.size,
+                    refresh: 0,
+                })
+                .into_iter()
+                .collect()
+        } else {
+            output.modes()
+        };
+        let mut changed = false;
+        self.modes.retain(|(mode, object)| {
+            let keep = wanted.contains(mode);
+            if !keep {
+                object.finished();
+                changed = true;
+            }
+            keep
+        });
+        let preferred = output.preferred_mode();
+        for mode in wanted {
+            if self.modes.iter().any(|(known, _)| *known == mode) {
+                continue;
+            }
+            let version = self.resource.version().min(MODE_VERSION);
+            let Ok(object) = client
+                .create_resource::<ZwlrOutputModeV1, (Output, OutputMode), State>(
+                    display,
+                    version,
+                    (output.clone(), mode),
+                )
+            else {
+                continue;
+            };
+            self.resource.mode(&object);
+            object.size(mode.size.w, mode.size.h);
+            if mode.refresh > 0 {
+                object.refresh(mode.refresh);
+            }
+            if !self.any_size && preferred == Some(mode) {
+                object.preferred();
+            }
+            self.modes.push((mode, object));
+            changed = true;
+        }
+        changed
+    }
+
     /// Sends what `now` has that differs from what was sent. Returns
     /// whether anything was.
     fn send_changes(&mut self, now: &Snap) -> bool {
@@ -219,9 +256,12 @@ impl SentHead {
         if now.enabled {
             let fresh = !before.enabled || before.position == (i32::MIN, i32::MIN);
             if fresh || before.mode != now.mode {
+                let any_size = self.any_size;
                 let current = now.mode.and_then(|(w, h, refresh)| {
                     self.modes.iter().find(|(mode, _)| {
-                        mode.size.w == w && mode.size.h == h && mode.refresh == refresh
+                        mode.size.w == w
+                            && mode.size.h == h
+                            && (any_size || mode.refresh == refresh)
                     })
                 });
                 if let Some((_, object)) = current {
@@ -282,7 +322,11 @@ impl State {
             }
             for (output, snap) in &now {
                 match manager.heads.iter_mut().find(|sent| &sent.output == output) {
-                    Some(sent) => any |= sent.send_changes(snap),
+                    Some(sent) => {
+                        // Modes first: the current one may be new.
+                        any |= sent.sync_modes(&display);
+                        any |= sent.send_changes(snap);
+                    }
                     None => {
                         if let Some(sent) =
                             send_head(&display, &manager.resource, self, output, snap)

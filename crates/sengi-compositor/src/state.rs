@@ -602,6 +602,11 @@ impl State {
     /// Asks for a frame. Everything that changes what is on screen calls
     /// this; nothing is drawn otherwise.
     pub fn request_redraw(&mut self) {
+        // Whatever moved a window may have moved it to an output of another
+        // scale: only matters where there are two to choose from.
+        if self.painters.len() > 1 {
+            self.scales_dirty = true;
+        }
         if self.needs_redraw {
             return;
         }

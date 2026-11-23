@@ -39,8 +39,10 @@ fn every_output_is_a_head_with_what_a_client_needs() {
     assert_eq!(one.transform, Some(Transform::Normal));
     assert_eq!(one.make, "Sengi OS");
     assert_eq!(one.model, "Headless");
-    // A virtual screen takes any size, so it lists no modes.
-    assert!(one.modes.is_empty());
+    // A virtual screen takes any size: its one mode is the size it has,
+    // with no rate, which is how Settings tells it from a panel.
+    assert_eq!(one.modes.len(), 1);
+    assert_eq!(one.current_size(), Some((1280, 720, 0)));
     assert!(app.seen.heads.serial.is_some());
     assert_eq!(app.seen.heads.dones, 1);
 
@@ -310,6 +312,9 @@ fn a_custom_size_resizes_a_virtual_screen() {
         app.configure(&manager, None, &ops, true).unwrap(),
         Outcome::Succeeded
     );
+    // The size it has is announced as its mode, and the old one is gone.
+    assert_eq!(app.head("HEADLESS-1").modes.len(), 1);
+    assert_eq!(app.head("HEADLESS-1").current_size(), Some((800, 600, 0)));
     let plain = app.plain_outputs().unwrap();
     assert_eq!(plain[0].size, Some((800, 600)));
     // The next one is where the first ends.
@@ -1254,4 +1259,39 @@ fn a_change_that_stood_for_a_trial_is_kept_when_the_session_ends_and_a_young_one
             "trial {trial}"
         );
     }
+}
+
+#[test]
+fn a_switcher_on_an_output_that_is_switched_off_closes_with_it() {
+    let compositor = two();
+    let mut app = compositor.connect();
+    app.keyboard().unwrap();
+    let manager = app.manager().unwrap();
+    compositor.input("move 100 100");
+    let (_a, _ta) = app.window(GREEN).unwrap();
+    compositor.input("move 1500 600");
+    compositor.input("keydown alt");
+    compositor.input("key tab");
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(count(&app.capture_named("HEADLESS-2").unwrap(), CARD) > 0);
+    let ops = [Op::keep("HEADLESS-1"), Op::off("HEADLESS-2")];
+    assert_eq!(
+        app.configure(&manager, None, &ops, true).unwrap(),
+        Outcome::Succeeded
+    );
+    compositor.input("keyup alt");
+    // Back on, the card is not there waiting.
+    let ops = [Op::keep("HEADLESS-1"), Op::keep("HEADLESS-2")];
+    assert_eq!(
+        app.configure(&manager, None, &ops, true).unwrap(),
+        Outcome::Succeeded
+    );
+    assert_eq!(count(&app.capture_named("HEADLESS-2").unwrap(), CARD), 0);
+    // And the keys do what they did: the switcher opens again.
+    compositor.input("move 100 100");
+    compositor.input("keydown alt");
+    compositor.input("key tab");
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(count(&app.capture_named("HEADLESS-1").unwrap(), CARD) > 0);
+    compositor.input("keyup alt");
 }

@@ -521,6 +521,10 @@ impl State {
             layer.layer_surface().send_close();
         }
         self.space.unmap_output(output);
+        // A card on that output has nowhere to be shown.
+        if self.overlay_output_is(output) {
+            self.overlay = None;
+        }
         self.lock_output_removed(output);
         self.forget_output_power(output);
         if let Some(head) = self.heads.iter_mut().find(|head| &head.output == output) {
@@ -942,10 +946,11 @@ impl State {
     /// Tells every surface at which scale to draw. Cheap to repeat: a
     /// surface hears of it only when it changes.
     pub fn update_preferred_scales(&mut self) {
-        if self.painters.len() < 2 && !self.scales_dirty {
+        // Only after something changed that could move a window between
+        // outputs or change a scale; an idle desktop is not walked.
+        if !std::mem::take(&mut self.scales_dirty) {
             return;
         }
-        self.scales_dirty = false;
         let set = |scale: f64| {
             move |_: &WlSurface, states: &smithay::wayland::compositor::SurfaceData| {
                 with_fractional_scale(states, |fractional| fractional.set_preferred_scale(scale));

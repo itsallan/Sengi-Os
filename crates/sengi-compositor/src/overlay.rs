@@ -343,6 +343,16 @@ impl State {
         }
     }
 
+    /// Whether the open card is on `output`.
+    pub fn overlay_output_is(&self, output: &Output) -> bool {
+        match self.overlay.as_ref() {
+            Some(Overlay::Switcher { output: on, .. } | Overlay::Menu { output: on, .. }) => {
+                on == output
+            }
+            None => false,
+        }
+    }
+
     /// The output the open card is on, if it is still there.
     fn overlay_output(&self) -> Option<Output> {
         let output = match self.overlay.as_ref()? {
