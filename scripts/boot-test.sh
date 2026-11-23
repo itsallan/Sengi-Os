@@ -629,11 +629,11 @@ if [ -n "$greeter_fail" ]; then
 	echo "FAIL: $greeter_fail" >&2
 	fail=1
 fi
-if [ "$ram_mb" -ge "$budget_ram_mb" ]; then
+if [ "${ram_mb:-9999}" -ge "$budget_ram_mb" ]; then
 	echo "FAIL: idle RAM ${ram_mb} MB is over the ${budget_ram_mb} MB budget" >&2
 	fail=1
 fi
-if [ "$(echo "$boot_s $budget_boot_s" | awk '{print ($1 >= $2)}')" = 1 ]; then
+if [ "$(echo "${boot_s:-9999} $budget_boot_s" | awk '{print ($1 >= $2)}')" = 1 ]; then
 	echo "FAIL: boot took ${boot_s} s, budget is ${budget_boot_s} s" >&2
 	fail=1
 fi
