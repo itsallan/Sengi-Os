@@ -1,6 +1,7 @@
 # sengi-compositor
 
-The Wayland compositor that will replace labwc in Sengi OS. It is built on
+The Wayland compositor of Sengi OS: the default from 0.8, with labwc kept
+as the fallback and the way back. It is built on
 [Smithay](https://github.com/Smithay/smithay) 0.7. The programs the image's
 session starts (sengi-bar, sengi-dock, sengi-launcher, sengi-notify,
 sengi-lock, sengi-focus, swaybg, swayidle) run on it, it sleeps when
@@ -8,10 +9,10 @@ nothing changes, and it drives screens through DRM/KMS: with GLES where
 there is a GPU, with pixman on the CPU where there is none. It has not run
 on real hardware yet; everything below was seen in virtual machines.
 
-The ISO carries it beside labwc, which is still the default: the boot menu
-entry "Sengi OS (sengi-compositor preview)" starts the session on it, and
-"Sengi OS (labwc compositor)" forces labwc. If it hangs or fails the
-session starts labwc instead. See "In the Sengi OS image" below. The crate
+The ISO starts it by default, for the login screen and the session. labwc
+is in the image too: the boot menu entry "Sengi OS (labwc compositor)"
+forces it, and if sengi-compositor hangs or fails the session starts labwc
+instead. See "In the Sengi OS image" below. The crate
 is its own Cargo workspace, excluded from the main one, so the normal build
 does not compile Smithay.
 
@@ -470,8 +471,8 @@ and so counts as dirty.
 
 ## In the Sengi OS image
 
-The image offers the compositor as a second choice beside labwc, to try it
-on real hardware without touching the default session.
+The image runs the compositor by default, and has labwc beside it as the
+fallback and the way back.
 
 `image/build.sh` builds it from this workspace with `--release --locked
 --no-default-features --features drm` and installs `/usr/bin/sengi-compositor`
@@ -480,25 +481,26 @@ libpixman-1-dev libxkbcommon-dev`; EGL and GLES are loaded at run time and
 need no headers. Every library it links against is already in the image
 because labwc needs it too, and the build stops if that ever changes.
 
-labwc stays the default. The session (`/usr/bin/sengi-session`) and the
-login screen (`/usr/libexec/sengi-greeter-session`) are started on
-sengi-compositor instead when it is asked for, in one of three ways,
-which `/usr/lib/sengi-os/compositor.sh` looks at for both. Each can ask
-for labwc instead, with the word `labwc` for `own`, and labwc wins when
-the two disagree; the header of that file has the order. The live image's
-menu has an entry "Sengi OS (labwc compositor)" that adds
-`sengi.compositor=labwc`.
+sengi-compositor is the default. The session (`/usr/bin/sengi-session`) and
+the login screen (`/usr/libexec/sengi-greeter-session`) are started on
+labwc instead when it is asked for, in one of three ways, which
+`/usr/lib/sengi-os/compositor.sh` looks at for both; the header of that
+file has the order:
 
-- The word `sengi.compositor=own` on the kernel command line. The live
-  image's boot menu has an entry "Sengi OS (sengi-compositor preview)"
-  that adds it; the menu is hidden, so press P while the machine starts to
-  pick the entry, or Esc for the menu. On any other entry, an installed
-  system's included, press E and add the word to the `linux` line.
-- A file `/etc/sengi-os/compositor` that says `own`, for every login until
-  it is removed: `sudo mkdir -p /etc/sengi-os && echo own | sudo tee
-  /etc/sengi-os/compositor`, then log out and in.
-- A file `/run/sengi-os.compositor` that says `own`, until the next start.
-  The boot test makes it.
+- The word `sengi.compositor=labwc` on the kernel command line. The live
+  image's boot menu has an entry "Sengi OS (labwc compositor)" that adds
+  it; the menu is hidden, so press L while the machine starts to pick the
+  entry, or Esc for the menu. An installed system's menu has the same
+  entry (Esc shows it). On any other entry press E and add the word to the
+  `linux` line.
+- A file `/etc/sengi-os/compositor` that says `labwc`, for every login
+  until it is removed: `sudo mkdir -p /etc/sengi-os && echo labwc | sudo
+  tee /etc/sengi-os/compositor`, then log out and in.
+- A file `/run/sengi-os.compositor` that says `labwc`, until the next
+  start. The boot test makes it.
+
+The word `sengi.compositor=own` and the content `own` are still accepted,
+and ask for what is the default.
 
 The session then reads the environment file labwc would read (the user's
 `~/.config/labwc/environment`, or else `/etc/xdg/labwc/environment`) for
@@ -609,7 +611,7 @@ and one for each pointing device, read back from libinput:
 Not seen: any of the touchpad settings on a touchpad (a VM has none),
 and a panel really going dark.
 
-Seen, in an earlier image, in a QEMU guest booted from the preview entry (no GPU there,
+Seen, in an earlier image, in a QEMU guest booted from the then preview entry (no GPU there,
 so pixman on dumb buffers, and no LLVM mapped): swaybg, sengi-bar,
 sengi-dock, sengi-focus and swayidle come up; the bar's power icon opens
 the session menu and its network item the quick settings panel; a
@@ -625,14 +627,14 @@ this image, and logging out through the session menu.
 
 ### The boot test
 
-`scripts/boot-test.sh` boots the default entry and expects labwc.
-`SENGI_COMPOSITOR=own scripts/boot-test.sh ISO OUT` hands the guest the
-`/run` file above, under either firmware, and expects sengi-compositor.
-`SENGI_PREVIEW=1` gets there through the boot menu instead: it presses
-the preview entry's hotkey between SeaBIOS handing over and the kernel
-starting (BIOS only). The guest reports which compositor the session
+`scripts/boot-test.sh` boots the default entry and expects
+sengi-compositor. `SENGI_COMPOSITOR=labwc scripts/boot-test.sh ISO OUT`
+hands the guest the `/run` file above, under either firmware, and expects
+labwc. `SENGI_LABWC_ENTRY=1` gets there through the boot menu instead: it
+presses the labwc entry's hotkey, L, between SeaBIOS handing over and the
+kernel starting (BIOS only). The guest reports which compositor the session
 really came up on, and the test fails if that is not the one meant. The
-checks and screenshots are the same as for labwc.
+checks and screenshots are the same for both.
 
 From inside the guest, SIGUSR1 makes the compositor print two lines to the
 journal: `N page flips, N with the cursor on its own plane, N dmabufs
