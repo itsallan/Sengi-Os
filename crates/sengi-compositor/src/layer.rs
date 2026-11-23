@@ -44,7 +44,14 @@ impl WlrLayerShellHandler for State {
     }
 
     fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
-        for output in self.space.outputs() {
+        // Also on outputs that are off: a bar can be destroyed after its
+        // output was switched off.
+        let outputs: Vec<Output> = self
+            .heads()
+            .iter()
+            .map(|head| head.output.clone())
+            .collect();
+        for output in &outputs {
             let mut map = layer_map_for_output(output);
             let layer = map
                 .layers()

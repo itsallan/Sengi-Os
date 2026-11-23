@@ -517,8 +517,16 @@ impl State {
     /// What taking an output off the desktop means: its bars are closed,
     /// the lock and the power switch forget it, clients stop seeing it.
     fn take_off_desktop(&mut self, output: &Output) {
-        for layer in layer_map_for_output(output).layers() {
-            layer.layer_surface().send_close();
+        // The bars are told to close and let go of at once: left in the map
+        // they would take their room again when the output comes back, and
+        // a client that has gone would never be able to take them out.
+        {
+            let mut map = layer_map_for_output(output);
+            let layers: Vec<_> = map.layers().cloned().collect();
+            for layer in layers {
+                layer.layer_surface().send_close();
+                map.unmap_layer(&layer);
+            }
         }
         self.space.unmap_output(output);
         // A card on that output has nowhere to be shown.

@@ -1071,6 +1071,16 @@ fn a_place_at_the_end_of_the_number_range_is_refused_and_nothing_breaks() {
         );
     }
     assert_eq!(app.head("HEADLESS-2").position, (1280, 0));
+    // Two that touch each other but are far off are refused too.
+    let far = 1 << 30;
+    let ops = [
+        Op::keep("HEADLESS-1").at(far, 0),
+        Op::keep("HEADLESS-2").at(far + 1280, 0),
+    ];
+    assert_eq!(
+        app.configure(&manager, None, &ops, true).unwrap(),
+        Outcome::Failed
+    );
     // The pointer still moves.
     compositor.input("move 5 5");
     compositor.input("nudge 10 0");
@@ -1279,14 +1289,14 @@ fn a_switcher_on_an_output_that_is_switched_off_closes_with_it() {
         app.configure(&manager, None, &ops, true).unwrap(),
         Outcome::Succeeded
     );
-    compositor.input("keyup alt");
-    // Back on, the card is not there waiting.
+    // Back on, with Alt still down, the card is not there waiting.
     let ops = [Op::keep("HEADLESS-1"), Op::keep("HEADLESS-2")];
     assert_eq!(
         app.configure(&manager, None, &ops, true).unwrap(),
         Outcome::Succeeded
     );
     assert_eq!(count(&app.capture_named("HEADLESS-2").unwrap(), CARD), 0);
+    compositor.input("keyup alt");
     // And the keys do what they did: the switcher opens again.
     compositor.input("move 100 100");
     compositor.input("keydown alt");
@@ -1294,4 +1304,107 @@ fn a_switcher_on_an_output_that_is_switched_off_closes_with_it() {
     std::thread::sleep(Duration::from_millis(100));
     assert!(count(&app.capture_named("HEADLESS-1").unwrap(), CARD) > 0);
     compositor.input("keyup alt");
+}
+
+#[test]
+fn a_bar_on_an_output_that_is_switched_off_is_closed_and_the_output_comes_back_clean() {
+    let compositor = twice_as_large();
+    let mut shell = compositor.connect();
+    let manager = shell.manager().unwrap();
+    let second = shell.output_named("HEADLESS-2").unwrap();
+    let (surface, bar) = shell.bar_on(Some(&second), 30, RED).unwrap();
+    assert_eq!(shell.seen.more.layer_closed, 0);
+
+    let ops = [Op::keep("HEADLESS-1"), Op::off("HEADLESS-2")];
+    assert_eq!(
+        shell.configure(&manager, None, &ops, true).unwrap(),
+        Outcome::Succeeded
+    );
+    assert!(
+        shell.wait(SOON, |seen| seen.more.layer_closed == 1),
+        "not told to close"
+    );
+    let ops = [Op::keep("HEADLESS-1"), Op::keep("HEADLESS-2")];
+    assert_eq!(
+        shell.configure(&manager, None, &ops, true).unwrap(),
+        Outcome::Succeeded
+    );
+
+    // The closed bar takes no room on the output that is back.
+    let mut app = compositor.connect();
+    app.keyboard().unwrap();
+    compositor.input("move 1500 300");
+    let (_s, _t) = app.window(GREEN).unwrap();
+    assert!(app.wait(SOON, |seen| seen.keyboard_enters == 1));
+    compositor.input("key super+a");
+    assert!(
+        app.wait(SOON, |seen| seen.more.toplevel == Some((640, 360, false))),
+        "told {:?}",
+        app.seen.more.toplevel
+    );
+    // The client lets go of its closed surface, which is nobody's concern.
+    bar.destroy();
+    surface.destroy();
+    shell.roundtrip().unwrap();
+
+    // A new bar maps on the output that came back, and takes its room.
+    let mut newcomer = compositor.connect();
+    let again = newcomer.output_named("HEADLESS-2").unwrap();
+    let (_s2, _b2) = newcomer.bar_on(Some(&again), 30, BLUE).unwrap();
+    assert_eq!(newcomer.seen.more.layer_closed, 0);
+    compositor.input("key super+a");
+    compositor.input("key super+a");
+    assert!(app.wait(SOON, |seen| seen.more.toplevel == Some((640, 330, false))));
+}
+
+#[test]
+fn an_output_switched_off_and_on_under_the_lock_shows_only_the_lock() {
+    let path = scratch("lock-toggle.png");
+    let script = format!("5500 screenshot {}\n", path.display());
+    let compositor = Compositor::start_args(&["--outputs", "1280x720,1280x720"], Some(&script));
+    let mut app = compositor.connect();
+    let manager = app.manager().unwrap();
+    compositor.input("move 1500 300");
+    let (_surface, _toplevel) = app.window(GREEN).unwrap();
+
+    let mut locker = compositor.locker();
+    let lock = locker.lock().unwrap();
+    let first = locker.output_named("HEADLESS-1").unwrap();
+    let _held = locker.lock_surface(&lock, &first, RED).unwrap();
+    assert!(locker.wait(SOON, |seen| seen.locked == 1));
+
+    let off = [Op::keep("HEADLESS-1"), Op::off("HEADLESS-2")];
+    assert_eq!(
+        app.configure(&manager, None, &off, true).unwrap(),
+        Outcome::Succeeded
+    );
+    let on = [Op::keep("HEADLESS-1"), Op::keep("HEADLESS-2")];
+    assert_eq!(
+        app.configure(&manager, None, &on, true).unwrap(),
+        Outcome::Succeeded
+    );
+    // Where the pointer is now: it was put back on an output that was left.
+    let report = compositor.status_line("pointer at");
+    let place = report.split("pointer at ").nth(1).unwrap();
+    let (px, py) = place.split_once(',').unwrap();
+    let px: u32 = px.trim().parse().unwrap();
+    let py: u32 = py.split_whitespace().next().unwrap().parse().unwrap();
+    let (width, height, pixels) = shot(&path);
+    assert_eq!((width, height), (2560, 720));
+    let at = |x: u32, y: u32| pixels[(y * width + x) as usize];
+    let cover = at(1290, 10);
+    assert_ne!(cover, rgb(GREEN));
+    assert_ne!(cover, rgb(DESKTOP));
+    for y in 0..720 {
+        for x in 1280..2560 {
+            // The pointer is drawn over the lock.
+            if (px.saturating_sub(10)..px + 40).contains(&x)
+                && (py.saturating_sub(10)..py + 50).contains(&y)
+            {
+                continue;
+            }
+            assert_eq!(at(x, y), cover, "the session shows at {x},{y}");
+        }
+    }
+    assert_eq!(at(10, 10), rgb(RED));
 }

@@ -102,6 +102,8 @@ pub struct More {
     pub frame_failed: u32,
     /// A layer surface's latest configure: serial, width, height.
     pub layer_configure: Option<(u32, u32, u32)>,
+    /// How many times a layer surface was told to close.
+    pub layer_closed: u32,
 }
 
 /// A picture of the screen as the compositor copied it.
@@ -692,6 +694,8 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for Seen {
         } = event
         {
             seen.more.layer_configure = Some((serial, width, height));
+        } else if let zwlr_layer_surface_v1::Event::Closed = event {
+            seen.more.layer_closed += 1;
         }
     }
 }
