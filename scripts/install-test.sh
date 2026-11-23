@@ -12,6 +12,10 @@
 # second, as a real machine keeps them, so the boot entry the installer
 # makes is the one that is used.
 #
+# Set SENGI_COMPOSITOR=own to run the live system and the installed one on
+# sengi-compositor: every start is handed the file that sengi-session looks
+# for, through a credential, since the installed disk carries no choice.
+#
 # The only disk that is ever written is OUTDIR/disk.qcow2, which this
 # script makes. The ISO is attached read-only.
 #
@@ -58,6 +62,13 @@ if [ -n "${SENGI_UEFI:-}" ]; then
 	fi
 fi
 
+# systemd-tmpfiles makes the file early in the start, from a credential the
+# firmware tables carry. No comma may be in it.
+choice=
+if [ "${SENGI_COMPOSITOR:-}" = own ]; then
+	choice='io.systemd.credential:tmpfiles.extra=f /run/sengi-os.compositor 0644 root root - own'
+fi
+
 now() { date +%s.%N; }
 since() { echo "$(now) $1" | awk '{printf "%.1f", $1 - $2}'; }
 
@@ -87,6 +98,7 @@ start_qemu() {
 		-audiodev none,id=snd -device intel-hda -device hda-output,audiodev=snd \
 		-nic user,model=virtio-net-pci \
 		-smbios type=11,value=io.systemd.credential:sengi.test.install=1 \
+		${choice:+-smbios "type=11,value=$choice"} \
 		-serial file:"$serial" \
 		-monitor stdio <"$out/mon.in" >"$monitor" 2>&1 &
 	qemu=$!
