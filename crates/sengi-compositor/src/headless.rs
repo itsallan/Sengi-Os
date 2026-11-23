@@ -25,7 +25,7 @@ use smithay::{
             Bind, ExportMem, Offscreen,
         },
     },
-    output::Output,
+    output::{Mode as OutputMode, Output},
     reexports::{
         calloop::{
             ping::make_ping,
@@ -39,30 +39,115 @@ use smithay::{
 };
 
 use crate::{
+    outputs::{HeadPlan, OutputSpec},
     png, render,
     script::{self, Action, Step},
-    state::{State, REFRESH_MHZ},
+    state::{State, TestOutput, REFRESH_MHZ},
     Options,
 };
 
 /// The shortest time between two frames, as on a 60 Hz panel.
 const FRAME: Duration = Duration::from_micros(16_667);
 
-struct Headless {
-    renderer: PixmanRenderer,
+/// One screen that does not exist: what it is drawn into.
+struct Screen {
     image: Image<'static, 'static>,
     size: Size<i32, Buffer>,
     damage: OutputDamageTracker,
     output: Output,
+}
+
+struct Headless {
+    renderer: PixmanRenderer,
+    screens: Vec<Screen>,
     /// What is left of the script, soonest step first.
     steps: VecDeque<Step>,
     started: Instant,
     last_frame: Option<Instant>,
     /// A timer is already waiting for the frame interval to pass.
     frame_pending: bool,
+    /// How many screens have been made, for their names.
+    made: u32,
 }
 
 type Shared = Rc<RefCell<Headless>>;
+
+impl Headless {
+    fn screen_for(&mut self, output: &Output) -> Result<Screen, Box<dyn Error>> {
+        let mode = output.current_mode().ok_or("the output has no mode")?;
+        let size = Size::from((mode.size.w, mode.size.h));
+        let image = self.renderer.create_buffer(Fourcc::Xrgb8888, size)?;
+        Ok(Screen {
+            image,
+            size,
+            damage: OutputDamageTracker::from_output(output),
+            output: output.clone(),
+        })
+    }
+}
+
+/// The sizes `--outputs` takes: `1920x1080`, or `1920x1080:panel` for one
+/// that has a list of modes of its own like a real display.
+pub fn parse_outputs(text: &str) -> Result<Vec<(i32, i32, bool)>, String> {
+    let err = |item: &str| {
+        format!("invalid output: {item} (expected WIDTHxHEIGHT or WIDTHxHEIGHT:panel)")
+    };
+    let mut found = Vec::new();
+    for item in text.split(',') {
+        let (size, panel) = match item.split_once(':') {
+            Some((size, "panel")) => (size, true),
+            Some(_) => return Err(err(item)),
+            None => (item, false),
+        };
+        let (w, h) = size.split_once('x').ok_or_else(|| err(item))?;
+        let (w, h): (i32, i32) = (
+            w.parse().map_err(|_| err(item))?,
+            h.parse().map_err(|_| err(item))?,
+        );
+        if !crate::outputs::size_is_sane(w, h) {
+            return Err(err(item));
+        }
+        found.push((w, h, panel));
+    }
+    if found.len() > crate::outputs::MAX_HEADS {
+        return Err("too many outputs".into());
+    }
+    Ok(found)
+}
+
+/// What a screen of `size` offers: a virtual one takes any size; a panel
+/// has a few modes.
+fn spec_for(name: &str, size: (i32, i32), panel: bool, transform: Transform) -> OutputSpec {
+    let mut spec = OutputSpec::virtual_screen(
+        name,
+        if panel { "Panel" } else { "Headless" },
+        size.into(),
+        REFRESH_MHZ,
+        transform,
+    );
+    if panel {
+        let mode = |w: i32, h: i32, refresh: i32| OutputMode {
+            size: (w, h).into(),
+            refresh,
+        };
+        spec.modes = vec![
+            mode(size.0, size.1, REFRESH_MHZ),
+            mode(size.0, size.1, REFRESH_MHZ / 2),
+            mode(
+                (size.0 * 2 / 3).max(1),
+                (size.1 * 2 / 3).max(1),
+                REFRESH_MHZ,
+            ),
+        ];
+        spec.preferred = Some(spec.modes[0]);
+        spec.current = spec.modes[0];
+        spec.any_size = false;
+        spec.physical = (size.0 * 25 / 100, size.1 * 25 / 100);
+        spec.make = "Sengi OS".into();
+        spec.serial = format!("{}-{}", size.0, size.1);
+    }
+    spec
+}
 
 pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
     let steps = steps(&options)?;
@@ -72,29 +157,46 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
     let mut state = State::new(&mut event_loop, display)?;
     state.set_output_scale(f64::from(options.scale_120) / 120.0);
 
-    let (width, height) = options.size;
-    let output = state.add_output(
-        "HEADLESS-1",
-        "Headless",
-        (width, height).into(),
-        REFRESH_MHZ,
-        Transform::Normal,
-    );
-
-    let mut renderer = PixmanRenderer::new()?;
-    let size = Size::from((width, height));
-    let image = renderer.create_buffer(Fourcc::Xrgb8888, size)?;
+    let sizes = if options.outputs.is_empty() {
+        vec![(options.size.0, options.size.1, false)]
+    } else {
+        options.outputs.clone()
+    };
+    let renderer = PixmanRenderer::new()?;
     let first_step = steps.front().map(|step| step.at);
     let backend: Shared = Rc::new(RefCell::new(Headless {
         renderer,
-        image,
-        size,
-        damage: OutputDamageTracker::from_output(&output),
-        output,
+        screens: Vec::new(),
         steps,
         started: Instant::now(),
         last_frame: None,
         frame_pending: false,
+        made: 0,
+    }));
+    for (width, height, panel) in sizes {
+        let name = {
+            let mut backend = backend.borrow_mut();
+            backend.made += 1;
+            format!("HEADLESS-{}", backend.made)
+        };
+        let output = state.add_head(spec_for(&name, (width, height), panel, Transform::Normal));
+        if state.head(&output).is_some_and(|head| head.enabled) {
+            let mut headless = backend.borrow_mut();
+            let screen = headless.screen_for(&output)?;
+            headless.screens.push(screen);
+        }
+    }
+
+    // The sizes, modes and switching on and off the protocol asks for.
+    let changing = backend.clone();
+    state.output_backend = Some(Box::new(move |state, plan| {
+        change_screens(&changing, state, plan)
+    }));
+
+    // Screens plugged in and pulled out by the tests.
+    let plugging = backend.clone();
+    state.test_outputs = Some(Box::new(move |state, request| {
+        plug(&plugging, state, request)
     }));
 
     // A picture for whoever asks: the frame drawn once more, apart from
@@ -102,7 +204,8 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
     let pictured = backend.clone();
     state.capture = Some(Box::new(move |state, output| {
         let mut backend = pictured.borrow_mut();
-        let size = backend.size;
+        let mode = output.current_mode()?;
+        let size = Size::from((mode.size.w, mode.size.h));
         let renderer = &mut backend.renderer;
         let mut damage = OutputDamageTracker::from_output(output);
         let mut image: Image<'static, 'static> =
@@ -259,6 +362,84 @@ fn play(backend: &Shared, state: &mut State) -> TimeoutAction {
     }
 }
 
+/// Puts the screens as `plan` wants them: made, resized or dropped. All
+/// or nothing: the new set is made first and only then replaces the old.
+fn change_screens(backend: &Shared, _state: &mut State, plan: &[HeadPlan]) -> Result<(), String> {
+    let mut backend = backend.borrow_mut();
+    let mut screens = Vec::new();
+    for head in plan.iter().filter(|head| head.enabled) {
+        let size = Size::from((head.mode.size.w, head.mode.size.h));
+        let kept = backend
+            .screens
+            .iter()
+            .position(|screen| screen.output == head.output && screen.size == size);
+        match kept {
+            Some(at) => {
+                let screen = backend.screens.remove(at);
+                screens.push(screen);
+            }
+            None => {
+                let image = backend
+                    .renderer
+                    .create_buffer(Fourcc::Xrgb8888, size)
+                    .map_err(|err| {
+                        format!("cannot make a buffer of {}x{}: {err}", size.w, size.h)
+                    })?;
+                screens.push(Screen {
+                    image,
+                    size,
+                    damage: OutputDamageTracker::from_output(&head.output),
+                    output: head.output.clone(),
+                });
+            }
+        }
+    }
+    backend.screens = screens;
+    Ok(())
+}
+
+/// A test plugs in a screen or pulls one out.
+fn plug(backend: &Shared, state: &mut State, request: TestOutput) -> Result<String, String> {
+    match request {
+        TestOutput::Plug { size, panel, name } => {
+            let name = {
+                let mut backend = backend.borrow_mut();
+                name.unwrap_or_else(|| {
+                    backend.made += 1;
+                    format!("HEADLESS-{}", backend.made)
+                })
+            };
+            if state.heads().iter().any(|head| head.output.name() == name) {
+                return Err(format!("{name} is there already"));
+            }
+            let output = state.add_head(spec_for(&name, size, panel, Transform::Normal));
+            if state.head(&output).is_some_and(|head| head.enabled) {
+                let mut headless = backend.borrow_mut();
+                let screen = headless
+                    .screen_for(&output)
+                    .map_err(|err| err.to_string())?;
+                headless.screens.push(screen);
+            }
+            state.request_redraw();
+            Ok(name)
+        }
+        TestOutput::Unplug { name } => {
+            let output = state
+                .heads()
+                .iter()
+                .map(|head| head.output.clone())
+                .find(|output| output.name() == name)
+                .ok_or_else(|| format!("no output {name}"))?;
+            backend
+                .borrow_mut()
+                .screens
+                .retain(|screen| screen.output != output);
+            state.remove_output(&output);
+            Ok(name)
+        }
+    }
+}
+
 impl Headless {
     /// Draws what changed since the last frame and tells clients about it.
     fn frame(
@@ -268,37 +449,68 @@ impl Headless {
     ) -> Result<(), Box<dyn Error>> {
         state.needs_redraw = false;
         let epoch = state.lock_epoch();
-        let mut target = self.renderer.bind(&mut self.image)?;
-        // The image is reused, so it always holds the previous frame and
-        // only damaged regions are painted.
-        let rendered = render::output(
-            state,
-            &self.output,
-            &mut self.renderer,
-            &mut target,
-            1,
-            &mut self.damage,
-        )?;
-        if let Some(path) = screenshot {
-            save(&mut self.renderer, &target, self.size, path)?;
+        let mut presented = Vec::new();
+        let mut pictures: Vec<(i32, Size<i32, Buffer>, Vec<u8>)> = Vec::new();
+        for screen in &mut self.screens {
+            let mut target = self.renderer.bind(&mut screen.image)?;
+            // The image is reused, so it always holds the previous frame
+            // and only damaged regions are painted.
+            let rendered = render::output(
+                state,
+                &screen.output,
+                &mut self.renderer,
+                &mut target,
+                1,
+                &mut screen.damage,
+            )?;
+            if screenshot.is_some() {
+                let at = state
+                    .space
+                    .output_geometry(&screen.output)
+                    .map_or(0, |geo| geo.loc.x);
+                pictures.push((
+                    at,
+                    screen.size,
+                    read_rgb(&mut self.renderer, &target, screen.size)?,
+                ));
+            }
+            drop(target);
+            presented.push((screen.output.clone(), rendered.states));
         }
-        drop(target);
+        if let Some(path) = screenshot {
+            save_all(&pictures, path)?;
+        }
 
         self.last_frame = Some(Instant::now());
-        render::presented(state, &self.output, &rendered.states, epoch);
+        for (output, states) in presented {
+            render::presented(state, &output, &states, epoch);
+        }
         Ok(())
     }
 }
 
-pub fn save(
-    renderer: &mut PixmanRenderer,
-    target: &PixmanTarget<'_>,
-    size: Size<i32, Buffer>,
+/// Writes the pictures of the screens as one, side by side in the order of
+/// their places on the desktop.
+fn save_all(
+    pictures: &[(i32, Size<i32, Buffer>, Vec<u8>)],
     path: &Path,
 ) -> Result<(), Box<dyn Error>> {
-    let rgb = read_rgb(renderer, target, size)?;
+    let mut order: Vec<&(i32, Size<i32, Buffer>, Vec<u8>)> = pictures.iter().collect();
+    order.sort_by_key(|(at, _, _)| *at);
+    let width: i32 = order.iter().map(|(_, size, _)| size.w).sum();
+    let height = order.iter().map(|(_, size, _)| size.h).max().unwrap_or(0);
+    let mut all = vec![0u8; (width * height * 3) as usize];
+    let mut left = 0;
+    for (_, size, rgb) in order {
+        let row = (size.w * 3) as usize;
+        for (y, pixels) in rgb.chunks_exact(row).enumerate() {
+            let at = (y * width as usize + left as usize) * 3;
+            all[at..at + row].copy_from_slice(pixels);
+        }
+        left += size.w;
+    }
     let mut file = BufWriter::new(png::create(path)?);
-    png::write_rgb(&mut file, size.w as u32, size.h as u32, &rgb)?;
+    png::write_rgb(&mut file, width as u32, height as u32, &all)?;
     crate::say!("wrote {}", path.display());
     Ok(())
 }

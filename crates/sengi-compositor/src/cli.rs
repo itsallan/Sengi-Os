@@ -17,7 +17,12 @@ Usage: sengi-compositor [options]
                         started on a terminal, headless otherwise)
       --size WxH        output size in pixels (default 1280x720)
       --scale FACTOR    how much larger everything is drawn, for dense
-                        screens: 2, or a fraction such as 1.5 (default 1)
+                        screens: 2, or a fraction such as 1.5 (default 1).
+                        Settings can give each screen its own; this is
+                        for the ones it did not
+      --outputs LIST    headless: several screens, WIDTHxHEIGHT separated by
+                        commas, side by side; add :panel to one for a
+                        screen with a list of modes of its own
       --screenshot PNG  save the last frame to PNG on exit (headless, drm);
                         with --backend drm also on every SIGUSR2
       --exit-after SEC  stop after SEC seconds
@@ -66,6 +71,9 @@ pub fn parse_renderer(name: &str) -> Option<Wanted> {
 pub struct Options {
     pub backend: Backend,
     pub size: (i32, i32),
+    /// Headless screens beyond or instead of `size`: width, height, and
+    /// whether the screen has modes of its own.
+    pub outputs: Vec<(i32, i32, bool)>,
     /// The output scale in 120ths, the unit fractional-scale counts in.
     pub scale_120: u32,
     pub startup: Vec<String>,
@@ -102,6 +110,7 @@ impl Default for Options {
         Self {
             backend: Backend::Auto,
             size: (1280, 720),
+            outputs: Vec::new(),
             scale_120: 120,
             startup: Vec::new(),
             session: None,
@@ -151,6 +160,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
                 }
             }
             "--size" => options.size = parse_size(&value()?)?,
+            "--outputs" => options.outputs = crate::headless::parse_outputs(&value()?)?,
             "--scale" => {
                 let text = value()?;
                 options.scale_120 = text
@@ -264,6 +274,7 @@ mod tests {
             Ok(Command::Run(Options {
                 backend: Backend::Headless,
                 size: (1920, 1080),
+                outputs: Vec::new(),
                 scale_120: 120,
                 startup: vec!["foot".into(), "sengi-bar".into()],
                 session: None,
@@ -308,6 +319,17 @@ mod tests {
         assert!(run(&["--renderer", "vulkan"]).is_err());
         assert_eq!(parse_renderer("gles"), Some(Wanted::Gles));
         assert_eq!(parse_renderer("auto"), Some(Wanted::Auto));
+    }
+
+    #[test]
+    fn several_screens_are_named_by_size() {
+        let Ok(Command::Run(options)) = run(&["--outputs", "1280x720,800x600:panel"]) else {
+            panic!("the screens are taken");
+        };
+        assert_eq!(options.outputs, [(1280, 720, false), (800, 600, true)]);
+        assert!(run(&["--outputs", "1280"]).is_err());
+        assert!(run(&["--outputs", "1280x720:other"]).is_err());
+        assert!(run(&["--outputs", "1280x720,0x5"]).is_err());
     }
 
     #[test]

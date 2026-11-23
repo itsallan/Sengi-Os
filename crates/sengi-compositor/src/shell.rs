@@ -386,7 +386,7 @@ impl State {
             // On the screen it asked for, else the first.
             let asked = window::data(&window).fullscreen_on.borrow().clone();
             let origin = asked
-                .or_else(|| self.output())
+                .or_else(|| self.active_output())
                 .and_then(|output| self.space.output_geometry(&output))
                 .map(|screen| (screen.loc.x, screen.loc.y))
                 .unwrap_or_default();
@@ -449,7 +449,13 @@ impl State {
         let Ok(root) = find_popup_root_surface(&kind) else {
             return;
         };
-        let Some(output) = self.output() else { return };
+        // The output the popup's window or layer surface is on.
+        let output = self
+            .window_for_surface(&root)
+            .and_then(|window| self.output_of_window(&window))
+            .or_else(|| self.output_for_layer(&root))
+            .or_else(|| self.active_output());
+        let Some(output) = output else { return };
         let Some(screen) = self.space.output_geometry(&output) else {
             return;
         };
@@ -513,9 +519,9 @@ impl State {
         }
     }
 
-    /// The part of the first output windows may cover.
+    /// The part of the output new windows go to that windows may cover.
     pub fn usable_area(&self) -> Rect {
-        match self.output() {
+        match self.active_output() {
             Some(output) => self.usable_area_of(&output),
             None => Rect::new(0, 0, 0, 0),
         }

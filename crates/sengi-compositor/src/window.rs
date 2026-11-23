@@ -2,6 +2,7 @@
 
 use std::{
     cell::{Cell, RefCell},
+    collections::HashMap,
     rc::Rc,
     time::{Duration, Instant},
 };
@@ -30,7 +31,9 @@ use crate::{
     frame::{self, Edges},
     keys::Edge,
     layout::Rect,
+    outputs::scale_key,
     state::{set_activated, State},
+    text::Font,
 };
 
 /// The width of a frame around a client `width` wide. The client picks that
@@ -103,7 +106,8 @@ pub struct WindowData {
     /// Set while the window fills a screen: the client area to go back
     /// to, once it has had one.
     pub fullscreen: Cell<Option<Option<Rect>>>,
-    pub frame: RefCell<Option<FrameBuffers>>,
+    /// The frame as painted for each scale an output has, by `scale_key`.
+    pub frame: RefCell<HashMap<u32, FrameBuffers>>,
     /// The title last rasterised, the room it had and its pixels, if the
     /// typeface is there.
     pub title: RefCell<TitleCache>,
@@ -545,7 +549,7 @@ impl State {
 
     /// The screen a window fills when it goes fullscreen: the one named,
     /// else the one most of it is on, else the first.
-    fn fullscreen_rect(&self, window: &Window, output: Option<Output>) -> Option<Rect> {
+    pub fn fullscreen_rect(&self, window: &Window, output: Option<Output>) -> Option<Rect> {
         let output = output
             .or_else(|| {
                 let frame = self.frame_rect(window)?;
@@ -555,7 +559,7 @@ impl State {
                 );
                 self.output_at(middle.into())
             })
-            .or_else(|| self.output())?;
+            .or_else(|| self.active_output())?;
         let screen = self.space.output_geometry(&output)?;
         Some(Rect::new(
             screen.loc.x,
@@ -784,29 +788,35 @@ impl State {
         }
     }
 
-    /// The widest title bar that is painted as a texture.
-    fn max_painted_width(&self) -> i32 {
+    /// The widest title bar that is painted as a texture at `scale`: no
+    /// wider than the widest screen drawn at that scale.
+    fn max_painted_width(&self, scale: f64) -> i32 {
         let floor = self.theme.metrics.min_frame_width();
-        self.output()
-            .and_then(|output| output.current_mode())
-            .map(|mode| painted_limit(mode.size.w, self.output_scale, floor))
+        self.space
+            .outputs()
+            .filter(|output| scale_key(self.scale_of(output)) == scale_key(scale))
+            .filter_map(Output::current_mode)
+            .map(|mode| painted_limit(mode.size.w, scale, floor))
+            .max()
             .unwrap_or(FALLBACK_PAINTED_WIDTH)
             .max(floor)
     }
 
     /// The title of `window` as pixels, cut to `room` pixels with an
     /// ellipsis if it does not fit. Rasterised once per title and room.
-    fn title_bitmap(&self, window: &Window, room: usize) -> (String, Option<Rc<TextBitmap>>) {
+    fn title_bitmap(
+        &self,
+        window: &Window,
+        room: usize,
+        font: Option<&Font>,
+    ) -> (String, Option<Rc<TextBitmap>>) {
         let mut cache = data(window).title.borrow_mut();
         let fresh = cache.as_ref().is_some_and(|(text, cached_room, _)| {
             *cached_room == room && with_title(window, |title| title == text)
         });
         if !fresh {
             let text = with_title(window, str::to_string);
-            let bitmap = self
-                .font
-                .as_ref()
-                .map(|font| Rc::new(font.fit(&text, room)));
+            let bitmap = font.map(|font| Rc::new(font.fit(&text, room)));
             *cache = Some((text, room, bitmap));
         }
         cache
@@ -820,10 +830,11 @@ impl State {
     /// The frame is painted at the screen's scale, with the theme scaled to
     /// match, so it is as sharp there as the screen allows. Nothing is
     /// painted or allocated while the look stays the same.
-    pub fn refresh_frame(&self, window: &Window, width: i32, height: i32) {
+    pub fn refresh_frame(&self, window: &Window, width: i32, height: i32, scale: f64) {
         let logical: &Theme = &self.theme;
-        let paint: &Theme = &self.paint_theme;
-        let scale = self.output_scale;
+        let painter = self.painter(scale);
+        let paint: &Theme = &painter.theme;
+        let key = scale_key(scale);
         let to_pixels = |v: i32| (f64::from(v) * scale).round() as i32;
         let border = logical.metrics.border;
         let hovered = match &self.hovered_button {
@@ -834,7 +845,7 @@ impl State {
         // memory the title bar takes: nothing wider than the screen is
         // painted, the remainder is a flat fill.
         let full = frame_span(width, border);
-        let painted = full.min(self.max_painted_width());
+        let painted = full.min(self.max_painted_width(scale));
         let active = self.focus_stack.current() == Some(window);
         let square = data(window).restore.get().is_some();
         let bar = Titlebar {
@@ -863,13 +874,14 @@ impl State {
             - (paint.metrics.padding + paint.metrics.border);
 
         let mut slot = data(window).frame.borrow_mut();
-        let unchanged = slot.as_ref().is_some_and(|buffers| {
+        let unchanged = slot.get(&key).is_some_and(|buffers| {
             buffers.look.0 == bar
                 && buffers.shape == shape
                 && with_title(window, |title| title == buffers.look.1)
         });
         if !unchanged {
-            let (title, text) = self.title_bitmap(window, room.max(0) as usize);
+            let (title, text) =
+                self.title_bitmap(window, room.max(0) as usize, painter.font.as_ref());
             let canvas = decoration::draw_titlebar(paint, &bar, text.as_deref());
             let size = (bar.width.max(1), paint.metrics.titlebar.max(1));
             // The buffer carries the output's scale, rounded. That is what keeps
@@ -911,22 +923,25 @@ impl State {
                     )
                 })
             });
-            *slot = Some(FrameBuffers {
-                look: (bar, title),
-                shape,
-                titlebar,
-                titlebar_size: (painted, logical.metrics.titlebar),
-                rest: SolidColorBuffer::new(rest_size, fill),
-                left: SolidColorBuffer::new((border, side_height), line),
-                right: SolidColorBuffer::new((border, side_height), line),
-                bottom: SolidColorBuffer::new((full, border), line),
-                bottom_corners,
-                bottom_top: height - radius,
-                bottom_corner: corner,
-                bottom_right: (full - corner).max(0),
-            });
+            slot.insert(
+                key,
+                FrameBuffers {
+                    look: (bar, title),
+                    shape,
+                    titlebar,
+                    titlebar_size: (painted, logical.metrics.titlebar),
+                    rest: SolidColorBuffer::new(rest_size, fill),
+                    left: SolidColorBuffer::new((border, side_height), line),
+                    right: SolidColorBuffer::new((border, side_height), line),
+                    bottom: SolidColorBuffer::new((full, border), line),
+                    bottom_corners,
+                    bottom_top: height - radius,
+                    bottom_corner: corner,
+                    bottom_right: (full - corner).max(0),
+                },
+            );
         }
-        if let Some(buffers) = slot.as_mut() {
+        if let Some(buffers) = slot.get_mut(&key) {
             buffers.rest.update(rest_size, fill);
             buffers.left.update((border, side_height), line);
             buffers.right.update((border, side_height), line);

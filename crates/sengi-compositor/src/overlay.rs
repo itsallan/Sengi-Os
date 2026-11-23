@@ -18,6 +18,7 @@ use smithay::{
 use crate::{
     card::{self, Layout, Row, Tile},
     keys::{self, Action},
+    outputs::scale_key,
     render::OutputElement,
     state::State,
     window,
@@ -29,12 +30,15 @@ pub enum Overlay {
     Switcher {
         windows: Vec<Window>,
         selected: usize,
+        /// The output it is shown on: the one the pointer was on.
+        output: Output,
     },
     /// A menu, at the pointer where it was opened (logical, on the desktop).
     Menu {
         kind: MenuKind,
         selected: Option<usize>,
         at: (f64, f64),
+        output: Output,
     },
 }
 
@@ -122,7 +126,10 @@ impl State {
             .into_iter()
             .filter(|window| self.space.element_location(window).is_some())
             .collect();
-        let capacity = self.switcher_capacity();
+        let Some(output) = self.active_output() else {
+            return;
+        };
+        let capacity = self.switcher_capacity(&output);
         windows.truncate(capacity);
         if windows.is_empty() {
             return;
@@ -135,21 +142,23 @@ impl State {
         } else {
             count - 1
         };
-        self.overlay = Some(Overlay::Switcher { windows, selected });
+        self.overlay = Some(Overlay::Switcher {
+            windows,
+            selected,
+            output,
+        });
         self.request_redraw();
     }
 
-    /// How many tiles the switcher can show on the first output, the most
-    /// recent windows first. The rest are not offered.
-    fn switcher_capacity(&self) -> usize {
-        let Some(output) = self.output() else {
+    /// How many tiles the switcher can show on `output`, the most recent
+    /// windows first. The rest are not offered.
+    fn switcher_capacity(&self, output: &Output) -> usize {
+        let Some(geometry) = self.space.output_geometry(output) else {
             return 1;
         };
-        let Some(geometry) = self.space.output_geometry(&output) else {
-            return 1;
-        };
-        let screen_w = (f64::from(geometry.size.w) * self.output_scale).round() as i32;
-        card::switcher_capacity(&self.paint_theme, screen_w)
+        let scale = self.scale_of(output);
+        let screen_w = (f64::from(geometry.size.w) * scale).round() as i32;
+        card::switcher_capacity(&self.painter(scale).theme, screen_w)
     }
 
     /// A window went away: the switcher stops offering it, and a menu for its
@@ -171,7 +180,10 @@ impl State {
 
     /// Moves the switcher's selection on, or back.
     pub fn step_switcher(&mut self, forward: bool) {
-        if let Some(Overlay::Switcher { windows, selected }) = self.overlay.as_mut() {
+        if let Some(Overlay::Switcher {
+            windows, selected, ..
+        }) = self.overlay.as_mut()
+        {
             *selected = keys::cycle(windows.len(), *selected, forward);
             self.request_redraw();
         }
@@ -182,22 +194,39 @@ impl State {
         if !self.may_open_overlay() {
             return;
         }
+        let Some(output) = self.output_at(at.into()) else {
+            return;
+        };
         self.overlay = Some(Overlay::Menu {
             kind,
             selected: None,
             at,
+            output,
         });
         self.request_redraw();
     }
 
     /// The arrow keys in a menu: moves the selection, skipping lines.
     pub fn move_menu(&mut self, step: i32) {
-        let Some(Overlay::Menu { kind, selected, .. }) = self.overlay.as_mut() else {
+        let Some(Overlay::Menu {
+            kind,
+            selected,
+            output,
+            ..
+        }) = self.overlay.as_mut()
+        else {
             return;
         };
         let rows = rows(kind);
         let parts = menu_rows(&rows);
-        let layout = card::menu(&self.paint_theme, self.font.as_ref(), &parts);
+        let painter = self
+            .painters
+            .iter()
+            .find(|painter| {
+                scale_key(painter.scale) == scale_key(output.current_scale().fractional_scale())
+            })
+            .unwrap_or(&self.painters[0]);
+        let layout = card::menu(&painter.theme, painter.font.as_ref(), &parts);
         *selected = layout.step(*selected, step);
         self.request_redraw();
     }
@@ -213,7 +242,9 @@ impl State {
     /// done, and the card closes.
     pub fn activate_overlay(&mut self) {
         match self.overlay.take() {
-            Some(Overlay::Switcher { windows, selected }) => {
+            Some(Overlay::Switcher {
+                windows, selected, ..
+            }) => {
                 if let Some(window) = windows.get(selected).cloned() {
                     if self.space.element_location(&window).is_some() {
                         self.focus_window(&window);
@@ -268,7 +299,7 @@ impl State {
     /// A pointer press while a card is open: an item of a menu is done, a
     /// press anywhere else closes the card, and nothing reaches the windows.
     pub fn overlay_press(&mut self, location: (f64, f64)) {
-        let Some(output) = self.output() else {
+        let Some(output) = self.overlay_output() else {
             self.close_overlay();
             return;
         };
@@ -300,7 +331,7 @@ impl State {
         if !matches!(self.overlay, Some(Overlay::Menu { .. })) {
             return;
         }
-        let Some(output) = self.output() else {
+        let Some(output) = self.overlay_output() else {
             return;
         };
         let hit = self.overlay_part_at(&output, location);
@@ -312,32 +343,43 @@ impl State {
         }
     }
 
+    /// The output the open card is on, if it is still there.
+    fn overlay_output(&self) -> Option<Output> {
+        let output = match self.overlay.as_ref()? {
+            Overlay::Switcher { output, .. } | Overlay::Menu { output, .. } => output,
+        };
+        self.head(output)
+            .is_some_and(|head| head.enabled)
+            .then(|| output.clone())
+    }
+
     /// The part of the open card under a logical point, by index into the
     /// rows or tiles it has.
     fn overlay_part_at(&self, output: &Output, location: (f64, f64)) -> Option<usize> {
         let (layout, (left, top)) = self.card_on(output)?;
         let geometry = self.space.output_geometry(output)?;
-        let scale = self.output_scale;
+        let scale = self.scale_of(output);
         let x = ((location.0 - f64::from(geometry.loc.x)) * scale).round() as i32 - left;
         let y = ((location.1 - f64::from(geometry.loc.y)) * scale).round() as i32 - top;
         layout.part_at(x, y)
     }
 
     /// The open card as it is drawn on `output`, with its top left corner in
-    /// the output's pixels. Only the first output shows it.
+    /// the output's pixels. Only the output it was opened on shows it.
     fn card_on(&self, output: &Output) -> Option<(Layout, (i32, i32))> {
         if self.is_locked() || self.login_screen {
             return None;
         }
-        if self.output().as_ref() != Some(output) {
+        if self.overlay_output().as_ref() != Some(output) {
             return None;
         }
         let geometry = self.space.output_geometry(output)?;
-        let scale = self.output_scale;
+        let scale = self.scale_of(output);
         let screen_w = (f64::from(geometry.size.w) * scale).round() as i32;
         let screen_h = (f64::from(geometry.size.h) * scale).round() as i32;
-        let theme = &self.paint_theme;
-        let font = self.font.as_ref();
+        let painter = self.painter(scale);
+        let theme = &painter.theme;
+        let font = painter.font.as_ref();
         match self.overlay.as_ref()? {
             Overlay::Switcher { windows, .. } => {
                 let titles: Vec<(String, char)> = windows
@@ -384,9 +426,9 @@ impl State {
             Overlay::Switcher { selected, .. } => Some(*selected),
             Overlay::Menu { selected, .. } => *selected,
         };
-        let theme = &self.paint_theme;
+        let scale = self.scale_of(output);
+        let theme = &self.painter(scale).theme;
         let canvas = layout.draw(theme, selected);
-        let scale = self.output_scale;
         let buffer_scale = scale.round().max(1.0) as i32;
         let (w, h) = (canvas.width() as i32, canvas.height() as i32);
         let buffer = MemoryRenderBuffer::from_slice(

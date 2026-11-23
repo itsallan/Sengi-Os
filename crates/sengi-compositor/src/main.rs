@@ -26,7 +26,10 @@ mod layout;
 mod lock;
 #[macro_use]
 mod log;
+mod output_management;
 mod output_power;
+mod output_store;
+mod outputs;
 mod overlay;
 mod png;
 mod render;

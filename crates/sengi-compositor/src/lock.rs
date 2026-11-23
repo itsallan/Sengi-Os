@@ -376,6 +376,27 @@ impl State {
             .map(|(_, surface)| surface.wl_surface().clone())
     }
 
+    /// The output a lock screen is on.
+    pub fn lock_output_of(&self, surface: &WlSurface) -> Option<Output> {
+        self.lock
+            .as_ref()?
+            .surfaces
+            .iter()
+            .find(|(_, lock_surface)| lock_surface.wl_surface() == surface)
+            .map(|(output, _)| output.clone())
+    }
+
+    /// Every lock screen with the output it is on.
+    pub fn lock_surfaces_by_output(&self) -> Vec<(Output, WlSurface)> {
+        self.lock.as_ref().map_or_else(Vec::new, |lock| {
+            lock.surfaces
+                .iter()
+                .filter(|(_, surface)| surface.alive())
+                .map(|(output, surface)| (output.clone(), surface.wl_surface().clone()))
+                .collect()
+        })
+    }
+
     /// Every lock screen there is.
     pub fn lock_surfaces(&self) -> Vec<WlSurface> {
         self.lock.as_ref().map_or_else(Vec::new, |lock| {

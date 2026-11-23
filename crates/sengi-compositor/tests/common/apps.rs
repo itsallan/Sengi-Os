@@ -310,11 +310,17 @@ impl Client {
     /// A picture of the first output, with the pointer in it if `overlay`
     /// is not zero.
     pub fn capture_with(&mut self, overlay: i32) -> Result<Picture, Failure> {
-        let manager: ZwlrScreencopyManagerV1 = self.globals.bind(&self.handle, 1..=1, ())?;
         let output = self.outputs().remove(0);
+        self.capture_of(&output, overlay)
+    }
+
+    /// A picture of `output`, with the pointer in it if `overlay` is not
+    /// zero.
+    pub fn capture_of(&mut self, output: &WlOutput, overlay: i32) -> Result<Picture, Failure> {
+        let manager: ZwlrScreencopyManagerV1 = self.globals.bind(&self.handle, 1..=1, ())?;
         self.seen.more.frame_buffer = None;
         let (ready, failed) = (self.seen.more.frame_ready, self.seen.more.frame_failed);
-        let frame = manager.capture_output(overlay, &output, &self.handle, ());
+        let frame = manager.capture_output(overlay, output, &self.handle, ());
         self.wait(SOON, |seen| {
             seen.more.frame_buffer.is_some() || seen.more.frame_failed > failed
         });
@@ -360,11 +366,21 @@ impl Client {
         height: u32,
         argb: u32,
     ) -> Result<(WlSurface, ZwlrLayerSurfaceV1), Failure> {
+        self.bar_on(None, height, argb)
+    }
+
+    /// A bar on `output`, or on the one the compositor picks.
+    pub fn bar_on(
+        &mut self,
+        output: Option<&WlOutput>,
+        height: u32,
+        argb: u32,
+    ) -> Result<(WlSurface, ZwlrLayerSurfaceV1), Failure> {
         let shell: ZwlrLayerShellV1 = self.globals.bind(&self.handle, 1..=4, ())?;
         let surface = self.compositor.create_surface(&self.handle, ());
         let bar = shell.get_layer_surface(
             &surface,
-            None,
+            output,
             Layer::Top,
             "test bar".into(),
             &self.handle,

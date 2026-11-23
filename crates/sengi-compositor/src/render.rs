@@ -33,7 +33,7 @@ use smithay::{
     },
 };
 
-use crate::{state::State, window};
+use crate::{outputs::scale_key, state::State, window};
 
 render_elements! {
     pub OutputElement<R> where R: ImportAll + ImportMem;
@@ -204,7 +204,7 @@ fn cursor<R>(
         CursorImageStatus::Named(icon) => {
             // The sprite is in the screen's pixels already, so its hotspot
             // is taken off in those too.
-            let sprite = state.cursors.get(icon);
+            let sprite = state.painter(scale.x).cursors.get(icon);
             let hotspot = Point::<i32, Physical>::from((sprite.hotspot.0, sprite.hotspot.1));
             let element = MemoryRenderBufferRenderElement::from_buffer(
                 renderer,
@@ -259,9 +259,9 @@ fn frame<R>(
         return;
     }
     let size = window.geometry().size;
-    state.refresh_frame(window, size.w, size.h);
+    state.refresh_frame(window, size.w, size.h, scale.x);
     let slot = data.frame.borrow();
-    let Some(buffers) = slot.as_ref() else {
+    let Some(buffers) = slot.get(&scale_key(scale.x)) else {
         return;
     };
 
@@ -325,9 +325,9 @@ fn frame_corners<R>(
         return;
     }
     let size = window.geometry().size;
-    state.refresh_frame(window, size.w, size.h);
+    state.refresh_frame(window, size.w, size.h, scale.x);
     let slot = data.frame.borrow();
-    let Some(buffers) = slot.as_ref() else {
+    let Some(buffers) = slot.get(&scale_key(scale.x)) else {
         return;
     };
     let Some(corners) = buffers.bottom_corners.as_ref() else {

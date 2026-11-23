@@ -121,7 +121,7 @@ impl XdgActivationHandler for State {
 
 impl FractionalScaleHandler for State {
     fn new_fractional_scale(&mut self, surface: WlSurface) {
-        let scale = self.output_scale;
+        let scale = self.preferred_scale_of(&surface);
         with_states(&surface, |states| {
             with_fractional_scale(states, |fractional| fractional.set_preferred_scale(scale));
         });

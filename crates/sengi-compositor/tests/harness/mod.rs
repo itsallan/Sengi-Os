@@ -235,6 +235,35 @@ impl Compositor {
         log.iter().rev().find(|line| line.contains(what)).cloned()
     }
 
+    /// Sends a line to the control socket and returns the answer.
+    pub fn control(&self, line: &str) -> String {
+        use std::io::{Read, Write};
+        let path = format!("{}.control", self.socket.display());
+        let mut stream = UnixStream::connect(path).expect("the control socket");
+        stream
+            .set_read_timeout(Some(SOON))
+            .expect("a timeout on the control socket");
+        stream.write_all(line.as_bytes()).expect("the request");
+        let mut answer = String::new();
+        let _ = stream.read_to_string(&mut answer);
+        answer.trim().to_string()
+    }
+
+    /// Plugs in a screen of `size` (`WxH`, `WxH panel`, `WxH NAME`), and
+    /// returns its name.
+    pub fn plug(&self, what: &str) -> String {
+        let answer = self.control(&format!("plug {what}"));
+        answer
+            .strip_prefix("ok ")
+            .unwrap_or_else(|| panic!("plugging {what}: {answer}"))
+            .to_string()
+    }
+
+    pub fn unplug(&self, name: &str) {
+        let answer = self.control(&format!("unplug {name}"));
+        assert!(answer.starts_with("ok"), "unplugging {name}: {answer}");
+    }
+
     /// The compositor's process id.
     pub fn pid(&self) -> u32 {
         self.child.id()

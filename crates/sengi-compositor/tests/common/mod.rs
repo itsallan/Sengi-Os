@@ -70,6 +70,7 @@ use wayland_protocols_wlr::output_power_management::v1::client::{
 };
 
 pub mod apps;
+pub mod heads;
 
 pub const LOCK_MANAGER: &str = "ext_session_lock_manager_v1";
 
@@ -98,6 +99,7 @@ pub struct Seen {
     /// The serial of the latest keyboard focus.
     pub enter_serial: Option<u32>,
     pub more: apps::More,
+    pub heads: heads::HeadsSeen,
 }
 
 pub struct Client {

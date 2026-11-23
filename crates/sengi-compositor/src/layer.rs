@@ -31,7 +31,8 @@ impl WlrLayerShellHandler for State {
         let output = wl_output
             .as_ref()
             .and_then(Output::from_resource)
-            .or_else(|| self.output());
+            .filter(|output| self.head(output).is_some_and(|head| head.enabled))
+            .or_else(|| self.active_output());
         let Some(output) = output else {
             surface.send_close();
             return;

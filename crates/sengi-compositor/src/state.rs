@@ -35,7 +35,7 @@ use smithay::{
         pointer::{CursorIcon, CursorImageStatus},
         Seat, SeatHandler, SeatState,
     },
-    output::{Mode as OutputMode, Output, PhysicalProperties, Scale as OutputScale, Subpixel},
+    output::{Output, PhysicalProperties, Subpixel},
     reexports::{
         calloop::{
             generic::Generic,
@@ -49,14 +49,13 @@ use smithay::{
             ext_idle_notifier_v1::ExtIdleNotifierV1,
         },
         wayland_server::{
-            backend::GlobalId,
             backend::{ClientData, ClientId, DisconnectReason},
             delegate_dispatch,
             protocol::{wl_buffer::WlBuffer, wl_surface::WlSurface},
             Client, DataInit, Display, DisplayHandle, GlobalDispatch, New, Resource,
         },
     },
-    utils::{Logical, Physical, Point, Size, Transform, SERIAL_COUNTER},
+    utils::{Logical, Point, SERIAL_COUNTER},
     wayland::{
         buffer::BufferHandler,
         compositor::{CompositorClientState, CompositorState},
@@ -91,18 +90,19 @@ use smithay::{
 
 use crate::{
     config::Config,
-    cursor::{resize_cursor, Cursors},
+    cursor::resize_cursor,
     decoration::Theme,
     foreign_toplevel::ForeignToplevelState,
     frame::Button,
     input::Drag,
     keys::{self, Swallowed},
-    layout::{self, FocusStack, Rect},
+    layout::{FocusStack, Rect},
     lock::Lock,
+    output_management::OutputManagementState,
     output_power::OutputPowerState,
-    render, security,
-    text::Font,
-    window, x11,
+    output_store::StoredLayout,
+    outputs::{Head, HeadPlan, Painter},
+    render, security, window, x11,
 };
 
 /// Environment variable through which started programs learn our pid.
@@ -125,6 +125,22 @@ pub const MAX_LOCK_ASKERS: usize = 32;
 pub type ConfigureInputs = Box<dyn FnMut(&Config)>;
 /// Says what each pointing device is set to.
 pub type DescribeInputs = Box<dyn Fn() -> Vec<String>>;
+/// Changes what a backend has to for a new arrangement of the outputs, or
+/// says why it cannot.
+pub type OutputBackend = Box<dyn FnMut(&mut State, &[HeadPlan]) -> Result<(), String>>;
+/// A screen is plugged in (with its size) or pulled out (by its name).
+pub type TestOutputs = Box<dyn FnMut(&mut State, TestOutput) -> Result<String, String>>;
+
+pub enum TestOutput {
+    Plug {
+        size: (i32, i32),
+        panel: bool,
+        name: Option<String>,
+    },
+    Unplug {
+        name: String,
+    },
+}
 
 pub struct State {
     pub start_time: Instant,
@@ -231,8 +247,6 @@ pub struct State {
     pub relock_armed: bool,
     pub tokens: Tokens,
     pub theme: Theme,
-    /// The title bar typeface, if it is installed.
-    pub font: Option<Font>,
     /// Set when the backend gave up, so the process exits non-zero.
     pub failed: bool,
 
@@ -262,9 +276,8 @@ pub struct State {
     pub overlay: Option<crate::overlay::Overlay>,
     /// Programs we started and still have to collect when they exit.
     children: Vec<Child>,
-    pub cursors: Cursors,
-    /// The theme at the screen's own scale: what frames are painted with.
-    pub paint_theme: Theme,
+    /// What is painted with, for each scale an output is drawn at.
+    pub painters: Vec<Painter>,
     /// Whether the pointer is drawn in the picture a screen copy takes,
     /// which a client asks for with overlay_cursor.
     pub draw_cursor: bool,
@@ -296,8 +309,20 @@ pub struct State {
     pub data_device_state: DataDeviceState,
     // Held so the xdg-output global stays alive.
     _output_manager_state: OutputManagerState,
-    /// What announces each output to clients, to take back when it goes.
-    output_globals: Vec<(Output, GlobalId)>,
+    /// Every screen there is, switched on or not. See `outputs.rs`.
+    pub heads: Vec<Head>,
+    /// An output's scale changed, so surfaces are told theirs again.
+    pub scales_dirty: bool,
+    /// Changes what a backend has to change when outputs are rearranged:
+    /// modes, switching on and off. None where it cannot.
+    pub output_backend: Option<OutputBackend>,
+    pub output_management: OutputManagementState,
+    /// The layout kept between sessions.
+    pub stored_layout: StoredLayout,
+    /// The timer that saves it, while a change waits to be saved.
+    pub output_save: Option<RegistrationToken>,
+    /// Plugs and unplugs screens on the headless backend, for tests.
+    pub test_outputs: Option<TestOutputs>,
 
     pub seat: Seat<Self>,
 }
@@ -430,19 +455,18 @@ impl State {
 
         let tokens = Tokens::builtin();
         let theme = Theme::from_tokens(&tokens);
-        let font = Font::load(&theme.font_family, theme.font_weight, theme.font_px);
-        if font.is_none() {
+        if crate::text::Font::load(&theme.font_family, theme.font_weight, theme.font_px).is_none() {
             crate::say!(
                 "{} is not installed, title bars will have no text",
                 theme.font_family
             );
         }
 
-        let cursors = Cursors::new(&theme, 1.0);
-        let paint_theme = theme.clone();
         let dh2 = dh.clone();
+        let output_management = OutputManagementState::new(&dh);
+        let stored_layout = StoredLayout::load();
 
-        Ok(Self {
+        let mut state = Self {
             start_time: Instant::now(),
             socket_name,
             display_handle: dh,
@@ -499,7 +523,6 @@ impl State {
             relock_armed: false,
             tokens,
             theme,
-            font,
             failed: false,
             space: Space::default(),
             popups: PopupManager::default(),
@@ -514,8 +537,7 @@ impl State {
             swallowed_keys: Swallowed::default(),
             overlay: None,
             children: Vec::new(),
-            cursors,
-            paint_theme,
+            painters: Vec::new(),
             draw_cursor: true,
             client_cursor: CursorImageStatus::default_named(),
             frame_cursor: None,
@@ -536,9 +558,17 @@ impl State {
             seat_state,
             data_device_state,
             _output_manager_state: output_manager_state,
-            output_globals: Vec::new(),
+            heads: Vec::new(),
+            scales_dirty: false,
+            output_backend: None,
+            output_management,
+            stored_layout,
+            output_save: None,
+            test_outputs: None,
             seat,
-        })
+        };
+        state.refresh_painters();
+        Ok(state)
     }
 
     /// Runs until a backend stops the loop.
@@ -549,6 +579,7 @@ impl State {
             state.sync_pointer_focus();
             state.refresh_foreign_toplevels();
             state.refresh_idle_inhibit();
+            state.update_preferred_scales();
             state.reap_children();
             state.watch_locker();
             let _ = state.display_handle.flush_clients();
@@ -651,96 +682,14 @@ impl State {
             .or_else(|| self.output())
     }
 
-    /// Announces an output of `size` pixels to clients and puts it to the
-    /// right of the ones already there.
-    pub fn add_output(
-        &mut self,
-        name: &str,
-        model: &str,
-        size: Size<i32, Physical>,
-        refresh_mhz: i32,
-        transform: Transform,
-    ) -> Output {
-        let output = Output::new(
-            name.into(),
-            PhysicalProperties {
-                size: (0, 0).into(),
-                subpixel: Subpixel::Unknown,
-                make: "Sengi OS".into(),
-                model: model.into(),
-            },
-        );
-        let global = output.create_global::<Self>(&self.display_handle);
-        self.output_globals.push((output.clone(), global));
-        let x = layout::next_output_x(&self.output_rects());
-        let mode = OutputMode {
-            size,
-            refresh: refresh_mhz,
-        };
-        // A whole number is announced to clients as it is; anything else
-        // they hear as the next whole number up, unless they ask for the
-        // fraction.
-        let scale = if self.output_scale.fract() == 0.0 {
-            OutputScale::Integer(self.output_scale as i32)
-        } else {
-            OutputScale::Fractional(self.output_scale)
-        };
-        output.change_current_state(
-            Some(mode),
-            Some(transform),
-            Some(scale),
-            Some((x, 0).into()),
-        );
-        output.set_preferred(mode);
-        self.space.map_output(&output, (x, 0));
-        output
-    }
-
-    /// Takes an output that was unplugged off the desktop. Its bars are
-    /// closed and its windows move to a screen that is still there.
-    #[cfg_attr(not(feature = "drm"), allow(dead_code))]
-    pub fn remove_output(&mut self, output: &Output) {
-        for layer in layer_map_for_output(output).layers() {
-            layer.layer_surface().send_close();
-        }
-        self.space.unmap_output(output);
-        self.lock_output_removed(output);
-        self.forget_output_power(output);
-        self.configure_lock_surfaces();
-        if let Some(at) = self.output_globals.iter().position(|(o, _)| o == output) {
-            let (_, global) = self.output_globals.remove(at);
-            self.display_handle.remove_global::<Self>(global);
-        }
-
-        let remaining = self.output_rects();
-        let usable = self.usable_area();
-        let windows: Vec<Window> = self.space.elements().cloned().collect();
-        for window in windows {
-            let Some(frame) = self.frame_rect(&window) else {
-                continue;
-            };
-            if let Some((x, y)) = layout::rehome(frame, &remaining, usable) {
-                self.move_frame_to(&window, x, y);
-            }
-        }
-        self.usable_area_changed();
-
-        // The pointer may have been on the screen that went.
-        let pointer = self.seat.get_pointer().expect("seat has a pointer");
-        let at = pointer.current_location();
-        let (x, y) = layout::clamp_to_outputs(&remaining, at.x, at.y);
-        if (x, y) != (at.x, at.y) && !pointer.is_grabbed() {
-            let time = self.start_time.elapsed().as_millis() as u32;
-            self.place_pointer((x, y).into(), time);
-        }
-        self.update_keyboard_focus();
-        self.request_redraw();
-    }
-
     /// Applies a new size to `output`, for backends whose window can resize.
     #[cfg(feature = "winit")]
-    pub fn resize_output(&mut self, output: &Output, size: Size<i32, Physical>) {
-        let mode = OutputMode {
+    pub fn resize_output(
+        &mut self,
+        output: &Output,
+        size: smithay::utils::Size<i32, smithay::utils::Physical>,
+    ) {
+        let mode = smithay::output::Mode {
             size,
             refresh: REFRESH_MHZ,
         };
@@ -748,7 +697,9 @@ impl State {
         output.set_preferred(mode);
         layer_map_for_output(output).arrange();
         self.configure_lock_surfaces();
+        self.refit_fullscreen();
         self.usable_area_changed();
+        self.output_management_changed();
         self.request_redraw();
     }
 
@@ -877,12 +828,19 @@ impl State {
             .loop_handle
             .insert_source(source, move |_, stream, state| {
                 state.control_waiting.retain(|(waiting, _)| *waiting != id);
-                let mut word = [0u8; 16];
+                let mut word = [0u8; 96];
                 let mut from: &UnixStream = stream;
                 let read = from.read(&mut word).unwrap_or(0);
-                if word[..read].trim_ascii() == b"lock" {
+                let line = word[..read].trim_ascii();
+                if line == b"lock" {
                     if let Ok(asker) = stream.try_clone() {
                         state.lock_requested(asker);
+                    }
+                } else if cfg!(feature = "test-hooks") {
+                    // Plugs and unplugs screens for the tests.
+                    if let Ok(mut asker) = stream.try_clone() {
+                        let answer = state.test_output_request(&String::from_utf8_lossy(line));
+                        let _ = std::io::Write::write_all(&mut asker, answer.as_bytes());
                     }
                 }
                 Ok(PostAction::Remove)
@@ -1105,19 +1063,14 @@ impl State {
         }
     }
 
-    /// Sets the scale every output is drawn at. Frames, title text and the
-    /// cursor are then painted in the screen's own pixels.
+    /// Sets the scale that outputs with no scale of their own are drawn
+    /// at. Frames, title text and the cursor are then painted in the
+    /// screen's own pixels.
     pub fn set_output_scale(&mut self, scale: f64) {
         self.output_scale = scale;
-        self.paint_theme = self.theme.scaled(scale);
-        self.font = Font::load(
-            &self.paint_theme.font_family,
-            self.paint_theme.font_weight,
-            self.paint_theme.font_px,
-        );
         // No redraw here: this runs before any output exists, and a frame
         // drawn then would show nothing. The backends ask once they have one.
-        self.cursors = Cursors::new(&self.paint_theme, scale);
+        self.refresh_painters();
     }
 
     /// Reads the settings again and acts on what changed: SIGHUP.
@@ -1147,6 +1100,7 @@ impl State {
         }
         self.config = config;
         crate::say!("settings read again");
+        self.reload_output_layout();
     }
 
     /// Tells idle watchers such as swayidle that the user did something,
