@@ -908,6 +908,16 @@ impl State {
                 }
                 return "ok\n".into();
             }
+            // How many clients are counted as having set up security contexts.
+            Some("contexts") => return format!("ok {}\n", self.security_contexts.len()),
+            // Minimises every window on the desktop, as the dock would.
+            Some("minimise") => {
+                let windows: Vec<Window> = self.space.elements().cloned().collect();
+                for window in &windows {
+                    self.set_minimised(window, true);
+                }
+                return format!("ok {}\n", windows.len());
+            }
             Some("plug") => {
                 let size = words.next().and_then(|text| {
                     let (w, h) = text.split_once('x')?;

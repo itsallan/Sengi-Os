@@ -1,7 +1,7 @@
 [package]
 name = "sengi-compositor"
 description = "Wayland compositor for Sengi OS"
-version = "0.0.1"
+version = "0.8.0"
 edition = "2021"
 publish = false
 

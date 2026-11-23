@@ -5,10 +5,12 @@
 #   boot-test.sh ISO [OUTDIR]
 #
 # Set SENGI_UEFI to an OVMF firmware image to boot through UEFI instead of BIOS.
-# Set SENGI_COMPOSITOR=own to run the session on sengi-compositor: the guest
-# is handed the file that sengi-session looks for, under either firmware.
-# Set SENGI_PREVIEW=1 to get there through the boot menu's preview entry
-# instead, the way a person does (BIOS only).
+# The default entry is run, and the session is expected on sengi-compositor,
+# the default compositor.
+# Set SENGI_COMPOSITOR=labwc to run the session on labwc: the guest is handed
+# the file that sengi-session looks for, under either firmware.
+# Set SENGI_LABWC_ENTRY=1 to get to labwc through the boot menu's labwc
+# entry (hotkey L) instead, the way a person does (BIOS only).
 #
 # The ISO is attached as a disk, the way a flashed USB stick shows up. The
 # guest reports through its serial port (see sengi-boot-report). Boot time is
@@ -38,7 +40,7 @@ if [ -w /dev/kvm ]; then accel=kvm cpu=host; fi
 
 now() { date +%s.%N; }
 
-# The preview entry is reached the way a person reaches it: by its hotkey in
+# The labwc entry is reached the way a person reaches it: by its hotkey in
 # the hidden boot menu. GRUB looks for a key once, and a key pressed before
 # GRUB runs does not count, so the firmware's own log is watched and the key
 # is pressed many times a second from the moment SeaBIOS hands over to the
@@ -46,22 +48,29 @@ now() { date +%s.%N; }
 # end up without one; the kernel is known to have started when the CPU is in
 # long mode. The guest says which compositor it was asked for, and that is
 # checked at the end. None of this has a counterpart under UEFI yet.
-preview=${SENGI_PREVIEW:-0}
-want=labwc
+preview=${SENGI_LABWC_ENTRY:-0}
+want=sengi-compositor
 handover=
 # systemd-tmpfiles makes the file early in the start, from a credential
 # the firmware tables carry. No comma may be in it.
 choice=
-if [ "${SENGI_COMPOSITOR:-}" = own ]; then
-	want=sengi-compositor
-	choice='io.systemd.credential:tmpfiles.extra=f /run/sengi-os.compositor 0644 root root - own'
-fi
+case "${SENGI_COMPOSITOR:-}" in
+'' | own) ;;
+labwc)
+	want=labwc
+	choice='io.systemd.credential:tmpfiles.extra=f /run/sengi-os.compositor 0644 root root - labwc'
+	;;
+*)
+	echo "SENGI_COMPOSITOR is own or labwc" >&2
+	exit 2
+	;;
+esac
 if [ "$preview" = 1 ]; then
 	if [ -n "${SENGI_UEFI:-}" ]; then
-		echo "the preview entry can only be picked under BIOS so far" >&2
+		echo "the labwc entry can only be picked under BIOS so far" >&2
 		exit 2
 	fi
-	want=sengi-compositor
+	want=labwc
 	handover='Booting from 0000:7c00'
 	: >"$out/firmware.log"
 fi
@@ -122,7 +131,7 @@ if [ "$preview" = 1 ]; then
 	done
 	i=0
 	while [ $i -lt 300 ]; do
-		echo "sendkey p" >&3
+		echo "sendkey l" >&3
 		echo "info registers" >&3
 		sleep 0.03
 		# EFER is zero in GRUB and never again once the kernel runs.
@@ -629,11 +638,11 @@ if [ -n "$greeter_fail" ]; then
 	echo "FAIL: $greeter_fail" >&2
 	fail=1
 fi
-if [ "$ram_mb" -ge "$budget_ram_mb" ]; then
+if [ "${ram_mb:-9999}" -ge "$budget_ram_mb" ]; then
 	echo "FAIL: idle RAM ${ram_mb} MB is over the ${budget_ram_mb} MB budget" >&2
 	fail=1
 fi
-if [ "$(echo "$boot_s $budget_boot_s" | awk '{print ($1 >= $2)}')" = 1 ]; then
+if [ "$(echo "${boot_s:-9999} $budget_boot_s" | awk '{print ($1 >= $2)}')" = 1 ]; then
 	echo "FAIL: boot took ${boot_s} s, budget is ${budget_boot_s} s" >&2
 	fail=1
 fi

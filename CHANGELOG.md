@@ -3,6 +3,82 @@
 All notable changes to Sengi OS. Each release section lists what is in its ISO
 and the measured idle RAM and boot time.
 
+## 0.8.0
+
+Our own compositor: sengi-compositor is now what Sengi OS runs. labwc stays
+in the image as the way back.
+
+### Added
+
+- sengi-compositor runs the whole session: xdg windows with our title bar,
+  frame and rounded corners, an Alt+Tab switcher, the desktop and window
+  menus, edge snapping, fullscreen, several screens with their own scale,
+  mode and place (Settings' Display page speaks to it), screen capture,
+  primary selection, activation, fractional scale, pointer constraints and
+  the lock screen and login screen. It starts Xwayland with the session, so
+  X11 programs run.
+- A way back to labwc. The live image's boot menu has an entry "Sengi OS
+  (labwc compositor)", which L picks directly while the machine starts,
+  and the installed system's menu has the same entry beside the text
+  mode one. The word `sengi.compositor=labwc` on the kernel command line,
+  or `labwc` in /etc/sengi-os/compositor or /run/sengi-os.compositor, does
+  the same on any system.
+- The session falls back to labwc if sengi-compositor does not come up. It
+  writes a ready file once a screen is lit and the session program runs;
+  if that file is not there in 15 seconds the compositor is ended, and one
+  that exits with an error within ten seconds is replaced too, the login
+  screen as well as the session. After any error exit the rest of that boot
+  uses labwc, provided /run/sengi-os exists and can be written, which the
+  image sees to.
+- If drawing keeps failing, 20 frames in a row, the compositor switches to
+  drawing on the CPU, and if that fails it exits with an error, which the
+  fallback above then covers.
+- scripts/test-compositor-sh.sh tests the choice of compositor and the
+  fallbacks; CI runs it.
+
+### Changed
+
+- sengi-compositor is the default compositor, for the login screen and
+  the session, on the live image and on an installed system. Nothing has
+  to be asked for. The "sengi-compositor preview" boot entry is gone, as
+  it is the default entry now. The boot test and the install tests run on
+  it, and CI keeps one boot test and one install test on labwc.
+- The start-up programs (bar, dock, wallpaper, idle timer) no longer wait
+  for Xwayland, which cost up to five seconds when it was slow. The display
+  is chosen first and every program gets it at once; an X11 program that
+  starts early waits on the socket.
+- sengi-compositor ends with an error when the program it runs fails, where
+  it used to end as if all were well.
+- A window that is minimised or on no screen no longer keeps the screen on
+  and the lock from coming. Programs in a sandbox are not offered the
+  idle-inhibit protocol, so a Flatpak app cannot turn the auto-lock off.
+- The boot test fails if the idle RAM or the boot time is missing from its
+  report; before it passed.
+
+### Known limits
+
+- sengi-compositor has been run in QEMU only. It has not been run on real
+  hardware yet, and the display paths (modes, hotplug, suspend and resume,
+  the lid) are unverified on a real machine.
+- No brightness or Fn keys and no lid handling: a closed lid with an
+  external monitor keeps the laptop panel in the layout.
+- No clipboard between X11 and Wayland programs, no text-input, and no
+  touch or tablet support.
+- Scales 2 and 1.5 have not been looked at on the image.
+- The fall back from a GPU that cannot draw has not been run with a broken
+  GPU.
+
+### Try it
+
+If the desktop does not come up, or its graphics do not work, labwc is the
+way back. On the live image pick "Sengi OS (labwc compositor)" in the boot
+menu (hold Shift or press Esc for the menu, or press L as the machine
+starts). On an installed system pick "Sengi OS (labwc compositor)" in the
+menu, which Esc shows; or press E on the first entry in GRUB and add
+`sengi.compositor=labwc` to the `linux` line; or start the text mode entry,
+log in, and write `labwc` into /etc/sengi-os/compositor to make it stay.
+If sengi-compositor fails to start, the session starts labwc by itself.
+
 ## 0.7.0
 
 An installer: Sengi OS can be put on a computer's disk.

@@ -30,6 +30,43 @@ fn it_ends_when_its_program_does() {
 }
 
 #[test]
+fn it_ends_with_an_error_when_its_program_fails() {
+    let mut compositor = Compositor::start_login_screen(Some("exit 3"), None, &[]);
+    let status = compositor.exit_status().expect("it did not end");
+    assert!(
+        !status.success(),
+        "a failing session ended the compositor with success"
+    );
+}
+
+#[test]
+fn it_ends_with_success_when_its_program_succeeds() {
+    let mut compositor = Compositor::start_login_screen(Some("exit 0"), None, &[]);
+    let status = compositor.exit_status().expect("it did not end");
+    assert!(status.success());
+}
+
+#[test]
+fn it_says_it_is_ready_while_it_runs_and_not_after() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut compositor = Compositor::start_login_screen(Some("sleep 1.5"), None, &[]);
+    let marker = compositor.dir.join("sengi-compositor.ready");
+    let end = std::time::Instant::now() + SOON;
+    while !marker.exists() && std::time::Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let mode = std::fs::metadata(&marker)
+        .expect("no ready file while running")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+    assert!(compositor
+        .exit_status()
+        .is_some_and(|status| status.success()));
+    assert!(!marker.exists(), "the ready file was left behind");
+}
+
+#[test]
 fn a_session_compositor_binds_super_q_and_the_login_screens_does_not() {
     // In a session the Q never reaches the window: Super down and up.
     let session = Compositor::start_with(None, None, Some(SUPER_Q));

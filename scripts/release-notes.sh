@@ -29,7 +29,8 @@ cat <<NOTES
 | Idle RAM | $(value idle_ram_mb) MB | under 400 MB |
 | Power-on to desktop | $(value boot_s) s | under 10 s |
 
-Measured in QEMU ($(value accel)), 2 cores and 4 GB RAM, booting the ISO as a disk.
+Measured in QEMU ($(value accel)), 2 cores and 4 GB RAM, booting the ISO as a disk,
+on $(value compositor).
 NOTES
 
 # One table for each install test's figures: the first is the one that
@@ -49,7 +50,8 @@ for installed in "$installed" "$also"; do
 | Installing | $(installed_value install_s) s | |
 
 Installed through the installer's window onto a blank disk in QEMU
-($(installed_value install_accel), $(installed_value install_firmware)), then started from that disk alone.
+($(installed_value install_accel), $(installed_value install_firmware)), then started from that disk alone,
+on $(installed_value installed_compositor).
 The boot menu waits one second for Esc, which is in these figures.
 NOTES
 done
