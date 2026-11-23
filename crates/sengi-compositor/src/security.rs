@@ -25,6 +25,10 @@ use crate::state::{ClientState, State};
 const MAX_CONTEXTS: u32 = 32;
 
 /// Whether `client` may see the globals that are kept from sandboxes.
+/// Xwayland is not trusted, by design: its client data is Smithay's
+/// `XWaylandClientData`, which has no `ClientState`, so this is false for it.
+/// It stands for every X11 program at once, so it must not get the layer
+/// shell, session lock or window management. Do not "fix" that here.
 pub fn trusted(client: &Client) -> bool {
     client
         .get_data::<ClientState>()
