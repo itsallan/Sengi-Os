@@ -350,17 +350,22 @@ wlr-screencopy and looks at the pixels.
 - Missing protocols: text-input, output management, virtual keyboard and
   pointer, ext-foreign-toplevel-list, ext-image-copy-capture (screen
   copies are wlr-screencopy's, which is what grim in Debian stable uses).
-- X11 programs run through XWayland, which the first program the user
-  starts while it is down brings up (a key, a menu item, the launcher).
-  That program waits for it and gets its DISPLAY, and so does every one
-  after. Startup programs and the session do not start it: an X11 program
-  they start gets no DISPLAY until a user launch has. A launch of a Wayland
-  program starts it too. Once up, Xwayland stays up until the compositor
-  ends: it is not stopped when its last X11 window goes, so it costs memory
-  after an X11 program has quit. Its windows get the same frame, title and
-  switcher entry as the others, read from Motif hints and WM_CLASS. Moves
-  and resizes a program asks for itself are not honoured, only the title
-  bar's. Only scale 1 has been tried.
+- X11 programs run through XWayland, which starts once, at the start of a
+  normal session (not on the login screen), so that the startup programs
+  (the bar, the dock, the launcher) and everything they start have a
+  DISPLAY. Programs started while it comes up wait for it, for five seconds
+  at most; after that they run without a DISPLAY and Xwayland is given up
+  for the session. It stays up for the whole session on purpose, whether
+  or not an X11 window is open, and is brought back by the next launch if
+  it dies. Only the socket in /tmp/.X11-unix is used, not the abstract one,
+  so a sandboxed program cannot reach it by sharing the network. Its
+  windows get the same frame, title and switcher entry as the others, read
+  from Motif hints and WM_CLASS. Only scale 1 has been tried. Known gaps:
+  no clipboard between X11 and Wayland programs; no click outside an X11
+  menu to dismiss it; a fullscreen override-redirect window is not usable;
+  a transient window is not centred or kept above its parent; a window
+  that withdraws and maps again is placed anew; moves and resizes a program
+  asks for itself are not honoured, only the title bar's.
 - With `--scale` other than 1, title bars and the cursor are drawn for
   scale 1 and enlarged, so they are the right size but soft. Nothing sets
   the scale yet but the command line.
@@ -408,9 +413,8 @@ and so counts as dirty.
    drag-and-drop icons.
 6. Rounded bottom corners and shadows.
 7. Key bindings from configuration.
-8. XWayland: stop it when it is idle, programs that start with DISPLAY
-   from the session itself, client-side moves and resizes, and X11 windows
-   at other scales.
+8. XWayland: the clipboard bridge, dismissing X11 menus, client-side moves
+   and resizes, and X11 windows at other scales.
 9. Measure idle RAM and time to first frame against labwc on the target
    machine.
 
