@@ -573,7 +573,7 @@ fn finish(
     let result = if apply {
         state.apply_plan(plan)
     } else {
-        state.check_plan(&plan)
+        state.test_plan(plan)
     };
     match result {
         Ok(()) => {

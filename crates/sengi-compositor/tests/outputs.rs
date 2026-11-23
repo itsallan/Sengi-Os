@@ -1167,3 +1167,66 @@ fn a_setting_given_twice_a_scale_of_nothing_and_a_mode_of_another_head_are_error
         h.settings.set_scale(1.5);
     }));
 }
+
+#[test]
+fn outputs_that_do_not_touch_along_an_edge_are_refused() {
+    let compositor = two();
+    let mut app = compositor.connect();
+    let manager = app.manager().unwrap();
+    // A gap, and a corner only: the pointer could not cross either.
+    for (x, y) in [(1300, 0), (1280, 720), (0, 721)] {
+        let ops = [Op::keep("HEADLESS-1"), Op::keep("HEADLESS-2").at(x, y)];
+        assert_eq!(
+            app.configure(&manager, None, &ops, true).unwrap(),
+            Outcome::Failed,
+            "{x},{y}"
+        );
+    }
+    // Sliding along the edge is fine.
+    let ops = [Op::keep("HEADLESS-1"), Op::keep("HEADLESS-2").at(1280, 500)];
+    assert_eq!(
+        app.configure(&manager, None, &ops, true).unwrap(),
+        Outcome::Succeeded
+    );
+}
+
+#[test]
+fn a_saved_place_that_leaves_a_gap_is_not_used() {
+    let layout = "[HEADLESS-2]\nx = 5000\ny = 0\n";
+    let compositor =
+        Compositor::start_with_layout(&["--outputs", "1280x720,1280x720"], Some(layout), "60000");
+    let mut app = compositor.connect();
+    let _manager = app.manager().unwrap();
+    assert_eq!(app.head("HEADLESS-2").position, (1280, 0));
+}
+
+#[test]
+fn a_saved_off_for_the_first_screen_is_kept_with_the_second_on() {
+    // The lid closed and a monitor on: the first is off.
+    let layout = "[HEADLESS-1]\nenabled = false\n\n[HEADLESS-2]\nenabled = true\n";
+    let compositor =
+        Compositor::start_with_layout(&["--outputs", "1280x720,800x600"], Some(layout), "60000");
+    let mut app = compositor.connect();
+    let _manager = app.manager().unwrap();
+    assert!(!app.head("HEADLESS-1").enabled);
+    assert!(app.head("HEADLESS-2").enabled);
+    let plain = app.plain_outputs().unwrap();
+    assert_eq!(plain.len(), 1);
+    assert_eq!(plain[0].name, "HEADLESS-2");
+    // New windows open on it, and the pointer is on it.
+    let (_s, _t) = app.window(GREEN).unwrap();
+    assert_eq!(
+        app.capture_named("HEADLESS-2").unwrap().at(400, 300),
+        rgb(GREEN)
+    );
+}
+
+#[test]
+fn a_layout_that_would_switch_everything_off_is_ignored() {
+    let layout = "[HEADLESS-1]\nenabled = false\n\n[HEADLESS-2]\nenabled = false\n";
+    let compositor =
+        Compositor::start_with_layout(&["--outputs", "1280x720,1280x720"], Some(layout), "60000");
+    let mut app = compositor.connect();
+    let _manager = app.manager().unwrap();
+    assert!(app.head("HEADLESS-1").enabled && app.head("HEADLESS-2").enabled);
+}

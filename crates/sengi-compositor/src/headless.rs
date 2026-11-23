@@ -172,13 +172,20 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         frame_pending: false,
         made: 0,
     }));
-    for (width, height, panel) in sizes {
-        let name = {
-            let mut backend = backend.borrow_mut();
-            backend.made += 1;
-            format!("HEADLESS-{}", backend.made)
-        };
-        let output = state.add_head(spec_for(&name, (width, height), panel, Transform::Normal));
+    let mut specs: Vec<OutputSpec> = sizes
+        .into_iter()
+        .map(|(width, height, panel)| {
+            let name = {
+                let mut backend = backend.borrow_mut();
+                backend.made += 1;
+                format!("HEADLESS-{}", backend.made)
+            };
+            spec_for(&name, (width, height), panel, Transform::Normal)
+        })
+        .collect();
+    state.decide_on(&mut specs);
+    for spec in specs {
+        let output = state.add_head(spec);
         if state.head(&output).is_some_and(|head| head.enabled) {
             let mut headless = backend.borrow_mut();
             let screen = headless.screen_for(&output)?;
@@ -389,7 +396,10 @@ fn plug(backend: &Shared, state: &mut State, request: TestOutput) -> Result<Stri
             if state.heads().iter().any(|head| head.output.name() == name) {
                 return Err(format!("{name} is there already"));
             }
-            let output = state.add_head(spec_for(&name, size, panel, Transform::Normal));
+            let mut specs = [spec_for(&name, size, panel, Transform::Normal)];
+            state.decide_on(&mut specs);
+            let [spec] = specs;
+            let output = state.add_head(spec);
             if state.head(&output).is_some_and(|head| head.enabled) {
                 let mut headless = backend.borrow_mut();
                 let screen = headless

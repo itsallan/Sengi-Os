@@ -193,6 +193,48 @@ pub fn follow_changes(
     at
 }
 
+/// Whether `rects` make one piece, each touching another along an edge of
+/// some length. A gap, or a touch at a corner only, would keep the pointer
+/// from crossing.
+pub fn edge_connected(rects: &[Rect]) -> bool {
+    let touch = |a: &Rect, b: &Rect| {
+        let across = |a0: i32, a1: i32, b0: i32, b1: i32| a0.max(b0) < a1.min(b1);
+        let side =
+            (a.right() == b.x || b.right() == a.x) && across(a.y, a.bottom(), b.y, b.bottom());
+        let stacked =
+            (a.bottom() == b.y || b.bottom() == a.y) && across(a.x, a.right(), b.x, b.right());
+        side || stacked
+    };
+    if rects.is_empty() {
+        return true;
+    }
+    let mut reached = vec![false; rects.len()];
+    reached[0] = true;
+    let mut stack = vec![0];
+    while let Some(i) = stack.pop() {
+        for j in 0..rects.len() {
+            if !reached[j] && touch(&rects[i], &rects[j]) {
+                reached[j] = true;
+                stack.push(j);
+            }
+        }
+    }
+    reached.iter().all(|r| *r)
+}
+
+/// Which of the screens that are found are to be on. `saved` is what the
+/// saved layout says of each (`None` if it says nothing), `on_now` how many
+/// are on already. What is saved is honoured, except that nothing is ever
+/// left with every screen off: if it would, it is ignored.
+pub fn decide_enabled(on_now: usize, saved: &[Option<bool>]) -> Vec<bool> {
+    let wanted: Vec<bool> = saved.iter().map(|s| s.unwrap_or(true)).collect();
+    if on_now == 0 && !wanted.iter().any(|on| *on) {
+        vec![true; wanted.len()]
+    } else {
+        wanted
+    }
+}
+
 /// Whether any two of `rects` overlap.
 pub fn overlap(rects: &[Rect]) -> bool {
     rects.iter().enumerate().any(|(i, a)| {
@@ -381,15 +423,15 @@ impl State {
             let wanted = Rect::new(place.0, place.1, w, h);
             let mut all = others.clone();
             all.push(wanted);
-            if !overlap(&all) {
+            if !overlap(&all) && edge_connected(&all) {
                 position = place;
             }
         }
         output.change_current_state(None, None, None, Some(position.into()));
 
-        let enabled = spec.enabled && stored.as_ref().is_none_or(|s| s.enabled);
-        // A saved "off" is not honoured when it would leave nothing on.
-        let enabled = enabled || !self.heads.iter().any(|head| head.enabled);
+        // Whether it is on was decided by whoever found it, with the other
+        // screens in view: see `decide_enabled`.
+        let enabled = spec.enabled;
         let mut head = Head {
             output: output.clone(),
             enabled: false,
@@ -407,6 +449,23 @@ impl State {
         self.scales_dirty = true;
         self.output_management_changed();
         output
+    }
+
+    /// What the saved layout says of a screen being found: on or off, or
+    /// nothing.
+    pub fn saved_enabled(&self, spec: &OutputSpec) -> Option<bool> {
+        self.stored_layout
+            .find(&spec.name, &spec.make, &spec.model, &spec.serial)
+            .map(|stored| stored.enabled)
+    }
+
+    /// Decides which of `specs`, found together, are on, and sets it.
+    pub fn decide_on(&self, specs: &mut [OutputSpec]) {
+        let on_now = self.heads.iter().filter(|head| head.enabled).count();
+        let saved: Vec<Option<bool>> = specs.iter().map(|spec| self.saved_enabled(spec)).collect();
+        for (spec, on) in specs.iter_mut().zip(decide_enabled(on_now, &saved)) {
+            spec.enabled = on;
+        }
     }
 
     /// The mode a new head starts in: the saved one if it is one of its
@@ -546,6 +605,13 @@ impl State {
         self.request_redraw();
     }
 
+    /// Checks `plan` as `apply_plan` would, places and all, without
+    /// changing anything.
+    pub fn test_plan(&self, mut plan: Vec<HeadPlan>) -> Result<(), String> {
+        self.place_unnamed(&mut plan);
+        self.check_plan(&plan)
+    }
+
     /// Checks `plan` without changing anything.
     pub fn check_plan(&self, plan: &[HeadPlan]) -> Result<(), String> {
         if plan.iter().all(|head| !head.enabled) {
@@ -583,6 +649,9 @@ impl State {
         }
         if overlap(&rects) {
             return Err("outputs would overlap".into());
+        }
+        if !edge_connected(&rects) {
+            return Err("outputs would not touch, and the pointer could not cross".into());
         }
         Ok(())
     }
@@ -1065,6 +1134,30 @@ mod tests {
         assert!(overlap(&[a, Rect::new(99, 0, 100, 100)]));
         assert!(overlap(&[a, Rect::new(10, 10, 5, 5)]));
         assert!(!overlap(&[a]));
+    }
+
+    #[test]
+    fn screens_that_do_not_touch_along_an_edge_are_not_one_piece() {
+        let a = Rect::new(0, 0, 100, 100);
+        assert!(edge_connected(&[a]));
+        assert!(edge_connected(&[a, Rect::new(100, 20, 100, 100)]));
+        assert!(edge_connected(&[a, Rect::new(-50, 100, 100, 50)]));
+        // A gap, and a touch at a corner.
+        assert!(!edge_connected(&[a, Rect::new(101, 0, 100, 100)]));
+        assert!(!edge_connected(&[a, Rect::new(100, 100, 100, 100)]));
+        // Joined through a third.
+        let c = Rect::new(100, 0, 100, 100);
+        assert!(edge_connected(&[a, Rect::new(200, 0, 50, 50), c]));
+    }
+
+    #[test]
+    fn what_was_saved_decides_which_are_on_but_never_all_off() {
+        assert_eq!(decide_enabled(0, &[Some(false), Some(true)]), [false, true]);
+        assert_eq!(decide_enabled(0, &[Some(false), Some(false)]), [true, true]);
+        assert_eq!(decide_enabled(0, &[Some(false), None]), [false, true]);
+        // One that is on already makes room for one that is saved off.
+        assert_eq!(decide_enabled(1, &[Some(false)]), [false]);
+        assert_eq!(decide_enabled(0, &[Some(false)]), [true]);
     }
 
     #[test]

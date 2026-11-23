@@ -302,6 +302,30 @@ fn connected(device: &DrmDevice) -> Result<Vec<Found>, Box<dyn Error>> {
     Ok(found)
 }
 
+/// What a found display is to clients, before it is known whether it is on.
+fn spec_of(found: &Found) -> OutputSpec {
+    let info = &found.info;
+    let (width, height) = found.preferred.size();
+    let name = format!("{}-{}", info.interface().as_str(), info.interface_id());
+    let preferred = output_mode(&found.preferred);
+    let mut spec = OutputSpec::virtual_screen(
+        &name,
+        "Display",
+        (i32::from(width), i32::from(height)).into(),
+        preferred.refresh,
+        Transform::Normal,
+    );
+    spec.modes = announced_modes(&found.modes);
+    spec.preferred = Some(preferred);
+    spec.current = preferred;
+    spec.any_size = false;
+    spec.make = "Unknown".into();
+    if let Some((w, h)) = info.size() {
+        spec.physical = (w as i32, h as i32);
+    }
+    spec
+}
+
 /// How a mode is told to clients: in pixels and millihertz.
 fn output_mode(mode: &Mode) -> OutputMode {
     let (width, height) = mode.size();
@@ -1339,13 +1363,19 @@ impl Drm {
             state.remove_output(&parked.output);
         }
 
-        for f in &found {
-            let known = self.screens.iter().any(|s| s.connector == f.info.handle())
-                || self.parked.iter().any(|p| p.connector == f.info.handle());
-            if known {
-                continue;
-            }
-            if let Err(err) = self.light(state, f) {
+        // What was just found is decided together: a saved "off" for the
+        // first of two displays is honoured, and all of them off is not.
+        let fresh: Vec<&Found> = found
+            .iter()
+            .filter(|f| {
+                !(self.screens.iter().any(|s| s.connector == f.info.handle())
+                    || self.parked.iter().any(|p| p.connector == f.info.handle()))
+            })
+            .collect();
+        let mut specs: Vec<OutputSpec> = fresh.iter().map(|f| spec_of(f)).collect();
+        state.decide_on(&mut specs);
+        for (f, spec) in fresh.into_iter().zip(specs) {
+            if let Err(err) = self.light(state, f, spec) {
                 crate::say!(
                     "cannot use {}-{}: {err}",
                     f.info.interface().as_str(),
@@ -1367,28 +1397,16 @@ impl Drm {
     }
 
     /// Sets up a newly found display and adds it to the desktop, or to the
-    /// displays that are switched off if that is what was saved for it.
-    fn light(&mut self, state: &mut State, found: &Found) -> Result<(), Box<dyn Error>> {
+    /// displays that are switched off if `spec` says so.
+    fn light(
+        &mut self,
+        state: &mut State,
+        found: &Found,
+        spec: OutputSpec,
+    ) -> Result<(), Box<dyn Error>> {
         let info = &found.info;
-        let (width, height) = found.preferred.size();
-        let name = format!("{}-{}", info.interface().as_str(), info.interface_id());
-        let modes = announced_modes(&found.modes);
+        let name = spec.name.clone();
         let preferred = output_mode(&found.preferred);
-        let mut spec = OutputSpec::virtual_screen(
-            &name,
-            "Display",
-            (i32::from(width), i32::from(height)).into(),
-            preferred.refresh,
-            Transform::Normal,
-        );
-        spec.modes = modes;
-        spec.preferred = Some(preferred);
-        spec.current = preferred;
-        spec.any_size = false;
-        spec.make = "Unknown".into();
-        if let Some((w, h)) = info.size() {
-            spec.physical = (w as i32, h as i32);
-        }
         let output = state.add_head(spec);
         if !state.head(&output).is_some_and(|head| head.enabled) {
             crate::say!("{name} is switched off");
