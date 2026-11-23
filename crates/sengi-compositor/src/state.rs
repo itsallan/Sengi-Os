@@ -241,6 +241,9 @@ pub struct State {
     /// Tries a client's dmabuf on the renderer; set by a backend that
     /// offers linux-dmabuf.
     pub dmabuf_import: Option<DmabufImport>,
+    /// The linux-dmabuf global, where one is offered, so that it can be
+    /// withdrawn if the renderer is given up.
+    pub dmabuf_global: Option<smithay::wayland::dmabuf::DmabufGlobal>,
     pub dmabufs_imported: u64,
     /// What Super+L runs, and what is started for a session whose locker
     /// died.
@@ -524,6 +527,7 @@ impl State {
             x11_generation: 0,
             x11_gave_up: false,
             dmabuf_import: None,
+            dmabuf_global: None,
             dmabufs_imported: 0,
             locker_command: keys::DEFAULT_LOCKER.to_string(),
             locker_pids: Vec::new(),

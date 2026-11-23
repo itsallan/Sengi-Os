@@ -160,8 +160,10 @@ struct Screen {
     on_glass: Option<u64>,
     /// A timer will draw this screen; until then it is left alone.
     waiting: bool,
-    /// How many frames in a row could not be drawn.
+    /// How many frames in a row could not be drawn, counted from
+    /// `failing_since` and no further back than `FAILURE_WINDOW`.
     failures: u32,
+    failing_since: Option<Instant>,
     /// Counts the frames queued, for the watchdog to tell them apart.
     queued: u64,
     /// The watchdog timer is running.
@@ -202,6 +204,48 @@ const FAILURES_UNDER_LOCK: u32 = 3;
 /// or switched is long over by then, and a GPU that cannot draw is not
 /// waited on for ever. Failures are counted from the last frame that worked.
 const FAILURES_BEFORE_REBUILD: u32 = 20;
+
+/// A run of failed frames counts only within this long of its first: a
+/// frame that works ends the run, and so does this much time. It is longer
+/// than 20 flip timeouts (1 s each) so that a GPU that never flips is still
+/// caught, and shorter than anything a resume from sleep would take to
+/// settle; a resume also clears the count, see `ActivateSession`.
+const FAILURE_WINDOW: Duration = Duration::from_secs(30);
+
+/// How long a screen that cannot be drawn waits before it is tried again,
+/// where pixman is all there is and other screens work.
+const SLOW_RETRY: Duration = Duration::from_secs(5);
+
+/// The count of failed frames after one more, and when the run began.
+fn count_failure(failures: u32, since: Option<Instant>, now: Instant) -> (u32, Instant) {
+    match since {
+        Some(start) if now.saturating_duration_since(start) <= FAILURE_WINDOW => {
+            (failures + 1, start)
+        }
+        _ => (1, now),
+    }
+}
+
+/// What to do once a screen has failed too often.
+#[derive(Debug, PartialEq, Eq)]
+enum Exhausted {
+    /// Draw on the CPU instead.
+    Rebuild,
+    /// Nothing can be drawn: end with an error.
+    GiveUp,
+    /// Others still work: try this one again later.
+    Retry,
+}
+
+fn after_exhaustion(on_gles: bool, all_failed: bool) -> Exhausted {
+    if on_gles {
+        Exhausted::Rebuild
+    } else if all_failed {
+        Exhausted::GiveUp
+    } else {
+        Exhausted::Retry
+    }
+}
 
 /// How long one refresh of `output` takes.
 fn refresh_interval(output: &Output) -> Duration {
@@ -773,9 +817,10 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
             .and_then(|meta| Ok(DmabufFeedbackBuilder::new(meta.rdev(), formats).build()?));
         match feedback {
             Ok(feedback) => {
-                state
+                let global = state
                     .dmabuf_state
                     .create_global_with_default_feedback::<State>(&state.display_handle, &feedback);
+                state.dmabuf_global = Some(global);
                 let importer = backend.clone();
                 state.dmabuf_import = Some(Box::new(move |dmabuf| {
                     match &mut importer.borrow_mut().renderer {
@@ -825,7 +870,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
                     let frame = screen.in_flight.take();
                     if let Some((_, epoch)) = &frame {
                         screen.on_glass = *epoch;
-                        screen.failures = 0;
+                        screen.clear_failures();
                     }
                     frame.map(|frame| (output, frame))
                 })
@@ -905,6 +950,8 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
                 // Displays may have come and gone meanwhile.
                 backend.rescan(state);
                 for screen in &mut backend.screens {
+                    // A slow resume must not count against the renderer.
+                    screen.clear_failures();
                     // Whatever was dark is switched off afresh.
                     screen.dark = false;
                     let reset = on_compositor!(&mut screen.compositor, |compositor| {
@@ -1062,7 +1109,7 @@ fn draw_if_ready(backend: &Shared, state: &mut State) {
             let epoch = state.lock_epoch();
             match screen.frame(renderer, state, epoch) {
                 Ok(Some(states)) => {
-                    screen.failures = 0;
+                    screen.clear_failures();
                     screen.waiting = true;
                     // "Nothing changed" is measured against the last frame
                     // drawn, not the last one shown. Unless a flip proved
@@ -1088,7 +1135,7 @@ fn draw_if_ready(backend: &Shared, state: &mut State) {
                 Err(err) => {
                     // The screen still shows what it showed. Try again
                     // shortly, at growing intervals.
-                    screen.failures += 1;
+                    screen.note_failure();
                     screen.stale = true;
                     // Whatever was half queued is dropped, and the retry
                     // paints everything.
@@ -1133,17 +1180,43 @@ fn draw_if_ready(backend: &Shared, state: &mut State) {
     }
     if exhausted {
         let mut backend = backend.borrow_mut();
-        if matches!(backend.renderer, Renderer::Gles { .. }) {
-            crate::say!("frames keep failing on GLES, drawing on the CPU instead");
-            if let Err(err) = backend.use_pixman() {
-                crate::say!("cannot draw on the CPU either: {err}");
-                give_up(state);
-            } else {
-                state.request_redraw();
+        let on_gles = matches!(backend.renderer, Renderer::Gles { .. });
+        match after_exhaustion(on_gles, all_exhausted) {
+            Exhausted::Rebuild => {
+                crate::say!("frames keep failing on GLES, drawing on the CPU instead");
+                if let Err(err) = backend.use_pixman() {
+                    crate::say!("cannot draw on the CPU either: {err}");
+                    give_up(state);
+                } else {
+                    // New clients are no longer told they may use the GPU.
+                    // One that already bound the global and asks for a
+                    // buffer anyway is refused: Smithay can only answer a
+                    // failed create_immed with a protocol error.
+                    if let Some(global) = state.dmabuf_global.take() {
+                        state
+                            .dmabuf_state
+                            .disable_global::<State>(&state.display_handle, &global);
+                    }
+                    state.request_redraw();
+                }
             }
-        } else if all_exhausted {
-            crate::say!("frames keep failing on every screen, giving up");
-            give_up(state);
+            Exhausted::GiveUp => {
+                crate::say!("frames keep failing on every screen, giving up");
+                give_up(state);
+            }
+            Exhausted::Retry => {
+                for screen in &mut backend.screens {
+                    if screen.failures >= FAILURES_BEFORE_REBUILD {
+                        crate::say!(
+                            "{}: frames keep failing, trying again in {SLOW_RETRY:?}",
+                            screen.output.name()
+                        );
+                        screen.clear_failures();
+                        screen.waiting = true;
+                        retry.push((screen.crtc, SLOW_RETRY));
+                    }
+                }
+            }
         }
     }
     // A dark screen shows nothing of the session, which is all a lock
@@ -1172,7 +1245,7 @@ fn draw_if_ready(backend: &Shared, state: &mut State) {
                         screen.output.name()
                     );
                     screen.in_flight = None;
-                    screen.failures += 1;
+                    screen.note_failure();
                     screen.stale = true;
                     screen.watched = false;
                     screen.repaint();
@@ -1274,6 +1347,17 @@ fn give_up(state: &mut State) {
 }
 
 impl Screen {
+    fn note_failure(&mut self) {
+        let (failures, since) = count_failure(self.failures, self.failing_since, Instant::now());
+        self.failures = failures;
+        self.failing_since = Some(since);
+    }
+
+    fn clear_failures(&mut self) {
+        self.failures = 0;
+        self.failing_since = None;
+    }
+
     /// Forgets what the buffers hold and what was queued, so that the next
     /// frame is drawn in full and committed afresh.
     fn repaint(&mut self) {
@@ -1612,6 +1696,7 @@ impl Drm {
             on_glass: None,
             waiting: false,
             failures: 0,
+            failing_since: None,
             queued: 0,
             watched: false,
         })
@@ -1817,6 +1902,25 @@ impl Drm {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failures_count_within_the_window_and_start_over_after_it() {
+        let start = Instant::now();
+        let (n, since) = count_failure(0, None, start);
+        assert_eq!((n, since), (1, start));
+        let soon = start + Duration::from_secs(10);
+        assert_eq!(count_failure(n, Some(since), soon), (2, start));
+        let late = start + FAILURE_WINDOW + Duration::from_secs(1);
+        assert_eq!(count_failure(19, Some(start), late), (1, late));
+    }
+
+    #[test]
+    fn an_exhausted_screen_is_dealt_with_by_what_else_works() {
+        assert_eq!(after_exhaustion(true, false), Exhausted::Rebuild);
+        assert_eq!(after_exhaustion(true, true), Exhausted::Rebuild);
+        assert_eq!(after_exhaustion(false, true), Exhausted::GiveUp);
+        assert_eq!(after_exhaustion(false, false), Exhausted::Retry);
+    }
 
     fn mode(width: u16, height: u16, refresh: u32, preferred: bool) -> ModeInfo {
         ModeInfo {
