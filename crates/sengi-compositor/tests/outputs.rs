@@ -1041,3 +1041,129 @@ fn the_saved_layout_is_read_again_on_sighup_but_not_over_a_change_waiting_to_be_
     app.wait(Duration::from_millis(500), |_| false);
     assert_eq!(app.head("HEADLESS-1").scale, 2.0);
 }
+
+// A client that asks for what cannot be, or cannot be trusted with it.
+
+#[test]
+fn a_place_at_the_end_of_the_number_range_is_refused_and_nothing_breaks() {
+    let compositor = two();
+    let mut app = compositor.connect();
+    let manager = app.manager().unwrap();
+    for (x, y) in [
+        (i32::MAX, 0),
+        (0, i32::MAX),
+        (i32::MIN, i32::MIN),
+        (i32::MAX - 1279, 0),
+        (1 << 21, 0),
+    ] {
+        let ops = [Op::keep("HEADLESS-1"), Op::keep("HEADLESS-2").at(x, y)];
+        let outcome = app.configure(&manager, None, &ops, true);
+        assert_eq!(
+            outcome.as_ref().ok(),
+            Some(&Outcome::Failed),
+            "{x},{y}: {:?}",
+            compositor.said_all("panicked")
+        );
+    }
+    assert_eq!(app.head("HEADLESS-2").position, (1280, 0));
+    // The pointer still moves.
+    compositor.input("move 5 5");
+    compositor.input("nudge 10 0");
+    assert!(compositor
+        .status_line("pointer at")
+        .contains("pointer at 15,5"));
+}
+
+#[test]
+fn a_saved_place_at_the_end_of_the_number_range_does_not_stop_a_session_starting() {
+    let layout = "[HEADLESS-1]\nx = 2147483647\ny = -2147483648\n\n[HEADLESS-2]\nx = 2147483000\ny = 2147483000\n";
+    let compositor =
+        Compositor::start_with_layout(&["--outputs", "1280x720,1280x720"], Some(layout), "60000");
+    let mut app = compositor.connect();
+    let _manager = app.manager().unwrap();
+    assert_eq!(app.head("HEADLESS-1").position, (0, 0));
+    assert_eq!(app.head("HEADLESS-2").position, (1280, 0));
+    compositor.input("move 5 5");
+    compositor.input("nudge 10 0");
+    assert!(compositor
+        .status_line("pointer at")
+        .contains("pointer at 15,5"));
+}
+
+#[test]
+fn a_configuration_used_twice_is_the_clients_error() {
+    let compositor = two();
+    let mut app = compositor.connect();
+    let manager = app.manager().unwrap();
+    let ops = [Op::keep("HEADLESS-1"), Op::keep("HEADLESS-2")];
+    let configuration = app.half_configuration(&manager, &ops).unwrap();
+    let before = app.seen.heads.outcomes.len();
+    configuration.test();
+    assert!(app.wait(SOON, |seen| seen.heads.outcomes.len() > before));
+    configuration.apply();
+    assert!(app.roundtrip().is_err());
+    // And the compositor lives for the next client.
+    let mut other = compositor.connect();
+    let _m = other.manager().unwrap();
+    assert_eq!(other.head_names().len(), 2);
+}
+
+#[test]
+fn a_head_enabled_twice_or_after_the_configuration_was_used_is_the_clients_error() {
+    let compositor = two();
+    let mut app = compositor.connect();
+    let manager = app.manager().unwrap();
+    let ops = [Op::keep("HEADLESS-1"), Op::keep("HEADLESS-1")];
+    assert!(app.half_configuration(&manager, &ops).is_err());
+
+    let mut app = compositor.connect();
+    let manager = app.manager().unwrap();
+    let ops = [Op::keep("HEADLESS-1"), Op::keep("HEADLESS-2")];
+    let configuration = app.half_configuration(&manager, &ops).unwrap();
+    let before = app.seen.heads.outcomes.len();
+    configuration.test();
+    assert!(app.wait(SOON, |seen| seen.heads.outcomes.len() > before));
+    let head = app.head("HEADLESS-1").proxy.clone();
+    let _late = configuration.enable_head(&head, &app.handle, ());
+    assert!(app.roundtrip().is_err());
+    let mut other = compositor.connect();
+    let _m = other.manager().unwrap();
+    assert_eq!(other.head_names().len(), 2);
+}
+
+#[test]
+fn a_setting_given_twice_a_scale_of_nothing_and_a_mode_of_another_head_are_errors() {
+    let compositor = Compositor::start_args(&["--outputs", "1280x720:panel,1280x720:panel"], None);
+    let ask = |what: &dyn Fn(&mut common::Client, &common::heads::HeadInfoRef)| {
+        let mut app = compositor.connect();
+        let manager = app.manager().unwrap();
+        let configuration =
+            manager.create_configuration(app.seen.heads.serial.unwrap(), &app.handle, ());
+        let head = app.head("HEADLESS-1").proxy.clone();
+        let settings = configuration.enable_head(&head, &app.handle, ());
+        let _ = &settings;
+        what(&mut app, &common::heads::HeadInfoRef { settings });
+        app.roundtrip().is_err()
+    };
+    assert!(ask(&|_, h| {
+        h.settings.set_scale(1.5);
+        h.settings.set_scale(2.0);
+    }));
+    assert!(ask(&|_, h| h.settings.set_scale(0.0)));
+    assert!(ask(&|_, h| h.settings.set_scale(-1.0)));
+    assert!(ask(&|app, h| {
+        let other = app.head("HEADLESS-2").modes[0].proxy.clone();
+        h.settings.set_mode(&other);
+    }));
+    assert!(ask(&|_, h| {
+        h.settings.set_custom_mode(800, 600, 0);
+        h.settings.set_position(0, 0);
+        h.settings.set_position(5, 5);
+    }));
+    // One that is in order is not.
+    assert!(!ask(&|app, h| {
+        let own = app.head("HEADLESS-1").modes[0].proxy.clone();
+        h.settings.set_mode(&own);
+        h.settings.set_scale(1.5);
+    }));
+}

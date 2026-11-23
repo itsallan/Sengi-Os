@@ -410,7 +410,24 @@ impl Dispatch<ZwlrOutputConfigurationV1, Mutex<Config>> for State {
         let Ok(mut config) = data.lock() else { return };
         match request {
             zwlr_output_configuration_v1::Request::EnableHead { id, head } => {
-                let Some(output) = head_output(&head) else {
+                // The new object is made first, whatever is wrong with the
+                // request: one left without data panics the server if the
+                // client ever sends to it.
+                let output = head_output(&head);
+                let change = Arc::new(Mutex::new(Change {
+                    output: output
+                        .clone()
+                        .unwrap_or_else(|| head_output_of_nothing(&config)),
+                    used: config.used.clone(),
+                    mode: None,
+                    custom_mode: false,
+                    position: None,
+                    transform: None,
+                    scale: None,
+                    adaptive_sync: false,
+                }));
+                data_init.init(id, change.clone());
+                let Some(output) = output else {
                     return;
                 };
                 if config.used.load(Ordering::SeqCst) {
@@ -424,17 +441,6 @@ impl Dispatch<ZwlrOutputConfigurationV1, Mutex<Config>> for State {
                     );
                     return;
                 }
-                let change = Arc::new(Mutex::new(Change {
-                    output: output.clone(),
-                    used: config.used.clone(),
-                    mode: None,
-                    custom_mode: false,
-                    position: None,
-                    transform: None,
-                    scale: None,
-                    adaptive_sync: false,
-                }));
-                data_init.init(id, change.clone());
                 config.heads.push((output, Some(change)));
             }
             zwlr_output_configuration_v1::Request::DisableHead { head } => {
@@ -463,6 +469,20 @@ impl Dispatch<ZwlrOutputConfigurationV1, Mutex<Config>> for State {
             _ => {}
         }
     }
+}
+
+/// Stands in for the output of a head that has gone, in the settings of
+/// a head that is refused anyway.
+fn head_output_of_nothing(_config: &Config) -> Output {
+    Output::new(
+        String::new(),
+        smithay::output::PhysicalProperties {
+            size: (0, 0).into(),
+            subpixel: smithay::output::Subpixel::Unknown,
+            make: String::new(),
+            model: String::new(),
+        },
+    )
 }
 
 /// The output a head object stands for, if it is still one.

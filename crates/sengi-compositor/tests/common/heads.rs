@@ -59,6 +59,11 @@ impl HeadInfo {
     }
 }
 
+/// A head's settings in a configuration being made by hand.
+pub struct HeadInfoRef {
+    pub settings: ZwlrOutputConfigurationHeadV1,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     Succeeded,
