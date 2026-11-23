@@ -80,7 +80,7 @@ SEED
 sync_tree() {
 	# shellcheck disable=SC2086
 	rsync -a --delete -e "ssh $ssh_opts" \
-		--exclude /cache --exclude /out --exclude /build --exclude /target --exclude /test-output \
+		--exclude /cache --exclude /out --exclude /build --exclude /target --exclude '/crates/*/target' --exclude /test-output \
 		"$root/" debian@127.0.0.1:sengi-os/
 }
 
