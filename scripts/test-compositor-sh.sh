@@ -90,6 +90,7 @@ reset() {
 }
 
 wanted() {
+	# shellcheck source=/dev/null
 	(. "$lib" && wanted_compositor)
 }
 
@@ -99,6 +100,7 @@ wanted() {
 own() {
 	status=0
 	out=$(
+		# shellcheck source=/dev/null
 		. "$lib"
 		own_compositor --test
 		echo FELL_BACK
@@ -207,6 +209,7 @@ unset FAKE_IGNORE_TERM
 # "early", straight away).
 terminated() {
 	(
+		# shellcheck source=/dev/null
 		. "$lib"
 		own_compositor --test
 		echo FELL_BACK
