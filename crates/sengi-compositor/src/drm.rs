@@ -169,6 +169,9 @@ struct Screen {
     /// Switched off because the output was asked to be, see
     /// `output_power.rs`.
     dark: bool,
+    /// A page flip of an earlier screen on this CRTC may still be reported:
+    /// the first report is not this screen's.
+    stale_flip: bool,
     /// Asked to be dark but could not be switched off. It is drawn as
     /// usual, and not asked again until the output has been on.
     stays_lit: bool,
@@ -207,6 +210,8 @@ struct Drm {
     renderer: Renderer,
     screens: Vec<Screen>,
     parked: Vec<Parked>,
+    /// CRTCs whose screen was dropped with a flip on its way.
+    stale_flips: Vec<crtc::Handle>,
     libinput: Libinput,
     /// False while another virtual terminal has the display.
     active: bool,
@@ -319,12 +324,80 @@ fn announced_modes(modes: &[Mode]) -> Vec<OutputMode> {
     seen
 }
 
+/// The one of `modes` that is `wanted`. Where several have the same size
+/// and rate, the preferred mode wins if it is one of them: a monitor lists
+/// a size again with other timings, and the first is not always the one it
+/// likes.
+fn pick_equal<T: Copy>(
+    modes: &[T],
+    key: impl Fn(&T) -> OutputMode,
+    wanted: OutputMode,
+    preferred: Option<T>,
+) -> Option<T> {
+    if let Some(preferred) = preferred.filter(|mode| key(mode) == wanted) {
+        return Some(preferred);
+    }
+    modes.iter().copied().find(|mode| key(mode) == wanted)
+}
+
 /// The mode of the display that is the one `wanted` stands for.
 fn drm_mode_for(modes: &[Mode], wanted: OutputMode) -> Option<Mode> {
-    modes
+    let listed: Vec<ModeInfo> = modes
         .iter()
-        .copied()
-        .find(|mode| output_mode(mode) == wanted)
+        .map(|mode| ModeInfo {
+            width: mode.size().0,
+            height: mode.size().1,
+            refresh: mode.vrefresh(),
+            preferred: mode.mode_type().contains(ModeTypeFlags::PREFERRED),
+        })
+        .collect();
+    let preferred = pick_mode(&listed).map(|index| modes[index]);
+    pick_equal(modes, output_mode, wanted, preferred)
+}
+
+/// What a new arrangement does to displays, in the order it is done.
+#[derive(Debug, PartialEq, Eq, Clone)]
+enum Step<K> {
+    Off(K),
+    On(K),
+    Mode(K),
+}
+
+/// The steps from what is lit to what `plan` wants, given as each display
+/// and whether it should be on. Off comes first, which frees the CRTCs
+/// that a display coming on may need. `mode_differs` says whether a lit
+/// display is in another mode than the plan names.
+fn steps<K: Clone + PartialEq>(
+    lit: &[K],
+    plan: &[(K, bool)],
+    mode_differs: impl Fn(&K) -> bool,
+) -> Vec<Step<K>> {
+    let mut steps: Vec<Step<K>> = plan
+        .iter()
+        .filter(|(key, on)| !on && lit.contains(key))
+        .map(|(key, _)| Step::Off(key.clone()))
+        .collect();
+    for (key, _) in plan.iter().filter(|(_, on)| *on) {
+        if !lit.contains(key) {
+            steps.push(Step::On(key.clone()));
+        } else if mode_differs(key) {
+            steps.push(Step::Mode(key.clone()));
+        }
+    }
+    steps
+}
+
+/// Which switched-off display to light when nothing is lit: one that the
+/// state counts as on, else the first. `None` when something is lit.
+fn wake_choice<K: Clone>(lit: usize, parked: &[(K, bool)]) -> Option<K> {
+    if lit > 0 {
+        return None;
+    }
+    parked
+        .iter()
+        .find(|(_, on)| *on)
+        .or_else(|| parked.first())
+        .map(|(key, _)| key.clone())
 }
 
 /// A CRTC that can drive `connector` and is not in `taken`.
@@ -620,6 +693,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         renderer,
         screens: Vec::new(),
         parked: Vec::new(),
+        stale_flips: Vec::new(),
         libinput: libinput.clone(),
         active: true,
         switched_off: false,
@@ -654,7 +728,9 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
 
     // Settings and the like change modes and switch displays off and on.
     let changing = backend.clone();
-    state.output_backend = Some(Box::new(move |_, plan| changing.borrow_mut().change(plan)));
+    state.output_backend = Some(Box::new(move |state, plan| {
+        changing.borrow_mut().change(state, plan)
+    }));
 
     // GPU clients may hand over their buffers as they are. Mesa finds the
     // device to render on through the feedback, so that is always sent.
@@ -698,6 +774,11 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
                     .iter_mut()
                     .find(|screen| screen.crtc == crtc);
                 screen.and_then(|screen| {
+                    // The report of a flip that an earlier screen on this
+                    // CRTC had on its way when it was switched off.
+                    if std::mem::take(&mut screen.stale_flip) {
+                        return None;
+                    }
                     let submitted = on_compositor!(&mut screen.compositor, |compositor| {
                         compositor
                             .frame_submitted()
@@ -1375,6 +1456,8 @@ impl Drm {
     ) -> Result<Screen, Box<dyn Error>> {
         let taken: Vec<crtc::Handle> = self.screens.iter().map(|screen| screen.crtc).collect();
         let crtc = free_crtc(&self.device, info, &taken).ok_or("no CRTC is free for it")?;
+        let stale_flip = self.stale_flips.contains(&crtc);
+        self.stale_flips.retain(|stale| *stale != crtc);
         let surface = self.device.create_surface(crtc, mode, &[info.handle()])?;
         let planes = surface.planes().clone();
 
@@ -1440,6 +1523,7 @@ impl Drm {
             stays_lit: false,
             in_flight: None,
             stale: true,
+            stale_flip,
             on_glass: None,
             waiting: false,
             failures: 0,
@@ -1450,75 +1534,105 @@ impl Drm {
 
     /// Puts the displays as `plan` wants them: switched off, switched on,
     /// in another mode. If one step fails the ones before it are taken
-    /// back as far as they can be.
-    fn change(&mut self, plan: &[HeadPlan]) -> Result<(), String> {
+    /// back as far as they can be, and never so that every display is dark.
+    fn change(&mut self, state: &mut State, plan: &[HeadPlan]) -> Result<(), String> {
+        // With the display handed to another terminal nothing can be
+        // committed; the change is not made, and Settings is told so.
+        if !self.active {
+            return Err("the display is not ours at the moment".into());
+        }
         enum Undo {
             Light(Output),
-            Park(Output),
+            Park(Output, OutputMode),
             Mode(Output, Mode),
         }
         let mut undo: Vec<Undo> = Vec::new();
-        let result = (|| -> Result<(), String> {
-            // Off first, which frees the CRTCs that something else may need.
-            for head in plan.iter().filter(|head| !head.enabled) {
-                let Some(at) = self
-                    .screens
-                    .iter()
-                    .position(|screen| screen.output == head.output)
-                else {
-                    continue;
-                };
-                let mut screen = self.screens.remove(at);
-                let cleared = on_compositor!(&mut screen.compositor, |compositor| {
-                    compositor.clear().map_err(|err| err.to_string())
-                });
-                if let Err(err) = cleared {
-                    crate::say!("{}: cannot switch off cleanly: {err}", head.output.name());
-                }
-                self.parked.push(Parked {
-                    connector: screen.connector,
-                    modes: screen.modes.clone(),
-                    output: head.output.clone(),
-                });
-                undo.push(Undo::Light(head.output.clone()));
+        let lit: Vec<Output> = self.screens.iter().map(|s| s.output.clone()).collect();
+        let keyed: Vec<(Output, bool)> = plan
+            .iter()
+            .map(|head| (head.output.clone(), head.enabled))
+            .collect();
+        let todo = steps(&lit, &keyed, |output| {
+            let head = plan.iter().find(|head| &head.output == output);
+            let screen = self.screens.iter().find(|screen| &screen.output == output);
+            match (head, screen) {
+                (Some(head), Some(screen)) => output_mode(&screen.mode) != head.mode,
+                _ => false,
             }
-            for head in plan.iter().filter(|head| head.enabled) {
-                let is_parked = self.parked.iter().any(|p| p.output == head.output);
-                if is_parked {
-                    // Lit in the mode the plan wants, not the one it had.
-                    let parked = self
-                        .parked
-                        .iter()
-                        .find(|p| p.output == head.output)
-                        .ok_or("lost a display")?;
-                    let mode = drm_mode_for(&parked.modes, head.mode)
-                        .ok_or_else(|| format!("{} has no such mode", head.output.name()))?;
-                    head.output
-                        .change_current_state(Some(output_mode(&mode)), None, None, None);
-                    self.light_parked(&head.output)
-                        .map_err(|err| err.to_string())?;
-                    undo.push(Undo::Park(head.output.clone()));
-                    continue;
-                }
-                let Some(screen) = self
-                    .screens
-                    .iter_mut()
-                    .find(|screen| screen.output == head.output)
-                else {
-                    continue;
+        });
+        let result = (|| -> Result<(), String> {
+            for step in todo {
+                let output = match &step {
+                    Step::Off(o) | Step::On(o) | Step::Mode(o) => o.clone(),
                 };
-                let mode = drm_mode_for(&screen.modes, head.mode)
-                    .ok_or_else(|| format!("{} has no such mode", head.output.name()))?;
-                if mode != screen.mode {
-                    let before = screen.mode;
-                    on_compositor!(&mut screen.compositor, |compositor| {
-                        compositor.use_mode(mode).map_err(|err| format!("{err:?}"))
-                    })?;
-                    screen.mode = mode;
-                    screen.in_flight = None;
-                    undo.push(Undo::Mode(head.output.clone(), before));
+                let head = plan
+                    .iter()
+                    .find(|head| head.output == output)
+                    .ok_or("lost a display")?;
+                match step {
+                    Step::Off(_) => {
+                        let at = self
+                            .screens
+                            .iter()
+                            .position(|screen| screen.output == output)
+                            .ok_or("lost a display")?;
+                        let mut screen = self.screens.remove(at);
+                        // A flip on its way is still reported for this
+                        // CRTC; whoever gets it next must not take it as
+                        // its own.
+                        if screen.in_flight.is_some() {
+                            self.stale_flips.push(screen.crtc);
+                        }
+                        let cleared = on_compositor!(&mut screen.compositor, |compositor| {
+                            compositor.clear().map_err(|err| err.to_string())
+                        });
+                        if let Err(err) = cleared {
+                            crate::say!("{}: cannot switch off cleanly: {err}", output.name());
+                        }
+                        self.parked.push(Parked {
+                            connector: screen.connector,
+                            modes: screen.modes.clone(),
+                            output: output.clone(),
+                        });
+                        undo.push(Undo::Light(output));
+                    }
+                    Step::On(_) => {
+                        let parked = self
+                            .parked
+                            .iter()
+                            .find(|p| p.output == output)
+                            .ok_or("lost a display")?;
+                        let mode = drm_mode_for(&parked.modes, head.mode)
+                            .ok_or_else(|| format!("{} has no such mode", output.name()))?;
+                        let before = output.current_mode().unwrap_or(head.mode);
+                        output.change_current_state(Some(output_mode(&mode)), None, None, None);
+                        if let Err(err) = self.light_parked(&output) {
+                            // It stays as it was, in every way.
+                            output.change_current_state(Some(before), None, None, None);
+                            return Err(err.to_string());
+                        }
+                        undo.push(Undo::Park(output, before));
+                    }
+                    Step::Mode(_) => {
+                        let screen = self
+                            .screens
+                            .iter_mut()
+                            .find(|screen| screen.output == output)
+                            .ok_or("lost a display")?;
+                        let mode = drm_mode_for(&screen.modes, head.mode)
+                            .ok_or_else(|| format!("{} has no such mode", output.name()))?;
+                        let before = screen.mode;
+                        on_compositor!(&mut screen.compositor, |compositor| {
+                            compositor.use_mode(mode).map_err(|err| format!("{err:?}"))
+                        })?;
+                        screen.mode = mode;
+                        screen.in_flight = None;
+                        undo.push(Undo::Mode(output, before));
+                    }
                 }
-                // A new scale or turn changes every pixel.
+            }
+            // A new scale or turn changes every pixel.
+            for screen in &mut self.screens {
                 screen.repaint();
                 screen.stale = true;
             }
@@ -1528,11 +1642,17 @@ impl Drm {
             for step in undo.into_iter().rev() {
                 match step {
                     Undo::Light(output) => {
-                        let _ = self.light_parked(&output);
+                        if let Err(err) = self.light_parked(&output) {
+                            crate::say!("cannot light {} again: {err}", output.name());
+                        }
                     }
-                    Undo::Park(output) => {
+                    Undo::Park(output, before) => {
                         if let Some(at) = self.screens.iter().position(|s| s.output == output) {
                             let screen = self.screens.remove(at);
+                            if screen.in_flight.is_some() {
+                                self.stale_flips.push(screen.crtc);
+                            }
+                            output.change_current_state(Some(before), None, None, None);
                             self.parked.push(Parked {
                                 connector: screen.connector,
                                 modes: screen.modes,
@@ -1549,6 +1669,28 @@ impl Drm {
                             screen.repaint();
                         }
                     }
+                }
+            }
+            // Never leave the user with every display dark: what the state
+            // says is on, and is not lit, is lit now.
+            let parked: Vec<(Output, bool)> = self
+                .parked
+                .iter()
+                .map(|p| {
+                    (
+                        p.output.clone(),
+                        state.head(&p.output).is_some_and(|h| h.enabled),
+                    )
+                })
+                .collect();
+            if let Some(output) = wake_choice(self.screens.len(), &parked) {
+                match self.light_parked(&output) {
+                    Ok(()) => {
+                        if !state.head(&output).is_some_and(|h| h.enabled) {
+                            state.enable_head_now(&output);
+                        }
+                    }
+                    Err(err) => crate::say!("no display can be lit: {err}"),
                 }
             }
         }
@@ -1598,6 +1740,54 @@ mod tests {
             refresh,
             preferred,
         }
+    }
+
+    fn om(w: i32, h: i32, refresh: i32) -> OutputMode {
+        OutputMode {
+            size: (w, h).into(),
+            refresh,
+        }
+    }
+
+    #[test]
+    fn the_preferred_timing_of_a_size_wins_over_an_earlier_one() {
+        // (id, size, rate): two timings of the same mode, the second is the one
+        // the monitor likes.
+        let modes = [(1, 1920, 60), (2, 1920, 60), (3, 1280, 60)];
+        let key = |m: &(i32, i32, i32)| om(m.1, 1080, m.2 * 1000);
+        let wanted = om(1920, 1080, 60_000);
+        assert_eq!(
+            pick_equal(&modes, key, wanted, Some(modes[1])).map(|m| m.0),
+            Some(2)
+        );
+        assert_eq!(pick_equal(&modes, key, wanted, None).map(|m| m.0), Some(1));
+        // A preferred mode of another size does not stand in.
+        assert_eq!(
+            pick_equal(&modes, key, wanted, Some(modes[2])).map(|m| m.0),
+            Some(1)
+        );
+        assert_eq!(pick_equal(&modes, key, om(1, 1, 1), None), None);
+    }
+
+    #[test]
+    fn displays_go_off_before_others_come_on() {
+        let lit = ["a", "b"];
+        let plan = [("a", false), ("b", true), ("c", true), ("d", false)];
+        let todo = steps(&lit, &plan, |key| *key == "b");
+        assert_eq!(
+            todo,
+            [Step::Off("a"), Step::Mode("b"), Step::On("c")],
+            "d is off already and needs nothing"
+        );
+        assert!(steps(&lit, &[("a", true), ("b", true)], |_| false).is_empty());
+    }
+
+    #[test]
+    fn something_is_lit_when_a_change_left_nothing() {
+        assert_eq!(wake_choice(1, &[("a", true)]), None);
+        assert_eq!(wake_choice(0, &[("a", false), ("b", true)]), Some("b"));
+        assert_eq!(wake_choice(0, &[("a", false), ("b", false)]), Some("a"));
+        assert_eq!(wake_choice::<&str>(0, &[]), None);
     }
 
     #[test]
