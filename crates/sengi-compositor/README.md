@@ -154,6 +154,17 @@ while the pointer does something. Lines starting with `#` are comments. Steps go
 the same code as real input. Leave time between a step and the screenshot
 that should show its effect; clients answer asynchronously.
 
+### Several screens, headless
+
+`--outputs 1280x720,800x600` makes several headless screens side by side,
+named HEADLESS-1 and so on; `1920x1080:panel` makes one that has a list of
+modes of its own, as a real display has, where a plain one takes any size.
+With a screenshot the screens come out as one picture, in order. A build
+with `test-hooks` also takes a line on the control socket (the `.control`
+file beside the Wayland socket): `plug 800x600 [NAME] [panel]`, `unplug
+NAME`, and `do STEP` for any script step, which is how `tests/outputs.rs`
+plugs screens and moves the pointer without waiting on a clock.
+
 ## What works
 
 Checked by running it in the builder VM, mostly headless with scripted input
@@ -289,9 +300,35 @@ wlr-screencopy and looks at the pixels.
   drawn over the top layer, bar and dock included, for as long as it is
   the window in front; leaving puts it back where it was. A window that
   asks before it is first shown starts that way.
-- viewporter and fractional-scale, and `--scale FACTOR` for all outputs: 2
-  is announced as it is, 1.5 as 2 to those who cannot take a fraction and
-  as 1.5 to those who ask.
+- viewporter and fractional-scale. Every output has its own scale, 0.5 to
+  4, which Settings sets (`--scale FACTOR` is the scale of the outputs it
+  has not set): 2 is announced as it is, 1.5 as 2 to those who cannot
+  take a fraction and as 1.5 to those who ask. Each window is told the
+  scale of the output most of it is on, and is drawn at each output's own
+  scale where it is over two.
+- Several outputs, and wlr-output-management (version 4, the one
+  Settings' Display page speaks): every output is a head with its modes,
+  position, scale and turn, switched on or off. A configuration is
+  checked and put in place whole or refused (`failed`), a serial that is
+  out of date is `cancelled`, and one that would switch every output off
+  or lay two over each other is refused. A head that is not given a
+  place keeps to its neighbours: when an output gets smaller or larger the
+  ones beside it move up to it, so that the pointer can still cross. The
+  layout is kept in `sengi-os/outputs.toml` beside the settings file, and
+  read at the start, when a screen is plugged in and on SIGHUP. A change a
+  program makes is saved twenty seconds after the last one, which is
+  longer than the fifteen seconds Settings gives a change before it takes
+  it back, so a change nobody keeps is never what is saved. Screens in
+  the file that are not there are kept and ignored. New windows, the
+  switcher and the menus come up on the output the pointer is on; a
+  maximised, snapped or fullscreen window uses the output it is on; a bar
+  takes room on its own output only. A window goes with its output when
+  it is moved in Settings, and to the one that is left when its output
+  is pulled out or switched off, fullscreen ones to fill that one.
+- Adaptive sync is not offered: a head says it is off, and turning it on
+  is refused. A saved screen is found by make, model and serial when it
+  has a serial, else by its name; the DRM backend does not read the
+  display's EDID, so for now that means the connector name.
 - Pointer constraints and relative pointer: a locked pointer stays where
   it is and its movement is still reported; a confined one does not leave
   its surface or the region named. A constraint begins when the pointer
@@ -310,13 +347,14 @@ wlr-screencopy and looks at the pixels.
 - GLES costs memory that is Mesa's, not ours: Debian's `libgallium` links
   libLLVM, and about 42 MB of it are resident in any process that opens
   EGL, labwc included. See "Memory" below.
-- Unplugging a display is handled (bars closed, windows moved to a screen
-  that is left) but only unit-tested; the test guest cannot unplug.
-- With several screens: new windows open on the first one, absolute
-  pointing devices map to the first one, popups are constrained to the
-  first screen, a taskbar is told every window is on the first screen, screens line up left to right in the order found with no
-  way to arrange them or pick a mode, and a gap left by an unplugged
-  screen is not closed.
+- Unplugging a display, changing its mode, switching one off and on and
+  turning it have been tried on the headless backend only. The DRM code
+  for them compiles and is checked by clippy, but nothing has driven a real
+  connector, CRTC or mode change with it: a mode change goes through
+  `DrmCompositor::use_mode` and a repaint, and a failed step is taken back
+  as far as it can be. The cursor is turned with the output, which is not
+  what a rotated panel wants. Adaptive sync is not there.
+- With several screens: absolute pointing devices map to the first one.
 - The touchpad settings (tap to click, disable while typing) have not
   been seen working: there is no touchpad in a VM.
 - In the 0.3.0 live image, Ctrl+Alt+Fn is refused by logind ("failed to
@@ -347,7 +385,7 @@ wlr-screencopy and looks at the pixels.
 - Nested under winit the host's keyboard layout is not followed.
 - No dmabuf on the pixman path, so GPU clients fall back to software
   there. No `wl_drm`; Mesa finds the device through dmabuf feedback.
-- Missing protocols: text-input, output management, virtual keyboard and
+- Missing protocols: text-input, virtual keyboard and
   pointer, ext-foreign-toplevel-list, ext-image-copy-capture (screen
   copies are wlr-screencopy's, which is what grim in Debian stable uses).
 - X11 programs run through XWayland, which starts once, at the start of a
@@ -366,9 +404,6 @@ wlr-screencopy and looks at the pixels.
   a transient window is not centred or kept above its parent; a window
   that withdraws and maps again is placed anew; moves and resizes a program
   asks for itself are not honoured, only the title bar's.
-- With `--scale` other than 1, title bars and the cursor are drawn for
-  scale 1 and enlarged, so they are the right size but soft. Nothing sets
-  the scale yet but the command line.
 - Clients started with `-s` or a key binding are not stopped when the
   compositor exits; they quit on their own when the socket closes.
 - Frame time has not been measured.
@@ -403,8 +438,8 @@ and so counts as dirty.
 
 1. Run it on the target laptop: GLES on i915, the cursor plane, VT
    switching under logind, the touchpad, suspend, idle RAM and frame time.
-2. Arranging screens and choosing modes, windows and popups that know
-   which screen they are on.
+2. Arranging screens and choosing modes on real displays, with the
+   hardware to see it.
 3. Seeing the panel really go dark and come back on the laptop.
 4. screencopy (grim, and the CI screenshot), output management, primary
    selection, xdg-activation, fractional scale, pointer constraints and
