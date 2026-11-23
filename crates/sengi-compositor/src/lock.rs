@@ -516,6 +516,7 @@ impl SessionLockHandler for State {
             window::finish_resize(&window);
         }
         self.hovered_button = None;
+        self.hovered_group = None;
         self.frame_cursor = None;
         self.overlay = None;
         self.layer_focus = None;

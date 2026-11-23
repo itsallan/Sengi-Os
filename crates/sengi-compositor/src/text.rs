@@ -3,6 +3,7 @@
 use std::{
     env, fs,
     path::{Path, PathBuf},
+    rc::Rc,
 };
 
 use ab_glyph::{point, Font as _, FontVec, PxScale, ScaleFont as _};
@@ -17,9 +18,13 @@ const FITTED_CHARS: usize = 300;
 /// How deep font directories are searched.
 const MAX_DEPTH: usize = 4;
 
+/// A loaded typeface at one size. Cloning shares the font data.
+#[derive(Clone)]
 pub struct Font {
-    font: FontVec,
+    font: Rc<FontVec>,
     scale: PxScale,
+    px: u32,
+    path: PathBuf,
 }
 
 /// The style name font files use for a CSS-like weight.
@@ -104,10 +109,27 @@ impl Font {
     /// Loads `family` for text `px` pixels tall (the em size).
     pub fn load(family: &str, weight: u32, px: u32) -> Option<Self> {
         let path = find(family, weight)?;
-        let font = FontVec::try_from_vec(fs::read(path).ok()?).ok()?;
+        let font = FontVec::try_from_vec(fs::read(&path).ok()?).ok()?;
         // ab_glyph scales by line height, the tokens give the em size.
         let scale = font.pt_to_px_scale(px as f32 * 72.0 / 96.0)?;
-        Some(Self { font, scale })
+        Some(Self {
+            font: Rc::new(font),
+            scale,
+            px,
+            path,
+        })
+    }
+
+    /// Like `load`, but when `weight` resolves to the file `other` is from,
+    /// at the same size, that font is shared instead of read a second time.
+    /// The one file is also what a lighter or heavier weight falls back to
+    /// when the family has no file for it.
+    pub fn load_or_share(family: &str, weight: u32, px: u32, other: Option<&Font>) -> Option<Self> {
+        let path = find(family, weight)?;
+        match other {
+            Some(other) if other.path == path && other.px == px => Some(other.clone()),
+            _ => Self::load(family, weight, px),
+        }
     }
 
     /// `text` as one line that is at most `max_width` pixels wide. What does

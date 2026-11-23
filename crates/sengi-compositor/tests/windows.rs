@@ -534,3 +534,52 @@ fn the_pointer_over_the_buttons_shows_the_glyphs() {
         hovered.write_ppm(&dir.join("window-hovered.ppm")).unwrap();
     }
 }
+
+/// Pressing a button the pointer already rests on changes nothing but the
+/// press, and the button is still drawn held down.
+#[test]
+fn a_button_is_drawn_darker_while_it_is_held() {
+    let compositor = Compositor::start(None);
+    let mut app = compositor.connect();
+    app.keyboard().unwrap();
+    let _window = app.decorated_window(GREEN).unwrap();
+    assert!(app.wait(SOON, |seen| seen.keyboard_enters == 1));
+    let plain = app.capture().unwrap();
+    let (x0, y0, x1, y1) = bounds(&plain, token("color.window-close")).unwrap();
+    drop(app);
+    drop(compositor);
+
+    let (cx, cy) = ((x0 + x1) / 2, (y0 + y1) / 2);
+    // On the button at 1.5 s, held from 2 s on, never let go.
+    let script = format!("1500 move {cx} {cy}\n2000 press left\n");
+    let compositor = Compositor::start_with(None, None, Some(&script));
+    let mut app = compositor.connect();
+    app.keyboard().unwrap();
+    let _window = app.decorated_window(GREEN).unwrap();
+    app.wait(Duration::from_secs(4), |_| false);
+    let held = app.capture().unwrap();
+    // Left of the glyph, still inside the circle.
+    let (x, y) = (x0, cy);
+    let fill = sengi_tokens::Tokens::builtin()
+        .color("color.window-close")
+        .unwrap();
+    let darker = |v: u8| u32::from(v) * 85 / 100;
+    let want = darker(fill.r) << 16 | darker(fill.g) << 8 | darker(fill.b);
+    let got = held.at(x, y);
+    for shift in [16, 8, 0] {
+        let (a, b) = ((got >> shift) & 0xff, (want >> shift) & 0xff);
+        assert!(
+            a.abs_diff(b) <= 3,
+            "held button {got:06x}, wanted {want:06x}"
+        );
+    }
+    assert_ne!(held.at(x, y), plain.at(x, y));
+    // The next button, left of its glyph, is as it was.
+    let (mx, my) = (x0 + 20, cy);
+    assert_eq!(held.at(mx, my), plain.at(mx, my));
+    if let Some(dir) = std::env::var_os("SENGI_SHOTS") {
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        held.write_ppm(&dir.join("window-pressed.ppm")).unwrap();
+    }
+}

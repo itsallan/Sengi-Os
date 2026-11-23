@@ -838,10 +838,7 @@ impl State {
         let key = scale_key(scale);
         let to_pixels = |v: i32| (f64::from(v) * scale).round() as i32;
         let border = logical.metrics.border;
-        let hovered = match &self.hovered_button {
-            Some((hovered, button)) if hovered == window => Some(*button),
-            _ => None,
-        };
+        let group_hovered = self.hovered_group.as_ref() == Some(window);
         // The client picks the window's width, so it must not pick how much
         // memory the title bar takes: nothing wider than the screen is
         // painted, the remainder is a flat fill.
@@ -849,12 +846,22 @@ impl State {
         let painted = full.min(self.max_painted_width(scale));
         let active = self.focus_stack.current() == Some(window);
         let square = data(window).restore.get().is_some();
-        let pressed =
-            matches!(&self.drag, Some(Drag::Press { window: held, .. }) if held == window);
+        // Held down, and the pointer still on it: moving between the buttons
+        // does not change what the bar looks like, only this does.
+        let pressed = match (&self.drag, &self.hovered_button) {
+            (
+                Some(Drag::Press {
+                    window: held,
+                    button,
+                }),
+                Some((over, on)),
+            ) if held == window && over == window && on == button => Some(*button),
+            _ => None,
+        };
         let bar = Titlebar {
             width: to_pixels(painted),
             active,
-            hovered,
+            group_hovered,
             pressed,
             square,
             cut: painted < full,

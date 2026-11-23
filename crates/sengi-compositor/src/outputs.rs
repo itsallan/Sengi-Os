@@ -290,8 +290,12 @@ impl State {
                 None => {
                     let theme = self.theme.scaled(scale);
                     let font = Font::load(&theme.font_family, theme.font_weight, theme.font_px);
-                    let title_font =
-                        Font::load(&theme.font_family, theme.title_weight, theme.font_px);
+                    let title_font = Font::load_or_share(
+                        &theme.font_family,
+                        theme.title_weight,
+                        theme.font_px,
+                        font.as_ref(),
+                    );
                     let cursors = crate::cursor::Cursors::new(&theme, scale);
                     self.painters.push(Painter {
                         scale,

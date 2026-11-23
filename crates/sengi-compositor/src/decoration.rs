@@ -398,11 +398,11 @@ pub struct Titlebar {
     /// Full frame width in pixels.
     pub width: i32,
     pub active: bool,
-    /// The pointer is over the group of buttons, on this one. Every button
-    /// shows its glyph then.
-    pub hovered: Option<Button>,
-    /// The hovered button is held down.
-    pub pressed: bool,
+    /// The pointer is over the group of buttons. Every button shows its
+    /// glyph then, whichever of them the pointer is on.
+    pub group_hovered: bool,
+    /// The button that is held down, with the pointer still on it.
+    pub pressed: Option<Button>,
     /// Maximised windows fill the screen edge to edge and have square
     /// corners.
     pub square: bool,
@@ -474,7 +474,7 @@ fn draw_light(canvas: &mut Canvas, theme: &Theme, bar: &Titlebar, button: Button
     } else {
         (theme.light_inactive, theme.light_inactive)
     };
-    if bar.pressed && bar.hovered == Some(button) {
+    if bar.pressed == Some(button) {
         fill = darken(fill, theme.pressed_darken);
         ring = darken(ring, theme.pressed_darken);
     }
@@ -483,7 +483,7 @@ fn draw_light(canvas: &mut Canvas, theme: &Theme, bar: &Titlebar, button: Button
     canvas.fill(Rounded::circle(cx, cy, radius), ring);
     canvas.fill(Rounded::circle(cx, cy, radius - theme.ring), fill);
 
-    if bar.hovered.is_none() {
+    if !bar.group_hovered {
         return;
     }
     // The ends are pulled in by half the stroke, which the round caps give
@@ -576,8 +576,8 @@ mod tests {
         Titlebar {
             width: 400,
             active,
-            hovered: None,
-            pressed: false,
+            group_hovered: false,
+            pressed: None,
             square: false,
             cut: false,
         }
@@ -646,8 +646,8 @@ mod tests {
         let bar = Titlebar {
             width: 604,
             active: true,
-            hovered: None,
-            pressed: false,
+            group_hovered: false,
+            pressed: None,
             square: false,
             cut: false,
         };
@@ -722,10 +722,14 @@ mod tests {
     }
 
     fn near(a: [u8; 4], b: Rgba) -> bool {
+        within(a, b, 2)
+    }
+
+    fn within(a: [u8; 4], b: Rgba, tolerance: u8) -> bool {
         a[..3]
             .iter()
             .zip([b.r, b.g, b.b])
-            .all(|(x, y)| x.abs_diff(y) <= 2)
+            .all(|(x, y)| x.abs_diff(y) <= tolerance)
     }
 
     #[test]
@@ -742,18 +746,16 @@ mod tests {
     }
 
     #[test]
-    fn the_buttons_are_round_and_have_a_ring() {
+    fn the_buttons_are_round() {
         let theme = theme();
         let canvas = draw_titlebar(&theme, &bar(true), None);
         for (index, button) in BUTTONS.into_iter().enumerate() {
             let rect = theme.metrics.button_rect(button);
-            let look = theme.lights[index];
             let (cx, cy) = centre_of(&theme, button);
-            assert!(near(canvas.pixel(cx, cy), look.fill), "{button:?} fill");
-            // The ring is half a pixel wide, so on a whole pixel it only
-            // tints the edge towards its own colour.
-            let edge = canvas.pixel(rect.x as usize, cy);
-            assert_ne!(edge, canvas.pixel(cx, cy), "{button:?} has a ring");
+            assert!(
+                near(canvas.pixel(cx, cy), theme.lights[index].fill),
+                "{button:?} fill"
+            );
             // The corner of the square is not part of a circle.
             assert!(
                 near(canvas.pixel(rect.x as usize, rect.y as usize), theme.active),
@@ -762,24 +764,129 @@ mod tests {
         }
     }
 
+    /// The pixel at the left rim of a button, where the ring is.
+    fn rim(canvas: &Canvas, theme: &Theme, button: Button) -> [u8; 4] {
+        let rect = theme.metrics.button_rect(button);
+        canvas.pixel(rect.x as usize, (rect.y + rect.h / 2) as usize)
+    }
+
     #[test]
-    fn glyphs_show_on_all_three_buttons_while_the_group_is_hovered() {
-        let theme = theme();
-        let plain = draw_titlebar(&theme, &bar(true), None);
-        let mut hovered = bar(true);
-        hovered.hovered = Some(Button::Minimise);
-        let canvas = draw_titlebar(&theme, &hovered, None);
+    fn the_ring_is_drawn_in_its_own_colour_at_the_rim() {
+        // A ring two pixels wide makes the colours plain to read: the rim
+        // pixel is all ring, the next one in all fill.
+        let mut theme = theme();
+        theme.ring = 2.0;
+        let canvas = draw_titlebar(&theme, &bar(true), None);
         for (index, button) in BUTTONS.into_iter().enumerate() {
-            let (cx, cy) = centre_of(&theme, button);
             let look = theme.lights[index];
-            assert!(near(plain.pixel(cx, cy), look.fill), "{button:?} bare");
-            // Strokes of 1.5 px cover the centre pixel at least in part.
-            let c = canvas.pixel(cx, cy);
-            assert_ne!(c, plain.pixel(cx, cy), "{button:?} shows a glyph");
+            let rect = theme.metrics.button_rect(button);
+            let y = (rect.y + rect.h / 2) as usize;
             assert!(
-                c[0].abs_diff(look.glyph.r) < plain.pixel(cx, cy)[0].abs_diff(look.glyph.r),
-                "{button:?} glyph colour"
+                within(rim(&canvas, &theme, button), look.ring, 8),
+                "{button:?}"
             );
+            assert!(
+                near(canvas.pixel(rect.x as usize + 3, y), look.fill),
+                "{button:?} inside the ring"
+            );
+            assert_ne!(look.ring, look.fill);
+        }
+    }
+
+    #[test]
+    fn the_token_ring_tints_the_rim_and_no_ring_does_not() {
+        let with = theme();
+        let mut without = theme();
+        without.ring = 0.0;
+        let drawn = draw_titlebar(&with, &bar(true), None);
+        let bare = draw_titlebar(&without, &bar(true), None);
+        for (index, button) in BUTTONS.into_iter().enumerate() {
+            let look = with.lights[index];
+            let (ring, plain) = (rim(&drawn, &with, button), rim(&bare, &without, button));
+            assert_ne!(ring, plain, "{button:?} has a ring");
+            // The rim with a ring is nearer the ring's colour.
+            let away = |p: [u8; 4]| {
+                (0..3)
+                    .map(|i| {
+                        u32::from(p[i])
+                            .abs_diff(u32::from([look.ring.r, look.ring.g, look.ring.b][i]))
+                    })
+                    .sum::<u32>()
+            };
+            assert!(
+                away(ring) < away(plain),
+                "{button:?} rim tinted by the ring"
+            );
+        }
+    }
+
+    /// Which pixels of the button's square are not what the same button
+    /// looks like without its glyph, and so belong to the glyph.
+    fn glyph_pixels(theme: &Theme, button: Button) -> Vec<(i32, i32)> {
+        let plain = draw_titlebar(theme, &bar(true), None);
+        let mut hovered = bar(true);
+        hovered.group_hovered = true;
+        let shown = draw_titlebar(theme, &hovered, None);
+        let rect = theme.metrics.button_rect(button);
+        let mut found = Vec::new();
+        for y in rect.y..rect.y + rect.h {
+            for x in rect.x..rect.x + rect.w {
+                if shown.pixel(x as usize, y as usize) != plain.pixel(x as usize, y as usize) {
+                    found.push((x - rect.x, y - rect.y));
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn each_button_has_its_own_glyph_in_the_glyph_colour() {
+        let theme = theme();
+        let (cross, minus, plus) = (
+            glyph_pixels(&theme, Button::Close),
+            glyph_pixels(&theme, Button::Minimise),
+            glyph_pixels(&theme, Button::Maximise),
+        );
+        assert_ne!(cross, minus);
+        assert_ne!(cross, plus);
+        assert_ne!(minus, plus);
+
+        // The button is 12 across, the centre between pixels 5 and 6.
+        let has = |set: &[(i32, i32)], x, y| set.contains(&(x, y));
+        // The cross covers the diagonals and not the middle of the edges.
+        assert!(has(&cross, 4, 4) && has(&cross, 7, 7));
+        assert!(has(&cross, 7, 4) && has(&cross, 4, 7));
+        assert!(!has(&cross, 5, 2) && !has(&cross, 2, 5));
+        // The minus is a bar across the middle and nothing above it.
+        assert!(has(&minus, 4, 5) && has(&minus, 7, 6));
+        assert!(
+            minus.iter().all(|(_, y)| *y >= 5),
+            "no pixel of the minus above the centre: {minus:?}"
+        );
+        assert!(minus.iter().all(|(_, y)| *y <= 6));
+        // The plus has the bar and a stroke up and down through the centre.
+        assert!(has(&plus, 4, 5) && has(&plus, 5, 3) && has(&plus, 6, 8));
+        assert!(plus.iter().any(|(_, y)| *y < 5));
+        assert!(!has(&plus, 3, 3));
+
+        // The strokes are in the glyph colour: the pixel in the middle of
+        // each is closer to it than to the fill it sits on.
+        let canvas = {
+            let mut hovered = bar(true);
+            hovered.group_hovered = true;
+            draw_titlebar(&theme, &hovered, None)
+        };
+        for (index, button) in BUTTONS.into_iter().enumerate() {
+            let rect = theme.metrics.button_rect(button);
+            let look = theme.lights[index];
+            let (x, y) = (rect.x as usize + 5, rect.y as usize + 5);
+            let got = canvas.pixel(x, y);
+            let distance = |c: Rgba| {
+                (0..3)
+                    .map(|i| u32::from(got[i]).abs_diff(u32::from([c.r, c.g, c.b][i])))
+                    .sum::<u32>()
+            };
+            assert!(distance(look.glyph) < distance(look.fill), "{button:?}");
         }
     }
 
@@ -798,8 +905,8 @@ mod tests {
     fn a_pressed_button_is_fifteen_percent_darker() {
         let theme = theme();
         let mut held = bar(true);
-        held.hovered = Some(Button::Close);
-        held.pressed = true;
+        held.group_hovered = true;
+        held.pressed = Some(Button::Close);
         let canvas = draw_titlebar(&theme, &held, None);
         // Away from the glyph, still inside the circle.
         let rect = theme.metrics.button_rect(Button::Close);

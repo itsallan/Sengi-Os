@@ -268,6 +268,9 @@ pub struct State {
     pub layer_focus: Option<WlSurface>,
     /// The title bar button under the pointer.
     pub hovered_button: Option<(Window, Button)>,
+    /// The window whose group of buttons, with the space between them, the
+    /// pointer is over.
+    pub hovered_group: Option<Window>,
     /// A move, resize or button press the pointer is in the middle of.
     pub drag: Option<Drag>,
     /// The last press on a title bar: a second one right after maximises.
@@ -542,6 +545,7 @@ impl State {
             focus_stack: FocusStack::default(),
             layer_focus: None,
             hovered_button: None,
+            hovered_group: None,
             drag: None,
             titlebar_press: None,
             pointer_stale: false,
@@ -1028,6 +1032,9 @@ impl State {
             .is_some_and(|(w, _)| w == window)
         {
             self.hovered_button = None;
+        }
+        if self.hovered_group.as_ref() == Some(window) {
+            self.hovered_group = None;
         }
         if self
             .titlebar_press
