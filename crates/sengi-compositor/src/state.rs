@@ -4,7 +4,7 @@ use std::{
     collections::{HashMap, VecDeque},
     error::Error,
     ffi::OsString,
-    io::Read,
+    io::{Read, Write},
     os::{
         fd::AsRawFd,
         unix::{
@@ -172,6 +172,8 @@ pub struct State {
     pub login_screen: bool,
     /// The program of `--session`: when it ends, so do we.
     session_child: Option<u32>,
+    /// How the `--session` program ended, once it has.
+    session_status: Option<std::process::ExitStatus>,
     /// Buttons whose press lit a dark screen and went no further; their
     /// release goes no further either.
     pub wake_buttons: Vec<u32>,
@@ -213,6 +215,8 @@ pub struct State {
     pub lock_tries: u32,
     /// Where `--lock` is asked for; the file goes when we do.
     _control: ControlSocket,
+    /// The file that tells compositor.sh we are up; it goes with us.
+    ready_marker: Option<ReadyMarker>,
     /// Switches to another virtual terminal, where the backend can.
     pub switch_vt: Option<Box<dyn FnMut(i32)>>,
     /// Frames shown on a real screen so far. Stays zero on backends that
@@ -226,10 +230,9 @@ pub struct State {
     pub xwayland_shell_state: XWaylandShellState,
     /// Xwayland, while it is wanted: see `x11.rs`.
     pub x11: Option<x11::Session>,
-    /// Programs started while Xwayland was starting, and whether each is the
-    /// session program. They run when it is ready, with its DISPLAY, or
-    /// without one if it never is.
-    pub held_commands: Vec<(String, bool)>,
+    /// The display number Xwayland last ran on, kept so that it comes back
+    /// on the same one and the DISPLAY of programs still running stays right.
+    pub x11_display: Option<u32>,
     /// Counts the Xwayland instances, so that a late timer can tell whether
     /// it is for the one that runs now.
     pub x11_generation: u64,
@@ -485,6 +488,7 @@ impl State {
             output_power,
             login_screen: false,
             session_child: None,
+            session_status: None,
             wake_buttons: Vec::new(),
             overlay_buttons: Vec::new(),
             capture: None,
@@ -508,6 +512,7 @@ impl State {
             control_count: 0,
             lock_tries: 0,
             _control: control,
+            ready_marker: None,
             switch_vt: None,
             page_flips: 0,
             cursor_plane_frames: 0,
@@ -515,7 +520,7 @@ impl State {
             dmabuf_state: DmabufState::new(),
             xwayland_shell_state: XWaylandShellState::new::<Self>(&dh2),
             x11: None,
-            held_commands: Vec::new(),
+            x11_display: None,
             x11_generation: 0,
             x11_gave_up: false,
             dmabuf_import: None,
@@ -584,16 +589,23 @@ impl State {
             state.refresh_idle_inhibit();
             state.update_preferred_scales();
             state.reap_children();
+            state.forget_gone_security_contexts();
             state.watch_locker();
             let _ = state.display_handle.flush_clients();
         })?;
 
         self.flush_output_layout();
-            state.forget_gone_security_contexts();
         if self.failed {
             return Err("rendering failed".into());
         }
-        Ok(())
+        // The compositor ends with the program it ran, so that whoever
+        // started us can tell a session that failed from one that ended.
+        match self.session_status {
+            Some(status) if !status.success() => {
+                Err(format!("the session program ended with {status}").into())
+            }
+            _ => Ok(()),
+        }
     }
 
     pub fn set_redraw_ping(&mut self, ping: Ping) {
@@ -761,29 +773,18 @@ impl State {
         }
     }
 
-    /// Whether a program started now has to wait for Xwayland: it is
-    /// starting, or this starts it again after it exited.
-    fn must_wait_for_xwayland(&mut self) -> bool {
-        match &self.x11 {
-            Some(session) => session.display.is_none(),
-            None => self.start_xwayland(),
-        }
-    }
-
     /// Runs `command` with the shell as a client of this compositor. It
-    /// waits for Xwayland to be ready, so that it gets a DISPLAY, but not
-    /// for longer than the timeout in `x11.rs`; then it runs without one.
-    /// Returns None while it waits; the pid is not known then.
+    /// gets the DISPLAY of Xwayland at once, whether Xwayland is ready yet or
+    /// not: an X11 client waits on the socket, nothing else waits for it.
+    /// A program started after Xwayland has exited brings it back.
     pub fn spawn(&mut self, command: &str) -> Option<u32> {
-        if self.must_wait_for_xwayland() {
-            self.held_commands.push((command.to_string(), false));
-            return None;
-        }
+        self.start_xwayland();
         self.spawn_plain(command)
     }
 
-    /// Gives `command` the DISPLAY of Xwayland when it is up. Without it the
-    /// DISPLAY it inherited would name some other server, so it is removed.
+    /// Gives `command` the DISPLAY of Xwayland when it is running or starting.
+    /// Without it the DISPLAY it inherited would name some other server, so
+    /// it is removed.
     fn give_display(&self, command: &mut Command) {
         match self.display_name() {
             Some(display) => {
@@ -928,26 +929,38 @@ impl State {
     /// as zombies.
     fn reap_children(&mut self) {
         let session = self.session_child;
-        let mut session_ended = false;
+        let mut session_ended = None;
         self.children.retain_mut(|child| {
-            let ended = matches!(child.try_wait(), Ok(Some(_)));
-            session_ended |= ended && Some(child.id()) == session;
-            !ended
+            let status = child.try_wait().ok().flatten();
+            if Some(child.id()) == session {
+                session_ended = session_ended.or(status);
+            }
+            status.is_none()
         });
-        if session_ended {
+        if let Some(status) = session_ended {
             self.session_child = None;
+            self.session_status = Some(status);
             self.loop_signal.stop();
             self.loop_signal.wakeup();
+        }
+    }
+
+    /// Says the compositor is up: a screen is lit and the session program or
+    /// the login screen has been started. Not if that failed.
+    pub fn mark_ready(&mut self) {
+        if self.failed || self.ready_marker.is_some() {
+            return;
+        }
+        match ReadyMarker::create() {
+            Ok(marker) => self.ready_marker = Some(marker),
+            Err(err) => crate::say!("cannot write the ready file: {err}"),
         }
     }
 
     /// `--session`: runs `command` and ends with it, the way a login
     /// screen's compositor has to for the login to go on.
     pub fn run_session(&mut self, command: &str) {
-        if self.must_wait_for_xwayland() {
-            self.held_commands.push((command.to_string(), true));
-            return;
-        }
+        self.start_xwayland();
         let pid = self.spawn_plain(command);
         self.session_started(pid);
     }
@@ -1224,6 +1237,40 @@ impl ControlSocket {
 }
 
 impl Drop for ControlSocket {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// What the file that says the compositor is up is called, in
+/// `XDG_RUNTIME_DIR`. No Wayland socket is named like that.
+pub const READY_FILE: &str = "sengi-compositor.ready";
+
+/// The file `compositor.sh` waits for: it exists from the moment a screen is
+/// lit and the session program runs until the compositor is gone.
+struct ReadyMarker {
+    path: PathBuf,
+}
+
+impl ReadyMarker {
+    fn create() -> Result<Self, Box<dyn Error>> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let dir = std::env::var_os("XDG_RUNTIME_DIR")
+            .filter(|dir| !dir.is_empty())
+            .ok_or("XDG_RUNTIME_DIR is not set")?;
+        let path = PathBuf::from(dir).join(READY_FILE);
+        let _ = std::fs::remove_file(&path);
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)?;
+        writeln!(file, "{}", std::process::id())?;
+        Ok(Self { path })
+    }
+}
+
+impl Drop for ReadyMarker {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
     }

@@ -543,6 +543,8 @@ fn programs_get_the_display_whether_started_by_the_session_or_later() {
     if !xwayland_installed("programs_get_the_display_whether_started_by_the_session_or_later") {
         return;
     }
+    // The startup program is not held for Xwayland, which takes a moment to
+    // report ready; its DISPLAY is the one Xwayland comes up on.
     let (later, startup) = (scratch("display-later"), scratch("display-startup"));
     let script = format!("2500 spawn echo $DISPLAY > {}\n", later.display());
     let startup_command = format!("echo $DISPLAY > {}", startup.display());
@@ -554,7 +556,7 @@ fn programs_get_the_display_whether_started_by_the_session_or_later() {
 }
 
 #[test]
-fn programs_held_for_a_slow_xwayland_run_without_a_display() {
+fn programs_are_not_held_for_a_slow_xwayland_and_get_its_display() {
     // A fake Xwayland that never reports ready, first on the path.
     let dir = std::env::temp_dir().join(format!("sengi-x11-fake-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -566,18 +568,51 @@ fn programs_held_for_a_slow_xwayland_run_without_a_display() {
         dir.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let out = scratch("display-slow");
-    let script = format!("500 spawn echo \"[$DISPLAY]\" > {}\n", out.display());
-    let compositor = Compositor::start_in(None, None, Some(&script), &[("PATH", &path)]);
+    let (startup, early, late) = (
+        scratch("display-slow-startup"),
+        scratch("display-slow-early"),
+        scratch("display-slow-late"),
+    );
+    let startup_command = format!("echo \"[$DISPLAY]\" > {}", startup.display());
+    let script = format!(
+        "500 spawn echo \"[$DISPLAY]\" > {}\n7500 spawn echo \"[$DISPLAY]\" > {}\n",
+        early.display(),
+        late.display()
+    );
     let started = Instant::now();
-    // It was held, then released after the timeout without a display.
+    let compositor =
+        Compositor::start_args_in(&["-s", &startup_command], Some(&script), &[("PATH", &path)]);
+    // The display is known before Xwayland has said anything.
+    let end = Instant::now() + Duration::from_secs(3);
+    let mut announced = None;
+    while announced.is_none() && Instant::now() < end {
+        announced = compositor
+            .said("Xwayland starting on :")
+            .and_then(|line| line.rsplit(':').next()?.trim().parse::<u32>().ok());
+        sleep(Duration::from_millis(20));
+    }
+    let number = announced.expect("the display number is not announced at the start");
+    let want = format!("[:{number}]\n");
+
+    // Neither the startup program nor one started a moment later waited for
+    // the five seconds Xwayland is given: both ran, with its DISPLAY.
     assert_eq!(
-        contents(&out, Duration::from_secs(12)).as_deref(),
-        Some("[]\n")
+        contents(&startup, Duration::from_secs(3)).as_deref(),
+        Some(want.as_str())
+    );
+    assert_eq!(
+        contents(&early, Duration::from_secs(3)).as_deref(),
+        Some(want.as_str())
     );
     assert!(
-        started.elapsed() > Duration::from_secs(3),
-        "the program ran before the timeout"
+        started.elapsed() < Duration::from_secs(4),
+        "a program waited for Xwayland"
+    );
+
+    // Once Xwayland is given up, what is started after that has no display.
+    assert_eq!(
+        contents(&late, Duration::from_secs(12)).as_deref(),
+        Some("[]\n")
     );
     assert!(compositor.said("did not report ready in time").is_some());
     assert!(compositor.status().contains("session"));

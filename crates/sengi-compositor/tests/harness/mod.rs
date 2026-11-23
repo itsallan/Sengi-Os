@@ -73,6 +73,15 @@ impl Compositor {
         Self::launch(None, None, script, &[], arguments, None)
     }
 
+    /// As `start_args`, with `variables` in the compositor's environment.
+    pub fn start_args_in(
+        arguments: &[&str],
+        script: Option<&str>,
+        variables: &[(&str, &str)],
+    ) -> Self {
+        Self::launch(None, None, script, variables, arguments, None)
+    }
+
     /// Starts the compositor with more on its command line, and the saved
     /// layout of the outputs `layout`, saved after `save_ms` milliseconds.
     pub fn start_with_layout(arguments: &[&str], layout: Option<&str>, save_ms: &str) -> Self {
@@ -122,6 +131,18 @@ impl Compositor {
             sleep(Duration::from_millis(10));
         }
         false
+    }
+
+    /// Waits for the compositor to end by itself and returns how it ended.
+    pub fn exit_status(&mut self) -> Option<std::process::ExitStatus> {
+        let end = Instant::now() + SOON;
+        while Instant::now() < end {
+            if let Ok(Some(status)) = self.child.try_wait() {
+                return Some(status);
+            }
+            sleep(Duration::from_millis(10));
+        }
+        None
     }
 
     /// As `start`, with the settings file `settings` in a configuration
