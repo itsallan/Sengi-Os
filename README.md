@@ -42,9 +42,12 @@ sengi-installer puts Sengi OS on a disk from the live session; see
 [Installing](#installing). The writing is done by sengi-install, a program
 without a window that the installer starts as root.
 
-The compositor (labwc) is still an existing component configured to the
-Sengi OS look; a later release replaces it with sengi-compositor, which is
-being developed on its own branch. See [ROADMAP.md](ROADMAP.md).
+The compositor (labwc) is still the default, an existing component configured
+to the Sengi OS look. sengi-compositor, our own, is in the repository and in
+the ISO as a preview, chosen at the boot menu or by a word on the kernel
+command line, with labwc as the fallback if it fails; a later release makes
+it the default. See [ROADMAP.md](ROADMAP.md) and
+[its README](crates/sengi-compositor/README.md).
 
 ## Building the ISO
 

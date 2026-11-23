@@ -3,6 +3,63 @@
 All notable changes to Sengi OS. Each release section lists what is in its ISO
 and the measured idle RAM and boot time.
 
+## Unreleased
+
+sengi-compositor, our own compositor, grows towards replacing labwc. labwc
+is still the default; nothing here changes what starts unless asked.
+
+### Added
+
+- sengi-compositor runs the whole session: xdg windows with our title bar,
+  frame and rounded corners, an Alt+Tab switcher, the desktop and window
+  menus, edge snapping, fullscreen, several screens with their own scale,
+  mode and place (Settings' Display page speaks to it), screen capture,
+  primary selection, activation, fractional scale, pointer constraints and
+  the lock screen and login screen. It starts Xwayland with the session, so
+  X11 programs run.
+- The boot menu of the live image has an entry "Sengi OS (labwc
+  compositor)" that forces labwc, beside the "sengi-compositor preview"
+  entry. The word `sengi.compositor=labwc`, or `labwc` in
+  /etc/sengi-os/compositor or /run/sengi-os.compositor, does the same on
+  any system and wins over `own`.
+- The session falls back to labwc if sengi-compositor does not come up. It
+  writes a ready file once a screen is lit and the session program runs;
+  if that file is not there in 15 seconds the compositor is ended, and one
+  that exits with an error within ten seconds is replaced too, the login
+  screen as well as the session. After any error exit the rest of that boot
+  uses labwc.
+- If drawing keeps failing, 20 frames in a row, the compositor switches to
+  drawing on the CPU, and if that fails it exits with an error, which the
+  fallback above then covers.
+- scripts/test-compositor-sh.sh tests the choice of compositor and the
+  fallbacks; CI runs it.
+
+### Changed
+
+- The start-up programs (bar, dock, wallpaper, idle timer) no longer wait
+  for Xwayland, which cost up to five seconds when it was slow. The display
+  is chosen first and every program gets it at once; an X11 program that
+  starts early waits on the socket.
+- sengi-compositor ends with an error when the program it runs fails, where
+  it used to end as if all were well.
+- A window that is minimised or on no screen no longer keeps the screen on
+  and the lock from coming. Programs in a sandbox are not offered the
+  idle-inhibit protocol, so a Flatpak app cannot turn the auto-lock off.
+- The boot test fails if the idle RAM or the boot time is missing from its
+  report; before it passed.
+
+### Known limits
+
+- sengi-compositor has run in virtual machines only, not on a real
+  machine, and not yet on the ZenBook.
+- No brightness or Fn keys and no lid handling: a closed lid with an
+  external monitor keeps the laptop panel in the layout.
+- No clipboard between X11 and Wayland programs, no text-input, and no
+  touch or tablet support.
+- Scales 2 and 1.5 have not been looked at on the image.
+- The fall back from a GPU that cannot draw has not been run with a broken
+  GPU.
+
 ## 0.7.0
 
 An installer: Sengi OS can be put on a computer's disk.
