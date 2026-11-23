@@ -61,7 +61,7 @@ each `- [ ]` line is an issue.
 
 ## 0.8
 
-- [ ] sengi-compositor switched in, as stable as the compositor it replaces
+- [x] sengi-compositor switched in, as stable as the compositor it replaces
 
 ## 1.0
 
