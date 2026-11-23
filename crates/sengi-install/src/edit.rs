@@ -490,7 +490,9 @@ user = \"live\"
         let entry = GRUB_TEXT_ENTRY;
         assert!(entry.starts_with("#!/bin/sh\n"));
         // Both entries, labwc first, each with its own word.
-        let labwc = entry.find("menuentry 'Sengi OS (labwc compositor)'").unwrap();
+        let labwc = entry
+            .find("menuentry 'Sengi OS (labwc compositor)'")
+            .unwrap();
         let text = entry.find("menuentry 'Sengi OS, text mode").unwrap();
         assert!(labwc < text);
         let labwc_line = entry
