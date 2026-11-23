@@ -1,10 +1,11 @@
 //! X11 programs, through Xwayland, and the windows they make.
 //!
-//! Xwayland is not started at boot. The first program the user starts while
-//! it is not up starts it (see `State::spawn`); that program is held until
-//! Xwayland is ready, so that it finds a DISPLAY, and the programs started
-//! after it get the DISPLAY at once. Xwayland is left down when it exits, its
-//! windows go with it, and the next program started brings it back.
+//! Xwayland is started once, at the start of a normal session (not on the
+//! login screen), so that the dock, bar and launcher, and everything they
+//! start, find a DISPLAY. Programs started while it comes up are held until it
+//! is ready, or for a few seconds at most; then they run without a DISPLAY.
+//! It stays up for the whole session. If it exits, its windows go with it and
+//! the next program started brings it back.
 //!
 //! Smithay starts Xwayland and makes its connection to us as a client; the
 //! window manager on the other end of that connection is `X11Wm`, and the
@@ -13,13 +14,19 @@
 //! Menus from X11 toolkits are override-redirect windows: they are put where
 //! the client asks, drawn, and never framed, focused or listed.
 
-use std::os::unix::net::UnixStream;
+use std::{
+    os::unix::net::UnixStream,
+    time::{Duration, Instant},
+};
 
 use smithay::{
     delegate_xwayland_shell,
     desktop::Window,
     reexports::{
-        calloop::RegistrationToken,
+        calloop::{
+            timer::{TimeoutAction, Timer},
+            RegistrationToken,
+        },
         wayland_server::{protocol::wl_surface::WlSurface, Client},
     },
     utils::{Logical, Rectangle},
@@ -32,8 +39,14 @@ use smithay::{
 
 use crate::{layout::Rect, state::State, window};
 
+/// How long a program is held for Xwayland before it runs without a DISPLAY.
+const READY_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Xwayland, from the moment it is asked for until it is gone.
 pub struct Session {
+    /// Which Xwayland this is, for the timer that watches it come up.
+    generation: u64,
+    started: Instant,
     /// Where the event source of the Xwayland instance is, for removing it.
     token: RegistrationToken,
     /// Xwayland's connection to us as a client, kept for the window manager.
@@ -56,14 +69,19 @@ impl State {
     /// Starts Xwayland if it is not up or starting. Returns whether it is
     /// starting now, so that the programs waiting for it can be held.
     pub fn start_xwayland(&mut self) -> bool {
-        if self.x11.is_some() {
+        // Nobody is logged in on the login screen, so there is nothing for
+        // X11 programs to run for.
+        if self.x11.is_some() || self.login_screen || self.x11_gave_up {
             return false;
         }
         let spawned = XWayland::spawn(
             &self.display_handle,
             None,
             std::iter::empty::<(&str, &str)>(),
-            true,
+            // No abstract socket: any process that shares the network
+            // namespace could connect to it, sandboxed ones too. Only the
+            // socket in /tmp/.X11-unix is used.
+            false,
             std::process::Stdio::null(),
             std::process::Stdio::inherit(),
             |_| {},
@@ -72,6 +90,7 @@ impl State {
             Ok(spawned) => spawned,
             Err(err) => {
                 crate::say!("cannot start Xwayland, X11 programs will not run: {err}");
+                self.x11_gave_up = true;
                 return false;
             }
         };
@@ -86,7 +105,16 @@ impl State {
             });
         match inserted {
             Ok(token) => {
+                self.x11_generation += 1;
+                let generation = self.x11_generation;
+                let timer = Timer::from_duration(READY_TIMEOUT);
+                let _ = self.loop_handle.insert_source(timer, move |_, _, state| {
+                    state.xwayland_overdue(generation);
+                    TimeoutAction::Drop
+                });
                 self.x11 = Some(Session {
+                    generation,
+                    started: Instant::now(),
                     token,
                     client,
                     display: None,
@@ -96,6 +124,7 @@ impl State {
             }
             Err(err) => {
                 crate::say!("cannot watch Xwayland, X11 programs will not run: {err}");
+                self.x11_gave_up = true;
                 false
             }
         }
@@ -110,12 +139,15 @@ impl State {
         match X11Wm::start_wm(handle, socket, session.client.clone()) {
             Ok(wm) => {
                 session.wm = Some(wm);
+                let took = session.started.elapsed().as_millis();
                 crate::say!("Xwayland is up on :{display}");
+                crate::say!("Xwayland took {took} ms to report ready");
             }
             Err(err) => {
                 crate::say!(
                     "Xwayland is up but cannot be managed, X11 programs will not run: {err}"
                 );
+                self.x11_gave_up = true;
                 self.stop_xwayland();
             }
         }
@@ -126,8 +158,25 @@ impl State {
     /// so that a broken Xwayland costs the X11 programs and nothing else.
     fn xwayland_failed(&mut self) {
         crate::say!("Xwayland did not start, X11 programs will not run");
+        self.x11_gave_up = true;
         self.stop_xwayland();
         self.start_held_programs();
+    }
+
+    /// The timer of Xwayland number `generation` ran out. If that one is
+    /// still not ready it is given up, and the programs waiting for it run
+    /// without a DISPLAY.
+    fn xwayland_overdue(&mut self, generation: u64) {
+        let waiting = self
+            .x11
+            .as_ref()
+            .is_some_and(|session| session.generation == generation && session.display.is_none());
+        if waiting {
+            crate::say!("Xwayland did not report ready in time, X11 programs will not run");
+            self.x11_gave_up = true;
+            self.stop_xwayland();
+            self.start_held_programs();
+        }
     }
 
     /// Xwayland is gone, by its own exit or by ours. Its windows go with it.
@@ -146,8 +195,11 @@ impl State {
 
     fn start_held_programs(&mut self) {
         let held = std::mem::take(&mut self.held_commands);
-        for command in held {
-            self.spawn_plain(&command);
+        for (command, is_session) in held {
+            let pid = self.spawn_plain(&command);
+            if is_session {
+                self.session_started(pid);
+            }
         }
     }
 
@@ -292,8 +344,24 @@ impl XwmHandler for State {
         );
         match self.window_for_x11(&window) {
             // On the desktop the compositor says where a window is, and the
-            // size it asks for is what it gets.
+            // size it asks for is what it gets, as far as the usable area
+            // goes, as for an xdg window. A fullscreen one is not held to it.
             Some(managed) if self.space.element_location(&managed).is_some() => {
+                let data = window::data(&managed);
+                let size = if data.fullscreen.get().is_some() {
+                    size
+                } else {
+                    let usable = self.usable_area();
+                    let most = if data.decorated.get() {
+                        self.theme.metrics.client(usable)
+                    } else {
+                        usable
+                    };
+                    (
+                        size.0.clamp(1, most.w.max(1)),
+                        size.1.clamp(1, most.h.max(1)),
+                    )
+                };
                 window::request_size(&managed, size, false);
             }
             _ => {

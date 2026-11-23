@@ -152,8 +152,11 @@ fn start_clients(state: &mut State, options: &Options) {
         let locker = options.locker.as_deref().unwrap_or(keys::DEFAULT_LOCKER);
         state.set_locker(locker);
     }
+    // Xwayland runs for the whole session, so that the programs started
+    // here, and the ones they start, have a DISPLAY. Not on the login screen.
+    state.start_xwayland();
     for command in &options.startup {
-        state.spawn_session(command);
+        state.spawn(command);
     }
     if let Some(command) = &options.session {
         state.run_session(command);

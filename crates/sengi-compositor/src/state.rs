@@ -210,9 +210,15 @@ pub struct State {
     pub xwayland_shell_state: XWaylandShellState,
     /// Xwayland, while it is wanted: see `x11.rs`.
     pub x11: Option<x11::Session>,
-    /// Programs the user started while Xwayland was starting. They run
-    /// when it is ready, with its DISPLAY.
-    pub held_commands: Vec<String>,
+    /// Programs started while Xwayland was starting, and whether each is the
+    /// session program. They run when it is ready, with its DISPLAY, or
+    /// without one if it never is.
+    pub held_commands: Vec<(String, bool)>,
+    /// Counts the Xwayland instances, so that a late timer can tell whether
+    /// it is for the one that runs now.
+    pub x11_generation: u64,
+    /// Xwayland did not come up once; it is not tried again this session.
+    pub x11_gave_up: bool,
     /// Tries a client's dmabuf on the renderer; set by a backend that
     /// offers linux-dmabuf.
     pub dmabuf_import: Option<DmabufImport>,
@@ -484,6 +490,8 @@ impl State {
             xwayland_shell_state: XWaylandShellState::new::<Self>(&dh2),
             x11: None,
             held_commands: Vec::new(),
+            x11_generation: 0,
+            x11_gave_up: false,
             dmabuf_import: None,
             dmabufs_imported: 0,
             locker_command: keys::DEFAULT_LOCKER.to_string(),
@@ -792,28 +800,24 @@ impl State {
         }
     }
 
-    /// Runs `command` with the shell as a client of this compositor, for a
-    /// program the user starts (a key, a menu item, the launcher). The
-    /// first of these starts Xwayland, when it is not up, and the program
-    /// waits for it to be ready so that it gets a DISPLAY. Returns None
-    /// while it waits; the pid is not known then.
-    pub fn spawn(&mut self, command: &str) -> Option<u32> {
-        let starting = match &self.x11 {
+    /// Whether a program started now has to wait for Xwayland: it is
+    /// starting, or this starts it again after it exited.
+    fn must_wait_for_xwayland(&mut self) -> bool {
+        match &self.x11 {
             Some(session) => session.display.is_none(),
             None => self.start_xwayland(),
-        };
-        if starting {
-            self.held_commands.push(command.to_string());
-            return None;
         }
-        self.spawn_plain(command)
     }
 
-    /// Runs `command` for the session itself: its startup programs and the
-    /// session program. These do not start Xwayland; they get a DISPLAY
-    /// only if it is already up. Keeping it down until a user starts an X11
-    /// program is what keeps an idle session's memory where it is.
-    pub fn spawn_session(&mut self, command: &str) -> Option<u32> {
+    /// Runs `command` with the shell as a client of this compositor. It
+    /// waits for Xwayland to be ready, so that it gets a DISPLAY, but not
+    /// for longer than the timeout in `x11.rs`; then it runs without one.
+    /// Returns None while it waits; the pid is not known then.
+    pub fn spawn(&mut self, command: &str) -> Option<u32> {
+        if self.must_wait_for_xwayland() {
+            self.held_commands.push((command.to_string(), false));
+            return None;
+        }
         self.spawn_plain(command)
     }
 
@@ -972,8 +976,18 @@ impl State {
     /// `--session`: runs `command` and ends with it, the way a login
     /// screen's compositor has to for the login to go on.
     pub fn run_session(&mut self, command: &str) {
-        self.session_child = self.spawn_session(command);
-        if self.session_child.is_none() {
+        if self.must_wait_for_xwayland() {
+            self.held_commands.push((command.to_string(), true));
+            return;
+        }
+        let pid = self.spawn_plain(command);
+        self.session_started(pid);
+    }
+
+    /// The session program has been started, or could not be.
+    pub fn session_started(&mut self, pid: Option<u32>) {
+        self.session_child = pid;
+        if pid.is_none() {
             self.failed = true;
             self.loop_signal.stop();
         }
