@@ -35,6 +35,19 @@ pub fn trusted(client: &Client) -> bool {
         .is_some_and(|data| !data.sandboxed)
 }
 
+impl State {
+    /// Drops the counts of clients that have disconnected, so that the map
+    /// does not grow with every short-lived program that asked for one.
+    pub fn forget_gone_security_contexts(&mut self) {
+        if self.security_contexts.is_empty() {
+            return;
+        }
+        let backend = self.display_handle.backend_handle();
+        self.security_contexts
+            .retain(|client, _| backend.get_client_data(client.clone()).is_ok());
+    }
+}
+
 impl SecurityContextHandler for State {
     fn context_created(&mut self, source: SecurityContextListenerSource, context: SecurityContext) {
         // Each context is a socket this process listens on from then on.

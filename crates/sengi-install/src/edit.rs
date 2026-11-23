@@ -85,18 +85,26 @@ GRUB_DISABLE_RECOVERY=true
 /// The word on the kernel's command line that says "without the desktop".
 pub const TEXT_MODE_FLAG: &str = "sengi.text";
 
-/// A script for /etc/grub.d: one more entry in GRUB's menu, written anew
-/// whenever update-grub runs, for the newest kernel there is. It starts
+/// The word that says "start the desktop on labwc, not on sengi-compositor".
+pub const LABWC_FLAG: &str = "sengi.compositor=labwc";
+
+/// A script for /etc/grub.d: two more entries in GRUB's menu, written anew
+/// whenever update-grub runs, for the newest kernel there is. The first
+/// starts the desktop on labwc, the way back when sengi-compositor, the
+/// default, does not work with the graphics. The second starts
 /// the system as far as multi-user and no further: no login screen, no
 /// desktop, and a text login on the first console, where the person can
 /// log in with their own name and password and use sudo. Root is locked,
 /// so the usual recovery entry, which asks for root's password, would
 /// let nobody in.
 pub const GRUB_TEXT_ENTRY: &str = r#"#!/bin/sh
-# Written by the Sengi OS installer. Adds "Sengi OS, text mode" to the
-# boot menu: the same kernel, started without the login screen and the
-# desktop, with a text login on the first console. For when the desktop
-# does not start. Log in there with your own name and password.
+# Written by the Sengi OS installer. Adds two entries to the boot menu.
+# "Sengi OS (labwc compositor)" is the desktop on labwc instead of
+# sengi-compositor, for when the graphics do not work with the default.
+# "Sengi OS, text mode" is the same kernel started without the login screen
+# and the desktop, with a text login on the first console, for when the
+# desktop does not start at all. Log in there with your own name and
+# password.
 set -e
 . "$pkgdatadir/grub-mkconfig_lib"
 
@@ -105,7 +113,12 @@ kernel=$(ls -1 /boot/vmlinuz-* 2>/dev/null | sort -V | tail -n 1)
 version=${kernel#/boot/vmlinuz-}
 [ -e "/boot/initrd.img-$version" ] || exit 0
 
-echo "Found text mode entry for: $kernel" >&2
+echo "Found labwc and text mode entries for: $kernel" >&2
+echo "menuentry 'Sengi OS (labwc compositor)' --class sengi --class gnu-linux --class os {"
+prepare_grub_to_access_device "$GRUB_DEVICE" | sed 's/^/	/'
+printf '\tlinux\t/boot/vmlinuz-%s root=UUID=%s ro %s %s sengi.compositor=labwc\n' "$version" "$GRUB_DEVICE_UUID" "$GRUB_CMDLINE_LINUX_DEFAULT" "$GRUB_CMDLINE_LINUX"
+printf '\tinitrd\t/boot/initrd.img-%s\n' "$version"
+echo "}"
 echo "menuentry 'Sengi OS, text mode (if the desktop does not start)' --class sengi --class gnu-linux --class os {"
 prepare_grub_to_access_device "$GRUB_DEVICE" | sed 's/^/	/'
 printf '\tlinux\t/boot/vmlinuz-%s root=UUID=%s ro sengi.text systemd.unit=multi-user.target\n' "$version" "$GRUB_DEVICE_UUID"
@@ -470,6 +483,39 @@ user = \"live\"
         assert!(lines[ROOT_PART as usize].contains("Sengi OS"));
         // The last one has no size: it takes the rest.
         assert!(!lines[ROOT_PART as usize].contains("size="));
+    }
+
+    #[test]
+    fn the_menu_has_a_way_back_to_labwc_and_a_text_mode() {
+        let entry = GRUB_TEXT_ENTRY;
+        assert!(entry.starts_with("#!/bin/sh\n"));
+        // Both entries, labwc first, each with its own word.
+        let labwc = entry
+            .find("menuentry 'Sengi OS (labwc compositor)'")
+            .unwrap();
+        let text = entry.find("menuentry 'Sengi OS, text mode").unwrap();
+        assert!(labwc < text);
+        let labwc_line = entry
+            .lines()
+            .find(|line| line.contains(LABWC_FLAG))
+            .expect("a kernel line with the labwc word");
+        assert!(labwc_line.contains("$GRUB_CMDLINE_LINUX_DEFAULT"));
+        assert!(!labwc_line.contains(TEXT_MODE_FLAG));
+        // Only the text entry stops at multi-user, and only it has the
+        // word the text login looks for.
+        let text_line = entry
+            .lines()
+            .find(|line| line.contains("systemd.unit=multi-user.target"))
+            .unwrap();
+        assert!(text_line.contains(TEXT_MODE_FLAG));
+        assert!(!text_line.contains(LABWC_FLAG));
+        assert_eq!(entry.matches("menuentry '").count(), 2);
+    }
+
+    #[test]
+    fn the_installed_default_is_the_first_entry_and_names_no_compositor() {
+        assert!(GRUB_DEFAULT.contains("GRUB_DEFAULT=0\n"));
+        assert!(!GRUB_DEFAULT.contains("sengi.compositor"));
     }
 
     #[test]

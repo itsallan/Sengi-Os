@@ -233,6 +233,47 @@ fn a_surface_on_screen_can_hold_idleness_off() {
 }
 
 #[test]
+fn a_minimised_window_does_not_hold_idleness_off() {
+    let compositor = Compositor::start(None);
+    let mut client = compositor.connect();
+    let (surface, _window) = client.window(GREEN).unwrap();
+    let _inhibitor = client.inhibit_idle(&surface).unwrap();
+    let _notification = client
+        .idle_notification(Duration::from_millis(300))
+        .unwrap();
+    client.wait(Duration::from_millis(900), |_| false);
+    assert_eq!(
+        client.seen.idled, 0,
+        "idle although a window asked not to be"
+    );
+
+    assert_eq!(compositor.control("minimise"), "ok 1");
+    assert!(
+        client.wait(SOON, |seen| seen.idled == 1),
+        "a minimised window still holds idleness off"
+    );
+}
+
+#[test]
+fn a_surface_that_is_on_no_screen_does_not_hold_idleness_off() {
+    let compositor = Compositor::start(None);
+    let mut client = compositor.connect();
+    // A surface with a picture and no window to show it in.
+    let surface = client.compositor.create_surface(&client.handle, ());
+    let buffer = client.buffer(64, 64, GREEN).unwrap();
+    surface.attach(Some(&buffer), 0, 0);
+    surface.commit();
+    let _inhibitor = client.inhibit_idle(&surface).unwrap();
+    let _notification = client
+        .idle_notification(Duration::from_millis(300))
+        .unwrap();
+    assert!(
+        client.wait(SOON, |seen| seen.idled == 1),
+        "a surface that is not shown holds idleness off"
+    );
+}
+
+#[test]
 fn without_anything_holding_it_off_the_session_goes_idle() {
     let compositor = Compositor::start(None);
     let mut client = compositor.connect();

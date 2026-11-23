@@ -42,9 +42,11 @@ sengi-installer puts Sengi OS on a disk from the live session; see
 [Installing](#installing). The writing is done by sengi-install, a program
 without a window that the installer starts as root.
 
-The compositor (labwc) is still an existing component configured to the
-Sengi OS look; a later release replaces it with sengi-compositor, which is
-being developed on its own branch. See [ROADMAP.md](ROADMAP.md).
+The compositor is sengi-compositor, our own, from 0.8 on. labwc, configured to
+the Sengi OS look, stays in the image as the fallback if it fails and as the
+way back: a boot menu entry, or the word `sengi.compositor=labwc` on the
+kernel command line. See [ROADMAP.md](ROADMAP.md) and
+[its README](crates/sengi-compositor/README.md).
 
 ## Building the ISO
 
@@ -67,7 +69,7 @@ Boot the ISO in QEMU:
 
     qemu-system-x86_64 -enable-kvm -cpu host -smp 2 -m 4G \
       -device virtio-vga -display gtk \
-      -drive file=out/sengi-os-0.7.0-amd64.iso,format=raw,if=virtio,readonly=on
+      -drive file=out/sengi-os-0.8.0-amd64.iso,format=raw,if=virtio,readonly=on
 
 Or flash it to a USB stick and boot from that. The live session logs in on its
 own; the user is `live` and the password is `live`. To see the login screen,
@@ -122,18 +124,18 @@ the ISO:
     qemu-img create -f qcow2 /tmp/sengi-disk.qcow2 16G
     qemu-system-x86_64 -enable-kvm -cpu host -smp 2 -m 4G \
       -device virtio-vga -display gtk \
-      -drive file=out/sengi-os-0.7.0-amd64.iso,format=raw,if=virtio,readonly=on \
+      -drive file=out/sengi-os-0.8.0-amd64.iso,format=raw,if=virtio,readonly=on \
       -drive file=/tmp/sengi-disk.qcow2,format=qcow2,if=virtio
 
 ## Testing
 
-    scripts/boot-test.sh out/sengi-os-0.7.0-amd64.iso test-output
+    scripts/boot-test.sh out/sengi-os-0.8.0-amd64.iso test-output
 
 This boots the ISO headless, saves screenshots, and records idle RAM and boot
 time against the budgets. It also opens Settings, locks and unlocks the
 screen, and logs out and back in through the login screen.
 
-    scripts/install-test.sh out/sengi-os-0.7.0-amd64.iso test-output/install
+    scripts/install-test.sh out/sengi-os-0.8.0-amd64.iso test-output/install
 
 This installs onto a blank disk image through the installer's window, then
 starts that disk alone, logs in with the password it chose, and checks that
@@ -142,8 +144,8 @@ root file system is the disk. It records how long installing took and the
 installed system's boot time and idle RAM. The only disk it writes is the
 image file it makes in the output directory. Set `SENGI_UEFI` to an OVMF
 firmware image to run either test through UEFI. Set
-`SENGI_COMPOSITOR=own` to run either test on sengi-compositor instead of
-labwc, the installed system included.
+`SENGI_COMPOSITOR=labwc` to run either test on labwc instead of
+sengi-compositor, the default, the installed system included.
 
 ## Repository layout
 

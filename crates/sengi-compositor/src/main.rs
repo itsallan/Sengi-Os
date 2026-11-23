@@ -164,6 +164,7 @@ fn start_clients(state: &mut State, options: &Options) {
     if let Some(command) = &options.session {
         state.run_session(command);
     }
+    state.mark_ready();
 }
 
 /// `--exit` and `--reload`: signals the compositor this was started

@@ -30,6 +30,8 @@ jobs:
           shellcheck -s sh -S warning scripts/*.sh image/*.sh \
             image/rootfs/usr/bin/* image/rootfs/usr/libexec/* image/rootfs/usr/lib/sengi-os/*.sh \
             image/rootfs/etc/initramfs-tools/hooks/* image/rootfs/etc/initramfs-tools/scripts/*
+      - name: Compositor selection and fallback
+        run: scripts/test-compositor-sh.sh
       - name: Generated files are current
         run: scripts/render-tokens.sh --check
       - name: No one-off styles
@@ -131,7 +133,7 @@ jobs:
 
   iso:
     runs-on: ubuntu-24.04
-    needs: lint
+    needs: [lint, compositor]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -158,13 +160,12 @@ jobs:
         run: |
           SENGI_UEFI=/usr/share/OVMF/OVMF_CODE_4M.fd SENGI_UEFI_VARS=/usr/share/OVMF/OVMF_VARS_4M.fd \
             scripts/install-test.sh out/sengi-os-$(cat VERSION)-amd64.iso test-output/install-uefi
-      # And on sengi-compositor, live and installed, under both firmwares.
-      - name: Install test, sengi-compositor
-        run: SENGI_COMPOSITOR=own scripts/install-test.sh out/sengi-os-$(cat VERSION)-amd64.iso test-output/install-own
-      - name: Install test, sengi-compositor, UEFI
-        run: |
-          SENGI_COMPOSITOR=own SENGI_UEFI=/usr/share/OVMF/OVMF_CODE_4M.fd SENGI_UEFI_VARS=/usr/share/OVMF/OVMF_VARS_4M.fd \
-            scripts/install-test.sh out/sengi-os-$(cat VERSION)-amd64.iso test-output/install-own-uefi
+      # The steps above run sengi-compositor, the default. labwc is the way
+      # back, so it is kept working: one boot and one BIOS install.
+      - name: Boot test, labwc
+        run: SENGI_COMPOSITOR=labwc scripts/boot-test.sh out/sengi-os-$(cat VERSION)-amd64.iso test-output/labwc
+      - name: Install test, labwc
+        run: SENGI_COMPOSITOR=labwc scripts/install-test.sh out/sengi-os-$(cat VERSION)-amd64.iso test-output/install-labwc
       - name: Summary
         if: always()
         run: |
@@ -189,6 +190,8 @@ jobs:
           path: |
             test-output/*.png
             test-output/metrics.txt
+            test-output/labwc/*.png
+            test-output/labwc/metrics.txt
             test-output/guest-info.txt
             test-output/serial.log
       - uses: actions/upload-artifact@v4

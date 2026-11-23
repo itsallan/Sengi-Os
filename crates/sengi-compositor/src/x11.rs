@@ -2,8 +2,10 @@
 //!
 //! Xwayland is started once, at the start of a normal session (not on the
 //! login screen), so that the dock, bar and launcher, and everything they
-//! start, find a DISPLAY. Programs started while it comes up are held until it
-//! is ready, or for a few seconds at most; then they run without a DISPLAY.
+//! start, find a DISPLAY. The display number is chosen before Xwayland is
+//! started and Smithay binds the sockets itself, so every program started
+//! afterwards is given DISPLAY at once and nothing waits: an X11 client that
+//! is quicker than Xwayland queues on the socket until Xwayland answers.
 //! It stays up for the whole session. If it exits, its windows go with it and
 //! the next program started brings it back.
 //!
@@ -39,7 +41,11 @@ use smithay::{
 
 use crate::{layout::Rect, state::State, window};
 
-/// How long a program is held for Xwayland before it runs without a DISPLAY.
+/// The display numbers tried, from 0, when the first is taken.
+const XWAYLAND_DISPLAYS: u32 = 33;
+
+/// How long Xwayland has to report ready before it is given up. Nothing is
+/// held for it meanwhile; this only bounds how long X11 programs may wait.
 const READY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Xwayland, from the moment it is asked for until it is gone.
@@ -51,49 +57,67 @@ pub struct Session {
     token: RegistrationToken,
     /// Xwayland's connection to us as a client, kept for the window manager.
     client: Client,
-    /// The display number, once Xwayland is ready.
-    pub display: Option<u32>,
+    /// The display number it was started on, whether it is ready or not.
+    pub display: u32,
+    /// Set once Xwayland has said it is ready.
+    pub ready: bool,
     /// The window manager on Xwayland's X connection, once it is ready.
     wm: Option<X11Wm>,
 }
 
 impl State {
-    /// The DISPLAY programs started now are given, if Xwayland is ready.
+    /// The DISPLAY programs started now are given: that of Xwayland while
+    /// it runs or starts, none once it is given up.
     pub fn display_name(&self) -> Option<String> {
         self.x11
-            .as_ref()?
-            .display
-            .map(|number| format!(":{number}"))
+            .as_ref()
+            .map(|session| format!(":{}", session.display))
     }
 
-    /// Starts Xwayland if it is not up or starting. Returns whether it is
-    /// starting now, so that the programs waiting for it can be held.
-    pub fn start_xwayland(&mut self) -> bool {
+    /// Starts Xwayland if it is not up or starting, on a display number
+    /// chosen here so that it is known before Xwayland has said a word.
+    pub fn start_xwayland(&mut self) {
         // Nobody is logged in on the login screen, so there is nothing for
         // X11 programs to run for.
         if self.x11.is_some() || self.login_screen || self.x11_gave_up {
-            return false;
+            return;
         }
-        let spawned = XWayland::spawn(
-            &self.display_handle,
-            None,
-            std::iter::empty::<(&str, &str)>(),
-            // No abstract socket: any process that shares the network
-            // namespace could connect to it, sandboxed ones too. Only the
-            // socket in /tmp/.X11-unix is used.
-            false,
-            std::process::Stdio::null(),
-            std::process::Stdio::inherit(),
-            |_| {},
-        );
-        let (server, client) = match spawned {
-            Ok(spawned) => spawned,
-            Err(err) => {
-                crate::say!("cannot start Xwayland, X11 programs will not run: {err}");
-                self.x11_gave_up = true;
-                return false;
+        // The number it had before first, so that the DISPLAY of programs
+        // that outlived it is right again. Smithay takes a number only if
+        // /tmp/.X<n>-lock is free or stale, and says AddrInUse if not.
+        let mut spawned = None;
+        for number in self.x11_display.into_iter().chain(0..XWAYLAND_DISPLAYS) {
+            let tried = XWayland::spawn(
+                &self.display_handle,
+                number,
+                std::iter::empty::<(&str, &str)>(),
+                // No abstract socket: any process that shares the network
+                // namespace could connect to it, sandboxed ones too. Only the
+                // socket in /tmp/.X11-unix is used.
+                false,
+                std::process::Stdio::null(),
+                std::process::Stdio::inherit(),
+                |_| {},
+            );
+            match tried {
+                Ok(started) => {
+                    spawned = Some((number, started));
+                    break;
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => continue,
+                Err(err) => {
+                    crate::say!("cannot start Xwayland, X11 programs will not run: {err}");
+                    self.x11_gave_up = true;
+                    return;
+                }
             }
+        }
+        let Some((display, (server, client))) = spawned else {
+            crate::say!("no free X11 display, X11 programs will not run");
+            self.x11_gave_up = true;
+            return;
         };
+        self.x11_display = Some(display);
         let inserted = self
             .loop_handle
             .insert_source(server, |event, _, state| match event {
@@ -117,15 +141,15 @@ impl State {
                     started: Instant::now(),
                     token,
                     client,
-                    display: None,
+                    display,
+                    ready: false,
                     wm: None,
                 });
-                true
+                crate::say!("Xwayland starting on :{display}");
             }
             Err(err) => {
                 crate::say!("cannot watch Xwayland, X11 programs will not run: {err}");
                 self.x11_gave_up = true;
-                false
             }
         }
     }
@@ -135,7 +159,7 @@ impl State {
         let Some(session) = self.x11.as_mut() else {
             return;
         };
-        session.display = Some(display);
+        session.ready = true;
         match X11Wm::start_wm(handle, socket, session.client.clone()) {
             Ok(wm) => {
                 session.wm = Some(wm);
@@ -151,31 +175,28 @@ impl State {
                 self.stop_xwayland();
             }
         }
-        self.start_held_programs();
     }
 
-    /// Xwayland did not come up. The programs held for it run without it,
-    /// so that a broken Xwayland costs the X11 programs and nothing else.
+    /// Xwayland did not come up. Nothing waited for it, so a broken Xwayland
+    /// costs the X11 programs and nothing else.
     fn xwayland_failed(&mut self) {
         crate::say!("Xwayland did not start, X11 programs will not run");
         self.x11_gave_up = true;
         self.stop_xwayland();
-        self.start_held_programs();
     }
 
     /// The timer of Xwayland number `generation` ran out. If that one is
-    /// still not ready it is given up, and the programs waiting for it run
-    /// without a DISPLAY.
+    /// still not ready it is given up, and programs started from now on get
+    /// no DISPLAY.
     fn xwayland_overdue(&mut self, generation: u64) {
         let waiting = self
             .x11
             .as_ref()
-            .is_some_and(|session| session.generation == generation && session.display.is_none());
+            .is_some_and(|session| session.generation == generation && !session.ready);
         if waiting {
             crate::say!("Xwayland did not report ready in time, X11 programs will not run");
             self.x11_gave_up = true;
             self.stop_xwayland();
-            self.start_held_programs();
         }
     }
 
@@ -191,16 +212,6 @@ impl State {
         drop(session.wm);
         self.forget_x11_windows();
         self.request_redraw();
-    }
-
-    fn start_held_programs(&mut self) {
-        let held = std::mem::take(&mut self.held_commands);
-        for (command, is_session) in held {
-            let pid = self.spawn_plain(&command);
-            if is_session {
-                self.session_started(pid);
-            }
-        }
     }
 
     fn forget_x11_windows(&mut self) {

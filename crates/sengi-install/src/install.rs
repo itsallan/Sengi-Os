@@ -805,6 +805,9 @@ impl Installer<'_> {
         if !menu.contains(edit::TEXT_MODE_FLAG) {
             return Err("GRUB's menu has no entry for starting without the desktop".to_string());
         }
+        if !menu.contains(edit::LABWC_FLAG) {
+            return Err("GRUB's menu has no entry for starting the desktop on labwc".to_string());
+        }
         for file in [
             "boot/grub/i386-pc/core.img",
             "boot/efi/EFI/BOOT/BOOTX64.EFI",
@@ -1133,7 +1136,7 @@ mod tests {
                     };
                     self.touch(
                         "boot/grub/grub.cfg",
-                        &format!("linux /boot/vmlinuz-{KERNEL} root=UUID={root} ro quiet\nlinux /boot/vmlinuz-{KERNEL} root=UUID={root} ro sengi.text systemd.unit=multi-user.target\n"),
+                        &format!("linux /boot/vmlinuz-{KERNEL} root=UUID={root} ro quiet\nlinux /boot/vmlinuz-{KERNEL} root=UUID={root} ro quiet sengi.compositor=labwc\nlinux /boot/vmlinuz-{KERNEL} root=UUID={root} ro sengi.text systemd.unit=multi-user.target\n"),
                     );
                 }
                 "efibootmgr" if inner.len() == 1 => stdout = self.firmware.to_string(),
@@ -1510,6 +1513,7 @@ mod tests {
         // and a text login that only that entry switches on.
         let entry = target.read("etc/grub.d/11_sengi-text");
         assert!(entry.starts_with("#!/bin/sh\n"));
+        assert!(entry.contains(edit::LABWC_FLAG));
         let mode = fs::metadata(target.join("etc/grub.d/11_sengi-text"))
             .unwrap()
             .permissions()
