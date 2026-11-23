@@ -239,6 +239,48 @@ else
 fi
 rm -f "$out/before.ppm" "$out/with.ppm"
 
+# Settings again, this time by clicking its icon in the dock, which is what
+# a person with a mouse does. The dock is centred at the bottom edge with
+# the search button, the installer, the terminal and Settings in a row, and
+# Settings is the last of the four. The icons are one icon width plus one gap
+# apart, both from tokens/sengi.toml; their middles are about 43 px above the
+# bottom edge, measured on the screenshots (the shelf has the running dot to
+# make room for under the icon). A click anywhere on the icon counts. The guest's
+# report only watches the first time Settings runs, so here the screen is
+# what says whether a window appeared.
+dock_token() {
+	awk -v key="$1" '/^\[/ { in_dock = ($0 == "[dock]"); next }
+		in_dock && $1 == key { print $3; exit }' "$(dirname "$0")/../tokens/sengi.toml"
+}
+dock_fail=
+dock_icon_pitch=$(($(dock_token icon) + $(dock_token gap)))
+dock_x=$((screen_w / 2 + dock_icon_pitch * 3 / 2))
+dock_y=$((screen_h - 43))
+echo "screendump $out/before.ppm" >&3
+sleep 1
+pointer "$dock_x" "$dock_y"
+shot dock-hover
+click
+sleep 3
+shot dock-settings
+echo "screendump $out/with.ppm" >&3
+sleep 1
+changed=$(cmp -l "$out/before.ppm" "$out/with.ppm" 2>/dev/null | wc -l)
+if [ "$changed" -lt "$window_bytes" ]; then
+	dock_fail="a click on the dock's Settings icon opened no window ($changed bytes of the screen changed)"
+	# Whatever the click did open should not stay in the way.
+	key esc 1
+fi
+key meta_l-q 2
+pointer $((screen_w / 8)) $((screen_h / 2))
+echo "screendump $out/after.ppm" >&3
+sleep 1
+# The bar's clock may have moved on a minute; nothing else has.
+if [ -z "$dock_fail" ] && [ "$(cmp -l "$out/before.ppm" "$out/after.ppm" 2>/dev/null | wc -l)" -ge 20000 ]; then
+	dock_fail="the desktop did not come back after Settings was closed from the dock"
+fi
+rm -f "$out/before.ppm" "$out/with.ppm" "$out/after.ppm"
+
 key meta_l-ret 3
 shot terminal
 key meta_l-spc
@@ -616,6 +658,10 @@ if grep -q SENGI-FAIL "$out/serial.log"; then
 fi
 if [ -n "$settings_fail" ]; then
 	echo "FAIL: $settings_fail" >&2
+	fail=1
+fi
+if [ -n "$dock_fail" ]; then
+	echo "FAIL: $dock_fail" >&2
 	fail=1
 fi
 if [ -n "$lock_fail" ]; then
