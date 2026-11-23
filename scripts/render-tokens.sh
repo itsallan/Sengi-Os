@@ -3,7 +3,7 @@
 #
 #   render-tokens.sh FILE.in              print FILE.in rendered to stdout
 #   render-tokens.sh --tree SRC DST       render SRC/**.in into DST, copy the rest
-#   render-tokens.sh                      regenerate committed outputs (ui/tokens.slint)
+#   render-tokens.sh                      regenerate committed outputs (ui/tokens.slint, ui/icon-paths.slint)
 #   render-tokens.sh --check              fail if committed outputs are stale
 #
 # Filters: @{color.bg|hex8} -> 16171bff, @{color.bg|nohash} -> 16171b(ff),
@@ -84,6 +84,7 @@ case "${1:-}" in
 			exit 1
 		fi
 	done || stale=1
+	"$root/scripts/render-icons.sh" --check || stale=1
 	exit $stale
 	;;
 "")
@@ -91,6 +92,7 @@ case "${1:-}" in
 		render "$root/$in" >"$root/$out"
 		echo "rendered $out"
 	done
+	"$root/scripts/render-icons.sh"
 	;;
 *)
 	render "$1"
