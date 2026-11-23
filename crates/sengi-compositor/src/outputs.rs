@@ -32,6 +32,18 @@ use crate::{
 /// The smallest and largest scale an output takes.
 pub const SCALE_RANGE: (f64, f64) = (0.5, 4.0);
 
+/// How far from the origin an output may be put, in either direction. Far
+/// beyond any real arrangement, and far from the ends of the number range,
+/// where sums of positions and sizes would overflow.
+pub const MAX_COORD: i32 = 1 << 20;
+
+/// Whether a place is within `MAX_COORD` of the origin. (Not `abs`, which
+/// overflows on the smallest number.)
+pub fn near((x, y): (i32, i32)) -> bool {
+    let range = -MAX_COORD..=MAX_COORD;
+    range.contains(&x) && range.contains(&y)
+}
+
 /// The most heads there are; anything beyond is not announced.
 pub const MAX_HEADS: usize = 16;
 
@@ -154,7 +166,10 @@ pub fn follow_changes(
     for (i, (before, after)) in old.iter().zip(new).enumerate() {
         let Some(before) = before else { continue };
         let (dw, dh) = match after {
-            Some(after) => (after.w - before.w, after.h - before.h),
+            Some(after) => (
+                after.w.saturating_sub(before.w),
+                after.h.saturating_sub(before.h),
+            ),
             None => (-before.w, -before.h),
         };
         if dw == 0 && dh == 0 {
@@ -168,10 +183,10 @@ pub fn follow_changes(
                 continue;
             }
             if other.x >= before.right() {
-                place.0 += dw;
+                place.0 = place.0.saturating_add(dw);
             }
             if other.y >= before.bottom() {
-                place.1 += dh;
+                place.1 = place.1.saturating_add(dh);
             }
         }
     }
@@ -361,6 +376,7 @@ impl State {
         let others: Vec<Rect> = self.output_rects();
         let mut position = (layout::next_output_x(&others), 0);
         if let Some(place) = stored.as_ref().and_then(|s| s.position) {
+            // (the store only keeps places within MAX_COORD)
             let (w, h) = logical_size(mode, transform, scale);
             let wanted = Rect::new(place.0, place.1, w, h);
             let mut all = others.clone();
@@ -553,6 +569,9 @@ impl State {
             if !listed && !takes && !current {
                 return Err(format!("{} has no {w}x{h} mode", head.output.name()));
             }
+            if !near(head.position) {
+                return Err("that place is too far from the others".into());
+            }
             if !(SCALE_RANGE.0..=SCALE_RANGE.1).contains(&head.scale) {
                 return Err(format!("a scale of {} is not supported", head.scale));
             }
@@ -705,7 +724,9 @@ impl State {
             .zip(&new)
             .zip(&old)
             .filter(|((_, _), was)| was.is_some())
-            .filter_map(|((place, rect), _)| Some(place.as_ref()?.0 + rect.as_ref()?.w))
+            .filter_map(|((place, rect), _)| {
+                Some(place.as_ref()?.0.saturating_add(rect.as_ref()?.w))
+            })
             .max()
             .unwrap_or(0);
         for (i, head) in plan.iter().enumerate() {
@@ -714,7 +735,7 @@ impl State {
             }
             let Some(rect) = &new[i] else { continue };
             at[i] = Some((right, 0));
-            right += rect.w;
+            right = right.saturating_add(rect.w);
         }
         for (head, place) in plan.iter_mut().zip(at) {
             if let Some(place) = place {

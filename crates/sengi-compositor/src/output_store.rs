@@ -19,7 +19,7 @@ use std::{
 use sengi_config::{store, Dirs, Document, Value};
 use smithay::utils::Transform;
 
-use crate::outputs::{size_is_sane, SCALE_RANGE};
+use crate::outputs::{near, size_is_sane, SCALE_RANGE};
 
 pub const FILE: &str = "sengi-os/outputs.toml";
 
@@ -144,7 +144,10 @@ impl StoredLayout {
                     Some(Value::Text(text)) => parse_mode(text),
                     _ => None,
                 };
-                let position = number(section, "x").zip(number(section, "y"));
+                // A place far off is no place: it would only make sums overflow.
+                let position = number(section, "x")
+                    .zip(number(section, "y"))
+                    .filter(|place| near(*place));
                 let scale = number(section, "scale")
                     .filter(|t| {
                         let scale = f64::from(*t) / 1000.0;
@@ -344,6 +347,15 @@ mod tests {
         assert!(one.enabled);
         assert!(StoredLayout::parse("").heads.is_empty());
         assert!(StoredLayout::parse("= = [").heads.is_empty());
+    }
+
+    #[test]
+    fn a_place_at_the_end_of_the_number_range_is_not_kept() {
+        let layout = StoredLayout::parse(
+            "[DP-1]\nx = 2147483647\ny = -2147483648\n[DP-2]\nx = 100\ny = 5\n",
+        );
+        assert_eq!(layout.heads[0].position, None);
+        assert_eq!(layout.heads[1].position, Some((100, 5)));
     }
 
     #[test]

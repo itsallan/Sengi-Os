@@ -17,12 +17,12 @@ impl Rect {
 
     /// One past the last column.
     pub const fn right(&self) -> i32 {
-        self.x + self.w
+        self.x.saturating_add(self.w)
     }
 
     /// One past the last row.
     pub const fn bottom(&self) -> i32 {
-        self.y + self.h
+        self.y.saturating_add(self.h)
     }
 
     pub const fn contains(&self, x: i32, y: i32) -> bool {
@@ -40,8 +40,16 @@ pub fn next_output_x(outputs: &[Rect]) -> i32 {
 pub fn clamp_to_outputs(outputs: &[Rect], x: f64, y: f64) -> (f64, f64) {
     let mut best: Option<((f64, f64), f64)> = None;
     for output in outputs.iter().filter(|output| output.w > 0 && output.h > 0) {
-        let nearest_x = x.clamp(f64::from(output.x), f64::from(output.right() - 1));
-        let nearest_y = y.clamp(f64::from(output.y), f64::from(output.bottom() - 1));
+        // Not `clamp`, which panics when the bounds cross: an output at the
+        // very end of the number range has its last column before its first.
+        let last_x = f64::from(output.right()) - 1.0;
+        let last_y = f64::from(output.bottom()) - 1.0;
+        let nearest_x = x
+            .max(f64::from(output.x))
+            .min(last_x.max(f64::from(output.x)));
+        let nearest_y = y
+            .max(f64::from(output.y))
+            .min(last_y.max(f64::from(output.y)));
         let distance = (nearest_x - x).powi(2) + (nearest_y - y).powi(2);
         if best.is_none_or(|(_, least)| distance < least) {
             best = Some(((nearest_x, nearest_y), distance));
@@ -209,6 +217,15 @@ mod tests {
         assert_eq!(stack.current(), Some(&'b'));
         assert!(stack.remove(&'b'));
         assert_eq!(stack.current(), None);
+    }
+
+    #[test]
+    fn outputs_at_the_end_of_the_number_range_do_not_break_the_pointer() {
+        let far = Rect::new(i32::MAX - 5, i32::MIN + 2, 100, 100);
+        assert_eq!(far.right(), i32::MAX);
+        let (x, y) = clamp_to_outputs(&[far], 0.0, 0.0);
+        assert!(x.is_finite() && y.is_finite());
+        assert_eq!(next_output_x(&[far]), i32::MAX);
     }
 
     #[test]
