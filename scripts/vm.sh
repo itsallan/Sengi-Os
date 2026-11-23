@@ -49,7 +49,7 @@ SEED
 	accel=tcg
 	[ -w /dev/kvm ] && accel=kvm
 	qemu-system-x86_64 -machine q35,accel=$accel -cpu max -smp "$cpus" -m "$mem" \
-		-drive file="$dir/disk.qcow2",if=virtio,cache=unsafe \
+		-drive file="$dir/disk.qcow2",if=virtio,cache=unsafe,discard=unmap \
 		-drive file="$dir/seed.iso",if=virtio,format=raw,readonly=on \
 		-netdev user,id=n0,hostfwd=tcp:127.0.0.1:"$port"-:22 -device virtio-net-pci,netdev=n0 \
 		-display none -serial file:"$dir/console.txt" \
@@ -98,6 +98,9 @@ fetch)
 	rsync -a -e "ssh $ssh_opts" debian@127.0.0.1:sengi-os/out/ "$root/out/"
 	;;
 down)
+	# Hand the blocks the guest has freed back to the host, or the disk
+	# file only ever grows: a few builds take it past 60 GB.
+	vm_ssh sudo fstrim -a >/dev/null 2>&1 || true
 	vm_ssh sudo poweroff 2>/dev/null || true
 	;;
 *)
