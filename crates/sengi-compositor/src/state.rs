@@ -589,6 +589,7 @@ impl State {
         })?;
 
         self.flush_output_layout();
+            state.forget_gone_security_contexts();
         if self.failed {
             return Err("rendering failed".into());
         }

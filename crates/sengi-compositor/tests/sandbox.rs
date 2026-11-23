@@ -10,7 +10,8 @@ use wayland_protocols::ext::idle_notify::v1::client::ext_idle_notifier_v1::ExtId
 
 /// The globals that reach beyond a client's own windows.
 const IDLE_NOTIFIER: &str = "ext_idle_notifier_v1";
-const PRIVILEGED: [&str; 5] = [
+const PRIVILEGED: [&str; 6] = [
+    "zwp_idle_inhibit_manager_v1",
     common::apps::SCREENCOPY,
     "zwlr_layer_shell_v1",
     "zwlr_foreign_toplevel_manager_v1",
@@ -60,5 +61,23 @@ fn a_sandboxed_client_does_not_see_the_privileged_globals() {
     assert!(
         confined.roundtrip().is_err(),
         "binding a hidden global must fail"
+    );
+}
+
+#[test]
+fn a_client_that_set_up_a_sandbox_is_forgotten_when_it_disconnects() {
+    let compositor = Compositor::start(None);
+    let mut portal = compositor.connect();
+    portal.sandbox(&compositor.dir.join("sandbox-1")).unwrap();
+    assert_eq!(compositor.control("contexts"), "ok 1");
+    drop(portal);
+    let end = std::time::Instant::now() + harness::SOON;
+    while compositor.control("contexts") != "ok 0" && std::time::Instant::now() < end {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(
+        compositor.control("contexts"),
+        "ok 0",
+        "the count of a client that is gone is kept"
     );
 }
