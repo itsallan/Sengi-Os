@@ -242,7 +242,10 @@ fn a_minimised_window_does_not_hold_idleness_off() {
         .idle_notification(Duration::from_millis(300))
         .unwrap();
     client.wait(Duration::from_millis(900), |_| false);
-    assert_eq!(client.seen.idled, 0, "idle although a window asked not to be");
+    assert_eq!(
+        client.seen.idled, 0,
+        "idle although a window asked not to be"
+    );
 
     assert_eq!(compositor.control("minimise"), "ok 1");
     assert!(

@@ -33,7 +33,10 @@ fn it_ends_when_its_program_does() {
 fn it_ends_with_an_error_when_its_program_fails() {
     let mut compositor = Compositor::start_login_screen(Some("exit 3"), None, &[]);
     let status = compositor.exit_status().expect("it did not end");
-    assert!(!status.success(), "a failing session ended the compositor with success");
+    assert!(
+        !status.success(),
+        "a failing session ended the compositor with success"
+    );
 }
 
 #[test]
@@ -57,7 +60,9 @@ fn it_says_it_is_ready_while_it_runs_and_not_after() {
         .permissions()
         .mode();
     assert_eq!(mode & 0o777, 0o600);
-    assert!(compositor.exit_status().is_some_and(|status| status.success()));
+    assert!(compositor
+        .exit_status()
+        .is_some_and(|status| status.success()));
     assert!(!marker.exists(), "the ready file was left behind");
 }
 

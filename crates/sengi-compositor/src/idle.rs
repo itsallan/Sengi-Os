@@ -16,7 +16,9 @@ use smithay::{
     },
     wayland::{
         compositor::get_parent,
-        idle_inhibit::{inhibitor::IdleInhibitorState, IdleInhibitHandler, IdleInhibitManagerState},
+        idle_inhibit::{
+            inhibitor::IdleInhibitorState, IdleInhibitHandler, IdleInhibitManagerState,
+        },
         seat::WaylandFocus,
     },
 };
