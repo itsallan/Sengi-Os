@@ -852,6 +852,48 @@ fn a_window_asking_for_a_huge_size_is_held_to_the_screen() {
 }
 
 #[test]
+fn an_x11_window_opens_on_the_output_of_the_pointer_and_is_held_to_it() {
+    if !xwayland_installed("an_x11_window_opens_on_the_output_of_the_pointer_and_is_held_to_it") {
+        return;
+    }
+    let compositor = Compositor::start_args(&["--outputs", "1280x720,800x600"], None);
+    let display = wait_for_display(&compositor);
+    compositor.input("move 1500 300");
+    let mut list = WindowList::connect(&compositor);
+    let mut x = XClient::connect(display);
+    let window = x.window(300, 200, 200, X_GREEN, "two", "SengiXTest");
+    assert!(list.lists("two", "SengiXTest", SOON));
+    let mut app = compositor.connect();
+    let green = |picture: &common::apps::Picture| {
+        (0..picture.height)
+            .flat_map(|y| (0..picture.width).map(move |x| (x, y)))
+            .filter(|(x, y)| picture.at(*x, *y) == X_GREEN)
+            .count()
+    };
+    let second = app.capture_named("HEADLESS-2").unwrap();
+    let first = app.capture_named("HEADLESS-1").unwrap();
+    assert!(green(&second) > 0, "the window is not on the second output");
+    assert_eq!(green(&first), 0, "it is on the first");
+    // Asking for more than there is, it gets what the second output has,
+    // whichever output the pointer is on by then.
+    compositor.input("move 100 100");
+    x.conn
+        .configure_window(window, &ConfigureWindowAux::new().width(5000).height(5000))
+        .unwrap();
+    x.conn.flush().unwrap();
+    assert!(
+        x.wait_for(SOON, |x| x.size(window).2 > 400),
+        "it did not grow"
+    );
+    x.pump(Duration::from_millis(300));
+    let (_, _, w, h) = x.size(window);
+    assert!(
+        w <= 800 && h <= 600,
+        "the window is {w} by {h}, past its output"
+    );
+}
+
+#[test]
 fn an_x11_window_can_be_made_fullscreen() {
     if !xwayland_installed("an_x11_window_can_be_made_fullscreen") {
         return;

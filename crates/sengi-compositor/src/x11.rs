@@ -351,7 +351,10 @@ impl XwmHandler for State {
                 let size = if data.fullscreen.get().is_some() {
                     size
                 } else {
-                    let usable = self.usable_area();
+                    // Held to the output the window is on.
+                    let usable = self
+                        .output_of_window(&managed)
+                        .map_or_else(|| self.usable_area(), |output| self.usable_area_of(&output));
                     let most = if data.decorated.get() {
                         self.theme.metrics.client(usable)
                     } else {
