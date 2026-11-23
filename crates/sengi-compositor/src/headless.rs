@@ -239,6 +239,9 @@ fn play(backend: &Shared, state: &mut State) -> TimeoutAction {
             // The picture has to show the steps before it, so draw now
             // whether or not a frame was due.
             Action::Screenshot(path) => draw(backend, state, Some(&path)),
+            Action::Spawn(command) => {
+                state.spawn(&command);
+            }
             Action::Exit => {
                 state.loop_signal.stop();
                 return TimeoutAction::Drop;

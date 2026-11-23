@@ -235,6 +235,11 @@ impl Compositor {
         log.iter().rev().find(|line| line.contains(what)).cloned()
     }
 
+    /// The compositor's process id.
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
     pub fn signal(&self, name: &str) {
         Command::new("kill")
             .args([&format!("-{name}"), &self.child.id().to_string()])

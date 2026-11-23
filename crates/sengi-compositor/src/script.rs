@@ -42,6 +42,8 @@ pub enum Action {
         pressed: bool,
     },
     Screenshot(PathBuf),
+    /// Starts a program the way a key or a menu does.
+    Spawn(String),
     Exit,
 }
 
@@ -234,6 +236,9 @@ pub fn parse(text: &str) -> Result<Vec<Step>, String> {
             }
             "screenshot" if !argument.trim().is_empty() => {
                 push(Action::Screenshot(PathBuf::from(argument.trim())));
+            }
+            "spawn" if !argument.trim().is_empty() => {
+                push(Action::Spawn(argument.trim().to_string()));
             }
             "exit" => push(Action::Exit),
             _ => return Err(err("unknown command")),
