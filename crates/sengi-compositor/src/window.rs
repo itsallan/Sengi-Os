@@ -17,11 +17,12 @@ use smithay::{
         decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
         shell::server::xdg_toplevel::State as ToplevelState,
     },
-    utils::Transform,
+    utils::{Logical, Rectangle, Size, Transform},
     wayland::{
         compositor::with_states,
         shell::xdg::{SurfaceCachedState, XdgToplevelSurfaceData},
     },
+    xwayland::X11Surface,
 };
 
 use crate::{
@@ -145,8 +146,50 @@ const FALLBACK_PAINTED_WIDTH: i32 = 4096;
 /// How long after an edge drag late commits are still aligned to it.
 const RESIZE_SETTLE: Duration = Duration::from_millis(500);
 
+/// The X11 side of a window, if it is one.
+pub fn x11(window: &Window) -> Option<&X11Surface> {
+    window.x11_surface()
+}
+
+pub fn is_x11(window: &Window) -> bool {
+    x11(window).is_some()
+}
+
+/// A menu of an X11 toolkit: override-redirect, so the compositor does not
+/// manage it.
+pub fn is_override(window: &Window) -> bool {
+    x11(window).is_some_and(X11Surface::is_override_redirect)
+}
+
+/// Whether the window's client is there to be told things: an xdg toplevel
+/// or an X11 window.
+fn is_client(window: &Window) -> bool {
+    window.toplevel().is_some() || is_x11(window)
+}
+
+/// Sends the xdg configure that carries the pending state of `window`. An X11
+/// window has no such thing: its state is set as it changes.
+fn send_configure(window: &Window) {
+    if let Some(toplevel) = window.toplevel() {
+        toplevel.send_configure();
+    }
+}
+
+/// Tells an X11 window where its client area is on the desktop and how large
+/// it is. The compositor's placement is what X11 sees as the window's place.
+pub fn place_x11(window: &Window, x: i32, y: i32, size: (i32, i32)) {
+    if let Some(x11) = x11(window) {
+        let _ = x11.configure(Rectangle::new((x, y).into(), Size::from(size)));
+    }
+}
+
 /// Asks the client for a new client-area size.
 pub fn request_size(window: &Window, size: (i32, i32), resizing: bool) {
+    if let Some(x11) = x11(window) {
+        let at = x11.geometry().loc;
+        place_x11(window, at.x, at.y, size);
+        return;
+    }
     let Some(toplevel) = window.toplevel() else {
         return;
     };
@@ -174,15 +217,38 @@ pub fn finish_resize(window: &Window) {
     }
 }
 
-/// Whether the client agreed to let the compositor draw its frame.
+/// Whether the client agreed to let the compositor draw its frame. An X11
+/// window gets one unless its Motif hints ask for none; Smithay's
+/// `is_decorated` is true exactly when they do.
 pub fn wants_server_decoration(window: &Window) -> bool {
+    if let Some(x11) = x11(window) {
+        return !x11.is_decorated();
+    }
     window
         .toplevel()
         .is_some_and(|t| t.current_state().decoration_mode == Some(Mode::ServerSide))
 }
 
+/// Whether a window that is on screen gets a frame now: it does unless it
+/// is fullscreen, and unless the client asked for none.
+pub fn wants_frame(window: &Window) -> bool {
+    wants_server_decoration(window) && data(window).fullscreen.get().is_none()
+}
+
+/// Asks the program in `window` to close it, as its title bar does.
+pub fn close(window: &Window) {
+    if let Some(toplevel) = window.toplevel() {
+        toplevel.send_close();
+    } else if let Some(x11) = x11(window) {
+        let _ = x11.close();
+    }
+}
+
 /// Looks at the window's title without copying it.
 pub fn with_title<T>(window: &Window, f: impl FnOnce(&str) -> T) -> T {
+    if let Some(x11) = x11(window) {
+        return f(&x11.title());
+    }
     let Some(toplevel) = window.toplevel() else {
         return f("");
     };
@@ -207,6 +273,10 @@ pub fn app_id(window: &Window) -> String {
 }
 
 pub fn with_app_id<T>(window: &Window, f: impl FnOnce(&str) -> T) -> T {
+    // An X11 window's app id is its WM_CLASS class, the name of its program.
+    if let Some(x11) = x11(window) {
+        return f(&x11.class());
+    }
     let Some(toplevel) = window.toplevel() else {
         return f("");
     };
@@ -223,11 +293,13 @@ pub fn with_app_id<T>(window: &Window, f: impl FnOnce(&str) -> T) -> T {
 }
 
 impl State {
-    /// Every window the user can get at: on screen or minimised.
+    /// Every window the user can get at: on screen or minimised. Menus of
+    /// X11 toolkits are not windows of the user's.
     pub fn managed_windows(&self) -> Vec<Window> {
         self.space
             .elements()
             .chain(self.minimised.iter())
+            .filter(|window| !is_override(window))
             .cloned()
             .collect()
     }
@@ -292,14 +364,23 @@ impl State {
 
     /// Smallest and largest client size for `window`; zero means no limit.
     pub fn size_limits(&self, window: &Window) -> ((i32, i32), (i32, i32)) {
-        let Some(toplevel) = window.toplevel() else {
-            return ((0, 0), (0, 0));
-        };
-        let (mut min, max) = with_states(toplevel.wl_surface(), |states| {
-            let mut guard = states.cached_state.get::<SurfaceCachedState>();
-            let cached = guard.current();
-            (cached.min_size, cached.max_size)
-        });
+        let (mut min, max): (Size<i32, Logical>, Size<i32, Logical>) =
+            if let Some(x11) = x11(window) {
+                let zero = Size::from((0, 0));
+                (
+                    x11.min_size().unwrap_or(zero),
+                    x11.max_size().unwrap_or(zero),
+                )
+            } else {
+                let Some(toplevel) = window.toplevel() else {
+                    return ((0, 0), (0, 0));
+                };
+                with_states(toplevel.wl_surface(), |states| {
+                    let mut guard = states.cached_state.get::<SurfaceCachedState>();
+                    let cached = guard.current();
+                    (cached.min_size, cached.max_size)
+                })
+            };
         if data(window).decorated.get() {
             // Never narrower than the title bar buttons.
             let metrics = &self.theme.metrics;
@@ -322,6 +403,10 @@ impl State {
         self.space.map_element(window.clone(), (x, y), false);
         for other in &order {
             self.space.raise_element(other, false);
+        }
+        if !is_override(window) {
+            let size = window.geometry().size;
+            place_x11(window, x, y, (size.w, size.h));
         }
     }
 
@@ -401,12 +486,12 @@ impl State {
 
     pub fn set_maximised(&mut self, window: &Window, maximised: bool) {
         let data = data(window);
-        let Some(toplevel) = window.toplevel() else {
+        if !is_client(window) {
             return;
-        };
+        }
         // A window that fills the screen is left as it is.
         if data.fullscreen.get().is_some() {
-            toplevel.send_configure();
+            send_configure(window);
             return;
         }
         let target = match (maximised, data.restore.get()) {
@@ -423,7 +508,7 @@ impl State {
             }
             // Already in the state asked for; still owed a configure.
             _ => {
-                toplevel.send_configure();
+                send_configure(window);
                 return;
             }
         };
@@ -431,15 +516,20 @@ impl State {
         data.resize_anchor.set(None);
         // A drag of this window cannot go on from a different geometry.
         self.forget_pointer_state(window);
-        toplevel.with_pending_state(|state| {
-            state.size = Some((target.w, target.h).into());
-            if maximised {
-                state.states.set(ToplevelState::Maximized);
-            } else {
-                state.states.unset(ToplevelState::Maximized);
-            }
-        });
-        toplevel.send_configure();
+        if let Some(toplevel) = window.toplevel() {
+            toplevel.with_pending_state(|state| {
+                state.size = Some((target.w, target.h).into());
+                if maximised {
+                    state.states.set(ToplevelState::Maximized);
+                } else {
+                    state.states.unset(ToplevelState::Maximized);
+                }
+            });
+            toplevel.send_configure();
+        } else if let Some(x11) = x11(window) {
+            let _ = x11.set_maximized(maximised);
+            request_size(window, (target.w, target.h), false);
+        }
         self.move_window(window, target.x, target.y);
         // A minimised window has no place to move; it comes back there.
         if data.minimised.get().is_some() {
@@ -483,9 +573,9 @@ impl State {
     /// without being asked to be.
     pub fn set_fullscreen(&mut self, window: &Window, fullscreen: bool, output: Option<Output>) {
         let data = data(window);
-        let Some(toplevel) = window.toplevel() else {
+        if !is_client(window) {
             return;
-        };
+        }
         let mapped = self.space.element_location(window).is_some();
         match (fullscreen, data.fullscreen.get()) {
             (true, None) => {
@@ -497,12 +587,17 @@ impl State {
                 data.decorated.set(false);
                 data.resize_anchor.set(None);
                 self.forget_pointer_state(window);
-                toplevel.with_pending_state(|state| {
-                    state.states.set(ToplevelState::Fullscreen);
-                    state.size = Some((screen.w, screen.h).into());
-                });
-                if mapped || toplevel.is_initial_configure_sent() {
-                    toplevel.send_configure();
+                if let Some(toplevel) = window.toplevel() {
+                    toplevel.with_pending_state(|state| {
+                        state.states.set(ToplevelState::Fullscreen);
+                        state.size = Some((screen.w, screen.h).into());
+                    });
+                    if mapped || toplevel.is_initial_configure_sent() {
+                        toplevel.send_configure();
+                    }
+                } else if let Some(x11) = x11(window) {
+                    let _ = x11.set_fullscreen(true);
+                    request_size(window, (screen.w, screen.h), false);
                 }
                 // It is not brought in front for asking: a window behind
                 // stays behind, and under the bar, until the user goes to
@@ -515,18 +610,25 @@ impl State {
             (false, Some(restore)) => {
                 data.fullscreen.set(None);
                 data.decorated.set(wants_server_decoration(window));
-                toplevel.with_pending_state(|state| {
-                    state.states.unset(ToplevelState::Fullscreen);
-                    state.size = restore.map(|rect| (rect.w, rect.h).into());
-                });
-                toplevel.send_configure();
+                if let Some(toplevel) = window.toplevel() {
+                    toplevel.with_pending_state(|state| {
+                        state.states.unset(ToplevelState::Fullscreen);
+                        state.size = restore.map(|rect| (rect.w, rect.h).into());
+                    });
+                    toplevel.send_configure();
+                } else if let Some(x11) = x11(window) {
+                    let _ = x11.set_fullscreen(false);
+                    if let Some(rect) = restore {
+                        request_size(window, (rect.w, rect.h), false);
+                    }
+                }
                 if let (true, Some(rect)) = (mapped, restore) {
                     self.move_window(window, rect.x, rect.y);
                 }
             }
             // Already as asked; still owed an answer once it can have one.
             _ if mapped => {
-                toplevel.send_configure();
+                send_configure(window);
             }
             _ => {}
         }
@@ -539,7 +641,8 @@ impl State {
     pub fn fullscreen_in_front(&self) -> Option<Window> {
         self.space
             .elements()
-            .last()
+            .rev()
+            .find(|window| !is_override(window))
             .filter(|window| data(window).fullscreen.get().is_some())
             .cloned()
     }
@@ -569,9 +672,9 @@ impl State {
     fn fill_frame(&mut self, window: &Window, frame: Rect) {
         let frame = Rect::new(frame.x, frame.y, frame.w.max(1), frame.h.max(1));
         let data = data(window);
-        let Some(toplevel) = window.toplevel() else {
+        if !is_client(window) {
             return;
-        };
+        }
         let client = if data.decorated.get() {
             self.theme.metrics.client(frame)
         } else {
@@ -579,10 +682,7 @@ impl State {
         };
         data.resize_anchor.set(None);
         self.forget_pointer_state(window);
-        toplevel.with_pending_state(|state| {
-            state.size = Some((client.w, client.h).into());
-        });
-        toplevel.send_configure();
+        request_size(window, (client.w, client.h), false);
         self.move_window(window, client.x, client.y);
         self.request_redraw();
     }

@@ -16,7 +16,7 @@ use smithay::{
     },
     reexports::wayland_server::{protocol::wl_surface::WlSurface, Resource},
     utils::{Logical, Point, Serial, SERIAL_COUNTER},
-    wayland::shell::wlr_layer::Layer,
+    wayland::{seat::WaylandFocus, shell::wlr_layer::Layer},
 };
 
 use crate::{
@@ -300,10 +300,12 @@ impl State {
                 // open, Super+Q is not aimed at the window behind it.
                 let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
                 let focused = keyboard.current_focus();
-                let toplevel = self.focus_stack.current().and_then(Window::toplevel);
-                if let Some(toplevel) = toplevel {
-                    if focused.as_ref() == Some(toplevel.wl_surface()) {
-                        toplevel.send_close();
+                if let Some(window) = self.focus_stack.current().cloned() {
+                    let has_keyboard = window
+                        .wl_surface()
+                        .is_some_and(|surface| Some(&*surface) == focused.as_ref());
+                    if has_keyboard {
+                        window::close(&window);
                     }
                 }
             }
@@ -629,9 +631,11 @@ impl State {
     /// caller installs the grab.
     pub fn start_move(&mut self, window: &Window, pointer: (i32, i32)) {
         // A maximised or fullscreen window stays where it is. A snapped
-        // one is let go of, and is its own size from now on.
+        // one is let go of, and is its own size from now on. A menu of an
+        // X11 toolkit does not move.
         if window::data(window).restore.get().is_some()
             || window::data(window).fullscreen.get().is_some()
+            || window::is_override(window)
         {
             return;
         }
@@ -737,11 +741,7 @@ impl State {
 
     fn press_button(&mut self, window: &Window, button: Button) {
         match button {
-            Button::Close => {
-                if let Some(toplevel) = window.toplevel() {
-                    toplevel.send_close();
-                }
-            }
+            Button::Close => window::close(window),
             Button::Maximise => self.toggle_maximise(window),
             Button::Minimise => self.set_minimised(window, true),
         }

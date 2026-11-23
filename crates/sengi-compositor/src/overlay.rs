@@ -260,11 +260,7 @@ impl State {
                 let on = window::data(window).fullscreen.get().is_some();
                 self.set_fullscreen(window, !on, None);
             }
-            (Item::Close, MenuKind::Window(window)) => {
-                if let Some(toplevel) = window.toplevel() {
-                    toplevel.send_close();
-                }
-            }
+            (Item::Close, MenuKind::Window(window)) => window::close(window),
             _ => {}
         }
     }

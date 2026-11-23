@@ -68,6 +68,7 @@ use smithay::{
         output::{OutputHandler, OutputManagerState},
         pointer_constraints::PointerConstraintsState,
         relative_pointer::RelativePointerManagerState,
+        seat::WaylandFocus,
         security_context::SecurityContextState,
         selection::{
             data_device::{set_data_device_focus, DataDeviceHandler, DataDeviceState},
@@ -101,7 +102,7 @@ use crate::{
     output_power::OutputPowerState,
     render, security,
     text::Font,
-    x11,
+    window, x11,
 };
 
 /// Environment variable through which started programs learn our pid.
@@ -745,6 +746,10 @@ impl State {
 
     /// Raises `window`, marks it active and gives it the keyboard.
     pub fn focus_window(&mut self, window: &Window) {
+        // A menu of an X11 toolkit is never focused by the compositor.
+        if window::is_override(window) {
+            return;
+        }
         if let Some(old) = self.focus_stack.current().cloned() {
             if old != *window {
                 set_activated(&old, false);
@@ -753,6 +758,16 @@ impl State {
         self.request_redraw();
         self.focus_stack.focus(window.clone());
         self.space.raise_element(window, true);
+        // Menus stay over the window they belong to.
+        let menus: Vec<Window> = self
+            .space
+            .elements()
+            .filter(|other| window::is_override(other))
+            .cloned()
+            .collect();
+        for menu in &menus {
+            self.space.raise_element(menu, false);
+        }
         set_activated(window, true);
 
         // Choosing a window takes the keyboard back from an on-demand layer.
@@ -1067,8 +1082,8 @@ impl State {
             .exclusive_layer()
             .or_else(|| self.layer_focus.clone())
             .or_else(|| {
-                let toplevel = self.focus_stack.current()?.toplevel()?;
-                Some(toplevel.wl_surface().clone())
+                let window = self.focus_stack.current()?;
+                window.wl_surface().map(|surface| surface.into_owned())
             });
 
         if keyboard.current_focus() != target {

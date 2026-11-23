@@ -350,7 +350,17 @@ wlr-screencopy and looks at the pixels.
 - Missing protocols: text-input, output management, virtual keyboard and
   pointer, ext-foreign-toplevel-list, ext-image-copy-capture (screen
   copies are wlr-screencopy's, which is what grim in Debian stable uses).
-- No XWayland.
+- X11 programs run through XWayland, which the first program the user
+  starts while it is down brings up (a key, a menu item, the launcher).
+  That program waits for it and gets its DISPLAY, and so does every one
+  after. Startup programs and the session do not start it: an X11 program
+  they start gets no DISPLAY until a user launch has. A launch of a Wayland
+  program starts it too. Once up, Xwayland stays up until the compositor
+  ends: it is not stopped when its last X11 window goes, so it costs memory
+  after an X11 program has quit. Its windows get the same frame, title and
+  switcher entry as the others, read from Motif hints and WM_CLASS. Moves
+  and resizes a program asks for itself are not honoured, only the title
+  bar's. Only scale 1 has been tried.
 - With `--scale` other than 1, title bars and the cursor are drawn for
   scale 1 and enlarged, so they are the right size but soft. Nothing sets
   the scale yet but the command line.
@@ -398,7 +408,9 @@ and so counts as dirty.
    drag-and-drop icons.
 6. Rounded bottom corners and shadows.
 7. Key bindings from configuration.
-8. XWayland, started on demand.
+8. XWayland: stop it when it is idle, programs that start with DISPLAY
+   from the session itself, client-side moves and resizes, and X11 windows
+   at other scales.
 9. Measure idle RAM and time to first frame against labwc on the target
    machine.
 

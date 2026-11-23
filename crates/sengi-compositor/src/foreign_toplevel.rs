@@ -298,11 +298,7 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, u64> for State {
                 state.set_minimised(&window, false);
                 state.focus_window(&window);
             }
-            Request::Close => {
-                if let Some(toplevel) = window.toplevel() {
-                    toplevel.send_close();
-                }
-            }
+            Request::Close => window::close(&window),
             Request::SetMaximized => state.set_maximised(&window, true),
             Request::UnsetMaximized => state.set_maximised(&window, false),
             Request::SetMinimized => state.set_minimised(&window, true),

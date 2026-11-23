@@ -22,6 +22,7 @@ use smithay::{
             get_parent, get_role, is_sync_subsurface, CompositorClientState, CompositorHandler,
             CompositorState,
         },
+        seat::WaylandFocus,
         shell::wlr_layer::LAYER_SURFACE_ROLE,
         shell::xdg::{
             decoration::XdgDecorationHandler, PopupSurface, PositionerState, ToplevelSurface,
@@ -71,6 +72,11 @@ impl CompositorHandler for State {
             }
             if let Some(window) = self.window_for_surface(&root) {
                 window.on_commit();
+                // An X11 window's surface can be known only from its first
+                // commit, and a focus that waited for it is given now.
+                if window::is_x11(&window) {
+                    self.update_keyboard_focus();
+                }
             }
         }
 
@@ -293,7 +299,7 @@ impl State {
             .elements()
             .chain(self.pending_windows.iter())
             .chain(self.minimised.iter())
-            .find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == surface))
+            .find(|w| w.wl_surface().is_some_and(|own| &*own == surface))
             .cloned()
     }
 
@@ -470,7 +476,7 @@ impl State {
 
     /// A mapped window gained or lost its frame: the space it takes
     /// changed, so fit it again.
-    fn decoration_changed(&mut self, window: &Window) {
+    pub fn decoration_changed(&mut self, window: &Window) {
         self.request_redraw();
         if window::data(window).restore.get().is_some() {
             let target = self.maximised_rect(window);
