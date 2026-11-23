@@ -983,6 +983,19 @@ impl State {
             TimeoutAction::Drop
         });
         self.output_save = armed.ok();
+        self.output_save_since = Some(std::time::Instant::now());
+    }
+
+    /// The session ends: a change that has stood for longer than a trial
+    /// lasts was kept, whether or not its time to be saved came. A younger
+    /// one may be one that blanked the screen, which nobody kept.
+    pub fn flush_output_layout(&mut self) {
+        let old_enough = self
+            .output_save_since
+            .is_some_and(|since| since.elapsed() >= trial_length());
+        if self.output_save.is_some() && old_enough {
+            self.save_output_layout();
+        }
     }
 
     /// The layout as it is now, one entry per head.
@@ -1067,6 +1080,18 @@ impl State {
             Err(why) => crate::say!("the saved layout of the outputs does not fit: {why}"),
         }
     }
+}
+
+/// How long Settings gives a change before it takes it back, with a second
+/// to spare, or what the tests set in its place.
+fn trial_length() -> Duration {
+    if cfg!(feature = "test-hooks") {
+        let set = std::env::var("SENGI_COMPOSITOR_OUTPUT_TRIAL_MS").ok();
+        if let Some(millis) = set.and_then(|text| text.parse().ok()) {
+            return Duration::from_millis(millis);
+        }
+    }
+    crate::output_store::TRIAL_AND_ONE
 }
 
 /// `SAVE_AFTER`, or what the tests set in its place.

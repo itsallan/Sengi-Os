@@ -1230,3 +1230,28 @@ fn a_layout_that_would_switch_everything_off_is_ignored() {
     let _manager = app.manager().unwrap();
     assert!(app.head("HEADLESS-1").enabled && app.head("HEADLESS-2").enabled);
 }
+
+#[test]
+fn a_change_that_stood_for_a_trial_is_kept_when_the_session_ends_and_a_young_one_is_not() {
+    for (trial, kept) in [("300", true), ("60000", false)] {
+        let mut compositor =
+            Compositor::start_with_trial(&["--outputs", "1280x720"], None, "60000", trial);
+        let mut app = compositor.connect();
+        let manager = app.manager().unwrap();
+        let ops = [Op::keep("HEADLESS-1").scale(2.0)];
+        assert_eq!(
+            app.configure(&manager, None, &ops, true).unwrap(),
+            Outcome::Succeeded
+        );
+        std::thread::sleep(Duration::from_millis(600));
+        assert!(compositor.saved_layout().is_none(), "not before its time");
+        compositor.signal("TERM");
+        assert!(compositor.ended(), "the session ended");
+        let saved = compositor.saved_layout();
+        assert_eq!(
+            saved.is_some_and(|text| text.contains("scale = 2000")),
+            kept,
+            "trial {trial}"
+        );
+    }
+}

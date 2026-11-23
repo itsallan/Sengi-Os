@@ -321,6 +321,8 @@ pub struct State {
     pub stored_layout: StoredLayout,
     /// The timer that saves it, while a change waits to be saved.
     pub output_save: Option<RegistrationToken>,
+    /// When the change that waits to be saved was made.
+    pub output_save_since: Option<Instant>,
     /// Plugs and unplugs screens on the headless backend, for tests.
     pub test_outputs: Option<TestOutputs>,
 
@@ -564,6 +566,7 @@ impl State {
             output_management,
             stored_layout,
             output_save: None,
+            output_save_since: None,
             test_outputs: None,
             seat,
         };
@@ -585,6 +588,7 @@ impl State {
             let _ = state.display_handle.flush_clients();
         })?;
 
+        self.flush_output_layout();
         if self.failed {
             return Err("rendering failed".into());
         }

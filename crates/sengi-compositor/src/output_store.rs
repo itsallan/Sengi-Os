@@ -27,6 +27,10 @@ pub const FILE: &str = "sengi-os/outputs.toml";
 /// trial Settings gives a change, so that one it takes back is not saved.
 pub const SAVE_AFTER: Duration = Duration::from_secs(20);
 
+/// How long a change has to have stood for the session's end to keep it:
+/// the page's trial is fifteen seconds.
+pub const TRIAL_AND_ONE: Duration = Duration::from_secs(16);
+
 /// The most entries kept, so that screens passing through cannot make the
 /// file grow without end.
 const MAX_ENTRIES: usize = 32;

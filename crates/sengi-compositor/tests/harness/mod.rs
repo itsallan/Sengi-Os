@@ -76,11 +76,25 @@ impl Compositor {
     /// Starts the compositor with more on its command line, and the saved
     /// layout of the outputs `layout`, saved after `save_ms` milliseconds.
     pub fn start_with_layout(arguments: &[&str], layout: Option<&str>, save_ms: &str) -> Self {
+        Self::start_with_trial(arguments, layout, save_ms, "16000")
+    }
+
+    /// As `start_with_layout`, with how old a change has to be for the
+    /// end of the session to keep it.
+    pub fn start_with_trial(
+        arguments: &[&str],
+        layout: Option<&str>,
+        save_ms: &str,
+        trial_ms: &str,
+    ) -> Self {
         Self::launch(
             None,
             None,
             None,
-            &[("SENGI_COMPOSITOR_OUTPUT_SAVE_MS", save_ms)],
+            &[
+                ("SENGI_COMPOSITOR_OUTPUT_SAVE_MS", save_ms),
+                ("SENGI_COMPOSITOR_OUTPUT_TRIAL_MS", trial_ms),
+            ],
             arguments,
             layout,
         )
