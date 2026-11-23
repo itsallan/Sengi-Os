@@ -62,6 +62,17 @@ to read TOML:
     sengi-settings --get power.lock-after    print the value in effect
     sengi-settings --apply                    write the files below
 
+A third changes a setting from a script or a test the way the window
+does: the value is checked and saved, the files below are written, and
+the running compositor is told.
+
+    sengi-settings --set keyboard.layouts us,de
+    sengi-settings --set mouse.natural-scroll true
+
+labwc is told with `labwc --reconfigure` and reads its files again.
+sengi-compositor reads `settings.toml` itself and is told with
+`sengi-compositor --reload`.
+
 ### Files written for other programs
 
 labwc reads the user's `rc.xml` and `environment` *instead of* the

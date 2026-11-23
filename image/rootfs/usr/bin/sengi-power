@@ -4,7 +4,13 @@ choice=$(printf 'Settings\nLock\nLog out\nRestart\nShut down\n' | sengi-launcher
 case $choice in
 Settings) exec sengi-run sengi-settings ;;
 Lock) exec sengi-lock -f ;;
-"Log out") exec labwc --exit ;;
+"Log out")
+	# Each compositor is asked to end the session in its own way.
+	if [ -n "${SENGI_COMPOSITOR_PID:-}" ]; then
+		exec sengi-compositor --exit
+	fi
+	exec labwc --exit
+	;;
 Restart) exec systemctl reboot ;;
 "Shut down") exec systemctl poweroff ;;
 esac

@@ -34,7 +34,57 @@ pss_kb() {
 }
 
 # Whether the desktop of the person with user number 1000 is up: its
-# compositor's socket, the bar and the dock.
+# compositor's socket, the bar and the dock. labwc calls its socket
+# wayland-0, sengi-compositor counts from wayland-1.
 desktop_is_up() {
-	[ -S /run/user/1000/wayland-0 ] && pidof sengi-bar >/dev/null && pidof sengi-dock >/dev/null
+	for socket in /run/user/1000/wayland-[0-9]; do
+		if [ -S "$socket" ] && pidof sengi-bar >/dev/null && pidof sengi-dock >/dev/null; then
+			return 0
+		fi
+	done
+	return 1
+}
+
+# The compositor the desktop session of user number 1000 is running on.
+# The login screen runs in one of its own, as its own user, and that one
+# is not meant here. The kernel keeps fifteen letters of a program's name.
+session_compositor() {
+	if pgrep -u 1000 -x sengi-composito >/dev/null; then
+		echo sengi-compositor
+	else
+		echo labwc
+	fi
+}
+
+# Its process number; nothing if it is not running.
+session_compositor_pid() {
+	pgrep -u 1000 -x "$(session_compositor | cut -c1-15)" | head -n 1
+}
+
+# The compositor the login screen is shown in, when there is one, and the
+# process numbers of the login screen and that compositor together.
+greeter_compositor() {
+	if pgrep -u _greetd -x sengi-composito >/dev/null; then
+		echo sengi-compositor
+	elif pgrep -u _greetd -x labwc >/dev/null; then
+		echo labwc
+	else
+		return 1
+	fi
+}
+greeter_pids() {
+	pgrep -u _greetd -x 'sengi-greeter|labwc|sengi-composito'
+}
+
+# Runs a command as the person logged in on the live image, inside their
+# desktop session as far as the environment goes: the session's socket,
+# and the compositor's process number under the name each compositor
+# gives it, which is how Settings knows whom to tell of a change.
+as_live() {
+	desktop_is_up || return 1
+	compositor_pid=$(session_compositor_pid)
+	pid_name=LABWC_PID
+	[ "$(session_compositor)" = labwc ] || pid_name=SENGI_COMPOSITOR_PID
+	runuser -u live -- env HOME=/home/live XDG_RUNTIME_DIR=/run/user/1000 \
+		WAYLAND_DISPLAY="${socket##*/}" "$pid_name=$compositor_pid" "$@"
 }

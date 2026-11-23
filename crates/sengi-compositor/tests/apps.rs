@@ -1,0 +1,453 @@
+//! The protocols ordinary programs expect, checked against the real
+//! compositor on the headless backend. Where it matters what was drawn,
+//! the test asks for a picture of the screen and looks at the pixels.
+
+mod common;
+mod harness;
+
+use std::time::Duration;
+
+use common::apps::SCREENCOPY;
+use harness::{Compositor, SOON};
+
+const RED: u32 = 0xffb0_2020;
+const GREEN: u32 = 0xff20_b020;
+const BLUE: u32 = 0xff20_20b0;
+
+/// A colour as a picture has it.
+fn rgb(argb: u32) -> u32 {
+    argb & 0x00ff_ffff
+}
+
+/// Not a test of its own: the compositor starts this as the screen locker,
+/// see `harness::hand_over`.
+#[test]
+fn locker_stand_in() {
+    harness::hand_over();
+}
+
+#[test]
+fn what_is_selected_can_be_pasted_by_whoever_has_the_keyboard() {
+    let compositor = Compositor::start(None);
+    let mut first = compositor.connect();
+    first.keyboard().unwrap();
+    let _window = first.window(GREEN).unwrap();
+    assert!(first.wait(SOON, |seen| seen.keyboard_enters == 1));
+    let _selection = first
+        .select_primary(first.seen.enter_serial.unwrap())
+        .unwrap();
+    assert!(first.wait(SOON, |seen| seen.more.primary_selections == 1));
+    assert_eq!(first.seen.more.primary_types, ["text/plain"]);
+
+    // Another program is told of it when the keyboard comes to it.
+    let mut second = compositor.connect();
+    let _device = second.primary_device().unwrap();
+    assert_eq!(second.seen.more.primary_selections, 0);
+    second.keyboard().unwrap();
+    let _window = second.window(BLUE).unwrap();
+    assert!(second.wait(SOON, |seen| seen.more.primary_selections == 1));
+    assert_eq!(second.seen.more.primary_types, ["text/plain"]);
+}
+
+#[test]
+fn only_the_program_in_front_can_bring_a_window_forward() {
+    let compositor = Compositor::start(None);
+    let mut behind = compositor.connect();
+    behind.keyboard().unwrap();
+    let (behind_surface, _toplevel) = behind.window(GREEN).unwrap();
+    assert!(behind.wait(SOON, |seen| seen.keyboard_enters == 1));
+    let mut front = compositor.connect();
+    front.keyboard().unwrap();
+    let (front_surface, _toplevel) = front.window(BLUE).unwrap();
+    assert!(front.wait(SOON, |seen| seen.keyboard_enters == 1));
+    assert!(behind.wait(SOON, |seen| seen.keyboard_leaves == 1));
+
+    // The one behind cannot put itself in front: not with the serial of
+    // the focus it once had, and not with none.
+    for serial in [behind.seen.enter_serial, None] {
+        let token = behind.activation_token(&behind_surface, serial).unwrap();
+        behind.activate(&token, &behind_surface).unwrap();
+        behind.wait(Duration::from_millis(300), |_| false);
+        assert_eq!(behind.seen.keyboard_enters, 1, "it took the keyboard");
+    }
+    // Nor with a token it made up.
+    behind.activate("not-a-token", &behind_surface).unwrap();
+    behind.wait(Duration::from_millis(300), |_| false);
+    assert_eq!(behind.seen.keyboard_enters, 1);
+
+    // The one in front can hand the keyboard on, as a launcher does.
+    let token = front
+        .activation_token(&front_surface, front.seen.enter_serial)
+        .unwrap();
+    behind.activate(&token, &behind_surface).unwrap();
+    assert!(
+        behind.wait(SOON, |seen| seen.keyboard_enters == 2),
+        "the window was not brought forward"
+    );
+
+    // The token is spent: the first program cannot come back with it.
+    front.activate(&token, &front_surface).unwrap();
+    front.wait(Duration::from_millis(300), |_| false);
+    assert_eq!(front.seen.keyboard_enters, 1, "a token worked twice");
+}
+
+#[test]
+fn a_program_holds_only_so_many_unused_tokens() {
+    let compositor = Compositor::start(None);
+    let mut behind = compositor.connect();
+    behind.keyboard().unwrap();
+    let (behind_surface, _toplevel) = behind.window(GREEN).unwrap();
+    let mut front = compositor.connect();
+    front.keyboard().unwrap();
+    let (front_surface, _toplevel) = front.window(BLUE).unwrap();
+    assert!(front.wait(SOON, |seen| seen.keyboard_enters == 1));
+
+    // Eight are good. What comes after is a token in name only.
+    let serial = front.seen.enter_serial;
+    let tokens: Vec<String> = (0..9)
+        .map(|_| front.activation_token(&front_surface, serial).unwrap())
+        .collect();
+    assert!(behind.wait(SOON, |seen| seen.keyboard_enters == 1));
+    behind.activate(&tokens[8], &behind_surface).unwrap();
+    behind.wait(Duration::from_millis(300), |_| false);
+    assert_eq!(behind.seen.keyboard_enters, 1, "the ninth token worked");
+    behind.activate(&tokens[7], &behind_surface).unwrap();
+    assert!(behind.wait(SOON, |seen| seen.keyboard_enters == 2));
+}
+
+#[test]
+fn a_fullscreen_window_covers_the_bar_and_gives_it_back() {
+    let compositor = Compositor::start(None);
+    let mut shell = compositor.connect();
+    let _bar = shell.bar(30, RED).unwrap();
+    let mut app = compositor.connect();
+    app.keyboard().unwrap();
+    let (surface, toplevel) = app.window(GREEN).unwrap();
+    assert!(app.wait(SOON, |seen| seen.keyboard_enters == 1));
+    assert_eq!(
+        app.capture().unwrap().at(5, 5),
+        rgb(RED),
+        "the bar is there"
+    );
+
+    toplevel.set_fullscreen(None);
+    assert!(
+        app.wait(SOON, |seen| seen.more.toplevel == Some((1280, 720, true))),
+        "not told to fill the screen: {:?}",
+        app.seen.more.toplevel
+    );
+    app.paint(&surface, 1280, 720, GREEN).unwrap();
+    let picture = app.capture().unwrap();
+    assert_eq!(picture.at(5, 5), rgb(GREEN), "the bar still shows");
+    assert_eq!(picture.at(1275, 715), rgb(GREEN));
+
+    toplevel.unset_fullscreen();
+    assert!(app.wait(SOON, |seen| matches!(
+        seen.more.toplevel,
+        Some((300, 200, false))
+    )));
+    app.paint(&surface, 300, 200, GREEN).unwrap();
+    let picture = app.capture().unwrap();
+    assert_eq!(picture.at(5, 5), rgb(RED), "the bar did not come back");
+    assert_eq!(
+        picture.at(640, 360),
+        rgb(GREEN),
+        "the window is not back in place"
+    );
+}
+
+#[test]
+fn a_window_behind_cannot_put_itself_in_front_by_going_fullscreen() {
+    let compositor = Compositor::start(None);
+    let mut shell = compositor.connect();
+    let _bar = shell.bar(30, RED).unwrap();
+    let mut behind = compositor.connect();
+    behind.keyboard().unwrap();
+    let (surface, toplevel) = behind.window(BLUE).unwrap();
+    assert!(behind.wait(SOON, |seen| seen.keyboard_enters == 1));
+    let mut front = compositor.connect();
+    front.keyboard().unwrap();
+    let _window = front.window(GREEN).unwrap();
+    assert!(front.wait(SOON, |seen| seen.keyboard_enters == 1));
+    assert!(behind.wait(SOON, |seen| seen.keyboard_leaves == 1));
+
+    toplevel.set_fullscreen(None);
+    assert!(behind.wait(SOON, |seen| seen.more.toplevel == Some((1280, 720, true))));
+    behind.paint(&surface, 1280, 720, BLUE).unwrap();
+    behind.wait(Duration::from_millis(300), |_| false);
+    // It has the size it asked for, behind: no keyboard, the window in
+    // front still in front, and the bar still over it.
+    assert_eq!(behind.seen.keyboard_enters, 1, "it took the keyboard");
+    front.roundtrip().unwrap();
+    assert_eq!(front.seen.keyboard_leaves, 0);
+    let picture = front.capture().unwrap();
+    assert_eq!(picture.at(640, 360), rgb(GREEN), "it is drawn in front");
+    assert_eq!(picture.at(5, 5), rgb(RED), "it covers the bar");
+    assert_eq!(picture.at(5, 700), rgb(BLUE), "it does not fill the screen");
+}
+
+/// How many pixels of `colour` the row across the middle of the screen has.
+fn across_the_middle(client: &mut common::Client, colour: u32) -> usize {
+    let picture = client.capture().unwrap();
+    assert_eq!((picture.width, picture.height), (1280, 720));
+    (0..picture.width)
+        .filter(|x| picture.at(*x, 360) == rgb(colour))
+        .count()
+}
+
+#[test]
+fn a_screen_drawn_twice_as_large_says_so_and_draws_so() {
+    let compositor = Compositor::start_args(&["--scale", "2"], None);
+    let mut client = compositor.connect();
+    assert_eq!(client.output_scale().unwrap(), Some(2));
+    assert!(client.has_global("wp_viewporter"));
+    let (surface, _toplevel) = client.window(GREEN).unwrap();
+    assert_eq!(client.preferred_scale(&surface).unwrap(), Some(240));
+    // A window 300 wide takes 600 pixels; the outermost are blended with
+    // what is behind when a buffer is drawn larger than it is.
+    let wide = across_the_middle(&mut client, GREEN);
+    assert!((596..=600).contains(&wide), "{wide} pixels wide");
+}
+
+#[test]
+fn a_screen_scaled_by_a_fraction_gives_the_fraction_to_those_who_ask() {
+    let compositor = Compositor::start_args(&["--scale", "1.5"], None);
+    let mut client = compositor.connect();
+    // Those who cannot take a fraction draw for the next whole number.
+    assert_eq!(client.output_scale().unwrap(), Some(2));
+    let (surface, _toplevel) = client.window(GREEN).unwrap();
+    assert_eq!(client.preferred_scale(&surface).unwrap(), Some(180));
+    let wide = across_the_middle(&mut client, GREEN);
+    assert!((446..=450).contains(&wide), "{wide} pixels wide");
+}
+
+#[test]
+fn an_unscaled_screen_is_as_it_was() {
+    let compositor = Compositor::start(None);
+    let mut client = compositor.connect();
+    assert_eq!(client.output_scale().unwrap(), Some(1));
+    let (surface, _toplevel) = client.window(GREEN).unwrap();
+    assert_eq!(client.preferred_scale(&surface).unwrap(), Some(120));
+    assert_eq!(across_the_middle(&mut client, GREEN), 300);
+}
+
+#[test]
+fn a_locked_pointer_stays_put_and_its_movement_is_still_told() {
+    let script = "1500 move 640 360\n2600 nudge 50 0\n3200 nudge 0 30\n";
+    let compositor = Compositor::start_with(None, None, Some(script));
+    let mut app = compositor.connect();
+    let pointer = app.pointer().unwrap();
+    let (surface, _toplevel) = app.window(GREEN).unwrap();
+    let _relative = app.relative_pointer(&pointer).unwrap();
+    assert!(app.wait(SOON, |seen| seen.more.pointer_enters == 1));
+    let _lock = app.lock_pointer(&surface, &pointer).unwrap();
+    assert!(app.wait(SOON, |seen| seen.more.pointer_locked == 1));
+    let moved = app.seen.more.pointer_motions;
+
+    assert!(app.wait(SOON, |seen| seen.more.relative.len() == 2));
+    assert_eq!(app.seen.more.relative, [(50.0, 0.0), (0.0, 30.0)]);
+    assert_eq!(app.seen.more.pointer_motions, moved, "the pointer moved");
+    let said = compositor.status_line("pointer at");
+    assert!(said.contains("pointer at 640,360"), "{said}");
+}
+
+#[test]
+fn a_program_without_the_keyboard_cannot_hold_the_pointer() {
+    // The pointer goes onto a bar, whose program asks to lock it there.
+    let script = "1500 move 100 10\n2600 nudge 50 0\n";
+    let compositor = Compositor::start_with(None, None, Some(script));
+    let mut shell = compositor.connect();
+    let pointer = shell.pointer().unwrap();
+    let (bar, _layer) = shell.bar(30, RED).unwrap();
+    let _relative = shell.relative_pointer(&pointer).unwrap();
+    let mut app = compositor.connect();
+    app.keyboard().unwrap();
+    let _window = app.window(GREEN).unwrap();
+    assert!(app.wait(SOON, |seen| seen.keyboard_enters == 1));
+    assert!(shell.wait(SOON, |seen| seen.more.pointer_enters == 1));
+    let _lock = shell.lock_pointer(&bar, &pointer).unwrap();
+
+    assert!(shell.wait(SOON, |seen| seen.more.relative.len() == 1));
+    assert_eq!(shell.seen.more.pointer_locked, 0, "it was given the lock");
+    let said = compositor.status_line("pointer at");
+    assert!(said.contains("pointer at 150,10"), "{said}");
+}
+
+#[test]
+fn a_lock_ends_when_the_keyboard_goes_to_another_program() {
+    // Inside the first window and clear of the second, which is cascaded 30
+    // pixels further in, so only the change of keyboard focus can end the
+    // lock.
+    let script = "1500 move 500 300\n";
+    let compositor = Compositor::start_with(None, None, Some(script));
+    let mut app = compositor.connect();
+    app.keyboard().unwrap();
+    let pointer = app.pointer().unwrap();
+    let (surface, _toplevel) = app.window(GREEN).unwrap();
+    assert!(app.wait(SOON, |seen| seen.keyboard_enters == 1));
+    assert!(app.wait(SOON, |seen| seen.more.pointer_enters == 1));
+    let _lock = app.lock_pointer(&surface, &pointer).unwrap();
+    assert!(app.wait(SOON, |seen| seen.more.pointer_locked == 1));
+
+    let mut other = compositor.connect();
+    let _window = other.window(BLUE).unwrap();
+    assert!(
+        app.wait(SOON, |seen| seen.keyboard_leaves == 1),
+        "focus did not leave"
+    );
+    // The new window does not cover the pointer, so this unlock is the
+    // keyboard's. What must not happen is none.
+    assert!(
+        app.wait(SOON, |seen| seen.more.pointer_unlocked >= 1),
+        "still locked with the keyboard elsewhere"
+    );
+}
+
+#[test]
+fn a_lock_with_a_region_waits_for_the_pointer_to_be_in_it() {
+    // The window's top left corner is at 490,260. The first movement
+    // takes the pointer into the corner the lock names, the second would
+    // take it out again.
+    let script = "1500 move 640 360\n2600 nudge -140 -90\n3400 nudge 30 0\n";
+    let compositor = Compositor::start_with(None, None, Some(script));
+    let mut app = compositor.connect();
+    let pointer = app.pointer().unwrap();
+    let (surface, _toplevel) = app.window(GREEN).unwrap();
+    let _relative = app.relative_pointer(&pointer).unwrap();
+    assert!(app.wait(SOON, |seen| seen.more.pointer_enters == 1));
+    let _lock = app
+        .lock_pointer_within(&surface, &pointer, (0, 0, 20, 20))
+        .unwrap();
+    app.wait(Duration::from_millis(300), |_| false);
+    assert_eq!(app.seen.more.pointer_locked, 0, "locked outside its region");
+
+    assert!(app.wait(SOON, |seen| seen.more.relative.len() == 2));
+    assert_eq!(app.seen.more.pointer_locked, 1);
+    let said = compositor.status_line("pointer at");
+    assert!(said.contains("pointer at 500,270"), "{said}");
+}
+
+#[test]
+fn a_confined_pointer_does_not_leave_its_window() {
+    // The window is 300 wide around the middle: 500 to the right is out
+    // of it, 20 is not.
+    let script = "1500 move 640 360\n2600 nudge 500 0\n3200 nudge 20 0\n";
+    let compositor = Compositor::start_with(None, None, Some(script));
+    let mut app = compositor.connect();
+    let pointer = app.pointer().unwrap();
+    let (surface, _toplevel) = app.window(GREEN).unwrap();
+    let _relative = app.relative_pointer(&pointer).unwrap();
+    assert!(app.wait(SOON, |seen| seen.more.pointer_enters == 1));
+    let _confine = app.confine_pointer(&surface, &pointer).unwrap();
+    assert!(app.wait(SOON, |seen| seen.more.pointer_confined == 1));
+
+    assert!(app.wait(SOON, |seen| seen.more.relative.len() == 2));
+    let said = compositor.status_line("pointer at");
+    assert!(said.contains("pointer at 660,360"), "{said}");
+}
+
+#[test]
+fn an_unheld_pointer_moves_by_what_the_mouse_reports() {
+    let script = "1500 move 640 360\n2000 nudge 500 0\n";
+    let compositor = Compositor::start_with(None, None, Some(script));
+    let mut app = compositor.connect();
+    let pointer = app.pointer().unwrap();
+    let _window = app.window(GREEN).unwrap();
+    let _relative = app.relative_pointer(&pointer).unwrap();
+    assert!(app.wait(SOON, |seen| seen.more.relative.len() == 1));
+    let said = compositor.status_line("pointer at");
+    assert!(said.contains("pointer at 1140,360"), "{said}");
+}
+
+#[test]
+fn a_picture_of_the_screen_shows_what_is_on_it() {
+    let compositor = Compositor::start(None);
+    let mut client = compositor.connect();
+    assert!(client.has_global(SCREENCOPY));
+    let _window = client.window(GREEN).unwrap();
+    let picture = client.capture().unwrap();
+    assert_eq!((picture.width, picture.height), (1280, 720));
+    assert_eq!(picture.at(640, 360), rgb(GREEN));
+    assert_ne!(picture.at(5, 5), rgb(GREEN));
+}
+
+#[test]
+fn no_picture_is_given_of_a_locked_screen() {
+    let compositor = Compositor::start(None);
+    let mut client = compositor.connect();
+    let _window = client.window(GREEN).unwrap();
+
+    let mut locker = compositor.locker();
+    let lock = locker.lock().unwrap();
+    let output = locker.outputs().remove(0);
+    let _surface = locker.lock_surface(&lock, &output, RED).unwrap();
+    assert!(locker.wait(SOON, |seen| seen.locked == 1));
+    assert!(client.capture().is_err(), "a locked screen was copied");
+
+    lock.unlock_and_destroy();
+    locker.roundtrip().unwrap();
+    assert_eq!(client.capture().unwrap().at(640, 360), rgb(GREEN));
+}
+
+#[test]
+fn what_is_dragged_is_drawn_under_the_pointer() {
+    let script = "1500 move 640 360\n1700 press left\n2600 move 900 500\n";
+    let compositor = Compositor::start_with(None, None, Some(script));
+    let mut app = compositor.connect();
+    let _pointer = app.pointer().unwrap();
+    let (surface, _toplevel) = app.window(GREEN).unwrap();
+    assert!(app.wait(SOON, |seen| seen.more.button_serial.is_some()));
+    let serial = app.seen.more.button_serial.unwrap();
+    let _drag = app.drag(&surface, serial, BLUE).unwrap();
+
+    // Until the pointer has been taken away from the window.
+    app.wait(Duration::from_millis(1500), |_| false);
+    let picture = app.capture().unwrap();
+    assert_eq!(
+        picture.at(940, 540),
+        rgb(BLUE),
+        "no drag icon at the pointer"
+    );
+    assert_ne!(picture.at(640, 360), rgb(BLUE));
+}
+
+#[test]
+fn a_frame_can_be_copied_once_and_a_second_copy_is_an_error() {
+    let compositor = Compositor::start(None);
+    let mut client = compositor.connect();
+    let _window = client.window(GREEN).unwrap();
+    assert!(
+        client.copy_twice().unwrap(),
+        "the second copy was not refused as already used"
+    );
+}
+
+#[test]
+fn the_pointer_is_in_a_picture_only_when_asked_for() {
+    let compositor = Compositor::start_with(None, None, Some("1500 move 640 360\n"));
+    let mut client = compositor.connect();
+    let _pointer = client.pointer().unwrap();
+    let _window = client.window(GREEN).unwrap();
+    assert!(client.wait(SOON, |seen| seen.more.pointer_enters == 1));
+    client.wait(Duration::from_millis(800), |_| false);
+    let without = client.capture_with(0).unwrap();
+    let with = client.capture_with(1).unwrap();
+    let around = |picture: &common::apps::Picture| {
+        (630..650)
+            .flat_map(|x| (350..370).map(move |y| (x, y)))
+            .map(|(x, y)| picture.at(x, y))
+            .collect::<Vec<u32>>()
+    };
+    // Without the request the pointer is not in the picture: the area is one
+    // colour, the window's.
+    let plain = around(&without);
+    assert!(
+        plain.iter().all(|&pixel| pixel == plain[0]),
+        "the pointer is in a picture that did not ask for it"
+    );
+    assert_ne!(
+        around(&with),
+        plain,
+        "the pointer was not drawn when asked for"
+    );
+}

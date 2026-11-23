@@ -1,0 +1,67 @@
+[package]
+name = "sengi-compositor"
+description = "Wayland compositor for Sengi OS"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+# Kept out of the main workspace on purpose: Smithay is a heavy dependency and
+# this crate is not part of the ISO until it can replace labwc.
+[workspace]
+
+[features]
+default = ["winit", "drm", "test-hooks"]
+# Switches for testing only: `--script` and the virtual cursor plane. A
+# build for the image leaves this out.
+test-hooks = []
+# Runs the compositor in a window for development. Pulls in winit and GLES.
+winit = ["smithay/backend_winit"]
+# Runs the compositor on a real screen: libseat, udev, DRM/KMS and libinput.
+drm = [
+    "smithay/backend_drm",
+    "smithay/backend_gbm",
+    "smithay/backend_udev",
+    "smithay/backend_libinput",
+    "smithay/backend_session_libseat",
+    # GLES on GBM, for displays with a GPU behind them.
+    "smithay/backend_egl",
+    "smithay/renderer_gl",
+]
+
+[dependencies]
+# Rasterises the title bar text.
+ab_glyph = "0.2"
+# Reads the system cursor theme.
+xcursor = "0.3"
+# The same calloop Smithay uses, with signal handling switched on.
+calloop = { version = "0.14", features = ["signals"] }
+# For SO_PEERPIDFD, which nothing wraps yet.
+libc = "0.2"
+# Reads the settings file. No dependencies of its own.
+sengi-config = { path = "../sengi-config" }
+sengi-tokens = { path = "../sengi-tokens" }
+# Smithay logs through this; src/log.rs prints what it says.
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+smithay = { version = "0.7", default-features = false, features = [
+    "desktop",
+    "wayland_frontend",
+    "renderer_pixman",
+    # X11 programs run through Xwayland, see src/x11.rs.
+    "xwayland",
+] }
+
+[dev-dependencies]
+# The X11 side of tests/x11.rs. The same crate Smithay uses for Xwayland.
+x11rb = "0.13"
+# For examples/misbehave.rs, a client that tests how the compositor copes
+# with requests it should refuse.
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

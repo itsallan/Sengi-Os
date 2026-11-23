@@ -17,6 +17,7 @@ use sengi_clock::Clock;
 use sengi_config::{Dirs, Settings};
 use sengi_layer::{App, Handle, Instances, LockError, Sender};
 use sengi_lock::cli::{self, Action};
+use sengi_lock::forward;
 use sengi_lock::pam::{self, Outcome};
 use sengi_lock::screen::{Next, Screen, Verdict, View};
 use sengi_lock::supervise::{self, Ready};
@@ -68,6 +69,28 @@ fn main() -> ExitCode {
             return ExitCode::from(64);
         }
     };
+
+    // sengi-compositor shows the session lock only to a locker it started
+    // itself, on a connection it hands over. Started there by anything
+    // else, such as the idle timer or the session menu, this passes the
+    // request on to the compositor, which then starts the locker, and
+    // returns once the screen is locked, with or without `-f`. Where no
+    // compositor answers, this locks the session itself as anywhere else.
+    if std::env::var_os("WAYLAND_SOCKET").is_none() {
+        let asked = forward::control_socket(
+            std::env::var_os("XDG_RUNTIME_DIR").as_deref(),
+            std::env::var_os("WAYLAND_DISPLAY").as_deref(),
+        )
+        .and_then(|socket| forward::ask(&socket));
+        match asked {
+            Some(true) => return ExitCode::SUCCESS,
+            Some(false) => {
+                eprintln!("sengi-lock: sengi-compositor could not lock the screen");
+                return ExitCode::from(supervise::FAILED);
+            }
+            None => {}
+        }
+    }
 
     // A screen that nothing could unlock is worse than one that will not
     // lock, so both of these are settled before the compositor is asked.

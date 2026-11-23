@@ -1,0 +1,231 @@
+//! sengi-compositor: the Wayland compositor for Sengi OS.
+//!
+//! See README.md for what works and what is missing.
+
+mod apps;
+mod card;
+mod cli;
+mod config;
+mod cursor;
+mod decoration;
+#[cfg(any(feature = "winit", feature = "drm"))]
+mod device_input;
+mod dmabuf;
+#[cfg(feature = "drm")]
+mod drm;
+mod foreign_toplevel;
+mod frame;
+#[cfg(feature = "drm")]
+mod gpu;
+mod headless;
+mod idle;
+mod input;
+mod keys;
+mod layer;
+mod layout;
+mod lock;
+#[macro_use]
+mod log;
+mod output_management;
+mod output_power;
+mod output_store;
+mod outputs;
+mod overlay;
+mod png;
+mod render;
+mod screencopy;
+mod script;
+mod security;
+mod shell;
+mod state;
+mod text;
+mod window;
+#[cfg(feature = "winit")]
+mod winit;
+mod x11;
+
+use std::process::ExitCode;
+
+use cli::{Backend, Command, Options};
+use state::State;
+
+fn main() -> ExitCode {
+    // Not for users: the drm backend runs this in a child to learn what GL
+    // would render with, without loading Mesa into the compositor itself.
+    #[cfg(feature = "drm")]
+    {
+        let mut args = std::env::args().skip(1);
+        if args.next().as_deref() == Some("--probe-gl") {
+            return match args.next().map(|node| drm::probe(&node)) {
+                Some(Ok(renderer)) => {
+                    crate::tell!("{renderer}");
+                    ExitCode::SUCCESS
+                }
+                Some(Err(err)) => {
+                    crate::say!("no GL on that device: {err}");
+                    ExitCode::FAILURE
+                }
+                None => ExitCode::from(2),
+            };
+        }
+    }
+
+    let options = match cli::parse(std::env::args().skip(1)) {
+        Ok(Command::Run(options)) => options,
+        Ok(Command::Help) => {
+            crate::tell!("{}", cli::USAGE);
+            return ExitCode::SUCCESS;
+        }
+        Ok(Command::Version) => {
+            crate::tell!("sengi-compositor {}", env!("CARGO_PKG_VERSION"));
+            return ExitCode::SUCCESS;
+        }
+        Ok(Command::Exit) => return signal_compositor("TERM"),
+        Ok(Command::Reload) => return signal_compositor("HUP"),
+        Ok(Command::Lock) => return ask_to_lock(),
+        Err(err) => {
+            crate::say!("{err}\n{}", cli::USAGE);
+            return ExitCode::from(2);
+        }
+    };
+
+    log::init();
+
+    let has_display = display_reachable();
+    // greetd and a login on a console both give the session a terminal.
+    let on_terminal = ["XDG_VTNR", "XDG_SEAT"]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()));
+    let on_terminal = on_terminal && cfg!(feature = "drm");
+    let result = match options.resolve_backend(has_display, on_terminal) {
+        #[cfg(feature = "drm")]
+        Backend::Drm => drm::run(options),
+        #[cfg(not(feature = "drm"))]
+        Backend::Drm => Err("this build has no drm backend".into()),
+        #[cfg(feature = "winit")]
+        Backend::Winit => winit::run(options),
+        #[cfg(not(feature = "winit"))]
+        Backend::Winit => Err("this build has no winit backend".into()),
+        Backend::Headless | Backend::Auto => headless::run(options),
+    };
+
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            crate::say!("{err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Whether there is a desktop session to open a window on. The variables
+/// alone do not say: one left over in the environment of a login on a
+/// terminal must not send the session into a window that cannot open.
+fn display_reachable() -> bool {
+    let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+    let wayland = set("WAYLAND_DISPLAY").is_some_and(|name| {
+        let name = std::path::PathBuf::from(name);
+        match set("XDG_RUNTIME_DIR") {
+            _ if name.is_absolute() => name.exists(),
+            Some(dir) => std::path::Path::new(&dir).join(name).exists(),
+            None => false,
+        }
+    });
+    let x11 = set("DISPLAY").is_some_and(|display| {
+        let display = display.to_string_lossy().into_owned();
+        let number = display
+            .rsplit(':')
+            .next()
+            .and_then(|rest| rest.split('.').next())
+            .unwrap_or_default();
+        // A display on another machine cannot be checked from here.
+        !display.starts_with(':')
+            || std::path::Path::new(&format!("/tmp/.X11-unix/X{number}")).exists()
+    });
+    wayland || x11
+}
+
+/// Prints the socket name and launches the `--startup` commands against it.
+fn start_clients(state: &mut State, options: &Options) {
+    crate::tell!("{}", state.socket_name.to_string_lossy());
+
+    if options.greeter {
+        state.become_login_screen();
+    } else {
+        let locker = options.locker.as_deref().unwrap_or(keys::DEFAULT_LOCKER);
+        state.set_locker(locker);
+    }
+    // Xwayland runs for the whole session, so that the programs started
+    // here, and the ones they start, have a DISPLAY. Not on the login screen.
+    state.start_xwayland();
+    for command in &options.startup {
+        state.spawn(command);
+    }
+    if let Some(command) = &options.session {
+        state.run_session(command);
+    }
+}
+
+/// `--exit` and `--reload`: signals the compositor this was started
+/// under, the way `labwc --exit` and `labwc --reconfigure` do theirs. It
+/// finds it through the pid it gave its children. SIGTERM ends the
+/// session, SIGHUP has the settings read again.
+fn signal_compositor(signal: &str) -> ExitCode {
+    let pid = std::env::var(state::PID_VARIABLE)
+        .ok()
+        // Never 0: to `kill` that is everything in our own process group.
+        .filter(|pid| pid.parse::<u32>().is_ok_and(|pid| pid > 0));
+    let Some(pid) = pid else {
+        crate::say!(
+            "{} is not set; not started from a session?",
+            state::PID_VARIABLE
+        );
+        return ExitCode::FAILURE;
+    };
+    match std::process::Command::new("kill")
+        .args([&format!("-{signal}"), &pid])
+        .status()
+    {
+        Ok(status) if status.success() => ExitCode::SUCCESS,
+        _ => {
+            crate::say!("could not signal process {pid}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `--lock`: asks the compositor this was started under to lock the
+/// screen, and waits for its answer. Success means every screen is
+/// covered, which is what `swayidle -w` waits for before the machine
+/// sleeps.
+fn ask_to_lock() -> ExitCode {
+    use std::io::{BufRead, BufReader, Write};
+
+    let path = state::control_path(
+        std::env::var_os("XDG_RUNTIME_DIR").as_deref(),
+        std::env::var_os("WAYLAND_DISPLAY").as_deref(),
+    );
+    let Some(path) = path else {
+        crate::say!("WAYLAND_DISPLAY is not set; not started from a session?");
+        return ExitCode::FAILURE;
+    };
+    let mut stream = match std::os::unix::net::UnixStream::connect(&path) {
+        Ok(stream) => stream,
+        Err(err) => {
+            crate::say!("no sengi-compositor at {}: {err}", path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(err) = stream.write_all(b"lock\n") {
+        crate::say!("could not ask for the lock: {err}");
+        return ExitCode::FAILURE;
+    }
+    let mut answer = String::new();
+    let _ = BufReader::new(stream).read_line(&mut answer);
+    if answer.trim() == "locked" {
+        ExitCode::SUCCESS
+    } else {
+        crate::say!("the screen was not locked");
+        ExitCode::FAILURE
+    }
+}

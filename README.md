@@ -141,7 +141,9 @@ it is an installed system: no `live` user, `sudo` asks for a password, the
 root file system is the disk. It records how long installing took and the
 installed system's boot time and idle RAM. The only disk it writes is the
 image file it makes in the output directory. Set `SENGI_UEFI` to an OVMF
-firmware image to run either test through UEFI.
+firmware image to run either test through UEFI. Set
+`SENGI_COMPOSITOR=own` to run either test on sengi-compositor instead of
+labwc, the installed system included.
 
 ## Repository layout
 

@@ -76,6 +76,12 @@ install -D -m 0644 "$src/crates/sengi-installer/sengi-installer.desktop" \
 install -D -m 0644 "$src/crates/sengi-settings/sengi-settings.desktop" \
 	"$work/overlay/usr/share/applications/sengi-settings.desktop"
 
+# The compositor preview is a workspace of its own, so Smithay stays out of
+# everyone else's build. No window backend and no test switches in the image.
+cargo build --release --locked --manifest-path "$src/crates/sengi-compositor/Cargo.toml" \
+	--no-default-features --features drm
+install -D -m 0755 "$work/target/release/sengi-compositor" "$work/overlay/usr/bin/sengi-compositor"
+
 components=main
 packages=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$src/image/packages.list" | paste -sd, -)
 if [ "${SENGI_NONFREE_FIRMWARE:-0}" = 1 ]; then
@@ -103,6 +109,13 @@ mmdebstrap --variant=minbase \
 	"deb $security $SUITE-security $components"
 
 root=$work/root
+
+# The compositor's libraries are the ones labwc brings in. If that ever stops
+# being true, find out here and not on a black screen.
+if chroot "$root" ldd /usr/bin/sengi-compositor | grep 'not found' >&2; then
+	echo "sengi-compositor is missing libraries in the image" >&2
+	exit 1
+fi
 
 # Things mmdebstrap manages itself during the bootstrap, so they are set here.
 cat >"$root/etc/apt/sources.list" <<LIST

@@ -12,6 +12,10 @@
 # second, as a real machine keeps them, so the boot entry the installer
 # makes is the one that is used.
 #
+# Set SENGI_COMPOSITOR=own to run the live system and the installed one on
+# sengi-compositor: every start is handed the file that sengi-session looks
+# for, through a credential, since the installed disk carries no choice.
+#
 # The only disk that is ever written is OUTDIR/disk.qcow2, which this
 # script makes. The ISO is attached read-only.
 #
@@ -58,6 +62,13 @@ if [ -n "${SENGI_UEFI:-}" ]; then
 	fi
 fi
 
+# systemd-tmpfiles makes the file early in the start, from a credential the
+# firmware tables carry. No comma may be in it.
+choice=
+if [ "${SENGI_COMPOSITOR:-}" = own ]; then
+	choice='io.systemd.credential:tmpfiles.extra=f /run/sengi-os.compositor 0644 root root - own'
+fi
+
 now() { date +%s.%N; }
 since() { echo "$(now) $1" | awk '{printf "%.1f", $1 - $2}'; }
 
@@ -87,6 +98,7 @@ start_qemu() {
 		-audiodev none,id=snd -device intel-hda -device hda-output,audiodev=snd \
 		-nic user,model=virtio-net-pci \
 		-smbios type=11,value=io.systemd.credential:sengi.test.install=1 \
+		${choice:+-smbios "type=11,value=$choice"} \
 		-serial file:"$serial" \
 		-monitor stdio <"$out/mon.in" >"$monitor" 2>&1 &
 	qemu=$!
@@ -333,6 +345,12 @@ expected="user=$user host=$host zone=$zone root=/dev/vda3 type=ext4 firmware=$fi
 if [ "$installed" != "$expected" ]; then
 	echo "FAIL: the installed system is '$installed', and what was asked for is '$expected'" >&2
 	fail=1
+fi
+# The installed system lists its biggest processes; the compositor asked for
+# has to be among them, and the other one not.
+if [ "${SENGI_COMPOSITOR:-}" = own ]; then
+	grep -q sengi-composito "$out/guest-info-installed.txt" || { echo "FAIL: the installed system did not run sengi-compositor" >&2; fail=1; }
+	if grep -q labwc "$out/guest-info-installed.txt"; then echo "FAIL: the installed system ran labwc" >&2; fail=1; fi
 fi
 for shot in installer-welcome installer-disk installer-review installer-progress installer-done \
 	installed-login installed-desktop installed-boot-menu; do

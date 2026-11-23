@@ -3,11 +3,18 @@
 # took and the idle memory use to the serial port.
 port=/dev/ttyS0
 
-until [ -S /run/user/1000/wayland-0 ] && pidof sengi-bar >/dev/null && pidof sengi-dock >/dev/null; do
+# desktop_is_up, session_compositor, may_power_off and pss_kb, which the
+# install test's report uses too.
+. /usr/lib/sengi-os/report.sh
+
+until desktop_is_up; do
 	sleep 0.1
 done
 read -r up _ </proc/uptime
 echo "SENGI-BOOT desktop_s=$up" >$port
+# Whichever compositor the session came up on. The test knows which one
+# it asked for.
+compositor=$(session_compositor)
 
 sleep "${SENGI_IDLE_WAIT:-30}"
 awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2}
@@ -25,7 +32,7 @@ fi
 {
 	# When each piece of the desktop was started, in seconds since boot,
 	# beside the desktop marker above, and when polkit was called for.
-	for prog in labwc sengi-bar sengi-dock swayidle polkitd; do
+	for prog in "$compositor" sengi-bar sengi-dock swayidle polkitd; do
 		pid=$(pidof -s "$prog") &&
 			awk -v prog="$prog" '{printf "started at %.2f s: %s\n", $22 / 100, prog}' "/proc/$pid/stat"
 	done
@@ -38,7 +45,9 @@ fi
 	grep -E '^(MemTotal|MemFree|MemAvailable|Shmem|Slab|SReclaimable|SUnreclaim|Cached|AnonPages|Mapped|Unevictable|Percpu):' /proc/meminfo
 	journalctl -b --no-pager 2>&1 | grep -i -m6 'portal'
 	ls -l /sys/class/drm/*/device/driver 2>&1 | sed 's/.*-> //' | sort -u
-	echo "labwc llvm maps: $(grep -c -i llvm "/proc/$(pidof labwc)/maps")"
+	echo "compositor: $compositor"
+	echo "$compositor llvm maps: $(grep -c -i llvm "/proc/$(pidof "$compositor")/maps")"
+	journalctl -b --no-pager -o cat -t sengi-session -t sengi-compositor 2>&1 | head -12
 	df -h / /run /tmp 2>&1
 } | sed 's/^/SENGI-INFO /' >$port
 # Extra diagnostics can be asked for from the host without rebuilding:
@@ -49,7 +58,7 @@ if [ -r "$debug" ]; then
 fi
 
 # A desktop that came up and then lost a piece is a failed boot.
-for prog in labwc sengi-bar sengi-dock swayidle swaybg sengi-focus; do
+for prog in "$compositor" sengi-bar sengi-dock swayidle swaybg sengi-focus; do
 	pidof "$prog" >/dev/null || echo "SENGI-FAIL $prog is not running" >$port
 done
 # Settings is a program that is started and goes away again. One that is
@@ -79,8 +88,6 @@ case $lock_after in
 '' | *[!0-9]*) echo "SENGI-FAIL sengi-settings --get power.lock-after gave '$lock_after', not a number" >$port ;;
 esac
 
-# may_power_off and pss_kb, which the install test's report uses too.
-. /usr/lib/sengi-os/report.sh
 # Restart and Shut down in the session menu go through logind.
 may_power_off live
 # shellcheck disable=SC2046
@@ -115,6 +122,134 @@ journalctl -f -n 0 -o cat -t sengi-lock 2>/dev/null | while IFS= read -r line; d
 done &
 watch sengi-lock SENGI-LOCK
 
+# The lock once more, asked for the way the idle timer, the session menu
+# and quick settings ask: by running sengi-lock. Under sengi-compositor
+# that passes the request on to the compositor, which is asked afterwards
+# what it holds. The test has to have seen the desktop back first. Then
+# it types the password, and this waits for the lock screen to go.
+sleep 6
+as_live sengi-lock -f
+status=$?
+held=
+if [ "$compositor" = sengi-compositor ]; then
+	# Only what the compositor says after this request is its answer: an
+	# older report of the session would look the same.
+	before=$(journalctl -b --no-pager -o cat -t sengi-compositor | grep -c 'session ')
+	kill -USR1 "$(session_compositor_pid)"
+	sleep 0.5
+	held=$(journalctl -b --no-pager -o cat -t sengi-compositor | grep 'session ' |
+		tail -n +"$((before + 1))" | tail -n 1 | sed 's/.*session /session /')
+fi
+echo "SENGI-FORWARD exit=$status $held" >$port
+n=0
+while pidof sengi-lock >/dev/null && [ $n -lt 300 ]; do
+	sleep 0.2
+	n=$((n + 1))
+done
+if pidof sengi-lock >/dev/null; then
+	echo "SENGI-FORWARD still locked" >$port
+else
+	echo "SENGI-FORWARD unlocked" >$port
+fi
+
+# Then three things Settings drives, each changed the way the window
+# changes it and without logging out. What came of it is reported as it
+# was found; the test knows what to expect of which compositor.
+#
+# A second keyboard layout and a key to switch to it. The test switches
+# and types "touch z" into the terminal: on the German layout that key
+# gives a y, and the file's name says which it was.
+rm -f /home/live/y /home/live/z
+as_live sengi-settings --set keyboard.switch grp:alt_shift_toggle
+as_live sengi-settings --set keyboard.layouts us,de
+echo "SENGI-KEYBOARD set exit=$?" >$port
+typed=nothing
+n=0
+while [ $n -lt 150 ]; do
+	if [ -e /home/live/y ]; then typed=y; break; fi
+	if [ -e /home/live/z ]; then typed=z; break; fi
+	sleep 0.2
+	n=$((n + 1))
+done
+echo "SENGI-KEYBOARD typed=$typed" >$port
+as_live sengi-settings --set keyboard.layouts us
+as_live sengi-settings --set keyboard.switch ''
+rm -f /home/live/y /home/live/z
+
+# A pointer setting. sengi-compositor says on SIGUSR1 what each device is
+# set to, as libinput has it; labwc has no way of being asked.
+as_live sengi-settings --set mouse.natural-scroll true
+echo "SENGI-POINTER set exit=$?" >$port
+if [ "$compositor" = sengi-compositor ]; then
+	sleep 0.5
+	kill -USR1 "$(session_compositor_pid)"
+	sleep 0.5
+	journalctl -b --no-pager -o cat -t sengi-compositor | grep 'input: ' | tail -n 4 |
+		sed 's/.*input: /SENGI-POINTER device /' >$port
+fi
+as_live sengi-settings --set mouse.natural-scroll false
+echo "SENGI-POINTER done" >$port
+
+# The screen off, as the idle timer asks for it, and on again. The kernel
+# says whether the panel is driven. The test presses a key: under
+# sengi-compositor that lights the screen; labwc leaves that to swayidle,
+# which has not timed out here, so it is asked.
+dpms() {
+	cat /sys/class/drm/card*-*/dpms 2>/dev/null | tr '\n' ' '
+}
+as_live sengi-settings --screen off
+status=$?
+sleep 1
+echo "SENGI-SCREEN asked exit=$status dpms=$(dpms)" >$port
+# Left alone it has to stay off. Only when the test has seen that does it
+# press the key, so a screen that came back by itself is not taken for
+# one the key lit.
+sleep 3
+echo "SENGI-SCREEN still dpms=$(dpms)" >$port
+lit=request
+n=0
+while [ $n -lt 40 ]; do
+	case $(dpms) in
+	*Off*) ;;
+	*) lit=key; break ;;
+	esac
+	sleep 0.2
+	n=$((n + 1))
+done
+[ "$lit" = key ] || as_live sengi-settings --screen on
+sleep 1
+echo "SENGI-SCREEN lit by=$lit dpms=$(dpms)" >$port
+
+# What foot said of the compositor when the test opened a terminal. It
+# names each thing it would use and does not find. Its words reach the
+# journal only under sengi-compositor, which starts it; there it must
+# have spoken, of the things still missing, and not of these three.
+if [ "$compositor" = sengi-compositor ]; then
+	said=$(journalctl -b --no-pager -o cat -t sengi-compositor | grep -E 'warn: wayland\.c')
+	spoke=$(printf '%s\n' "$said" | grep -c .)
+	missing=$(printf '%s\n' "$said" |
+		grep -c -E 'primary selection|XDG activation|fractional scaling')
+	echo "SENGI-FOOT spoke=$spoke missing=$missing" >$port
+else
+	echo "SENGI-FOOT skipped" >$port
+fi
+
+# A terminal that asks to fill the screen from the start, for the test to
+# see over the bar and the dock, and then closed again. The test has to
+# have taken its picture of the desktop first.
+sleep 6
+as_live foot --fullscreen --app-id sengi-fullscreen-test sleep 600 >/dev/null 2>&1 &
+sleep 3
+if pgrep -u live -f 'app-id sengi-fullscreen-test' >/dev/null; then
+	echo "SENGI-FULLSCREEN up" >$port
+else
+	echo "SENGI-FULLSCREEN failed" >$port
+fi
+sleep 6
+pkill -u live -f 'app-id sengi-fullscreen-test'
+sleep 2
+echo "SENGI-FULLSCREEN down" >$port
+
 # Last, the test logs out. greetd then starts the login screen in a
 # compositor of its own, both as its own user. Say when they are up, what
 # they cost and whether they may turn the machine off; then when PAM has
@@ -124,7 +259,7 @@ greeter() {
 	pgrep -u _greetd -x "$1"
 }
 n=0
-until [ -n "$(greeter sengi-greeter)" ] && [ -n "$(greeter labwc)" ]; do
+until [ -n "$(greeter sengi-greeter)" ] && greeter_compositor >/dev/null; do
 	n=$((n + 1))
 	[ $n -lt 900 ] || exit 0
 	sleep 0.2
@@ -135,7 +270,7 @@ if pidof sengi-bar sengi-dock >/dev/null; then
 	echo "SENGI-FAIL the desktop is still running under the login screen" >$port
 fi
 # shellcheck disable=SC2046
-echo "SENGI-GREETER running pss_kb=$(pss_kb $(greeter sengi-greeter) $(greeter labwc))" >$port
+echo "SENGI-GREETER running pss_kb=$(pss_kb $(greeter_pids)) compositor=$(greeter_compositor)" >$port
 ps -u _greetd -o rss=,args= | sed 's/^/SENGI-INFO _greetd runs: /' >$port
 may_power_off _greetd
 journalctl -f -n 0 -o cat -t greetd 2>/dev/null | while IFS= read -r line; do
@@ -153,16 +288,23 @@ while [ -n "$(greeter sengi-greeter)" ]; do
 done
 echo "SENGI-GREETER gone" >$port
 n=0
-until [ -S /run/user/1000/wayland-0 ] && pidof sengi-bar >/dev/null && pidof sengi-dock >/dev/null; do
+until desktop_is_up; do
 	n=$((n + 1))
 	[ $n -lt 150 ] || break
 	sleep 0.2
 done
 sleep 2
-left=$(pgrep -u _greetd -x 'sengi-greeter|labwc' | tr '\n' ' ')
+left=$(greeter_pids | tr '\n' ' ')
 owner=$(loginctl list-sessions --no-legend | awk '$4 == "seat0" && $6 == "user" {print $3; exit}')
 desktop=down
-if pidof labwc >/dev/null && pidof sengi-bar >/dev/null && pidof sengi-dock >/dev/null; then
+if [ "$(session_compositor)" = "$compositor" ] && [ -n "$(session_compositor_pid)" ] &&
+	pidof sengi-bar >/dev/null && pidof sengi-dock >/dev/null; then
 	desktop=up
 fi
 echo "SENGI-GREETER after desktop=$desktop session=${owner:-nobody} left=${left:-nothing}" >$port
+# What the compositors said as they came and went, with logind's view of
+# the sessions between them: how the display passed from one to the next.
+journalctl -b --no-pager -o short-monotonic -t sengi-compositor -t sengi-session -t systemd-logind |
+	grep -E 'restore|clear state|drm master|New session|Removed session|gave up|started in' |
+	tail -n 24 | sed 's/^/SENGI-INFO handover: /' >$port
+echo "SENGI-HANDOVER reported" >$port

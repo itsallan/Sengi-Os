@@ -4,6 +4,7 @@
 pub const USAGE: &str = "\
 Usage: sengi-settings [PAGE]
        sengi-settings --get SECTION.KEY
+       sengi-settings --set SECTION.KEY VALUE
        sengi-settings --apply
        sengi-settings --screen off|on
 
@@ -14,6 +15,11 @@ Pages: network, bluetooth, sound, display, power, date-time, keyboard,
        mouse, notifications, about
 
   --get SECTION.KEY  print the setting in effect, for scripts
+  --set SECTION.KEY VALUE
+                     change a setting as the window would: saved, written
+                     out for the session and taken up by it at once.
+                     Lists are given with commas, flags as true or false.
+                     The idle times in [power] take effect at the next login
   --apply            write the files other programs read from the settings
   --screen off|on    switch every display off, or back on
   -h, --help         show this help
@@ -108,6 +114,12 @@ pub enum Action {
         section: String,
         key: String,
     },
+    /// Change one setting and have the session take it up.
+    Set {
+        section: String,
+        key: String,
+        value: String,
+    },
     /// Write the derived files and exit.
     Apply,
     /// Switch the displays on or off and exit.
@@ -142,6 +154,18 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Action, String> {
                 key: key.to_string(),
             }
         }
+        Some("--set") => {
+            let name = args.next().ok_or("--set needs SECTION.KEY and a value")?;
+            let (section, key) = name
+                .split_once('.')
+                .ok_or("--set needs SECTION.KEY, for example mouse.natural-scroll")?;
+            let value = args.next().ok_or("--set needs a value after SECTION.KEY")?;
+            Action::Set {
+                section: section.to_string(),
+                key: key.to_string(),
+                value,
+            }
+        }
         #[cfg(debug_assertions)]
         Some("--demo") => match args.next() {
             Some(name) => Action::Demo(name),
@@ -165,6 +189,24 @@ mod tests {
 
     fn parsed(args: &[&str]) -> Result<Action, String> {
         parse(args.iter().map(|arg| arg.to_string()))
+    }
+
+    #[test]
+    fn set_takes_a_name_and_a_value() {
+        assert_eq!(
+            parsed(&["--set", "keyboard.layouts", "us,de"]),
+            Ok(Action::Set {
+                section: "keyboard".to_string(),
+                key: "layouts".to_string(),
+                value: "us,de".to_string(),
+            })
+        );
+        // An empty value is a value: it is how a text setting is cleared.
+        assert!(parsed(&["--set", "keyboard.switch", ""]).is_ok());
+        assert!(parsed(&["--set"]).is_err());
+        assert!(parsed(&["--set", "keyboard.layouts"]).is_err());
+        assert!(parsed(&["--set", "layouts", "us"]).is_err());
+        assert!(parsed(&["--set", "keyboard.layouts", "us", "de"]).is_err());
     }
 
     #[test]

@@ -1,4 +1,7 @@
-# Started by labwc once the compositor is up.
+# The programs of the desktop session, started once its compositor is
+# up: by labwc from its autostart file, by sengi-compositor from
+# sengi-session. Each tells the programs it starts its own process number.
+compositor=${SENGI_COMPOSITOR_PID:-${LABWC_PID:-}}
 # Services the user manager starts on demand, such as notifications, need to
 # know where the compositor is. This has to finish before anything can ask
 # for them, so it is not run in the background. TZ is there when a time
@@ -19,7 +22,7 @@ fi
 for program in sengi-bar sengi-dock; do
 	(
 		wait=1
-		while kill -0 "$LABWC_PID" 2>/dev/null; do
+		while kill -0 "$compositor" 2>/dev/null; do
 			started=$(date +%s)
 			systemd-cat -t "$program" "$program"
 			# Ran for a while before dying: start over quickly.
@@ -36,13 +39,14 @@ done
 sengi-focus >/dev/null 2>&1 &
 # When the screen goes off and when it locks are the user's to set, in
 # Settings. "sengi-lock -f" returns once every output is covered, and
-# swayidle waits for that (-w) before it lets the machine go to sleep. swayidle cannot be given new times while it runs, so Settings
+# swayidle waits for that (-w) before it lets the machine go to sleep.
+# swayidle cannot be given new times while it runs, so Settings
 # ends the one that carries the mark below and this loop starts another
 # with the times as they are now. Anything that is not a number, such as
 # no answer at all, gets the default.
 (
 	wait=1
-	while kill -0 "$LABWC_PID" 2>/dev/null; do
+	while kill -0 "$compositor" 2>/dev/null; do
 		blank=$(sengi-settings --get power.blank-after 2>/dev/null)
 		lock=$(sengi-settings --get power.lock-after 2>/dev/null)
 		on_sleep=$(sengi-settings --get power.lock-on-sleep 2>/dev/null)

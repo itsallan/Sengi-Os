@@ -5,12 +5,24 @@ export XDG_SESSION_DESKTOP=sengi
 export XDG_SESSION_TYPE=wayland
 export MOZ_ENABLE_WAYLAND=1
 
-# Picks the software renderer where there is no GPU to use.
-. /usr/lib/sengi-os/renderer.sh
-
 # labwc reads the user's rc.xml and environment in place of the system's.
 # Settings writes those from the system's files plus what the user chose,
 # so they are written again here in case an update changed the system's.
 sengi-settings --apply 2>/dev/null || true
+
+# Which compositor is asked for, and how ours is run.
+. /usr/lib/sengi-os/compositor.sh
+
+if [ "$(wanted_compositor)" = own ]; then
+	# labwc reads its environment file itself: the user's, or else the
+	# system's. The cursor size and the time zone are kept there.
+	environment=${XDG_CONFIG_HOME:-$HOME/.config}/labwc/environment
+	[ -r "$environment" ] || environment=/etc/xdg/labwc/environment
+	export_environment "$environment"
+	own_compositor --locker '/usr/bin/sengi-lock -f' -s '. /usr/lib/sengi-os/session-start'
+fi
+
+# Picks the software renderer where there is no GPU to use.
+. /usr/lib/sengi-os/renderer.sh
 
 exec labwc

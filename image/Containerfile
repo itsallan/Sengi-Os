@@ -1,5 +1,8 @@
 # Builder for the Sengi OS ISO. The build tools come from the same Debian
-# snapshot as the image itself, so the toolchain is pinned too.
+# snapshot as the image itself, so the toolchain is pinned too. That takes
+# the snapshot's updates and security suites as well: the base image already
+# carries fixes from them, and a -dev package wants its library at the very
+# same version.
 FROM docker.io/library/debian:trixie-slim
 
 ARG SNAPSHOT
@@ -9,12 +12,15 @@ ENV DEBIAN_FRONTEND=noninteractive
 # a few times. Without this apt waits on a dead connection for ever.
 RUN rm -f /etc/apt/sources.list.d/* \
  && printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "5";\n' >/etc/apt/apt.conf.d/80sengi-timeouts \
- && echo "deb http://snapshot.debian.org/archive/debian/${SNAPSHOT} trixie main" >/etc/apt/sources.list \
+ && printf 'deb http://snapshot.debian.org/archive/%s trixie%s main\n' \
+      "debian/${SNAPSHOT}" "" "debian/${SNAPSHOT}" -updates "debian-security/${SNAPSHOT}" -security \
+      >/etc/apt/sources.list \
  && apt-get -o Acquire::Check-Valid-Until=false update \
  && apt-get install -y --no-install-recommends \
       mmdebstrap squashfs-tools xorriso mtools dosfstools \
       grub-common grub-pc-bin grub-efi-amd64-bin \
       ca-certificates zstd faketime rustup gcc libc6-dev pkg-config libfontconfig-dev libxkbcommon-dev libpam0g-dev \
+      libseat-dev libinput-dev libudev-dev libgbm-dev libpixman-1-dev \
  && rm -rf /var/lib/apt/lists/*
 
 # Slint needs a newer Rust than Debian stable ships, so the compiler comes

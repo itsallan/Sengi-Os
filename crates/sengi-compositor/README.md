@@ -1,0 +1,697 @@
+# sengi-compositor
+
+The Wayland compositor that will replace labwc in Sengi OS. It is built on
+[Smithay](https://github.com/Smithay/smithay) 0.7. The programs the live
+session starts (sengi-bar, sengi-dock, sengi-launcher, mako, swaybg,
+swayidle, swaylock, sengi-focus) run on it, it sleeps when nothing changes,
+and it drives screens through DRM/KMS: with GLES where there is a GPU, with
+pixman on the CPU where there is none. It has not run on real hardware yet;
+everything below was seen in virtual machines.
+
+The ISO carries it as a preview beside labwc: the boot menu entry "Sengi OS
+(sengi-compositor preview)" starts the session on it, the default entry is
+labwc as before. See "In the Sengi OS image" below. The crate is its own
+Cargo workspace, excluded from the main one, so the normal build does not
+compile Smithay.
+
+## Build and run
+
+    cd crates/sengi-compositor
+    cargo build
+    cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
+
+Build needs a C toolchain, `pkg-config`, `libpixman-1-dev` and
+`libxkbcommon-dev`. The binary links against libpixman-1 and libxkbcommon. The
+winit backend also loads libwayland-client, libwayland-egl, libEGL and a GLES
+driver at run time (Mesa's llvmpipe is enough). Title bar text needs the
+typeface named by `type.family` (Inter, Debian package `fonts-inter`) under
+`/usr/share/fonts`, `/usr/local/share/fonts` or the user's fonts directory;
+without it title bars are drawn with no title. The cursor comes from the
+XCursor theme named by `XCURSOR_THEME` (default `default`) at `XCURSOR_SIZE`
+(default 24); without a theme an arrow is drawn.
+
+    # In a window on your desktop, with a terminal inside it
+    sengi-compositor -s foot
+
+    # No display at all: run clients for five seconds, save what was drawn
+    sengi-compositor --backend headless --exit-after 5 --screenshot out.png \
+        -s waybar -s 'sleep 2; foot'
+
+    # On a virtual terminal, as the session (what greetd would run)
+    sengi-compositor -s 'sh /etc/xdg/labwc/autostart'
+
+The socket name is printed on stdout. `-s` commands get `WAYLAND_DISPLAY` set
+to it. `--no-default-features` builds without winit and GLES, headless only.
+
+### As the session on a real screen
+
+With the `drm` feature (on by default) and started on a virtual terminal
+with no `WAYLAND_DISPLAY` or `DISPLAY` set, the compositor takes the seat
+through libseat (logind or seatd), opens the seat's primary display device,
+lights every connected connector at its preferred mode, side by side in the
+order found, and reads keyboards, mice and touchpads through libinput.
+
+The renderer is chosen at start and named in the log. Kernel drivers that
+never have a GPU get pixman on dumb buffers. Otherwise a child process
+(`--probe-gl`) asks Mesa what GL would run on, so Mesa is only loaded into
+the compositor when the answer is hardware; llvmpipe and the like are
+refused. `--renderer gles|pixman` or `SENGI_COMPOSITOR_RENDERER` override
+the choice. With GLES, clients can hand over dmabufs (linux-dmabuf with
+feedback) and the cursor goes on its own plane where KMS offers one.
+
+Build for the image, without the development window backend:
+
+    cargo build --release --locked --no-default-features --features drm
+
+That also leaves out the `test-hooks` feature, and with it `--script` and
+the virtual cursor plane switch, which are for testing only.
+
+Build-time packages (Debian): `build-essential pkg-config libseat-dev
+libinput-dev libudev-dev libgbm-dev libpixman-1-dev libxkbcommon-dev`.
+Run-time packages: `libseat1 libinput10 libudev1 libgbm1 libdrm2
+libpixman-1-0 libxkbcommon0`, `fonts-inter` for title text, a cursor theme
+such as `adwaita-icon-theme`, and a seat provider: systemd-logind (a greetd
+session with pam_systemd is enough) or seatd.
+
+Under greetd, point the session command at a script like the image's
+`sengi-session`, which runs
+
+    sengi-compositor --backend drm --locker '/usr/bin/sengi-lock -f' \
+        -s '. /usr/lib/sengi-os/session-start'
+
+Name the backend there. Left to choose, the compositor opens a window
+when `WAYLAND_DISPLAY` or `DISPLAY` name a display that is really there,
+takes the screen when started on a terminal, and otherwise runs headless.
+
+Started programs get `WAYLAND_DISPLAY` and `SENGI_COMPOSITOR_PID`, which
+the session's restart loops watch. From inside the session,
+`sengi-compositor --exit` (or SIGTERM) logs out and gives the terminal
+back, and `sengi-compositor --lock` locks the screen and returns once
+every screen is covered. `sengi-compositor --reload` (or SIGHUP, which is
+also what `labwc --reconfigure` sends) has the settings read again, see
+"What Settings sets" below. Ctrl+Alt+F1..F12 switch virtual terminals.
+
+`--backend drm --screenshot PNG` saves what is drawn, by rendering the same
+frame once more into memory, whenever the compositor gets SIGUSR2, and at
+the end with `--exit-after SEC`. Several screens come out as one picture,
+laid out as they are on the desktop. SIGUSR1 prints how many page flips
+there were, how many of them had the cursor on its own plane, how many
+dmabufs were imported and where the pointer is. Smithay's warnings and
+errors go to stderr; `SENGI_COMPOSITOR_LOG=info|debug|trace` shows more.
+
+### A test guest with a GPU
+
+The GPU path was checked in a KVM guest with a virgl GPU, booted from the
+released ISO, with the compositor and the test script on a second disk
+that the image's `sengi.test.debug` hook mounts and runs:
+
+    qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp 2 -m 4096 \
+        -drive file=sengi-os-0.3.0-amd64.iso,format=raw,if=virtio,readonly=on \
+        -drive file=share.img,format=raw,if=virtio \
+        -device virtio-vga-gl,id=gpu0,max_outputs=2 \
+        -display egl-headless,rendernode=/dev/dri/renderD128 \
+        -vnc unix:vnc.sock -vnc unix:vnc2.sock,id=v2,display=gpu0,head=1 \
+        -machine vmport=off -device virtio-tablet-pci -device virtio-mouse-pci \
+        -nic none -serial file:serial.log -qmp pipe:qmp -monitor stdio \
+        -smbios type=11,value=io.systemd.credential:sengi.test=1 \
+        -smbios 'type=11,value=io.systemd.credential:sengi.test.debug=mount /dev/vdb /mnt; sh /mnt/guest.sh'
+
+Notes for whoever repeats it. The credential text must not contain a
+comma. QEMU's `screendump` has no picture of a GL scanout ("no surface");
+a VNC client gets one, and it shows the primary plane only, which is how a
+cursor on its own plane can be told from a composed one. The second head
+is "plugged in" by a VNC client on `vnc2.sock` that announces the extended
+desktop size encoding and sends SetDesktopSize; nothing found unplugs it
+again. Keys go in with the monitor's `sendkey`, absolute and relative
+pointer events with QMP `input-send-event`. On virtual GPUs the kernel
+hides the cursor plane from compositors that do not set the cursor hotspot
+property, which Smithay does not; `SENGI_COMPOSITOR_VIRTUAL_CURSOR_PLANE=1`
+claims that support so the cursor plane can be exercised there (a host
+that draws the guest's cursor may then show it a few pixels off).
+virtio-gpu completes page flips at once, so a client that draws
+continuously runs faster than the 75 Hz the mode claims.
+
+### Scripted input
+
+The headless backend has no devices, so `--script FILE` plays input from a
+file: one step per line, the time in milliseconds since start, then a command.
+
+    # drag a title bar, type a command, close the window
+    2000 move 640 110
+    2100 press left
+    2200 move 490 50
+    2300 release left
+    2500 type echo Hello
+    2600 key enter
+    3000 screenshot /tmp/after.png
+    3100 key super+q
+    3500 exit
+
+`move` takes output pixels. `press`, `release` and `click` take `left`,
+`right` or `middle`. `type` and `key` assume the US layout; `key` takes a
+key name or a chord, `keydown` and `keyup` one key, to hold a modifier
+while the pointer does something. Lines starting with `#` are comments. Steps go through
+the same code as real input. Leave time between a step and the screenshot
+that should show its effect; clients answer asynchronously.
+
+### Several screens, headless
+
+`--outputs 1280x720,800x600` makes several headless screens side by side,
+named HEADLESS-1 and so on; `1920x1080:panel` makes one that has a list of
+modes of its own, as a real display has, where a plain one takes any size.
+With a screenshot the screens come out as one picture, in order. A build
+with `test-hooks` also takes a line on the control socket (the `.control`
+file beside the Wayland socket): `plug 800x600 [NAME] [panel]`, `unplug
+NAME`, and `do STEP` for any script step, which is how `tests/outputs.rs`
+plugs screens and moves the pointer without waiting on a clock.
+
+## What works
+
+Checked by running it in the builder VM, mostly headless with scripted input
+and screenshots, against foot, sengi-bar, waybar, swaybg, fuzzel, mako,
+swaylock, swayidle, sengi-focus, wlrctl and gtk3-widget-factory:
+
+- xdg-shell toplevels over `wl_shm`. A new window is centred in the free
+  area; later ones cascade by the title bar height.
+- Server-side decorations through xdg-decoration, for clients that accept
+  them (foot does): title bar with close, minimise and maximise on the left,
+  centred title in Inter, rounded top corners, 1 px border, separate looks
+  for the focused and unfocused window, hover highlight on buttons. All
+  sizes and colours are read from `tokens/sengi.toml`.
+- Drag the title bar to move. Drag an edge or corner to resize; the opposite
+  edges stay put, a window never gets narrower than its buttons, and the
+  title bar cannot be pushed under the bar. Drags are Smithay pointer
+  grabs, like popup grabs and client clicks.
+- Close, minimise and maximise buttons. Maximise again restores the old size
+  and place; a minimised window comes back when the dock activates it. A
+  client that asks to be maximised before it maps (`foot --maximized`)
+  starts maximised.
+- The image's own start-up script (`autostart.in`, with `LABWC_PID` set to
+  the compositor's pid) brings up swaybg, sengi-bar and sengi-dock; the
+  dock's Terminal item starts foot and shows it as running, its search item
+  and Super+Space open sengi-launcher, which takes the keyboard and closes
+  on a click outside.
+- It draws only when something changed. With swaybg, sengi-bar, a dock,
+  mako and foot running and no input, the compositor made 0 wakeups in ten
+  seconds (566 before); with a blinking terminal cursor, about two per
+  blink. Frame callbacks go to visible surfaces, hidden ones get one a
+  second. Measured on the headless backend, debug build.
+- Key bindings as labwc has them in the image: Super+Space runs
+  sengi-launcher (fuzzel where that is missing),
+  Super+Return a terminal (`sengi-run foot`, or `foot`), Super+L
+  the locker, Super+Q and Alt+F4 close the window that has the keyboard,
+  Alt+Tab and Alt+Shift+Tab step through windows by recent use.
+- With Super held, the left button moves a window from anywhere on it and
+  the right button resizes it by the nearest corner. A double click on the
+  title bar maximises and restores.
+- wlr-layer-shell on all the layers the session uses: sengi-bar and the
+  waybar dock with exclusive zones, swaybg behind, mako on the overlay
+  layer. Windows are kept out from under bars, also ones that appear later,
+  and maximised windows fill exactly the area left free.
+- Keyboard focus for layer surfaces: fuzzel is typed into while it is open
+  and the window gets the keyboard back afterwards.
+- wlr-foreign-toplevel-management: title, app id, activated, maximised and
+  minimised state; activate, close, maximise and minimise requests. The
+  waybar taskbar lists windows and restores a minimised one on click;
+  `wlrctl toplevel` can list, focus and minimise; sengi-focus connects.
+- A drawn pointer cursor: theme cursors, resize cursors on frame edges,
+  cursors set by clients (surface or cursor-shape).
+- xdg popups, also on layer surfaces (waybar tooltips), with grabs: a GTK
+  menu opens and a click elsewhere dismisses it.
+- ext-session-lock and ext-idle-notify: swaylock locks, swayidle locks
+  after its timeout. While locked only the lock surfaces are drawn and get
+  input, one per screen; keys typed and clicks made on the lock screen did
+  not reach the terminal behind it, and bindings did not fire. The locker
+  is told the session is locked once every screen has shown a frame drawn
+  under the lock. If the locker dies, the screen stays locked and plain
+  and the compositor starts the locker again; a second locker is refused
+  while the first lives. Only the lock object that was granted the lock
+  can unlock or supply lock surfaces. `tests/lock.rs` checks these rules
+  against the running compositor, and on two screens in the GPU guest
+  swaylock covered both while `misbehave steal-unlock` and
+  `fake-lock-surface` got nowhere.
+- DRM backend, checked on virtio-gpu in a nested QEMU guest booted from the
+  project's ISO, with the compositor in labwc's place in the live greetd
+  session: the image's start-up script brought up swaybg, sengi-bar,
+  sengi-dock, mako, swayidle and sengi-focus; Super+Return opened foot with
+  our title bar and typing reached it; Super+Space opened the launcher; the
+  pointer followed an absolute pointing device. QEMU's own screen dumps
+  show all of it, and a click on the title bar's close button closed the
+  window. 24 MB resident, no LLVM mapped, and no wakeups or CPU time in
+  ten idle seconds. SIGTERM ended the session and gave the console back.
+  Run as root on libseat's builtin backend, Ctrl+Alt+F2 switched to the
+  text login on tty2 and Ctrl+Alt+F7 came back to a repainted desktop,
+  and `--screenshot` saved the frame.
+- GLES on GBM, checked in a KVM guest with a virgl GPU (host: Intel HD 620)
+  running the image's session. The compositor's own screenshots of the
+  desktop, a terminal, a window mid-drag, a resize cursor and the launcher
+  are pixel for pixel what QEMU's VNC server shows of the scanout, and
+  differ from the same scenes on pixman only in the clock, a text caret
+  and about fifty pixels by one or two levels. Idle, ten seconds: no page
+  flips, no CPU time.
+- linux-dmabuf on GLES: `weston-simple-egl` attached dmabufs
+  (`zwp_linux_buffer_params_v1.create_immed`, ARGB8888, no modifier) and
+  no shm buffers, and was drawn. On pixman the global is not offered and
+  the same client falls back to software.
+- Cursor plane, with the virtual cursor switch described above: the log
+  counts one cursor plane, every frame with the pointer in it had the
+  cursor on that plane, DRM's debugfs state shows the plane following the
+  pointer, and the primary plane's picture lacks the cursor, also for the
+  resize cursor and the launcher's.
+- Terminal switching and exit on GLES, as root on libseat's builtin
+  backend: Ctrl+Alt+F2 reached tty2, Ctrl+Alt+F7 came back to a picture
+  identical to the one before, typing still worked, SIGTERM gave the text
+  console back.
+- A second display plugged in while running was lit next to the first,
+  swaybg and sengi-bar put their surfaces on it, and a terminal dragged
+  across the edge showed on both.
+- Relative pointer motion through libinput, with its acceleration: 100
+  units sent slowly moved the pointer 58 to 74 pixels, the same distance
+  sent in two steps 129 to 198.
+- `sengi-compositor --exit` and SIGTERM end the session; started programs
+  get `SENGI_COMPOSITOR_PID`.
+- A forged `xdg_toplevel.move` is ignored and a toplevel that detaches
+  its buffer unmaps cleanly (`examples/misbehave.rs`). A client that
+  commits with a frame callback and no damage gets its callbacks at the
+  refresh rate (`misbehave spin`: 69 a second on a 75 Hz display; 507
+  before that was fixed).
+- wp-security-context, see "Who may do what" below.
+- Headless backend: pixman rendering into memory, scripted input, PNG
+  screenshots.
+- Winit backend: GLES rendering in a window with keyboard and pointer input.
+  Tested nested inside headless labwc with injected keys and clicks (frames
+  and our own cursor draw, the host cursor is hidden, the maximise button
+  works), not yet by a person on a real desktop.
+
+### What ordinary programs expect
+
+Checked by `tests/apps.rs` against the running compositor; where it
+matters what was drawn, the test takes a picture of the screen through
+wlr-screencopy and looks at the pixels.
+
+- Primary selection: what one program selects is offered to whichever
+  has the keyboard.
+- xdg-activation: a program that has the keyboard, and shows it with the
+  serial of that focus, gets a token that brings a window forward within
+  ten seconds; a launcher does that for what it starts. A token asked for
+  without the keyboard, with an old serial or made up brings nothing
+  forward, so a program in the background cannot put itself in front.
+- Fullscreen: a window that asks fills its screen without a frame and is
+  drawn over the top layer, bar and dock included, for as long as it is
+  the window in front; leaving puts it back where it was. A window that
+  asks before it is first shown starts that way.
+- viewporter and fractional-scale. Every output has its own scale, 0.5 to
+  4, which Settings sets (`--scale FACTOR` is the scale of the outputs it
+  has not set): 2 is announced as it is, 1.5 as 2 to those who cannot
+  take a fraction and as 1.5 to those who ask. Each window is told the
+  scale of the output most of it is on, and is drawn at each output's own
+  scale where it is over two.
+- Several outputs, and wlr-output-management (version 4, the one
+  Settings' Display page speaks): every output is a head with its modes,
+  position, scale and turn, switched on or off. A configuration is
+  checked and put in place whole or refused (`failed`), a serial that is
+  out of date is `cancelled`, and one that would switch every output off
+  or lay two over each other is refused. A head that is not given a
+  place keeps to its neighbours: when an output gets smaller or larger the
+  ones beside it move up to it, so that the pointer can still cross. The
+  layout is kept in `sengi-os/outputs.toml` beside the settings file, and
+  read at the start, when a screen is plugged in and on SIGHUP. A change a
+  program makes is saved twenty seconds after the last one, which is
+  longer than the fifteen seconds Settings gives a change before it takes
+  it back, so a change nobody keeps is never what is saved. Screens in
+  the file that are not there are kept and ignored. New windows, the
+  switcher and the menus come up on the output the pointer is on; a
+  maximised, snapped or fullscreen window uses the output it is on; a bar
+  takes room on its own output only. A window goes with its output when
+  it is moved in Settings, and to the one that is left when its output
+  is pulled out or switched off, fullscreen ones to fill that one.
+- Adaptive sync is not offered: a head says it is off, and turning it on
+  is refused. A saved screen is found by make, model and serial when it
+  has a serial, else by its name; the DRM backend does not read the
+  display's EDID, so for now that means the connector name.
+- Pointer constraints and relative pointer: a locked pointer stays where
+  it is and its movement is still reported; a confined one does not leave
+  its surface or the region named. A constraint begins when the pointer
+  is on the surface and ends when it leaves.
+- wlr-screencopy, version 1, into shared-memory buffers, a whole output or
+  a part of it. Refused while the session is locked, and not offered to
+  sandboxed clients. The picture always includes the cursor.
+- The picture a drag carries is drawn under the pointer.
+
+## What does not work
+
+- Nothing has run on real hardware. Unseen there: GLES on i915, the
+  cursor plane without the virtual switch, overlay planes and direct
+  scanout (virtio-gpu offers none), suspend and resume, real vertical
+  blanks.
+- GLES costs memory that is Mesa's, not ours: Debian's `libgallium` links
+  libLLVM, and about 42 MB of it are resident in any process that opens
+  EGL, labwc included. See "Memory" below.
+- Unplugging a display, changing its mode, switching one off and on and
+  turning it have been tried on the headless backend only. The DRM code
+  for them compiles and is checked by clippy, but nothing has driven a real
+  connector, CRTC or mode change with it: a mode change goes through
+  `DrmCompositor::use_mode` and a repaint, and a failed step is taken back
+  as far as it can be. The cursor is turned with the output, which is not
+  what a rotated panel wants. Adaptive sync is not there.
+- With several screens: absolute pointing devices (a touchscreen, a tablet)
+  map to the first one that is on, not to the one they belong to; that
+  needs the device's output, which libinput gives only for some.
+- The touchpad settings (tap to click, disable while typing) have not
+  been seen working: there is no touchpad in a VM.
+- In the 0.3.0 live image, Ctrl+Alt+Fn is refused by logind ("failed to
+  change vt") for the session user; it works when the compositor runs on
+  libseat's builtin backend. The image probably has the same limit under
+  labwc; polkit or seatd would lift it.
+- The bottom corners of a window are square and there are no shadows.
+- A fullscreen window has no key binding of ours to leave it by; labwc
+  has none by default either. The program's own key does it.
+- The bar's power icon starts `sengi-power`, which was not available to
+  test; the click reaches the bar.
+- Clients that do not speak xdg-decoration (GTK) keep their own title bars.
+- Windows are not re-placed when the usable area changes; they are only
+  pulled out from under a bar.
+- Written but not exercised: moves and resizes started by the client
+  (`xdg_toplevel.move`/`.resize` with a valid serial),
+  popup constraining at a screen edge, a decoration mode change on a mapped
+  window, frame callback throttling for a fully covered window,
+  unmapping a window by detaching its buffer, on-demand layer focus by
+  click, client maximum sizes, scroll events, winit window resize, animated
+  cursors.
+- No key binding configuration, no edge snapping, no window menu on
+  Alt+Space. Alt+Tab has no on-screen switcher. A maximised window cannot
+  be dragged off its place; restore it first.
+- Maximising moves the window at once but the client redraws a moment later.
+- Title text is unkerned (Inter keeps kerning in GPOS), has no fallback
+  fonts, and long titles are cut off without an ellipsis.
+- Nested under winit the host's keyboard layout is not followed.
+- No dmabuf on the pixman path, so GPU clients fall back to software
+  there. No `wl_drm`; Mesa finds the device through dmabuf feedback.
+- Missing protocols: text-input, virtual keyboard and
+  pointer, ext-foreign-toplevel-list, ext-image-copy-capture (screen
+  copies are wlr-screencopy's, which is what grim in Debian stable uses).
+- X11 programs run through XWayland, which starts once, at the start of a
+  normal session (not on the login screen), so that the startup programs
+  (the bar, the dock, the launcher) and everything they start have a
+  DISPLAY. Programs started while it comes up wait for it, for five seconds
+  at most; after that they run without a DISPLAY and Xwayland is given up
+  for the session. It stays up for the whole session on purpose, whether
+  or not an X11 window is open, and is brought back by the next launch if
+  it dies. Only the socket in /tmp/.X11-unix is used, not the abstract one,
+  so a sandboxed program cannot reach it by sharing the network. Its
+  windows get the same frame, title and switcher entry as the others, read
+  from Motif hints and WM_CLASS. Only scale 1 has been tried. Known gaps:
+  no clipboard between X11 and Wayland programs; no click outside an X11
+  menu to dismiss it; a fullscreen override-redirect window is not usable;
+  a transient window is not centred or kept above its parent; a window
+  that withdraws and maps again is placed anew; moves and resizes a program
+  asks for itself are not honoured, only the title bar's.
+- Clients started with `-s` or a key binding are not stopped when the
+  compositor exits; they quit on their own when the socket closes.
+- Frame time has not been measured.
+
+## Memory
+
+Measured in the GPU guest above with the whole session running and idle
+(swaybg, sengi-bar, sengi-dock, mako, swayidle, sengi-focus, PipeWire),
+release build, from `/proc/PID/smaps_rollup` and `smaps`, in MB:
+
+| compositor                 | Rss | Pss | private dirty | libLLVM resident | heap | session Pss |
+|----------------------------|-----|-----|---------------|------------------|------|-------------|
+| sengi-compositor on pixman |  15 |  11 |             9 |                0 |    1 |          58 |
+| sengi-compositor on GLES   |  88 |  83 |            31 |               42 |   13 |         130 |
+| labwc on GLES              | 100 |  92 |            30 |               42 |   19 |         130 |
+
+The 73 MB between pixman and GLES are Mesa: 42 MB of libLLVM (5.5 MB of
+it dirty from relocations, the rest clean file pages that the kernel can
+drop and that other GL programs share), 10 MB of libgallium, and 12 MB
+of heap that Mesa allocates for its context and shaders. `ldd` on
+`libgallium-25.0.7` in the image lists `libLLVM.so.19.1` and `libz3`;
+virgl and iris do not use LLVM, the library is simply linked in.
+Switching off Mesa's shader disk cache and GL threading changed nothing.
+labwc pays the same on the same renderer. What would help is a Mesa
+built without LLVM in the image, which is a packaging question and not
+something the compositor can do. In all three rows 4 MB are the
+wallpaper's shm buffer, mapped while swaybg keeps it attached; in ours
+3 MB are the binary itself, which in the test sits on a tmpfs overlay
+and so counts as dirty.
+
+## Next steps toward replacing labwc
+
+1. Run it on the target laptop: GLES on i915, the cursor plane, VT
+   switching under logind, the touchpad, suspend, idle RAM and frame time.
+2. Arranging screens and choosing modes on real displays, with the
+   hardware to see it.
+3. Seeing the panel really go dark and come back on the laptop.
+4. screencopy (grim, and the CI screenshot), output management, primary
+   selection, xdg-activation, fractional scale, pointer constraints and
+   relative pointer.
+5. Fullscreen, popup constraining, edge snapping, an Alt+Tab switcher,
+   drag-and-drop icons.
+6. Rounded bottom corners and shadows.
+7. Key bindings from configuration.
+8. XWayland: the clipboard bridge, dismissing X11 menus, client-side moves
+   and resizes, and X11 windows at other scales.
+9. Measure idle RAM and time to first frame against labwc on the target
+   machine.
+
+## In the Sengi OS image
+
+The image offers the compositor as a second choice beside labwc, to try it
+on real hardware without touching the default session.
+
+`image/build.sh` builds it from this workspace with `--release --locked
+--no-default-features --features drm` and installs `/usr/bin/sengi-compositor`
+(3.5 MB). The builder needs `libseat-dev libinput-dev libudev-dev libgbm-dev
+libpixman-1-dev libxkbcommon-dev`; EGL and GLES are loaded at run time and
+need no headers. Every library it links against is already in the image
+because labwc needs it too, and the build stops if that ever changes.
+
+labwc stays the default. The session (`/usr/bin/sengi-session`) and the
+login screen (`/usr/libexec/sengi-greeter-session`) are started on
+sengi-compositor instead when it is asked for, in one of three ways,
+which `/usr/lib/sengi-os/compositor.sh` looks at for both:
+
+- The word `sengi.compositor=own` on the kernel command line. The live
+  image's boot menu has an entry "Sengi OS (sengi-compositor preview)"
+  that adds it; the menu is hidden, so press P while the machine starts to
+  pick the entry, or Esc for the menu. On any other entry, an installed
+  system's included, press E and add the word to the `linux` line.
+- A file `/etc/sengi-os/compositor` that says `own`, for every login until
+  it is removed: `sudo mkdir -p /etc/sengi-os && echo own | sudo tee
+  /etc/sengi-os/compositor`, then log out and in.
+- A file `/run/sengi-os.compositor` that says `own`, until the next start.
+  The boot test makes it.
+
+The session then reads the environment file labwc would read (the user's
+`~/.config/labwc/environment`, or else `/etc/xdg/labwc/environment`) for
+the cursor size and the time zone, and runs
+
+    sengi-compositor --backend drm --locker '/usr/bin/sengi-lock -f' \
+        -s '. /usr/lib/sengi-os/session-start'
+
+with its output in the journal (`journalctl -t sengi-compositor`). If the
+compositor exits with an error within ten seconds, the session writes a
+line to the journal (`-t sengi-session`) and starts labwc instead, once.
+
+`/usr/lib/sengi-os/session-start` is the one start-up script of the
+session; labwc's `autostart` runs the same file. Its restart loops watch
+the compositor by the process number each one gives its children. It
+picks the wallpaper by `WLR_RENDERER`, which nothing sets here, so swaybg
+gets its one-colour buffer, which both of our renderers draw correctly.
+The session menu's "Log out" runs `sengi-compositor --exit`.
+
+Locking goes through the compositor. Super+L, or anything that runs
+`sengi-compositor --lock`, makes it start the locker on a connection of
+its own; see "Who may do what". `sengi-lock` started by anything else in
+this session (swayidle, the session menu, quick settings) passes the
+request on with `sengi-compositor --lock` and so behaves as it does under
+labwc: `sengi-lock -f` returns once the screen is locked.
+
+### The login screen
+
+greetd starts `sengi-greeter-session` as its own user whenever nobody is
+logged in. With sengi-compositor asked for, that runs
+
+    sengi-compositor --backend drm --greeter --session /usr/bin/sengi-greeter
+
+`--session` ends the compositor when the login screen ends, which is what
+lets greetd start the session of whoever logged in. `--greeter` leaves
+out every key binding except the ones that switch terminals, and the
+locker, so nothing can be started as greetd's user from the keyboard;
+and it takes the keyboard from `XKB_DEFAULT_*`, which the script exports
+from `/usr/share/sengi-os/greeter/environment`, the file the installer
+writes the chosen layout to. If the compositor gives up within ten
+seconds, the login screen is started in labwc instead, as the session is.
+
+The login screen's compositor and the session's follow each other on the
+same terminal. Each gets the display from logind when it starts and
+hands it back when it ends.
+
+### What Settings sets
+
+The compositor reads `sengi-os/settings.toml` itself, the file Settings
+writes, at start and again on SIGHUP. Settings still writes labwc's
+`rc.xml` and `environment` from the same settings, for labwc; the
+compositor reads neither for these. When something is changed, Settings
+tells the compositor it is running under: `labwc --reconfigure` there,
+`sengi-compositor --reload` here, so a change takes effect at once.
+
+- `[keyboard]`: `layouts` and `switch` make the keymap, `repeat-delay` and
+  `repeat-rate` the key repeat (600 ms and 25 a second unless set, as
+  under labwc). The layout is always named to XKB, plain `us` too, so
+  that the `XKB_DEFAULT_*` variables the session was started with, which
+  are those of the last login, never stand in for it. A layout the
+  system does not have leaves the keymap as it was and says so in the
+  journal. The layout in use is told to clients the usual way, so the
+  lock screen shows it.
+- `[mouse]`: `speed`, `natural-scroll`, `left-handed`, for every pointing
+  device that cannot be tapped.
+- `[touchpad]`: `speed`, `natural-scroll`, `tap-to-click`,
+  `disable-while-typing`, for those that can.
+
+`sengi-settings --screen off`, which swayidle runs after the time set in
+`[power]`, switches the outputs off through wlr-output-power-management.
+The compositor lights them again at the first key, click, scroll or
+pointer movement, whether or not anybody asks it to. That first one only
+lights the screen: it was made without seeing anything and reaches no
+program and no shortcut (labwc passes it on). A lock that begins while a
+screen is dark does not wait for it, unless switching it off failed. A client can hold idleness off with
+idle-inhibit while its surface is on screen and the session is unlocked.
+
+SIGUSR1 adds to its report a line on the keyboard, one on the outputs
+and one for each pointing device, read back from libinput:
+
+    keyboard: layout us,de, variant ,, options grp:alt_shift_toggle, repeat 25 a second after 600 ms
+    outputs: eDP-1 on
+    input: SynPS/2 Synaptics TouchPad (touchpad): speed 0.00, natural scroll off, left-handed off, tap on, disable while typing on
+
+Not seen: any of the touchpad settings on a touchpad (a VM has none),
+and a panel really going dark.
+
+Seen in a QEMU guest booted from the image's preview entry (no GPU there,
+so pixman on dumb buffers, and no LLVM mapped): swaybg, sengi-bar,
+sengi-dock, sengi-focus and swayidle come up; the bar's power icon opens
+the session menu and its network item the quick settings panel; a
+notification sent over D-Bus starts sengi-notify and shows its card;
+Super+Return opens foot and the dock marks it running; the dock brings a
+minimised window back; Super+Space opens the launcher; Super+L locks with
+swaylock; Alt+F4, Super and the mouse buttons, and the double click on the
+title bar work as on labwc. Idle, the compositor used no CPU time in thirty
+seconds and flipped no page. It is 11 MB Pss against labwc's 25.
+
+Not seen: anything on real hardware, the lock after the idle timeout in
+this image, and logging out through the session menu.
+
+### The boot test
+
+`scripts/boot-test.sh` boots the default entry and expects labwc.
+`SENGI_COMPOSITOR=own scripts/boot-test.sh ISO OUT` hands the guest the
+`/run` file above, under either firmware, and expects sengi-compositor.
+`SENGI_PREVIEW=1` gets there through the boot menu instead: it presses
+the preview entry's hotkey between SeaBIOS handing over and the kernel
+starting (BIOS only). The guest reports which compositor the session
+really came up on, and the test fails if that is not the one meant. The
+checks and screenshots are the same as for labwc.
+
+From inside the guest, SIGUSR1 makes the compositor print two lines to the
+journal: `N page flips, N with the cursor on its own plane, N dmabufs
+imported, pointer at X,Y` and `session unlocked` or `session locked, locker
+alive, N lock surface(s), locker told yes`. Equal flip counts ten seconds
+apart are the idle check.
+
+### A client that commits without damage
+
+`misbehave spin` commits with a frame callback and no damage as fast as
+callbacks come; `misbehave flood` commits a hundred times between round
+trips with no callback. Release build in the image, QEMU guest with two
+CPUs, pixman, CPU time of the compositor per run of 3.5 seconds:
+
+| compositor       | spin: callbacks a second | spin: CPU      | flood: commits in 3 s  | flood: CPU     |
+|------------------|--------------------------|----------------|------------------------|----------------|
+| sengi-compositor | 73 to 74                 | 0.18 to 0.24 s | 619,000 to 627,000     | 2.49 to 2.53 s |
+| labwc            | 1611 to 1651             | 0.63 to 0.66 s | 1,443,000 to 1,625,000 | 2.07 to 2.12 s |
+
+We hold frame callbacks to the refresh rate where nothing was shown, so
+the spinning client costs a third of what it costs labwc, which answers
+every commit. One empty commit, though, costs us about three times what it
+costs labwc (4.0 against 1.4 microseconds). System calls are not it (a few
+thousand for 290,000 commits); the time goes in protocol handling in user
+space, which has not been profiled. An empty frame on the DRM backend
+costs about 1 ms of CPU where the headless backend needs 0.3 ms, also not
+looked into.
+
+## Who may do what
+
+The lock screen is only worth something if other programs cannot get
+around it, so this is spelled out.
+
+A client that connects through a security context, which is how Flatpak
+apps arrive once the portal sees a compositor that supports it, is not
+offered session lock, layer shell, foreign-toplevel management, idle
+notification or the security context manager, and cannot bind them by
+number either. It can still do what any window can: open windows, read
+the clipboard while it has keyboard focus, and offer drags.
+
+The session lock is offered only to a locker the compositor started
+itself. The locker is the command of `--locker` (default `sengi-lock -f`;
+a program and its arguments, no shell syntax, found in `PATH` at start).
+The compositor starts it on Super+L, when `sengi-compositor --lock` asks,
+and for a locked session whose locker died. It makes a socket pair, keeps
+one end as a client that may see the lock, and hands the other to the
+program as `WAYLAND_SOCKET`. No client that connects to the session's
+socket is shown the lock, whatever program it is. Nothing is looked up
+about the locker's process, so a locker that has closed itself to other
+processes (`PR_SET_DUMPABLE` off, as sengi-lock does to keep its password
+out of reach) works like any other. Whoever holds the lock is the only
+one who can unlock or supply lock surfaces, and no second locker is
+started while one lives.
+
+`--lock` is asked for over a socket beside the Wayland one
+(`$XDG_RUNTIME_DIR/wayland-N.control`), which like it is open to the
+user's own programs only. All it can do is have the screen locked.
+
+A program that runs unsandboxed as the user is not confined by any of
+this, here or under labwc. It can put up a layer surface over everything
+and take all keys, list, activate and close all windows, and watch idle
+time, because the bar, the dock and swayidle do exactly that through the
+same globals. It can ask for the screen to be locked, and with the user's
+rights it could as well replace the session's start-up script. Keeping
+untrusted programs in a sandbox is what protects against them.
+
+## Layout
+
+- `src/layout.rs`: window placement and focus order. Pure, unit-tested.
+- `src/frame.rs`: frame geometry: buttons, hit testing, resize and clamping
+  arithmetic. Pure, unit-tested.
+- `src/decoration.rs`: theme from the tokens and the title bar painter. Pure,
+  unit-tested.
+- `src/text.rs`: finding the typeface and rasterising a line of text.
+- `src/keys.rs`: the key binding table. Pure, unit-tested.
+- `src/cli.rs`, `src/script.rs`: arguments and input scripts, unit-tested.
+- `src/state.rs`: state shared by all backends, outputs, focus.
+- `src/window.rs`: per-window state, frame textures, move, resize, maximise.
+- `src/shell.rs`: wl_compositor, xdg-shell and xdg-decoration.
+- `src/layer.rs`: layer-shell.
+- `src/foreign_toplevel.rs`: wlr-foreign-toplevel-management.
+- `src/config.rs`: what is taken from the settings file. Pure,
+  unit-tested.
+- `src/output_power.rs`: switching outputs off and on for clients.
+- `src/idle.rs`: idle-inhibit.
+- `src/lock.rs`: session lock and who may use it.
+- `src/security.rs`: security contexts and what sandboxed clients are
+  kept from.
+- `src/cursor.rs`: cursor theme loading and the fallback arrow.
+- `src/input.rs`: keyboard and pointer events, the drag grab, hit testing.
+- `src/device_input.rs`: backend device events, built only with a backend
+  that has devices.
+- `src/render.rs`: drawing an output and frame callbacks.
+- `src/headless.rs`, `src/winit.rs`, `src/drm.rs`: the backends.
+- `src/gpu.rs`: choosing between GLES and pixman. Pure, unit-tested.
+- `src/dmabuf.rs`: linux-dmabuf.
+- `src/log.rs`: printing what Smithay logs, and the `say!` and `tell!`
+  macros everything else prints with.
+- `tests/`: tests that start the compositor on the headless backend and
+  talk to it as clients (`common/` is the client, shared with
+  `examples/misbehave.rs`; `harness/` starts the compositor).
+- `src/png.rs`: minimal PNG writer for screenshots.

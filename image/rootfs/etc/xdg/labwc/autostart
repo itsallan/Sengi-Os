@@ -1,0 +1,3 @@
+# Started by labwc once it is up. The session's programs are the same on
+# either compositor, so they are started from one place.
+. /usr/lib/sengi-os/session-start
