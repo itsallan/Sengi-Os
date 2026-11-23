@@ -121,6 +121,8 @@ pub struct Painter {
     pub scale: f64,
     pub theme: Theme,
     pub font: Option<Font>,
+    /// The title typeface, which is heavier than the rest of the text.
+    pub title_font: Option<Font>,
     pub cursors: crate::cursor::Cursors,
 }
 
@@ -288,11 +290,14 @@ impl State {
                 None => {
                     let theme = self.theme.scaled(scale);
                     let font = Font::load(&theme.font_family, theme.font_weight, theme.font_px);
+                    let title_font =
+                        Font::load(&theme.font_family, theme.title_weight, theme.font_px);
                     let cursors = crate::cursor::Cursors::new(&theme, scale);
                     self.painters.push(Painter {
                         scale,
                         theme,
                         font,
+                        title_font,
                         cursors,
                     });
                 }

@@ -30,13 +30,31 @@ pub struct CardMetrics {
     pub margin: i32,
 }
 
+/// How one round button looks: its fill, the ring around it and its glyph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Light {
+    pub fill: Rgba,
+    pub ring: Rgba,
+    pub glyph: Rgba,
+}
+
 #[derive(Debug, Clone)]
 pub struct Theme {
     pub metrics: Metrics,
     pub radius: i32,
     /// Side of the square a button glyph is drawn in.
     pub glyph: i32,
-    pub glyph_stroke: i32,
+    pub glyph_stroke: f32,
+    /// Width of the ring around a round button.
+    pub ring: f32,
+    /// How much darker a pressed button is, in percent.
+    pub pressed_darken: u32,
+    /// Close, minimise and maximise, in the order of `BUTTONS`.
+    pub lights: [Light; 3],
+    /// What all three buttons turn into in a window that is not focused.
+    pub light_inactive: Rgba,
+    /// Weight of the window title.
+    pub title_weight: u32,
     /// Height of the arrow drawn when no cursor theme is installed.
     pub fallback_cursor: i32,
     pub font_family: String,
@@ -48,7 +66,6 @@ pub struct Theme {
     pub text: Rgba,
     pub text_muted: Rgba,
     pub border: Rgba,
-    pub danger: Rgba,
     pub accent: Rgba,
     pub accent_text: Rgba,
     /// The surface a card of settings sits on, one step above the bar.
@@ -68,21 +85,41 @@ impl Theme {
                 .color(name)
                 .unwrap_or_else(|| panic!("tokens define {name}"))
         };
-        let button = px("size.button");
+        let float = |name: &str| -> f32 {
+            tokens
+                .get(name)
+                .and_then(|v| v.parse().ok())
+                .unwrap_or_else(|| panic!("tokens define {name}"))
+        };
+        let light = |name: &str| Light {
+            fill: color(&format!("color.window-{name}")),
+            ring: color(&format!("color.window-{name}-ring")),
+            glyph: color(&format!("color.window-{name}-glyph")),
+        };
+        let button = px("window.button");
 
         Self {
             metrics: Metrics {
                 titlebar: px("size.titlebar-height"),
                 border: px("border.width"),
                 button,
-                gap: px("space.xs"),
+                gap: px("window.button-gap"),
+                inset: px("window.button-inset"),
                 padding: px("space.sm"),
                 grip: px("space.xs"),
                 corner: px("space.lg"),
             },
             radius: px("radius.base"),
-            glyph: button - 2 * px("space.sm"),
-            glyph_stroke: px("border.width"),
+            glyph: px("window.button-glyph"),
+            glyph_stroke: float("window.button-glyph-stroke"),
+            ring: float("window.button-ring"),
+            pressed_darken: px("window.button-pressed-darken") as u32,
+            lights: [light("close"), light("minimise"), light("maximise")],
+            light_inactive: color("color.window-inactive"),
+            title_weight: tokens
+                .get("type.weight-bold")
+                .and_then(|weight| weight.parse().ok())
+                .expect("tokens define type.weight-bold"),
             fallback_cursor: px("size.bar-icon"),
             font_family: tokens
                 .get("type.family")
@@ -100,7 +137,6 @@ impl Theme {
             text: color("color.text"),
             text_muted: color("color.text-muted"),
             border: color("color.border"),
-            danger: color("color.danger"),
             accent: color("color.accent"),
             accent_text: color("color.accent-text"),
             raised: color("color.surface-raised"),
@@ -130,13 +166,15 @@ impl Theme {
                 border: px(m.border),
                 button: px(m.button),
                 gap: px(m.gap),
+                inset: px(m.inset),
                 padding: px(m.padding),
                 grip: px(m.grip),
                 corner: px(m.corner),
             },
             radius: px(self.radius),
             glyph: px(self.glyph),
-            glyph_stroke: px(self.glyph_stroke).max(1),
+            glyph_stroke: self.glyph_stroke * scale as f32,
+            ring: self.ring * scale as f32,
             fallback_cursor: px(self.fallback_cursor),
             font_px: px(self.font_px as i32) as u32,
             accent: self.accent,
@@ -190,6 +228,17 @@ impl Rounded {
             x1: rect.right() as f32,
             y1: rect.bottom() as f32,
             radii,
+        }
+    }
+
+    /// A circle of `radius` around `(cx, cy)`.
+    fn circle(cx: f32, cy: f32, radius: f32) -> Self {
+        Self {
+            x0: cx - radius,
+            y0: cy - radius,
+            x1: cx + radius,
+            y1: cy + radius,
+            radii: [radius; 4],
         }
     }
 
@@ -349,7 +398,11 @@ pub struct Titlebar {
     /// Full frame width in pixels.
     pub width: i32,
     pub active: bool,
+    /// The pointer is over the group of buttons, on this one. Every button
+    /// shows its glyph then.
     pub hovered: Option<Button>,
+    /// The hovered button is held down.
+    pub pressed: bool,
     /// Maximised windows fill the screen edge to edge and have square
     /// corners.
     pub square: bool,
@@ -399,6 +452,58 @@ pub fn draw_bottom_corner(
     canvas
 }
 
+/// `colour` darkened by `percent`.
+fn darken(colour: Rgba, percent: u32) -> Rgba {
+    let keep = 100 - percent.min(100);
+    let scale = |v: u8| (u32::from(v) * keep / 100) as u8;
+    Rgba {
+        r: scale(colour.r),
+        g: scale(colour.g),
+        b: scale(colour.b),
+        a: colour.a,
+    }
+}
+
+/// One round button: a ring, the fill inside it and, while the pointer is
+/// over the group, the glyph.
+fn draw_light(canvas: &mut Canvas, theme: &Theme, bar: &Titlebar, button: Button, index: usize) {
+    let rect = theme.metrics.button_rect(button);
+    let look = theme.lights[index];
+    let (mut fill, mut ring) = if bar.active {
+        (look.fill, look.ring)
+    } else {
+        (theme.light_inactive, theme.light_inactive)
+    };
+    if bar.pressed && bar.hovered == Some(button) {
+        fill = darken(fill, theme.pressed_darken);
+        ring = darken(ring, theme.pressed_darken);
+    }
+    let radius = rect.w as f32 / 2.0;
+    let (cx, cy) = (rect.x as f32 + radius, rect.y as f32 + rect.h as f32 / 2.0);
+    canvas.fill(Rounded::circle(cx, cy, radius), ring);
+    canvas.fill(Rounded::circle(cx, cy, radius - theme.ring), fill);
+
+    if bar.hovered.is_none() {
+        return;
+    }
+    // The ends are pulled in by half the stroke, which the round caps give
+    // back, so the glyph is as wide as `glyph` says.
+    let stroke = theme.glyph_stroke;
+    let half = (theme.glyph as f32 - stroke) / 2.0;
+    let (left, right, top, bottom) = (cx - half, cx + half, cy - half, cy + half);
+    match button {
+        Button::Close => {
+            canvas.line((left, top), (right, bottom), stroke, look.glyph);
+            canvas.line((left, bottom), (right, top), stroke, look.glyph);
+        }
+        Button::Minimise => canvas.line((left, cy), (right, cy), stroke, look.glyph),
+        Button::Maximise => {
+            canvas.line((left, cy), (right, cy), stroke, look.glyph);
+            canvas.line((cx, top), (cx, bottom), stroke, look.glyph);
+        }
+    }
+}
+
 /// Paints a title bar: `width` by the title bar height, premultiplied ARGB.
 pub fn draw_titlebar(theme: &Theme, bar: &Titlebar, title: Option<&TextBitmap>) -> Canvas {
     let metrics = &theme.metrics;
@@ -439,32 +544,8 @@ pub fn draw_titlebar(theme: &Theme, bar: &Titlebar, title: Option<&TextBitmap>) 
     } else {
         theme.text_muted
     };
-    let stroke = theme.glyph_stroke as f32;
-    for button in BUTTONS {
-        let rect = metrics.button_rect(button);
-        if bar.hovered == Some(button) {
-            let radius = theme.radius as f32;
-            canvas.fill(Rounded::new(rect, [radius; 4]), theme.hover);
-        }
-
-        // Glyph corners sit on pixel centres so straight strokes stay crisp.
-        let half = (theme.glyph / 2) as f32;
-        let cx = rect.x as f32 + (rect.w / 2) as f32 + 0.5;
-        let cy = rect.y as f32 + (rect.h / 2) as f32 + 0.5;
-        let (left, right, top, bottom) = (cx - half, cx + half, cy - half, cy + half);
-        match button {
-            Button::Close => {
-                canvas.line((left, top), (right, bottom), stroke, theme.danger);
-                canvas.line((left, bottom), (right, top), stroke, theme.danger);
-            }
-            Button::Minimise => canvas.line((left, cy), (right, cy), stroke, foreground),
-            Button::Maximise => {
-                canvas.line((left, top), (right, top), stroke, foreground);
-                canvas.line((right, top), (right, bottom), stroke, foreground);
-                canvas.line((right, bottom), (left, bottom), stroke, foreground);
-                canvas.line((left, bottom), (left, top), stroke, foreground);
-            }
-        }
+    for (index, button) in BUTTONS.into_iter().enumerate() {
+        draw_light(&mut canvas, theme, bar, button, index);
     }
 
     if let Some(title) = title {
@@ -496,6 +577,7 @@ mod tests {
             width: 400,
             active,
             hovered: None,
+            pressed: false,
             square: false,
             cut: false,
         }
@@ -565,6 +647,7 @@ mod tests {
             width: 604,
             active: true,
             hovered: None,
+            pressed: false,
             square: false,
             cut: false,
         };
@@ -630,46 +713,104 @@ mod tests {
         assert_eq!(canvas.pixel(0, 0)[3], 0);
     }
 
-    #[test]
-    fn close_glyph_is_drawn_in_danger() {
-        let theme = theme();
-        let canvas = draw_titlebar(&theme, &bar(true), None);
-        let rect = theme.metrics.button_rect(Button::Close);
-        let centre = (
+    fn centre_of(theme: &Theme, button: Button) -> (usize, usize) {
+        let rect = theme.metrics.button_rect(button);
+        (
             (rect.x + rect.w / 2) as usize,
             (rect.y + rect.h / 2) as usize,
-        );
-        assert_eq!(canvas.pixel(centre.0, centre.1), rgba(theme.danger));
+        )
+    }
 
-        // The minimise glyph is a line through the middle in the text colour.
-        let rect = theme.metrics.button_rect(Button::Minimise);
-        let centre = (
-            (rect.x + rect.w / 2) as usize,
-            (rect.y + rect.h / 2) as usize,
-        );
-        assert_eq!(canvas.pixel(centre.0, centre.1), rgba(theme.text));
-        assert_eq!(canvas.pixel(centre.0, centre.1 - 3), rgba(theme.active));
+    fn near(a: [u8; 4], b: Rgba) -> bool {
+        a[..3]
+            .iter()
+            .zip([b.r, b.g, b.b])
+            .all(|(x, y)| x.abs_diff(y) <= 2)
     }
 
     #[test]
-    fn hovered_button_gets_a_background() {
+    fn the_buttons_are_twelve_pixels_eight_apart_from_twelve_in() {
         let theme = theme();
-        let mut hovered = bar(true);
-        hovered.hovered = Some(Button::Maximise);
-        let canvas = draw_titlebar(&theme, &hovered, None);
+        let m = &theme.metrics;
+        assert_eq!((m.button, m.gap, m.inset), (12, 8, 12));
+        assert_eq!(m.button_rect(Button::Close).x, 12);
+        assert_eq!(m.button_rect(Button::Minimise).x, 32);
+        assert_eq!(m.button_rect(Button::Maximise).x, 52);
+        // Centred in the bar.
+        let rect = m.button_rect(Button::Close);
+        assert_eq!(rect.y * 2 + rect.h, m.titlebar);
+    }
 
-        let rect = theme.metrics.button_rect(Button::Maximise);
-        let centre = (
-            (rect.x + rect.w / 2) as usize,
-            (rect.y + rect.h / 2) as usize,
-        );
-        // The maximise glyph is hollow, so its centre shows the background.
-        assert_eq!(canvas.pixel(centre.0, centre.1), rgba(theme.hover));
-        let other = theme.metrics.button_rect(Button::Minimise);
-        assert_eq!(
-            canvas.pixel(other.x as usize + 2, other.y as usize + 2),
-            rgba(theme.active)
-        );
+    #[test]
+    fn the_buttons_are_round_and_have_a_ring() {
+        let theme = theme();
+        let canvas = draw_titlebar(&theme, &bar(true), None);
+        for (index, button) in BUTTONS.into_iter().enumerate() {
+            let rect = theme.metrics.button_rect(button);
+            let look = theme.lights[index];
+            let (cx, cy) = centre_of(&theme, button);
+            assert!(near(canvas.pixel(cx, cy), look.fill), "{button:?} fill");
+            // The ring is half a pixel wide, so on a whole pixel it only
+            // tints the edge towards its own colour.
+            let edge = canvas.pixel(rect.x as usize, cy);
+            assert_ne!(edge, canvas.pixel(cx, cy), "{button:?} has a ring");
+            // The corner of the square is not part of a circle.
+            assert!(
+                near(canvas.pixel(rect.x as usize, rect.y as usize), theme.active),
+                "{button:?} is round"
+            );
+        }
+    }
+
+    #[test]
+    fn glyphs_show_on_all_three_buttons_while_the_group_is_hovered() {
+        let theme = theme();
+        let plain = draw_titlebar(&theme, &bar(true), None);
+        let mut hovered = bar(true);
+        hovered.hovered = Some(Button::Minimise);
+        let canvas = draw_titlebar(&theme, &hovered, None);
+        for (index, button) in BUTTONS.into_iter().enumerate() {
+            let (cx, cy) = centre_of(&theme, button);
+            let look = theme.lights[index];
+            assert!(near(plain.pixel(cx, cy), look.fill), "{button:?} bare");
+            // Strokes of 1.5 px cover the centre pixel at least in part.
+            let c = canvas.pixel(cx, cy);
+            assert_ne!(c, plain.pixel(cx, cy), "{button:?} shows a glyph");
+            assert!(
+                c[0].abs_diff(look.glyph.r) < plain.pixel(cx, cy)[0].abs_diff(look.glyph.r),
+                "{button:?} glyph colour"
+            );
+        }
+    }
+
+    #[test]
+    fn a_window_that_is_not_focused_has_grey_buttons() {
+        let theme = theme();
+        let canvas = draw_titlebar(&theme, &bar(false), None);
+        for button in BUTTONS {
+            let (cx, cy) = centre_of(&theme, button);
+            assert_eq!(canvas.pixel(cx, cy), rgba(theme.light_inactive));
+        }
+        assert_eq!(rgba(theme.light_inactive), [0x4d, 0x4d, 0x4d, 255]);
+    }
+
+    #[test]
+    fn a_pressed_button_is_fifteen_percent_darker() {
+        let theme = theme();
+        let mut held = bar(true);
+        held.hovered = Some(Button::Close);
+        held.pressed = true;
+        let canvas = draw_titlebar(&theme, &held, None);
+        // Away from the glyph, still inside the circle.
+        let rect = theme.metrics.button_rect(Button::Close);
+        let (x, y) = (rect.x as usize + 2, rect.y as usize + 6);
+        let fill = theme.lights[0].fill;
+        let want = darken(fill, 15);
+        assert!(near(canvas.pixel(x, y), want), "{:?}", canvas.pixel(x, y));
+        assert_eq!(want.r, 216);
+        // The others stay as they were.
+        let (cx, cy) = centre_of(&theme, Button::Maximise);
+        assert_ne!(canvas.pixel(cx, cy), rgba(darken(theme.lights[2].fill, 15)));
     }
 
     #[test]

@@ -12,11 +12,13 @@ pub struct Metrics {
     /// Height of the title bar, including the border along its top.
     pub titlebar: i32,
     pub border: i32,
-    /// Side of a square title bar button.
+    /// Diameter of a round title bar button.
     pub button: i32,
     /// Space between buttons.
     pub gap: i32,
     /// Space between the frame edge and the first button.
+    pub inset: i32,
+    /// Space kept clear between the buttons or the edge and the title.
     pub padding: i32,
     /// How far around the frame edge a press starts a resize.
     pub grip: i32,
@@ -82,10 +84,24 @@ impl Metrics {
     pub fn button_rect(&self, button: Button) -> Rect {
         let index = BUTTONS.iter().position(|b| *b == button).unwrap_or(0) as i32;
         Rect::new(
-            self.border + self.padding + index * (self.button + self.gap),
+            self.inset + index * (self.button + self.gap),
             (self.titlebar - self.button) / 2,
             self.button,
             self.button,
+        )
+    }
+
+    /// The part of the title bar that presses `button`: its circle and half
+    /// the gap around it, so the three buttons form one unbroken group and
+    /// the pointer over the space between two is still on the group.
+    pub fn button_reach(&self, button: Button) -> Rect {
+        let rect = self.button_rect(button);
+        let half = self.gap / 2;
+        Rect::new(
+            rect.x - half,
+            rect.y - half,
+            rect.w + 2 * half,
+            rect.h + 2 * half,
         )
     }
 
@@ -118,7 +134,7 @@ impl Metrics {
         let (local_x, local_y) = (x - frame.x, y - frame.y);
         if let Some(button) = BUTTONS
             .into_iter()
-            .find(|b| self.button_rect(*b).contains(local_x, local_y))
+            .find(|b| self.button_reach(*b).contains(local_x, local_y))
         {
             return Some(Hit::Button(button));
         }
@@ -313,8 +329,9 @@ mod tests {
     const M: Metrics = Metrics {
         titlebar: 30,
         border: 1,
-        button: 26,
-        gap: 4,
+        button: 12,
+        gap: 8,
+        inset: 12,
         padding: 8,
         grip: 4,
         corner: 16,
@@ -339,29 +356,34 @@ mod tests {
 
     #[test]
     fn buttons_are_on_the_left_in_order() {
-        assert_eq!(M.button_rect(Button::Close), Rect::new(9, 2, 26, 26));
-        assert_eq!(M.button_rect(Button::Minimise), Rect::new(39, 2, 26, 26));
-        assert_eq!(M.button_rect(Button::Maximise), Rect::new(69, 2, 26, 26));
-        assert_eq!(M.buttons_end(), 95);
-        assert_eq!(M.min_frame_width(), 104);
+        assert_eq!(M.button_rect(Button::Close), Rect::new(12, 9, 12, 12));
+        assert_eq!(M.button_rect(Button::Minimise), Rect::new(32, 9, 12, 12));
+        assert_eq!(M.button_rect(Button::Maximise), Rect::new(52, 9, 12, 12));
+        assert_eq!(M.buttons_end(), 64);
+        assert_eq!(M.min_frame_width(), 73);
     }
 
     #[test]
     fn hit_buttons() {
         assert_eq!(
-            M.hit(FRAME, 110, 110, true),
+            M.hit(FRAME, 118, 115, true),
             Some(Hit::Button(Button::Close))
         );
         assert_eq!(
-            M.hit(FRAME, 150, 115, true),
+            M.hit(FRAME, 138, 115, true),
             Some(Hit::Button(Button::Minimise))
         );
         assert_eq!(
-            M.hit(FRAME, 180, 127, true),
+            M.hit(FRAME, 158, 115, true),
             Some(Hit::Button(Button::Maximise))
         );
-        // The gap between two buttons is plain title bar.
-        assert_eq!(M.hit(FRAME, 136, 115, true), Some(Hit::Titlebar));
+        // The gap between two buttons belongs to the group.
+        assert_eq!(
+            M.hit(FRAME, 130, 115, true),
+            Some(Hit::Button(Button::Minimise))
+        );
+        // Past the last button it is plain title bar.
+        assert_eq!(M.hit(FRAME, 172, 115, true), Some(Hit::Titlebar));
     }
 
     #[test]
@@ -534,13 +556,13 @@ mod tests {
 
     #[test]
     fn tiny_frames_pick_the_nearer_edge() {
-        let tiny = Rect::new(100, 100, 10, 10);
+        let tiny = Rect::new(100, 100, 10, 4);
         assert_eq!(
             M.hit(tiny, 100, 100, true),
             Some(Hit::Resize(edges(true, false, true, false)))
         );
         assert_eq!(
-            M.hit(tiny, 108, 109, true),
+            M.hit(tiny, 108, 103, true),
             Some(Hit::Resize(edges(false, true, false, true)))
         );
     }

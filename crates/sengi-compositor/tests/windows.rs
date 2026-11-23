@@ -375,3 +375,162 @@ fn an_edge_key_snaps_a_window_that_is_not_fullscreen() {
         app.seen.more.toplevel
     );
 }
+
+fn token(name: &str) -> u32 {
+    let c = sengi_tokens::Tokens::builtin().color(name).unwrap();
+    u32::from(c.r) << 16 | u32::from(c.g) << 8 | u32::from(c.b)
+}
+
+/// The top left and bottom right of the pixels of one colour.
+fn bounds(picture: &common::apps::Picture, colour: u32) -> Option<(u32, u32, u32, u32)> {
+    let mut found: Option<(u32, u32, u32, u32)> = None;
+    for y in 0..picture.height {
+        for x in 0..picture.width {
+            if picture.at(x, y) == colour {
+                let b = found.get_or_insert((x, y, x, y));
+                *b = (b.0.min(x), b.1.min(y), b.2.max(x), b.3.max(y));
+            }
+        }
+    }
+    found
+}
+
+/// Runs of pixels on row `y`, from `from` for `len` pixels, that are neither
+/// the bar nor its border: the three buttons.
+fn button_runs(
+    picture: &common::apps::Picture,
+    y: u32,
+    from: u32,
+    len: u32,
+    bar: u32,
+) -> Vec<(u32, u32)> {
+    let border = token("color.border");
+    let mut runs: Vec<(u32, u32)> = Vec::new();
+    for x in from..from + len {
+        let pixel = picture.at(x, y);
+        if pixel == bar || pixel == border {
+            continue;
+        }
+        match runs.last_mut() {
+            Some(run) if run.1 + 1 == x => run.1 = x,
+            _ => runs.push((x, x)),
+        }
+    }
+    runs
+}
+
+/// What the buttons measure in a picture: the left inset from the frame's
+/// edge, then the diameter of each circle and the gaps between them.
+fn measure_buttons(
+    picture: &common::apps::Picture,
+    anchor: u32,
+    bar: u32,
+    left_of_anchor: u32,
+) -> Vec<u32> {
+    let (x0, y0, _, y1) = bounds(picture, anchor).expect("a button of the anchor colour");
+    let frame_left = x0 - left_of_anchor;
+    let y = y0 + (y1 - y0).div_ceil(2);
+    assert_eq!(
+        picture.at(frame_left, y),
+        token("color.border"),
+        "frame edge"
+    );
+    let runs = button_runs(picture, y, frame_left + 1, 68, bar);
+    assert_eq!(runs.len(), 3, "three buttons: {runs:?}");
+    let mut numbers = vec![runs[0].0 - frame_left];
+    for (i, run) in runs.iter().enumerate() {
+        numbers.push(run.1 - run.0 + 1);
+        if let Some(next) = runs.get(i + 1) {
+            numbers.push(next.0 - run.1 - 1);
+        }
+    }
+    numbers
+}
+
+/// Inset, circle, gap, circle, gap, circle, as the spec gives them: 12 from
+/// the frame's edge, 12 across, 8 apart.
+const BUTTON_NUMBERS: [u32; 6] = [12, 12, 8, 12, 8, 12];
+
+#[test]
+fn the_buttons_of_a_focused_window_measure_as_specified() {
+    let compositor = Compositor::start(None);
+    let mut app = compositor.connect();
+    app.keyboard().unwrap();
+    let _window = app.decorated_window(GREEN).unwrap();
+    assert!(app.wait(SOON, |seen| seen.keyboard_enters == 1));
+    let picture = app.capture().unwrap();
+    // Pixels fully inside the close circle are the fill colour.
+    let numbers = measure_buttons(
+        &picture,
+        token("color.window-close"),
+        token("color.surface"),
+        13,
+    );
+    eprintln!("focused buttons: inset, d, gap, d, gap, d = {numbers:?}");
+    assert_eq!(numbers, BUTTON_NUMBERS);
+    if let Some(dir) = std::env::var_os("SENGI_SHOTS") {
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        picture.write_ppm(&dir.join("window-focused.ppm")).unwrap();
+    }
+}
+
+#[test]
+fn the_buttons_of_a_window_that_is_not_focused_are_grey() {
+    let compositor = Compositor::start(None);
+    let mut first = compositor.connect();
+    first.keyboard().unwrap();
+    let _a = first.decorated_window(GREEN).unwrap();
+    assert!(first.wait(SOON, |seen| seen.keyboard_enters == 1));
+    let mut second = compositor.connect();
+    second.keyboard().unwrap();
+    let _b = second.decorated_window(RED).unwrap();
+    assert!(second.wait(SOON, |seen| seen.keyboard_enters == 1));
+    let picture = second.capture().unwrap();
+    let grey = token("color.window-inactive");
+    let numbers = measure_buttons(&picture, grey, token("color.bg"), 13);
+    eprintln!("unfocused buttons: {numbers:?}");
+    assert_eq!(numbers, BUTTON_NUMBERS);
+    if let Some(dir) = std::env::var_os("SENGI_SHOTS") {
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        picture
+            .write_ppm(&dir.join("window-unfocused.ppm"))
+            .unwrap();
+    }
+}
+
+/// With the pointer on a button every button shows its glyph.
+#[test]
+fn the_pointer_over_the_buttons_shows_the_glyphs() {
+    // Where the first window's close button is, found from a picture
+    // without the pointer, then the same run with the pointer there.
+    let compositor = Compositor::start(None);
+    let mut app = compositor.connect();
+    app.keyboard().unwrap();
+    let _window = app.decorated_window(GREEN).unwrap();
+    assert!(app.wait(SOON, |seen| seen.keyboard_enters == 1));
+    let plain = app.capture().unwrap();
+    let (x0, y0, x1, y1) = bounds(&plain, token("color.window-close")).unwrap();
+    drop(app);
+    drop(compositor);
+
+    let script = format!("1500 move {} {}\n", (x0 + x1) / 2, (y0 + y1) / 2);
+    let compositor = Compositor::start_with(None, None, Some(&script));
+    let mut app = compositor.connect();
+    app.keyboard().unwrap();
+    let _window = app.decorated_window(GREEN).unwrap();
+    app.wait(Duration::from_secs(4), |_| false);
+    let hovered = app.capture().unwrap();
+    // The glyph is the centre of each circle: the close glyph is dark red.
+    let centre = ((x0 + x1) / 2, (y0 + y1) / 2);
+    assert_ne!(plain.at(centre.0, centre.1), hovered.at(centre.0, centre.1));
+    // The maximise button, two steps to the right, has its glyph too.
+    let at_max = (centre.0 + 40, centre.1);
+    assert_ne!(plain.at(at_max.0, at_max.1), hovered.at(at_max.0, at_max.1));
+    if let Some(dir) = std::env::var_os("SENGI_SHOTS") {
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        hovered.write_ppm(&dir.join("window-hovered.ppm")).unwrap();
+    }
+}

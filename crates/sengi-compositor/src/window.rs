@@ -29,6 +29,7 @@ use smithay::{
 use crate::{
     decoration::{self, TextBitmap, Theme, Titlebar},
     frame::{self, Edges},
+    input::Drag,
     keys::Edge,
     layout::Rect,
     outputs::scale_key,
@@ -848,10 +849,13 @@ impl State {
         let painted = full.min(self.max_painted_width(scale));
         let active = self.focus_stack.current() == Some(window);
         let square = data(window).restore.get().is_some();
+        let pressed =
+            matches!(&self.drag, Some(Drag::Press { window: held, .. }) if held == window);
         let bar = Titlebar {
             width: to_pixels(painted),
             active,
             hovered,
+            pressed,
             square,
             cut: painted < full,
         };
@@ -881,7 +885,7 @@ impl State {
         });
         if !unchanged {
             let (title, text) =
-                self.title_bitmap(window, room.max(0) as usize, painter.font.as_ref());
+                self.title_bitmap(window, room.max(0) as usize, painter.title_font.as_ref());
             let canvas = decoration::draw_titlebar(paint, &bar, text.as_deref());
             let size = (bar.width.max(1), paint.metrics.titlebar.max(1));
             // The buffer carries the output's scale, rounded. That is what keeps
