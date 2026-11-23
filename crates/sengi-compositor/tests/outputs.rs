@@ -812,17 +812,18 @@ fn scratch(name: &str) -> std::path::PathBuf {
     path
 }
 
-/// Waits for a screenshot the script saves, and reads it.
+/// Waits for a screenshot the script saves, and reads it. The file shows up
+/// before it is written, so this waits for the PNG's last chunk.
 fn shot(path: &std::path::Path) -> (u32, u32, Vec<u32>) {
-    let end = std::time::Instant::now() + Duration::from_secs(12);
+    const IEND: [u8; 8] = [0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82];
+    let end = std::time::Instant::now() + Duration::from_secs(20);
     while std::time::Instant::now() < end {
-        if path.exists() {
-            std::thread::sleep(Duration::from_millis(200));
+        if std::fs::read(path).is_ok_and(|data| data.ends_with(&IEND)) {
             return common::heads::read_png(path);
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    panic!("no screenshot at {}", path.display());
+    panic!("no complete screenshot at {}", path.display());
 }
 
 #[test]
