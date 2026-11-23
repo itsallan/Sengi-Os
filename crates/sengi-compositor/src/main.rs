@@ -39,6 +39,7 @@ mod text;
 mod window;
 #[cfg(feature = "winit")]
 mod winit;
+mod x11;
 
 use std::process::ExitCode;
 
@@ -152,7 +153,7 @@ fn start_clients(state: &mut State, options: &Options) {
         state.set_locker(locker);
     }
     for command in &options.startup {
-        state.spawn(command);
+        state.spawn_session(command);
     }
     if let Some(command) = &options.session {
         state.run_session(command);

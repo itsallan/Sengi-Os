@@ -46,6 +46,8 @@ smithay = { version = "0.7", default-features = false, features = [
     "desktop",
     "wayland_frontend",
     "renderer_pixman",
+    # X11 programs run through Xwayland, see src/x11.rs.
+    "xwayland",
 ] }
 
 [dev-dependencies]

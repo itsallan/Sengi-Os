@@ -84,6 +84,7 @@ use smithay::{
         tablet_manager::TabletSeatHandler,
         viewporter::ViewporterState,
         xdg_activation::XdgActivationState,
+        xwayland_shell::XWaylandShellState,
     },
 };
 
@@ -100,6 +101,7 @@ use crate::{
     output_power::OutputPowerState,
     render, security,
     text::Font,
+    x11,
 };
 
 /// Environment variable through which started programs learn our pid.
@@ -204,6 +206,12 @@ pub struct State {
     /// Saves a picture of the screen on SIGUSR2, where the backend can.
     pub take_screenshot: Option<ScreenshotHook>,
     pub dmabuf_state: DmabufState,
+    pub xwayland_shell_state: XWaylandShellState,
+    /// Xwayland, while it is wanted: see `x11.rs`.
+    pub x11: Option<x11::Session>,
+    /// Programs the user started while Xwayland was starting. They run
+    /// when it is ready, with its DISPLAY.
+    pub held_commands: Vec<String>,
     /// Tries a client's dmabuf on the renderer; set by a backend that
     /// offers linux-dmabuf.
     pub dmabuf_import: Option<DmabufImport>,
@@ -472,6 +480,9 @@ impl State {
             cursor_plane_frames: 0,
             take_screenshot: None,
             dmabuf_state: DmabufState::new(),
+            xwayland_shell_state: XWaylandShellState::new::<Self>(&dh2),
+            x11: None,
+            held_commands: Vec::new(),
             dmabuf_import: None,
             dmabufs_imported: 0,
             locker_command: keys::DEFAULT_LOCKER.to_string(),
@@ -766,15 +777,54 @@ impl State {
         }
     }
 
-    /// Runs `command` with the shell as a client of this compositor.
+    /// Runs `command` with the shell as a client of this compositor, for a
+    /// program the user starts (a key, a menu item, the launcher). The
+    /// first of these starts Xwayland, when it is not up, and the program
+    /// waits for it to be ready so that it gets a DISPLAY. Returns None
+    /// while it waits; the pid is not known then.
     pub fn spawn(&mut self, command: &str) -> Option<u32> {
-        let child = Command::new("sh")
+        let starting = match &self.x11 {
+            Some(session) => session.display.is_none(),
+            None => self.start_xwayland(),
+        };
+        if starting {
+            self.held_commands.push(command.to_string());
+            return None;
+        }
+        self.spawn_plain(command)
+    }
+
+    /// Runs `command` for the session itself: its startup programs and the
+    /// session program. These do not start Xwayland; they get a DISPLAY
+    /// only if it is already up. Keeping it down until a user starts an X11
+    /// program is what keeps an idle session's memory where it is.
+    pub fn spawn_session(&mut self, command: &str) -> Option<u32> {
+        self.spawn_plain(command)
+    }
+
+    /// Gives `command` the DISPLAY of Xwayland when it is up. Without it the
+    /// DISPLAY it inherited would name some other server, so it is removed.
+    fn give_display(&self, command: &mut Command) {
+        match self.display_name() {
+            Some(display) => {
+                command.env("DISPLAY", display);
+            }
+            None => {
+                command.env_remove("DISPLAY");
+            }
+        }
+    }
+
+    pub(crate) fn spawn_plain(&mut self, command: &str) -> Option<u32> {
+        let mut process = Command::new("sh");
+        process
             .arg("-c")
             .arg(command)
             .env("WAYLAND_DISPLAY", &self.socket_name)
             // For the session's restart loops, and for `--exit`.
-            .env(PID_VARIABLE, std::process::id().to_string())
-            .spawn();
+            .env(PID_VARIABLE, std::process::id().to_string());
+        self.give_display(&mut process);
+        let child = process.spawn();
         match child {
             Ok(child) => {
                 let pid = child.id();
@@ -839,6 +889,7 @@ impl State {
             .args(arguments)
             .env("WAYLAND_DISPLAY", &self.socket_name)
             .env(PID_VARIABLE, std::process::id().to_string());
+        self.give_display(&mut command);
         if let Some(socket) = &socket {
             let fd = socket.as_raw_fd();
             command.env("WAYLAND_SOCKET", fd.to_string());
@@ -906,7 +957,7 @@ impl State {
     /// `--session`: runs `command` and ends with it, the way a login
     /// screen's compositor has to for the login to go on.
     pub fn run_session(&mut self, command: &str) {
-        self.session_child = self.spawn(command);
+        self.session_child = self.spawn_session(command);
         if self.session_child.is_none() {
             self.failed = true;
             self.loop_signal.stop();

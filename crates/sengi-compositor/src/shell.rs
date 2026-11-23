@@ -28,6 +28,7 @@ use smithay::{
             XdgShellHandler, XdgShellState, XDG_POPUP_ROLE, XDG_TOPLEVEL_ROLE,
         },
     },
+    xwayland::XWaylandClientData,
 };
 
 use crate::{
@@ -44,9 +45,14 @@ impl CompositorHandler for State {
     }
 
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
+        // Xwayland connects with its own client data; every other client
+        // is inserted with ours.
+        if let Some(xwayland) = client.get_data::<XWaylandClientData>() {
+            return &xwayland.compositor_state;
+        }
         &client
             .get_data::<ClientState>()
-            .expect("every client is inserted with ClientState")
+            .expect("every client is inserted with ClientState or XWaylandClientData")
             .compositor_state
     }
 
