@@ -346,6 +346,12 @@ if [ "$installed" != "$expected" ]; then
 	echo "FAIL: the installed system is '$installed', and what was asked for is '$expected'" >&2
 	fail=1
 fi
+# The installed system lists its biggest processes; the compositor asked for
+# has to be among them, and the other one not.
+if [ "${SENGI_COMPOSITOR:-}" = own ]; then
+	grep -q sengi-composito "$out/guest-info-installed.txt" || { echo "FAIL: the installed system did not run sengi-compositor" >&2; fail=1; }
+	if grep -q labwc "$out/guest-info-installed.txt"; then echo "FAIL: the installed system ran labwc" >&2; fail=1; fi
+fi
 for shot in installer-welcome installer-disk installer-review installer-progress installer-done \
 	installed-login installed-desktop installed-boot-menu; do
 	[ -s "$out/$shot.png" ] || { echo "FAIL: no screenshot $shot.png was saved" >&2; fail=1; }
