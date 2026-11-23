@@ -354,7 +354,9 @@ wlr-screencopy and looks at the pixels.
   `DrmCompositor::use_mode` and a repaint, and a failed step is taken back
   as far as it can be. The cursor is turned with the output, which is not
   what a rotated panel wants. Adaptive sync is not there.
-- With several screens: absolute pointing devices map to the first one.
+- With several screens: absolute pointing devices (a touchscreen, a tablet)
+  map to the first one that is on, not to the one they belong to; that
+  needs the device's output, which libinput gives only for some.
 - The touchpad settings (tap to click, disable while typing) have not
   been seen working: there is no touchpad in a VM.
 - In the 0.3.0 live image, Ctrl+Alt+Fn is refused by logind ("failed to

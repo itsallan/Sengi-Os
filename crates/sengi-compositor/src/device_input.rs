@@ -18,6 +18,7 @@ impl State {
                 self.key(event.key_code(), event.state(), event.time_msec());
             }
             InputEvent::PointerMotionAbsolute { event } => {
+                // The first output that is on: a switched-off one is not in the space.
                 let Some(output) = self.output() else { return };
                 let Some(geometry) = self.space.output_geometry(&output) else {
                     return;
