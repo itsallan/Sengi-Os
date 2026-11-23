@@ -1,37 +1,32 @@
 # Sourced by the scripts that start a compositor: the desktop session and
 # the login screen. Which compositor, and how ours is started.
 #
-# labwc is the compositor unless ours is asked for, which is done in one
-# of three ways:
-#   - the word sengi.compositor=own on the kernel command line: the live
-#     image's "sengi-compositor preview" boot entry, or the word added by
-#     hand to any entry (press E on it in the boot menu). For that start.
-#   - a file /etc/sengi-os/compositor that says "own": on an installed
-#     system, for every start until the file is removed.
+# sengi-compositor ("own") is the compositor unless labwc is asked for, which
+# is done in one of three ways:
+#   - the word sengi.compositor=labwc on the kernel command line: the live
+#     image's "labwc compositor" boot entry and the one the installer adds,
+#     or the word added by hand to any entry (press E on it in the boot
+#     menu). For that start.
+#   - a file /etc/sengi-os/compositor that says "labwc": for every start
+#     until the file is removed.
 #   - a file /run/sengi-os.compositor that says the same: until the next
 #     start. The boot test makes it.
-# Each of them can ask for labwc instead, with "labwc" in place of "own":
-# the boot entry "Sengi OS, labwc compositor" does, and so can a file that
-# is left in /etc/sengi-os to override a preview word.
+# The word sengi.compositor=own and the content "own" are still accepted;
+# they ask for what is the default anyway.
 #
 # Precedence, first that applies:
 #   1. a start of ours that failed earlier in this boot: labwc. It is
 #      recorded in /run/sengi-os/compositor-failed, see own_compositor.
 #   2. any selector that says labwc: labwc.
-#   3. any selector that says own: ours.
-#   4. labwc.
+#   3. otherwise ours, whatever else says "own" or nothing at all.
 # The login screen and the session follow the same choice.
 
 # Prints "own" or "labwc". SENGI_CMDLINE, SENGI_COMPOSITOR_FILES and
 # SENGI_FAILED_FILE are for the tests of this file.
 wanted_compositor() {
-	own=0
 	labwc=0
 	failed=${SENGI_FAILED_FILE:-/run/sengi-os/compositor-failed}
 	read -r cmdline <"${SENGI_CMDLINE:-/proc/cmdline}" || true
-	case " $cmdline " in
-	*" sengi.compositor=own "*) own=1 ;;
-	esac
 	case " $cmdline " in
 	*" sengi.compositor=labwc "*) labwc=1 ;;
 	esac
@@ -40,12 +35,9 @@ wanted_compositor() {
 		if [ -r "$choice" ]; then
 			read -r word <"$choice" || true
 		fi
-		case $word in
-		own) own=1 ;;
-		labwc) labwc=1 ;;
-		esac
+		[ "$word" != labwc ] || labwc=1
 	done
-	if [ -e "$failed" ] || [ "$labwc" = 1 ] || [ "$own" = 0 ]; then
+	if [ -e "$failed" ] || [ "$labwc" = 1 ]; then
 		echo labwc
 	else
 		echo own

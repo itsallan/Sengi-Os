@@ -111,10 +111,10 @@ own() {
 }
 
 reset
-check "labwc by default" "$(wanted)" labwc
+check "ours by default" "$(wanted)" own
 
 printf 'quiet sengi.compositor=own splash\n' >"$tmp/cmdline"
-check "own by the kernel word" "$(wanted)" own
+check "ours by the kernel word, still accepted" "$(wanted)" own
 
 printf 'quiet sengi.compositor=labwc\n' >"$tmp/cmdline"
 check "labwc by the kernel word" "$(wanted)" labwc
@@ -122,13 +122,18 @@ check "labwc by the kernel word" "$(wanted)" labwc
 printf 'sengi.compositor=own sengi.compositor=labwc\n' >"$tmp/cmdline"
 check "the labwc word wins over the own word" "$(wanted)" labwc
 
-printf 'sengi.compositor=ownish\n' >"$tmp/cmdline"
-check "a longer word is not the word" "$(wanted)" labwc
+printf 'sengi.compositor=labwcish\n' >"$tmp/cmdline"
+check "a longer word is not the word" "$(wanted)" own
 
 reset
 echo own >"$tmp/etc-choice"
-check "own by the file in /etc" "$(wanted)" own
+check "ours by the file in /etc, still accepted" "$(wanted)" own
+echo labwc >"$tmp/etc-choice"
+check "labwc by the file in /etc" "$(wanted)" labwc
+rm "$tmp/etc-choice"
 echo labwc >"$tmp/run-choice"
+check "labwc by the run file" "$(wanted)" labwc
+echo own >"$tmp/etc-choice"
 check "labwc in the run file wins over own in /etc" "$(wanted)" labwc
 
 reset
@@ -137,9 +142,10 @@ echo labwc >"$tmp/etc-choice"
 check "labwc in a file wins over the own word" "$(wanted)" labwc
 
 reset
-printf 'sengi.compositor=own\n' >"$tmp/cmdline"
 : >"$tmp/failed"
 check "a failed start earlier in the boot means labwc" "$(wanted)" labwc
+printf 'sengi.compositor=own\n' >"$tmp/cmdline"
+check "and also against the own word" "$(wanted)" labwc
 
 reset
 export FAKE_READY=1 FAKE_LIFE=0.3 FAKE_STATUS=0
