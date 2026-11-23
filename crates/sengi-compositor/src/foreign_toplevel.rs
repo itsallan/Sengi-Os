@@ -32,6 +32,8 @@ pub struct Info {
     pub maximized: bool,
     pub minimized: bool,
     pub activated: bool,
+    /// The output it is on, which docks that sit on one output go by.
+    pub output: Option<Output>,
 }
 
 /// What has to be sent to bring a client from `old` to `new`.
@@ -40,6 +42,7 @@ pub struct Changes {
     pub title: bool,
     pub app_id: bool,
     pub state: bool,
+    pub output: bool,
 }
 
 impl Changes {
@@ -49,11 +52,12 @@ impl Changes {
             app_id: old.app_id != new.app_id,
             state: (old.maximized, old.minimized, old.activated)
                 != (new.maximized, new.minimized, new.activated),
+            output: old.output != new.output,
         }
     }
 
     pub fn any(self) -> bool {
-        self.title || self.app_id || self.state
+        self.title || self.app_id || self.state || self.output
     }
 }
 
@@ -106,12 +110,7 @@ impl ForeignToplevelState {
 }
 
 /// Creates a handle for `entry` on `manager` and sends everything known.
-fn announce(
-    display: &DisplayHandle,
-    manager: &ZwlrForeignToplevelManagerV1,
-    entry: &mut Entry,
-    output: Option<&Output>,
-) {
+fn announce(display: &DisplayHandle, manager: &ZwlrForeignToplevelManagerV1, entry: &mut Entry) {
     let Some(client) = manager.client() else {
         return;
     };
@@ -126,14 +125,32 @@ fn announce(
     handle.title(entry.info.title.clone());
     handle.app_id(entry.info.app_id.clone());
     // Docks filter by output, so say where the window is.
-    if let Some(output) = output {
-        for wl_output in output.client_outputs(&client) {
-            handle.output_enter(&wl_output);
-        }
-    }
+    move_between_outputs(&handle, None, entry.info.output.as_ref());
     handle.state(entry.info.state_array());
     handle.done();
     entry.handles.push(handle);
+}
+
+/// Tells a client's handle that the window left the output `from` and is
+/// on `to`.
+fn move_between_outputs(
+    handle: &ZwlrForeignToplevelHandleV1,
+    from: Option<&Output>,
+    to: Option<&Output>,
+) {
+    let Some(client) = handle.client() else {
+        return;
+    };
+    if let Some(from) = from {
+        for wl_output in from.client_outputs(&client) {
+            handle.output_leave(&wl_output);
+        }
+    }
+    if let Some(to) = to {
+        for wl_output in to.client_outputs(&client) {
+            handle.output_enter(&wl_output);
+        }
+    }
 }
 
 impl State {
@@ -145,6 +162,7 @@ impl State {
             maximized: data.restore.get().is_some(),
             minimized: data.minimised.get().is_some(),
             activated: self.focus_stack.current() == Some(window),
+            output: self.output_of_window(window),
         }
     }
 
@@ -153,6 +171,10 @@ impl State {
         info.maximized == data.restore.get().is_some()
             && info.minimized == data.minimised.get().is_some()
             && info.activated == (self.focus_stack.current() == Some(window))
+            // A window with no place, minimised, is still on its output.
+            && self
+                .output_of_window(window)
+                .is_none_or(|output| info.output.as_ref() == Some(&output))
             && window::with_title(window, |title| title == info.title)
             && window::with_app_id(window, |app_id| app_id == info.app_id)
     }
@@ -161,7 +183,6 @@ impl State {
     /// are now. Cheap when nothing changed.
     pub fn refresh_foreign_toplevels(&mut self) {
         let windows: Vec<Window> = self.managed_windows();
-        let output = self.output();
 
         // Gone windows first.
         self.foreign_toplevels.entries.retain(|entry| {
@@ -185,7 +206,11 @@ impl State {
             if known.is_some_and(|entry| self.foreign_unchanged(&window, &entry.info)) {
                 continue;
             }
-            let info = self.foreign_info(&window);
+            let mut info = self.foreign_info(&window);
+            info.output = info
+                .output
+                .or_else(|| known.and_then(|entry| entry.info.output.clone()))
+                .or_else(|| self.output());
             let foreign = &mut self.foreign_toplevels;
             match foreign.entries.iter_mut().find(|e| e.window == window) {
                 Some(entry) => {
@@ -199,6 +224,13 @@ impl State {
                         }
                         if changes.app_id {
                             handle.app_id(info.app_id.clone());
+                        }
+                        if changes.output {
+                            move_between_outputs(
+                                handle,
+                                entry.info.output.as_ref(),
+                                info.output.as_ref(),
+                            );
                         }
                         if changes.state {
                             handle.state(info.state_array());
@@ -216,7 +248,7 @@ impl State {
                     };
                     foreign.next_id += 1;
                     for manager in &foreign.managers {
-                        announce(&self.display_handle, manager, &mut entry, output.as_ref());
+                        announce(&self.display_handle, manager, &mut entry);
                     }
                     foreign.entries.push(entry);
                 }
@@ -235,9 +267,8 @@ impl GlobalDispatch<ZwlrForeignToplevelManagerV1, ()> for State {
         data_init: &mut DataInit<'_, Self>,
     ) {
         let manager = data_init.init(resource, ());
-        let output = state.output();
         for entry in &mut state.foreign_toplevels.entries {
-            announce(display, &manager, entry, output.as_ref());
+            announce(display, &manager, entry);
         }
         state.foreign_toplevels.managers.push(manager);
     }

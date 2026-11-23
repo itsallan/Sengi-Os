@@ -476,7 +476,8 @@ fn a_window_over_two_outputs_is_drawn_on_each_at_its_scale() {
     let compositor = twice_as_large();
     let mut app = compositor.connect();
     compositor.input("move 100 100");
-    let (_surface, _toplevel) = app.decorated_window(GREEN).unwrap();
+    let (surface, _toplevel) = app.decorated_window(GREEN).unwrap();
+    assert_eq!(app.preferred_scale(&surface).unwrap(), Some(120));
     let before = app.capture_named("HEADLESS-1").unwrap();
     let left = first_x(&before, 360, GREEN).expect("the window is on the first output");
     let right = last_x(&before, 360, GREEN).unwrap();
@@ -507,6 +508,12 @@ fn a_window_over_two_outputs_is_drawn_on_each_at_its_scale() {
     compositor.input("release left");
     app.roundtrip().unwrap();
     std::thread::sleep(Duration::from_millis(200));
+    // Most of it is on the second output now, and it is told so.
+    assert!(
+        app.wait(SOON, |seen| seen.more.preferred_scale == Some(240)),
+        "told {:?}",
+        app.seen.more.preferred_scale
+    );
 
     let one = app.capture_named("HEADLESS-1").unwrap();
     let two = app.capture_named("HEADLESS-2").unwrap();

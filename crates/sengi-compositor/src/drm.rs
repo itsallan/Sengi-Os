@@ -56,7 +56,7 @@ use smithay::{
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
         udev::{self, UdevBackend, UdevEvent},
     },
-    output::Output,
+    output::{Mode as OutputMode, Output},
     reexports::{
         calloop::{
             ping::make_ping,
@@ -79,7 +79,9 @@ use smithay::{
 use crate::{
     cli::{self, Wanted},
     config::{Config, Kind},
-    gpu, headless, png, render,
+    gpu, headless,
+    outputs::{HeadPlan, OutputSpec},
+    png, render,
     state::State,
     Options,
 };
@@ -142,6 +144,9 @@ struct Screen {
     connector: connector::Handle,
     crtc: crtc::Handle,
     mode: Mode,
+    /// Every mode the connector listed when this was lit: a different list
+    /// means another monitor on the same connector.
+    modes: Vec<Mode>,
     output: Output,
     compositor: Compositor,
     /// The frame that is on its way to the screen, if any: what was visible
@@ -169,6 +174,14 @@ struct Screen {
     stays_lit: bool,
 }
 
+/// A display that is plugged in and switched off in Settings: it keeps its
+/// head, but no CRTC and no buffers.
+struct Parked {
+    connector: connector::Handle,
+    modes: Vec<Mode>,
+    output: Output,
+}
+
 /// How long a queued frame may take to reach the screen before it is
 /// given up as failed. A flip that never completes would otherwise block
 /// its screen for good, and under a lock keep the locker waiting.
@@ -193,6 +206,7 @@ struct Drm {
     fd: DrmDeviceFd,
     renderer: Renderer,
     screens: Vec<Screen>,
+    parked: Vec<Parked>,
     libinput: Libinput,
     /// False while another virtual terminal has the display.
     active: bool,
@@ -244,8 +258,16 @@ pub fn pick_mode(modes: &[ModeInfo]) -> Option<usize> {
         .map(|(index, _)| index)
 }
 
-/// Every connected connector that has a usable mode, with that mode.
-fn connected(device: &DrmDevice) -> Result<Vec<(connector::Info, Mode)>, Box<dyn Error>> {
+/// A connected display and what it offers.
+struct Found {
+    info: connector::Info,
+    modes: Vec<Mode>,
+    /// The one `pick_mode` chose.
+    preferred: Mode,
+}
+
+/// Every connected connector that has a usable mode.
+fn connected(device: &DrmDevice) -> Result<Vec<Found>, Box<dyn Error>> {
     let resources = device.resource_handles()?;
     let mut found = Vec::new();
     for handle in resources.connectors() {
@@ -253,7 +275,7 @@ fn connected(device: &DrmDevice) -> Result<Vec<(connector::Info, Mode)>, Box<dyn
         if info.state() != connector::State::Connected {
             continue;
         }
-        let modes: Vec<ModeInfo> = info
+        let listed: Vec<ModeInfo> = info
             .modes()
             .iter()
             .map(|mode| ModeInfo {
@@ -263,11 +285,46 @@ fn connected(device: &DrmDevice) -> Result<Vec<(connector::Info, Mode)>, Box<dyn
                 preferred: mode.mode_type().contains(ModeTypeFlags::PREFERRED),
             })
             .collect();
-        if let Some(mode) = pick_mode(&modes).map(|index| info.modes()[index]) {
-            found.push((info, mode));
+        if let Some(preferred) = pick_mode(&listed).map(|index| info.modes()[index]) {
+            let modes = info.modes().to_vec();
+            found.push(Found {
+                info,
+                modes,
+                preferred,
+            });
         }
     }
     Ok(found)
+}
+
+/// How a mode is told to clients: in pixels and millihertz.
+fn output_mode(mode: &Mode) -> OutputMode {
+    let (width, height) = mode.size();
+    OutputMode {
+        size: (i32::from(width), i32::from(height)).into(),
+        refresh: mode.vrefresh() as i32 * 1000,
+    }
+}
+
+/// The modes of a display as clients see them: each size and rate once, as
+/// a monitor lists the same one with several timings.
+fn announced_modes(modes: &[Mode]) -> Vec<OutputMode> {
+    let mut seen: Vec<OutputMode> = Vec::new();
+    for mode in modes {
+        let mode = output_mode(mode);
+        if !seen.contains(&mode) {
+            seen.push(mode);
+        }
+    }
+    seen
+}
+
+/// The mode of the display that is the one `wanted` stands for.
+fn drm_mode_for(modes: &[Mode], wanted: OutputMode) -> Option<Mode> {
+    modes
+        .iter()
+        .copied()
+        .find(|mode| output_mode(mode) == wanted)
 }
 
 /// A CRTC that can drive `connector` and is not in `taken`.
@@ -562,6 +619,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         fd,
         renderer,
         screens: Vec::new(),
+        parked: Vec::new(),
         libinput: libinput.clone(),
         active: true,
         switched_off: false,
@@ -593,6 +651,10 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
     };
     let device_id = backend.device.device_id();
     let backend: Shared = Rc::new(RefCell::new(backend));
+
+    // Settings and the like change modes and switch displays off and on.
+    let changing = backend.clone();
+    state.output_backend = Some(Box::new(move |_, plan| changing.borrow_mut().change(plan)));
 
     // GPU clients may hand over their buffers as they are. Mesa finds the
     // device to render on through the feedback, so that is always sent.
@@ -1162,7 +1224,7 @@ impl Screen {
 
 impl Drm {
     /// Lights displays that were plugged in and lets go of ones that were
-    /// pulled.
+    /// pulled. A display that was switched off in Settings stays off.
     fn rescan(&mut self, state: &mut State) {
         let found = match connected(&self.device) {
             Ok(found) => found,
@@ -1171,69 +1233,157 @@ impl Drm {
                 return;
             }
         };
+        // The same display is the same connector offering the same modes: a
+        // mode that Settings chose is not a different monitor.
+        let same = |connector: connector::Handle, modes: &[Mode]| {
+            found
+                .iter()
+                .any(|f| f.info.handle() == connector && f.modes == modes)
+        };
 
         let (kept, gone): (Vec<Screen>, Vec<Screen>) = std::mem::take(&mut self.screens)
             .into_iter()
-            .partition(|screen| {
-                // A different monitor on the same connector wants another
-                // mode: that is the old one gone and a new one found.
-                found
-                    .iter()
-                    .any(|(info, mode)| info.handle() == screen.connector && *mode == screen.mode)
-            });
+            .partition(|screen| same(screen.connector, &screen.modes));
         self.screens = kept;
         for screen in gone {
             crate::say!("{} is gone", screen.output.name());
             state.remove_output(&screen.output);
         }
+        let (kept, gone): (Vec<Parked>, Vec<Parked>) = std::mem::take(&mut self.parked)
+            .into_iter()
+            .partition(|parked| same(parked.connector, &parked.modes));
+        self.parked = kept;
+        for parked in gone {
+            crate::say!("{} is gone", parked.output.name());
+            state.remove_output(&parked.output);
+        }
 
-        for (info, mode) in &found {
-            if self
-                .screens
-                .iter()
-                .any(|screen| screen.connector == info.handle())
-            {
+        for f in &found {
+            let known = self.screens.iter().any(|s| s.connector == f.info.handle())
+                || self.parked.iter().any(|p| p.connector == f.info.handle());
+            if known {
                 continue;
             }
-            if let Err(err) = self.light(state, info, *mode) {
+            if let Err(err) = self.light(state, f) {
                 crate::say!(
                     "cannot use {}-{}: {err}",
-                    info.interface().as_str(),
-                    info.interface_id()
+                    f.info.interface().as_str(),
+                    f.info.interface_id()
                 );
+            }
+        }
+        // Everything that was on is gone, and something was left switched
+        // off: that comes on, rather than leave nothing to look at.
+        if self.screens.is_empty() {
+            if let Some(parked) = self.parked.first() {
+                let output = parked.output.clone();
+                if let Err(err) = self.wake(state, &output) {
+                    crate::say!("cannot light {}: {err}", output.name());
+                }
             }
         }
         state.request_redraw();
     }
 
-    /// Sets up a newly found display and adds it to the desktop.
-    fn light(
+    /// Sets up a newly found display and adds it to the desktop, or to the
+    /// displays that are switched off if that is what was saved for it.
+    fn light(&mut self, state: &mut State, found: &Found) -> Result<(), Box<dyn Error>> {
+        let info = &found.info;
+        let (width, height) = found.preferred.size();
+        let name = format!("{}-{}", info.interface().as_str(), info.interface_id());
+        let modes = announced_modes(&found.modes);
+        let preferred = output_mode(&found.preferred);
+        let mut spec = OutputSpec::virtual_screen(
+            &name,
+            "Display",
+            (i32::from(width), i32::from(height)).into(),
+            preferred.refresh,
+            Transform::Normal,
+        );
+        spec.modes = modes;
+        spec.preferred = Some(preferred);
+        spec.current = preferred;
+        spec.any_size = false;
+        spec.make = "Unknown".into();
+        if let Some((w, h)) = info.size() {
+            spec.physical = (w as i32, h as i32);
+        }
+        let output = state.add_head(spec);
+        if !state.head(&output).is_some_and(|head| head.enabled) {
+            crate::say!("{name} is switched off");
+            self.parked.push(Parked {
+                connector: info.handle(),
+                modes: found.modes.clone(),
+                output,
+            });
+            return Ok(());
+        }
+        // The mode the output starts in is the one that was saved for it,
+        // if the display still has it.
+        let wanted = output.current_mode().unwrap_or(preferred);
+        let mode = drm_mode_for(&found.modes, wanted).unwrap_or(found.preferred);
+        if output_mode(&mode) != wanted {
+            output.change_current_state(Some(output_mode(&mode)), None, None, None);
+        }
+        match self.screen_for(info, &found.modes, mode, &output) {
+            Ok(screen) => {
+                self.screens.push(screen);
+                Ok(())
+            }
+            Err(err) => {
+                state.remove_output(&output);
+                Err(err)
+            }
+        }
+    }
+
+    /// Lights a display that was switched off, in the mode it has been
+    /// left in, and brings its head back on the desktop.
+    fn wake(&mut self, state: &mut State, output: &Output) -> Result<(), Box<dyn Error>> {
+        self.light_parked(output)?;
+        state.enable_head_now(output);
+        Ok(())
+    }
+
+    /// The part of `wake` that is the display's own.
+    fn light_parked(&mut self, output: &Output) -> Result<(), Box<dyn Error>> {
+        let at = self
+            .parked
+            .iter()
+            .position(|parked| &parked.output == output)
+            .ok_or("that display is not switched off")?;
+        let parked = &self.parked[at];
+        let info = self.device.get_connector(parked.connector, true)?;
+        let wanted = output.current_mode().ok_or("the output has no mode")?;
+        let mode = drm_mode_for(&parked.modes, wanted)
+            .or_else(|| parked.modes.first().copied())
+            .ok_or("the display has no mode")?;
+        let screen = self.screen_for(&info, &parked.modes.clone(), mode, output)?;
+        self.screens.push(screen);
+        self.parked.remove(at);
+        Ok(())
+    }
+
+    /// Everything a display needs to be drawn on: a CRTC, a surface, and
+    /// buffers of the renderer's kind.
+    fn screen_for(
         &mut self,
-        state: &mut State,
         info: &connector::Info,
+        modes: &[Mode],
         mode: Mode,
-    ) -> Result<(), Box<dyn Error>> {
+        output: &Output,
+    ) -> Result<Screen, Box<dyn Error>> {
         let taken: Vec<crtc::Handle> = self.screens.iter().map(|screen| screen.crtc).collect();
         let crtc = free_crtc(&self.device, info, &taken).ok_or("no CRTC is free for it")?;
         let surface = self.device.create_surface(crtc, mode, &[info.handle()])?;
         let planes = surface.planes().clone();
-
-        let (width, height) = mode.size();
-        let name = format!("{}-{}", info.interface().as_str(), info.interface_id());
-        let output = state.add_output(
-            &name,
-            "Display",
-            (i32::from(width), i32::from(height)).into(),
-            mode.vrefresh() as i32 * 1000,
-            Transform::Normal,
-        );
 
         let cursor_size = self.device.cursor_size();
         let compositor = match &self.renderer {
             Renderer::Pixman(renderer) => {
                 let formats = Bind::<Dmabuf>::supported_formats(&**renderer).unwrap_or_default();
                 DrmCompositor::new(
-                    &output,
+                    output,
                     surface,
                     None,
                     DumbAllocator::new(self.fd.clone()),
@@ -1255,7 +1405,7 @@ impl Drm {
                 // Passing the GBM device also gives the cursor a plane of
                 // its own where the driver has one.
                 DrmCompositor::new(
-                    &output,
+                    output,
                     surface,
                     None,
                     allocator,
@@ -1269,25 +1419,22 @@ impl Drm {
                 .map_err(|err| err.to_string())
             }
         };
-        let compositor = match compositor {
-            Ok(compositor) => compositor,
-            Err(err) => {
-                state.remove_output(&output);
-                return Err(format!("cannot set up the display: {err}").into());
-            }
-        };
+        let compositor = compositor.map_err(|err| format!("cannot set up the display: {err}"))?;
 
+        let (width, height) = mode.size();
         crate::say!(
-            "{name} at {width}x{height}, {} Hz; planes: {} cursor, {} overlay",
+            "{} at {width}x{height}, {} Hz; planes: {} cursor, {} overlay",
+            output.name(),
             mode.vrefresh(),
             planes.cursor.len(),
             planes.overlay.len(),
         );
-        self.screens.push(Screen {
+        Ok(Screen {
             connector: info.handle(),
             crtc,
             mode,
-            output,
+            modes: modes.to_vec(),
+            output: output.clone(),
             compositor,
             dark: false,
             stays_lit: false,
@@ -1298,8 +1445,114 @@ impl Drm {
             failures: 0,
             queued: 0,
             watched: false,
-        });
-        Ok(())
+        })
+    }
+
+    /// Puts the displays as `plan` wants them: switched off, switched on,
+    /// in another mode. If one step fails the ones before it are taken
+    /// back as far as they can be.
+    fn change(&mut self, plan: &[HeadPlan]) -> Result<(), String> {
+        enum Undo {
+            Light(Output),
+            Park(Output),
+            Mode(Output, Mode),
+        }
+        let mut undo: Vec<Undo> = Vec::new();
+        let result = (|| -> Result<(), String> {
+            // Off first, which frees the CRTCs that something else may need.
+            for head in plan.iter().filter(|head| !head.enabled) {
+                let Some(at) = self
+                    .screens
+                    .iter()
+                    .position(|screen| screen.output == head.output)
+                else {
+                    continue;
+                };
+                let mut screen = self.screens.remove(at);
+                let cleared = on_compositor!(&mut screen.compositor, |compositor| {
+                    compositor.clear().map_err(|err| err.to_string())
+                });
+                if let Err(err) = cleared {
+                    crate::say!("{}: cannot switch off cleanly: {err}", head.output.name());
+                }
+                self.parked.push(Parked {
+                    connector: screen.connector,
+                    modes: screen.modes.clone(),
+                    output: head.output.clone(),
+                });
+                undo.push(Undo::Light(head.output.clone()));
+            }
+            for head in plan.iter().filter(|head| head.enabled) {
+                let is_parked = self.parked.iter().any(|p| p.output == head.output);
+                if is_parked {
+                    // Lit in the mode the plan wants, not the one it had.
+                    let parked = self
+                        .parked
+                        .iter()
+                        .find(|p| p.output == head.output)
+                        .ok_or("lost a display")?;
+                    let mode = drm_mode_for(&parked.modes, head.mode)
+                        .ok_or_else(|| format!("{} has no such mode", head.output.name()))?;
+                    head.output
+                        .change_current_state(Some(output_mode(&mode)), None, None, None);
+                    self.light_parked(&head.output)
+                        .map_err(|err| err.to_string())?;
+                    undo.push(Undo::Park(head.output.clone()));
+                    continue;
+                }
+                let Some(screen) = self
+                    .screens
+                    .iter_mut()
+                    .find(|screen| screen.output == head.output)
+                else {
+                    continue;
+                };
+                let mode = drm_mode_for(&screen.modes, head.mode)
+                    .ok_or_else(|| format!("{} has no such mode", head.output.name()))?;
+                if mode != screen.mode {
+                    let before = screen.mode;
+                    on_compositor!(&mut screen.compositor, |compositor| {
+                        compositor.use_mode(mode).map_err(|err| format!("{err:?}"))
+                    })?;
+                    screen.mode = mode;
+                    screen.in_flight = None;
+                    undo.push(Undo::Mode(head.output.clone(), before));
+                }
+                // A new scale or turn changes every pixel.
+                screen.repaint();
+                screen.stale = true;
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            for step in undo.into_iter().rev() {
+                match step {
+                    Undo::Light(output) => {
+                        let _ = self.light_parked(&output);
+                    }
+                    Undo::Park(output) => {
+                        if let Some(at) = self.screens.iter().position(|s| s.output == output) {
+                            let screen = self.screens.remove(at);
+                            self.parked.push(Parked {
+                                connector: screen.connector,
+                                modes: screen.modes,
+                                output,
+                            });
+                        }
+                    }
+                    Undo::Mode(output, mode) => {
+                        if let Some(screen) = self.screens.iter_mut().find(|s| s.output == output) {
+                            let _ = on_compositor!(&mut screen.compositor, |compositor| {
+                                compositor.use_mode(mode).map_err(|err| format!("{err:?}"))
+                            });
+                            screen.mode = mode;
+                            screen.repaint();
+                        }
+                    }
+                }
+            }
+        }
+        result
     }
 
     /// Saves what every screen shows as one picture, laid out as the

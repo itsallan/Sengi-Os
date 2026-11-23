@@ -421,6 +421,7 @@ impl State {
 
     /// Announces an output of `size` pixels to clients and puts it to the
     /// right of the ones already there.
+    #[cfg_attr(not(feature = "winit"), allow(dead_code))]
     pub fn add_output(
         &mut self,
         name: &str,
@@ -496,6 +497,36 @@ impl State {
             let time = self.start_time.elapsed().as_millis() as u32;
             self.place_pointer((x, y).into(), time);
         }
+    }
+
+    /// Brings a head that is switched off back on, where the backend has
+    /// already lit it: at its old place if that is free, else to the right
+    /// of the others. For a backend that switches heads on by itself, as
+    /// when the last one that was on is pulled out.
+    pub fn enable_head_now(&mut self, output: &Output) {
+        let mut plan = self.current_plan();
+        let others: Vec<Rect> = self.output_rects();
+        let Some(entry) = plan.iter_mut().find(|entry| &entry.output == output) else {
+            return;
+        };
+        entry.enabled = true;
+        let (w, h) = logical_size(entry.mode, entry.transform, entry.scale);
+        let mut all = others.clone();
+        all.push(Rect::new(entry.position.0, entry.position.1, w, h));
+        if overlap(&all) {
+            entry.position = (layout::next_output_x(&others), 0);
+        }
+        let entry = entry.clone();
+        self.commit_head(&entry);
+        self.refresh_painters();
+        self.scales_dirty = true;
+        for output in self.space.outputs().cloned().collect::<Vec<_>>() {
+            layer_map_for_output(&output).arrange();
+        }
+        self.configure_lock_surfaces();
+        self.usable_area_changed();
+        self.output_management_changed();
+        self.request_redraw();
     }
 
     /// Checks `plan` without changing anything.

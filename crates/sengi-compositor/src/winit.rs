@@ -52,6 +52,23 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         REFRESH_MHZ,
         Transform::Flipped180,
     );
+    // The window is the display: its size follows the window, and its
+    // orientation is what the EGL surface needs.
+    let fixed = output.clone();
+    state.output_backend = Some(Box::new(move |_, plan| {
+        for head in plan.iter().filter(|head| head.output == fixed) {
+            if head.mode.size
+                != fixed
+                    .current_mode()
+                    .map(|mode| mode.size)
+                    .unwrap_or(head.mode.size)
+                || head.transform != fixed.current_transform()
+            {
+                return Err("the size and the turn of a window are not Settings'".into());
+            }
+        }
+        Ok(())
+    }));
     let mut damage = OutputDamageTracker::from_output(&output);
     let backend = Rc::new(RefCell::new(backend));
 
