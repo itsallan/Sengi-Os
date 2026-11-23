@@ -503,6 +503,7 @@ impl State {
     /// already lit it: at its old place if that is free, else to the right
     /// of the others. For a backend that switches heads on by itself, as
     /// when the last one that was on is pulled out.
+    #[cfg_attr(not(feature = "drm"), allow(dead_code))]
     pub fn enable_head_now(&mut self, output: &Output) {
         let mut plan = self.current_plan();
         let others: Vec<Rect> = self.output_rects();

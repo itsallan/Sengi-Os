@@ -52,6 +52,9 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         REFRESH_MHZ,
         Transform::Flipped180,
     );
+    if let Some(head) = state.heads.iter_mut().find(|head| head.output == output) {
+        head.any_size = false;
+    }
     // The window is the display: its size follows the window, and its
     // orientation is what the EGL surface needs.
     let fixed = output.clone();
