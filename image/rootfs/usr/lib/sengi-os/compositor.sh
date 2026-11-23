@@ -75,9 +75,12 @@ export_environment() {
 
 # Notes that sengi-compositor died without being asked to, so that the
 # rest of this boot uses labwc. The directory is made by tmpfiles.d, open to
-# every user: the login screen and the session run as different ones.
+# every user: the login screen and the session run as different ones. If it
+# is missing or not writable nothing is noted, and a later start in the same
+# boot tries ours again.
 note_compositor_failed() {
-	printf '' >"${SENGI_FAILED_FILE:-/run/sengi-os/compositor-failed}" 2>/dev/null || true
+	# The error output goes first, so that a failure to open is not printed.
+	printf '' 2>/dev/null >"${SENGI_FAILED_FILE:-/run/sengi-os/compositor-failed}" || true
 }
 
 # Runs sengi-compositor on the screen with the arguments given and ends
@@ -108,13 +111,21 @@ own_compositor() {
 	hung=0
 	trap 'stopping=1; kill -TERM "$pid" 2>/dev/null' TERM HUP INT
 	if [ -n "$ready" ]; then
+		# A sleep that takes whole seconds only would run the polls out in
+		# no time and kill a healthy compositor: poll once a second then.
+		poll=${SENGI_READY_POLL:-0.1}
+		limit=${SENGI_READY_TICKS:-150}
+		if ! sleep "$poll" 2>/dev/null; then
+			poll=1
+			limit=$(((limit + 9) / 10))
+		fi
 		ticks=0
 		while [ ! -e "$ready" ] && [ "$stopping" = 0 ] && kill -0 "$pid" 2>/dev/null; do
-			if [ "$ticks" -ge "${SENGI_READY_TICKS:-150}" ]; then
+			if [ "$ticks" -ge "$limit" ]; then
 				hung=1
 				break
 			fi
-			sleep "${SENGI_READY_POLL:-0.1}"
+			sleep "$poll"
 			ticks=$((ticks + 1))
 		done
 	fi
@@ -125,18 +136,25 @@ own_compositor() {
 		sleep 1
 		kill -KILL "$pid" 2>/dev/null || true
 	fi
-	status=0
-	wait "$pid" || status=$?
-	if [ "$stopping" = 1 ]; then
+	# A trapped signal ends wait early with a status over 128 while the
+	# compositor is still there, and then it is waited for again. One wait
+	# that already reaped it must not be repeated: dash has forgotten the
+	# job by then and says 127.
+	while :; do
 		status=0
 		wait "$pid" || status=$?
-	fi
+		if [ "$status" -gt 128 ] && kill -0 "$pid" 2>/dev/null; then
+			continue
+		fi
+		break
+	done
 	trap - TERM HUP INT
 	rm -f "$ready"
 	[ "$hung" = 0 ] || [ "$status" -ne 0 ] || status=1
 	read -r up _ </proc/uptime
 	lasted=$((${up%.*} - started))
 	# Told to stop is not a failure to start: labwc must not take over.
+	[ "$stopping" = 0 ] || status=0
 	if [ "$stopping" = 1 ] || { [ "$status" -eq 0 ] && [ "$hung" = 0 ]; }; then
 		exit "$status"
 	fi
