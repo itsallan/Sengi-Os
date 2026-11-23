@@ -12,9 +12,10 @@
 # second, as a real machine keeps them, so the boot entry the installer
 # makes is the one that is used.
 #
-# Set SENGI_COMPOSITOR=own to run the live system and the installed one on
-# sengi-compositor: every start is handed the file that sengi-session looks
-# for, through a credential, since the installed disk carries no choice.
+# The live system and the installed one run on sengi-compositor, the default.
+# Set SENGI_COMPOSITOR=labwc to run both on labwc: every start is handed the
+# file that sengi-session looks for, through a credential, since the
+# installed disk carries no choice.
 #
 # The only disk that is ever written is OUTDIR/disk.qcow2, which this
 # script makes. The ISO is attached read-only.
@@ -65,9 +66,14 @@ fi
 # systemd-tmpfiles makes the file early in the start, from a credential the
 # firmware tables carry. No comma may be in it.
 choice=
-if [ "${SENGI_COMPOSITOR:-}" = own ]; then
-	choice='io.systemd.credential:tmpfiles.extra=f /run/sengi-os.compositor 0644 root root - own'
-fi
+case "${SENGI_COMPOSITOR:-}" in
+'' | own) ;;
+labwc) choice='io.systemd.credential:tmpfiles.extra=f /run/sengi-os.compositor 0644 root root - labwc' ;;
+*)
+	echo "SENGI_COMPOSITOR is own or labwc" >&2
+	exit 2
+	;;
+esac
 
 now() { date +%s.%N; }
 since() { echo "$(now) $1" | awk '{printf "%.1f", $1 - $2}'; }
@@ -328,6 +334,13 @@ grep SENGI-INFO "$serial" | sed 's/.*SENGI-INFO //' >"$out/guest-info-installed.
 	echo "install_live_boot_s=$live_s"
 	echo "install_firmware=$firmware"
 	echo "install_accel=$accel"
+	if grep -q sengi-composito "$out/guest-info-installed.txt"; then
+		echo "installed_compositor=sengi-compositor"
+	elif grep -q labwc "$out/guest-info-installed.txt"; then
+		echo "installed_compositor=labwc"
+	else
+		echo "installed_compositor="
+	fi
 } >"$out/install-metrics.txt"
 cat "$out/install-metrics.txt"
 echo "installed: $installed"
@@ -348,7 +361,10 @@ if [ "$installed" != "$expected" ]; then
 fi
 # The installed system lists its biggest processes; the compositor asked for
 # has to be among them, and the other one not.
-if [ "${SENGI_COMPOSITOR:-}" = own ]; then
+if [ "${SENGI_COMPOSITOR:-}" = labwc ]; then
+	grep -q labwc "$out/guest-info-installed.txt" || { echo "FAIL: the installed system did not run labwc" >&2; fail=1; }
+	if grep -q sengi-composito "$out/guest-info-installed.txt"; then echo "FAIL: the installed system ran sengi-compositor" >&2; fail=1; fi
+else
 	grep -q sengi-composito "$out/guest-info-installed.txt" || { echo "FAIL: the installed system did not run sengi-compositor" >&2; fail=1; }
 	if grep -q labwc "$out/guest-info-installed.txt"; then echo "FAIL: the installed system ran labwc" >&2; fail=1; fi
 fi
