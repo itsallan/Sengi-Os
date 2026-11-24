@@ -9,6 +9,8 @@ and the measured idle RAM and boot time.
   MediaTek, Atheros and Broadcom, plus Intel graphics firmware and CPU
   microcode, from Debian's non-free-firmware section.
 
+- Fixed windows never appearing on small screens such as 800x600: a window asked to shrink never got the frame callback it waits for.
+
 ## 0.8.0
 
 Our own compositor: sengi-compositor is now what Sengi OS runs. labwc stays

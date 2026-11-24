@@ -25,8 +25,10 @@ budget_ram_mb=${SENGI_BUDGET_RAM_MB:-400}
 timeout_s=${SENGI_BOOT_TIMEOUT_S:-300}
 
 # Guest display size, needed to turn pixels into pointer coordinates.
-screen_w=1280
-screen_h=800
+# SENGI_SCREEN=WxH runs the same test at another size, for small screens.
+screen=${SENGI_SCREEN:-1280x800}
+screen_w=${screen%x*}
+screen_h=${screen#*x}
 
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
@@ -89,7 +91,7 @@ start=$(now)
 qemu-system-x86_64 -machine q35,accel=$accel -cpu $cpu -smp 2 -m 4096 \
 	-drive file="$iso",format=raw,if=virtio,readonly=on \
 	${SENGI_UEFI:+-bios "$SENGI_UEFI"} \
-	-device virtio-vga -display none \
+	-device "virtio-vga${SENGI_SCREEN:+,xres=$screen_w,yres=$screen_h}" -display none \
 	-audiodev none,id=snd -device intel-hda -device hda-output,audiodev=snd \
 	-nic user,model=virtio-net-pci \
 	-smbios type=11,value=io.systemd.credential:sengi.test=1 \

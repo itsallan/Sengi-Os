@@ -166,6 +166,10 @@ jobs:
         run: SENGI_COMPOSITOR=labwc scripts/boot-test.sh out/sengi-os-$(cat VERSION)-amd64.iso test-output/labwc
       - name: Install test, labwc
         run: SENGI_COMPOSITOR=labwc scripts/install-test.sh out/sengi-os-$(cat VERSION)-amd64.iso test-output/install-labwc
+      # Windows must also appear on a small screen, where the apps are bigger
+      # than what the bar and dock leave free.
+      - name: Boot test, small screen
+        run: SENGI_SCREEN=800x600 scripts/boot-test.sh out/sengi-os-$(cat VERSION)-amd64.iso test-output/small
       - name: Summary
         if: always()
         run: |
@@ -192,6 +196,8 @@ jobs:
             test-output/metrics.txt
             test-output/labwc/*.png
             test-output/labwc/metrics.txt
+            test-output/small/*.png
+            test-output/small/metrics.txt
             test-output/guest-info.txt
             test-output/serial.log
       - uses: actions/upload-artifact@v4
