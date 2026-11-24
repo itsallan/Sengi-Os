@@ -2,10 +2,11 @@
 //! machine has. Nothing here knows about Slint, so it is tested as it is.
 
 use sengi_config::settings::Layout;
+use sengi_install::beside::{self, Beside, Offer};
 use sengi_install::disks::{self, Disk};
 use sengi_install::install::STEPS;
 use sengi_install::names;
-use sengi_install::plan::{Plan, LIVE_KERNEL, LIVE_ROOT};
+use sengi_install::plan::{Mode, Plan, LIVE_KERNEL, LIVE_ROOT};
 use sengi_install::progress::Event;
 
 /// The pages before the installation starts, in order.
@@ -139,6 +140,105 @@ pub fn erase_question(disk: &Disk) -> String {
     )
 }
 
+/// The two ways of using a disk, as the rows of a list: what each is, and
+/// whether it can be chosen on this disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModeRow {
+    pub id: &'static str,
+    pub title: String,
+    pub detail: String,
+    pub enabled: bool,
+    pub checked: bool,
+}
+
+pub const ERASE: &str = "erase";
+pub const BESIDE: &str = "beside";
+
+/// What installing beside another system would use on `disk`, or why it
+/// cannot be offered.
+pub fn beside_offer(disk: &Disk, uefi: bool) -> Result<Offer, beside::Why> {
+    beside::offer(disk, uefi)
+}
+
+/// The plan's part for an offer.
+pub fn beside_of(offer: &Offer) -> Beside {
+    let region = offer.region();
+    Beside {
+        start: region.start,
+        sectors: region.sectors,
+        esp: offer.esp,
+        table: offer.snapshot.clone(),
+    }
+}
+
+/// The two rows: erase the disk, and install beside what is there. The
+/// second is switched off, with the reason, where it cannot be done.
+pub fn mode_rows(disk: &Disk, uefi: bool, beside_chosen: bool) -> Vec<ModeRow> {
+    let (beside_detail, beside_enabled) = match beside_offer(disk, uefi) {
+        Ok(offer) => (
+            format!(
+                "Adds one partition of {} in free space. Nothing that is already on the disk is changed.",
+                disks::size_words(offer.region().bytes())
+            ),
+            true,
+        ),
+        Err(why) => (why.words(), false),
+    };
+    vec![
+        ModeRow {
+            id: ERASE,
+            title: "Erase the whole disk".to_string(),
+            detail: "Everything on the disk is removed and Sengi OS takes all of it.".to_string(),
+            enabled: true,
+            checked: !(beside_chosen && beside_enabled),
+        },
+        ModeRow {
+            id: BESIDE,
+            title: "Install beside the existing system".to_string(),
+            detail: beside_detail,
+            enabled: beside_enabled,
+            checked: beside_chosen && beside_enabled,
+        },
+    ]
+}
+
+/// The note under the choice and above the review: in the warning colour
+/// where something is erased. The second is whether it warns.
+pub fn change_note(disk: &Disk, offer: Option<&Offer>) -> (String, bool) {
+    match offer {
+        None => (erase_warning(disk), true),
+        Some(offer) => (
+            format!(
+                "Sengi OS will be added beside what is on {} ({}), in {} of free space. Nothing that is already on the disk is changed.",
+                disk_title(disk),
+                disk.path,
+                disks::size_words(offer.region().bytes())
+            ),
+            false,
+        ),
+    }
+}
+
+/// The question that is asked before anything is written: its title, its
+/// sentence, the button that says yes, and whether that button is a
+/// dangerous one.
+pub fn question(disk: &Disk, offer: Option<&Offer>) -> (&'static str, String, &'static str, bool) {
+    match offer {
+        None => ("Erase this disk?", erase_question(disk), "Erase and install", true),
+        Some(offer) => (
+            "Install beside the existing system?",
+            format!(
+                "This creates one partition of {} in free space on {} ({}). Nothing that is already on the disk is changed.",
+                disks::size_words(offer.region().bytes()),
+                disk_title(disk),
+                disk_place(disk)
+            ),
+            "Install",
+            false,
+        ),
+    }
+}
+
 /// What the list says above it.
 pub fn disk_note(disks: &[Disk]) -> &'static str {
     if disks.is_empty() {
@@ -146,7 +246,7 @@ pub fn disk_note(disks: &[Disk]) -> &'static str {
     } else if disks.iter().all(|disk| disks::refusal(disk).is_some()) {
         "None of these disks can be installed on. Sengi OS needs a disk of at least 8 GB that is not in use, and it does not install on the stick it is running from."
     } else {
-        "Choose the disk to install on. All of it is used: what is on it now is erased."
+        "Choose the disk to install on. Then say whether to erase it, or to install beside what is on it."
     }
 }
 
@@ -235,10 +335,28 @@ impl Form {
             && typed.same
     }
 
-    /// The plan for these answers.
+    /// The plan for these answers, for a whole disk.
     pub fn plan(&self, disk: &Disk, keyboard: &Layout, time_zone: &str) -> Plan {
+        self.plan_with(disk, keyboard, time_zone, None)
+    }
+
+    /// The plan for these answers: beside another system where `beside`
+    /// says where, and for the whole disk without it.
+    pub fn plan_with(
+        &self,
+        disk: &Disk,
+        keyboard: &Layout,
+        time_zone: &str,
+        beside: Option<Beside>,
+    ) -> Plan {
         Plan {
             device: disk.path.clone(),
+            mode: if beside.is_some() {
+                Mode::Beside
+            } else {
+                Mode::Erase
+            },
+            beside,
             size: disk.size,
             model: disk.model.clone(),
             serial: disk.serial.clone(),
@@ -253,6 +371,55 @@ impl Form {
             allow_loop: false,
         }
     }
+}
+
+/// The rows of the review page for an installation beside another
+/// system: exactly what is made, and what is left alone.
+pub fn review_beside(
+    form: &Form,
+    disk: &Disk,
+    offer: &Offer,
+    keyboard: &str,
+    time_zone: &str,
+) -> Vec<(&'static str, String)> {
+    let name = form.full_name.trim();
+    vec![
+        (
+            "Disk",
+            format!("{} ({})", disk_title(disk), disk_place(disk)),
+        ),
+        ("On it now", disk_contents(disk)),
+        (
+            "What changes",
+            format!(
+                "Creates one partition of {} in free space. Nothing that is already on the disk is changed.",
+                disks::size_words(offer.region().bytes())
+            ),
+        ),
+        (
+            "Put on it",
+            "Sengi OS in the new partition, not encrypted".to_string(),
+        ),
+        (
+            "Starts with",
+            "UEFI, as this computer was started. Sengi OS is tried first, and the other system stays in the boot list and in the boot menu".to_string(),
+        ),
+        (
+            "Boot files",
+            "A folder of its own, EFI/sengios, on the EFI system partition that is already there".to_string(),
+        ),
+        (
+            "Your account",
+            if name.is_empty() {
+                form.user_name.clone()
+            } else {
+                format!("{name} ({})", form.user_name)
+            },
+        ),
+        ("Computer name", form.host_name.clone()),
+        ("Keyboard layout", keyboard.to_string()),
+        ("Time zone", time_zone.replace('_', " ")),
+    ]
 }
 
 /// The rows of the review page: title and value.
@@ -332,6 +499,8 @@ pub struct Progress {
     pub log: String,
     /// The disk it is installing on, as its node: `/dev/sda`.
     pub disk: String,
+    /// It adds a partition beside what is there and erases nothing.
+    pub beside: bool,
     pub outcome: Outcome,
 }
 
@@ -350,6 +519,7 @@ impl Default for Progress {
             warnings: Vec::new(),
             log: String::new(),
             disk: String::new(),
+            beside: false,
             outcome: Outcome::Running,
         }
     }
@@ -385,6 +555,7 @@ impl Progress {
             Event::Warning(text) => self.warnings.push(sengi_text::line(&text, 300)),
             Event::Log(path) => self.log = sengi_text::line(&path, 200),
             Event::Disk(path) => self.disk = sengi_text::line(&path, 64),
+            Event::Beside => self.beside = true,
             Event::Done(seconds) => self.outcome = Outcome::Done(seconds),
             Event::Failed(id, why) => {
                 if let Some(step) = self.step(&id) {
@@ -457,7 +628,9 @@ impl Progress {
             Some(step) => format!("Installing on {on} stopped at \u{201c}{step}\u{201d}"),
             None => format!("Installing on {on} did not start"),
         };
-        let left = if self.disk_was_touched() {
+        let left = if self.disk_was_touched() && self.beside {
+            "A new partition may have been added to the free space of the disk. Nothing else was written to it on purpose. This live session is as it was, and the installer can be run again."
+        } else if self.disk_was_touched() {
             "The disk was being written and no longer holds what it did. This live session is as it was, and the installer can be run again."
         } else {
             "Nothing on the computer was changed."
@@ -495,6 +668,8 @@ mod tests {
             wwn: String::new(),
             tran: String::new(),
             read_only: false,
+            pttype: String::new(),
+            ptuuid: String::new(),
             parts: Vec::new(),
             fstype: String::new(),
             label: String::new(),
@@ -503,6 +678,43 @@ mod tests {
             held: false,
             medium: false,
         }
+    }
+
+    /// The same disk with Windows on it: an EFI system partition and a
+    /// system of 100 GB, and the rest of the 256 GB free.
+    fn windows_disk() -> Disk {
+        let part = |number: u32, start: u64, bytes: u64, kind: &str, fstype: &str| {
+            sengi_install::disks::Part {
+                name: format!("sda{number}"),
+                number,
+                start,
+                size: bytes,
+                kind: kind.to_string(),
+                uuid: format!("uuid-{number}"),
+                fstype: fstype.to_string(),
+                label: String::new(),
+            }
+        };
+        let mut disk = disk();
+        disk.pttype = "gpt".to_string();
+        disk.ptuuid = "f6691c2b-d8e2-4c39-8ee0-426c24613ef0".to_string();
+        disk.parts = vec![
+            part(
+                1,
+                2048,
+                104_857_600,
+                "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
+                "vfat",
+            ),
+            part(
+                2,
+                206_848,
+                100_000_000_000,
+                "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7",
+                "ntfs",
+            ),
+        ];
+        disk
     }
 
     fn typed(password: usize, again: usize, same: bool) -> Typed {
@@ -766,10 +978,10 @@ mod tests {
             "sfdisk said no".to_string(),
         ));
         assert!(late.disk_was_touched());
-        assert_eq!(late.failed_step(), Some("Erasing the disk"));
+        assert_eq!(late.failed_step(), Some("Preparing the disk"));
         late.disk = "/dev/sda".to_string();
         let words = late.failure_words("SanDisk \u{b7} 256 GB");
-        assert!(words.starts_with("Installing on SanDisk \u{b7} 256 GB (/dev/sda) stopped at \u{201c}Erasing the disk\u{201d}: sfdisk said no. The disk was being written"), "{words}");
+        assert!(words.starts_with("Installing on SanDisk \u{b7} 256 GB (/dev/sda) stopped at \u{201c}Preparing the disk\u{201d}: sfdisk said no. The disk was being written"), "{words}");
         // Opened again after the fact, the window knows only the node.
         assert!(late
             .failure_words("")
@@ -826,5 +1038,146 @@ mod tests {
         assert_eq!(duration_words(60), "1 minute");
         assert_eq!(duration_words(120), "2 minutes");
         assert_eq!(duration_words(135), "2 min 15 s");
+    }
+    #[test]
+    fn the_second_way_of_installing_is_offered_where_it_can_be_done() {
+        let disk = windows_disk();
+        let rows = mode_rows(&disk, true, false);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, ERASE);
+        assert_eq!(rows[0].title, "Erase the whole disk");
+        assert!(rows[0].enabled && rows[0].checked && !rows[1].checked);
+        assert_eq!(rows[1].id, BESIDE);
+        assert_eq!(rows[1].title, "Install beside the existing system");
+        assert!(rows[1].enabled);
+        assert!(
+            rows[1].detail.starts_with("Adds one partition of "),
+            "{}",
+            rows[1].detail
+        );
+        assert!(rows[1]
+            .detail
+            .contains("Nothing that is already on the disk is changed."));
+        // Chosen, it is the checked one.
+        let chosen = mode_rows(&disk, true, true);
+        assert!(chosen[1].checked && !chosen[0].checked);
+    }
+
+    #[test]
+    fn where_it_cannot_be_done_the_row_says_why_and_cannot_be_chosen() {
+        // BIOS.
+        let rows = mode_rows(&windows_disk(), false, true);
+        assert!(!rows[1].enabled && !rows[1].checked && rows[0].checked);
+        assert!(rows[1].detail.contains("UEFI"));
+        // An MBR disk.
+        let mut mbr = windows_disk();
+        mbr.pttype = "dos".to_string();
+        let rows = mode_rows(&mbr, true, false);
+        assert!(!rows[1].enabled);
+        assert!(rows[1].detail.contains("GPT"));
+        // No EFI system partition.
+        let mut none = windows_disk();
+        none.parts.remove(0);
+        assert!(mode_rows(&none, true, false)[1]
+            .detail
+            .contains("EFI system partition"));
+        // No room: shrink the other system first.
+        let mut full = windows_disk();
+        full.parts[1].size = 250_000_000_000;
+        let rows = mode_rows(&full, true, false);
+        assert!(!rows[1].enabled);
+        assert!(rows[1]
+            .detail
+            .contains("Shrink the other system first, from inside it"));
+        // An empty disk has nothing to install beside.
+        assert!(!mode_rows(&disk(), true, false)[1].enabled);
+        // Erasing is always there.
+        assert!(rows[0].enabled);
+    }
+
+    #[test]
+    fn the_review_beside_says_exactly_what_changes() {
+        let disk = windows_disk();
+        let offer = beside_offer(&disk, true).unwrap();
+        let rows = review_beside(&filled(), &disk, &offer, "French (AZERTY)", "Europe/Paris");
+        let value = |title: &str| {
+            rows.iter()
+                .find(|(row, _)| *row == title)
+                .map(|(_, value)| value.as_str())
+                .unwrap()
+        };
+        let size = sengi_install::disks::size_words(offer.region().bytes());
+        assert_eq!(
+            value("What changes"),
+            format!("Creates one partition of {size} in free space. Nothing that is already on the disk is changed.")
+        );
+        assert!(value("On it now").contains("Windows (NTFS)"));
+        assert!(value("Put on it").starts_with("Sengi OS in the new partition"));
+        assert!(value("Boot files").contains("EFI/sengios"));
+        assert!(value("Starts with").starts_with("UEFI"));
+        // Nothing in it says the disk is erased.
+        assert!(!rows
+            .iter()
+            .any(|(_, value)| value.to_lowercase().contains("erase")));
+        assert!(rows.iter().all(|(title, _)| *title != "What happens to it"));
+        assert_eq!(value("Your account"), "Allan Smith (allan)");
+    }
+
+    #[test]
+    fn the_question_beside_is_a_plain_one_and_the_erasing_one_is_not() {
+        let disk = windows_disk();
+        let offer = beside_offer(&disk, true).unwrap();
+        let (title, body, confirm, danger) = question(&disk, Some(&offer));
+        assert_eq!(title, "Install beside the existing system?");
+        assert!(body.starts_with("This creates one partition of "));
+        assert!(body.ends_with("Nothing that is already on the disk is changed."));
+        assert_eq!(confirm, "Install");
+        assert!(!danger);
+        let (title, body, confirm, danger) = question(&disk, None);
+        assert_eq!(title, "Erase this disk?");
+        assert!(body.starts_with("This erases "));
+        assert_eq!(confirm, "Erase and install");
+        assert!(danger);
+        // The note says it in the quiet colour, and the erasing one warns.
+        let (note, warns) = change_note(&disk, Some(&offer));
+        assert!(!warns && note.contains("Nothing that is already on the disk is changed."));
+        let (note, warns) = change_note(&disk, None);
+        assert!(warns && note.contains("will be erased"));
+    }
+
+    #[test]
+    fn the_plan_beside_names_the_free_space_and_reads_back() {
+        let disk = windows_disk();
+        let offer = beside_offer(&disk, true).unwrap();
+        let layout = Layout::parse("fr(azerty)").unwrap();
+        let plan = filled().plan_with(&disk, &layout, "Europe/Paris", Some(beside_of(&offer)));
+        assert_eq!(plan.mode, Mode::Beside);
+        let beside = plan.beside.clone().unwrap();
+        assert_eq!(beside.start, offer.region().start);
+        assert_eq!(beside.esp, 1);
+        assert_eq!(Plan::parse(&plan.render()), Ok(plan));
+        // Without it the plan erases, as before.
+        let erase = filled().plan(&disk, &layout, "Europe/Paris");
+        assert_eq!(erase.mode, Mode::Erase);
+        assert_eq!(erase.beside, None);
+    }
+
+    #[test]
+    fn a_failure_beside_another_system_does_not_say_the_disk_was_erased() {
+        let mut progress = Progress::default();
+        progress.apply(Event::parse("beside").unwrap());
+        for line in ["begin check", "end check", "begin partition"] {
+            progress.apply(Event::parse(line).unwrap());
+        }
+        progress.apply(Event::Failed(
+            "partition".to_string(),
+            "sfdisk said no".to_string(),
+        ));
+        let words = progress.failure_words("SanDisk");
+        assert!(
+            words.contains("A new partition may have been added"),
+            "{words}"
+        );
+        assert!(!words.contains("no longer holds what it did"), "{words}");
     }
 }

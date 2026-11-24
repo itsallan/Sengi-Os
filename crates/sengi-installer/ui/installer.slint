@@ -44,6 +44,11 @@ export global Wizard {
     in property <bool> disk-chosen: false;
     callback disk-picked(string);
     callback look-again();
+    // What to do with the chosen disk: erase it, or install beside what
+    // is on it. The row that cannot be chosen says why.
+    in property <[Item]> modes;
+    in-out property <int> mode-current: 0;
+    callback mode-picked(string);
 
     // You.
     in-out property <string> full-name;
@@ -66,6 +71,9 @@ export global Wizard {
     // Review.
     in property <[InfoRow]> review;
     in property <string> erase-warning;
+    // The note about what changes is in the warning colour where a disk
+    // is erased, and plain where one partition is added.
+    in property <bool> note-warns: true;
 
     // Progress, and how it ended: "", "done" or "failed".
     in property <[StepRow]> steps;
@@ -113,9 +121,9 @@ component WelcomePage inherits Page {
         InfoCard {
             rows: [
                 { title: "Region", value: "Your keyboard layout and time zone" },
-                { title: "Disk", value: "Which disk to install on" },
+                { title: "Disk", value: "Which disk to install on, and whether to erase it or install beside what is on it" },
                 { title: "You", value: "Your name, a password, and a name for the computer" },
-                { title: "Review", value: "Everything once more, before anything is erased" },
+                { title: "Review", value: "Everything once more, before anything on the disk is changed" },
             ];
         }
 
@@ -123,7 +131,7 @@ component WelcomePage inherits Page {
 
         Note {
             warning: true;
-            text: "Sengi OS takes one whole disk and erases everything on it. Not offered yet: installing beside another system, encryption, and partitions laid out by hand. To keep trying Sengi OS from the stick instead, close this window.";
+            text: "Sengi OS can take one whole disk and erase everything on it, or, on a computer that starts with UEFI and has 10 GB or more of free space beside another system, be added beside it without changing what is there. Not offered yet: shrinking another system, encryption, and partitions laid out by hand. To keep trying Sengi OS from the stick instead, close this window.";
         }
     }
 }
@@ -207,8 +215,20 @@ component DiskPage inherits Page {
             }
         }
 
+        if Wizard.disk-chosen: SectionLabel {
+            text: "What to do with it";
+        }
+
+        if Wizard.disk-chosen: Card {
+            ItemList {
+                items: Wizard.modes;
+                current <=> Wizard.mode-current;
+                activated(id) => { Wizard.mode-picked(id); }
+            }
+        }
+
         if Wizard.disk-chosen: Note {
-            warning: true;
+            warning: Wizard.note-warns;
             text: Wizard.erase-warning;
         }
 
@@ -344,7 +364,7 @@ component ReviewPage inherits Page {
 
     column := PageColumn {
         Note {
-            warning: true;
+            warning: Wizard.note-warns;
             text: Wizard.erase-warning;
         }
 

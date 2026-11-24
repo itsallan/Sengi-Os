@@ -118,6 +118,8 @@ struct App {
     page: Cell<&'static str>,
     disks: RefCell<Vec<Disk>>,
     chosen: RefCell<Option<Disk>>,
+    /// The chosen disk is to be installed beside what is on it, not erased.
+    beside: Cell<bool>,
     form: RefCell<Form>,
     password: RefCell<PasswordEntry>,
     again: RefCell<PasswordEntry>,
@@ -166,14 +168,38 @@ fn uefi() -> bool {
     Path::new("/sys/firmware/efi").is_dir()
 }
 
+/// What the disks of a demo look like when the machine is not asked.
+fn demo_uefi() -> bool {
+    true
+}
+
 /// Disks to show when there is no machine to ask.
 fn demo_disks() -> Vec<Disk> {
-    let part = |name: &str, size: u64, fstype: &str, label: &str| disks::Part {
-        name: name.to_string(),
-        size,
-        fstype: fstype.to_string(),
-        label: label.to_string(),
+    let mut start = 2048;
+    let mut part = move |name: &str, size: u64, fstype: &str, label: &str, kind: &str| {
+        let digits: String = name
+            .chars()
+            .rev()
+            .take_while(char::is_ascii_digit)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        let number = digits.parse().unwrap_or(1);
+        let at = start;
+        start += size / 512;
+        disks::Part {
+            name: name.to_string(),
+            number,
+            start: at,
+            kind: kind.to_string(),
+            uuid: format!("demo-{name}"),
+            size,
+            fstype: fstype.to_string(),
+            label: label.to_string(),
+        }
     };
+    let esp = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
     let disk = |name: &str, size: u64, model: &str| Disk {
         name: name.to_string(),
         path: format!("/dev/{name}"),
@@ -183,6 +209,8 @@ fn demo_disks() -> Vec<Disk> {
         wwn: String::new(),
         tran: String::new(),
         read_only: false,
+        pttype: "gpt".to_string(),
+        ptuuid: "5f6c9a8e-0000-4000-8000-000000000001".to_string(),
         parts: Vec::new(),
         fstype: String::new(),
         label: String::new(),
@@ -193,9 +221,21 @@ fn demo_disks() -> Vec<Disk> {
     };
     let mut main = disk("sda", 256_060_514_304, "SanDisk SD8SN8U256G");
     main.parts = vec![
-        part("sda1", 104_857_600, "vfat", "SYSTEM"),
-        part("sda2", 200_000_000_000, "ntfs", "Windows"),
-        part("sda3", 55_000_000_000, "ext4", ""),
+        part("sda1", 104_857_600, "vfat", "SYSTEM", esp),
+        part(
+            "sda2",
+            200_000_000_000,
+            "ntfs",
+            "Windows",
+            "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7",
+        ),
+        part(
+            "sda3",
+            55_000_000_000,
+            "ext4",
+            "",
+            "0fc63daf-8483-4772-8e79-3d69d8477de4",
+        ),
     ];
     main.tran = "sata".to_string();
     main.serial = "162345400999".to_string();
@@ -211,9 +251,29 @@ fn demo_disks() -> Vec<Disk> {
     let mut second = disk("nvme0n1", 500_107_862_016, "Samsung SSD 970 EVO 500GB");
     second.tran = "nvme".to_string();
     second.serial = "S466NX0M123456H".to_string();
-    second.parts = vec![part("nvme0n1p1", 500_000_000_000, "ext4", "data")];
+    second.parts = vec![part(
+        "nvme0n1p1",
+        500_000_000_000,
+        "ext4",
+        "data",
+        "0fc63daf-8483-4772-8e79-3d69d8477de4",
+    )];
     second.mounted = vec!["/media/live/data".to_string()];
-    vec![main, second, stick, card]
+    // A computer that came with Windows and has most of its disk free.
+    let mut third = disk("sdc", 1_000_204_886_016, "WD Blue SN570 1TB");
+    third.tran = "sata".to_string();
+    third.serial = "WD-2214AB778899".to_string();
+    third.parts = vec![
+        part("sdc1", 272_629_760, "vfat", "", esp),
+        part(
+            "sdc2",
+            250_000_000_000,
+            "ntfs",
+            "Windows",
+            "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7",
+        ),
+    ];
+    vec![main, third, second, stick, card]
 }
 
 /// What stands in for sengi-install in a demo: it says what the real
@@ -252,12 +312,13 @@ impl App {
             }
             .into(),
         );
-        wizard.set_next_erases(page == "review");
+        let beside = self.beside.get();
+        wizard.set_next_erases(page == "review" && !beside);
         wizard.set_next_label(
-            if page == "review" {
-                "Erase disk and install\u{2026}"
-            } else {
-                "Continue"
+            match (page, beside) {
+                ("review", false) => "Erase disk and install\u{2026}",
+                ("review", true) => "Install Sengi OS\u{2026}",
+                _ => "Continue",
             }
             .into(),
         );
@@ -501,6 +562,9 @@ impl App {
                 .find(|disk| *disk == chosen && disks::refusal(disk).is_none())
                 .cloned()
         });
+        if kept.is_none() {
+            self.beside.set(false);
+        }
         *self.chosen.borrow_mut() = kept;
         *self.disks.borrow_mut() = found;
         self.render_disks();
@@ -540,15 +604,73 @@ impl App {
             wizard.set_disk_current(at as i32);
         }
         wizard.set_disk_chosen(chosen.is_some());
-        wizard.set_erase_warning(
-            chosen
-                .as_ref()
-                .map(model::erase_warning)
-                .unwrap_or_default()
-                .into(),
-        );
+        let uefi = self.uefi_now();
+        let mode_items: Vec<Item> = chosen
+            .as_ref()
+            .map(|disk| {
+                model::mode_rows(disk, uefi, self.beside.get())
+                    .into_iter()
+                    .map(|row| Item {
+                        id: row.id.into(),
+                        title: row.title.into(),
+                        detail: row.detail.into(),
+                        action: if row.enabled && !row.checked {
+                            "Choose"
+                        } else {
+                            ""
+                        }
+                        .into(),
+                        checked: row.checked,
+                        enabled: row.enabled,
+                        ..Item::default()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(at) = mode_items.iter().position(|item| item.checked) {
+            wizard.set_mode_current(at as i32);
+        }
+        wizard.set_modes(rows(mode_items));
+        let (note, warns) = chosen
+            .as_ref()
+            .map(|disk| {
+                let offer = self.offer_for(disk);
+                model::change_note(disk, offer.as_ref())
+            })
+            .unwrap_or_default();
+        wizard.set_erase_warning(note.into());
+        wizard.set_note_warns(warns);
         drop(chosen);
         self.set_can_next();
+    }
+
+    fn uefi_now(&self) -> bool {
+        match self.demo {
+            Demo::Off => uefi(),
+            _ => demo_uefi(),
+        }
+    }
+
+    /// What installing beside what is on `disk` would use, if that is what
+    /// was chosen and it can be done.
+    fn offer_for(&self, disk: &Disk) -> Option<sengi_install::beside::Offer> {
+        if !self.beside.get() {
+            return None;
+        }
+        model::beside_offer(disk, self.uefi_now()).ok()
+    }
+
+    fn pick_mode(&self, id: &str) {
+        let Some(disk) = self.chosen.borrow().clone() else {
+            return;
+        };
+        let beside = match id {
+            model::BESIDE => model::beside_offer(&disk, self.uefi_now()).is_ok(),
+            model::ERASE => false,
+            _ => return,
+        };
+        self.beside.set(beside);
+        self.render_disks();
     }
 
     fn pick_disk(&self, path: &str) {
@@ -559,6 +681,13 @@ impl App {
             .find(|disk| disk.path == path && disks::refusal(disk).is_none())
             .cloned();
         if picked.is_some() {
+            // Another disk starts again from erasing it: beside is chosen
+            // on purpose, for the disk it was chosen on.
+            if self.chosen.borrow().as_ref().map(|disk| &disk.path)
+                != picked.as_ref().map(|disk| &disk.path)
+            {
+                self.beside.set(false);
+            }
             *self.chosen.borrow_mut() = picked;
             self.render_disks();
         }
@@ -615,14 +744,27 @@ impl App {
         let chosen = self.chosen.borrow();
         let Some(disk) = chosen.as_ref() else { return };
         let wizard = self.wizard();
-        wizard.set_review(facts(model::review(
-            &self.form.borrow(),
-            disk,
-            &self.layout_name(),
-            &self.zone.borrow(),
-            uefi(),
-        )));
-        wizard.set_erase_warning(model::erase_warning(disk).into());
+        let offer = self.offer_for(disk);
+        let rows = match &offer {
+            Some(offer) => model::review_beside(
+                &self.form.borrow(),
+                disk,
+                offer,
+                &self.layout_name(),
+                &self.zone.borrow(),
+            ),
+            None => model::review(
+                &self.form.borrow(),
+                disk,
+                &self.layout_name(),
+                &self.zone.borrow(),
+                self.uefi_now(),
+            ),
+        };
+        wizard.set_review(facts(rows));
+        let (note, warns) = model::change_note(disk, offer.as_ref());
+        wizard.set_erase_warning(note.into());
+        wizard.set_note_warns(warns);
     }
 
     /// The question before the disk is erased. Its dialog starts with
@@ -630,13 +772,15 @@ impl App {
     fn ask_to_erase(&self) {
         let chosen = self.chosen.borrow();
         let Some(disk) = chosen.as_ref() else { return };
+        let offer = self.offer_for(disk);
+        let (title, body, confirm, danger) = model::question(disk, offer.as_ref());
         let state = self.window.global::<DialogState>();
         state.set_spec(DialogSpec {
-            title: "Erase this disk?".into(),
-            body: model::erase_question(disk).into(),
-            confirm: "Erase and install".into(),
+            title: title.into(),
+            body: body.into(),
+            confirm: confirm.into(),
             cancel: "Cancel".into(),
-            danger: true,
+            danger,
             ..DialogSpec::default()
         });
         state.set_open(true);
@@ -657,10 +801,15 @@ impl App {
         if !self.form_ready() {
             return;
         }
+        let beside = self.offer_for(&disk).map(|offer| model::beside_of(&offer));
+        // Beside was chosen and cannot be done any more: nothing starts.
+        if self.beside.get() && beside.is_none() {
+            return;
+        }
         let plan = self
             .form
             .borrow()
-            .plan(&disk, &self.layout.borrow(), &self.zone.borrow())
+            .plan_with(&disk, &self.layout.borrow(), &self.zone.borrow(), beside)
             .render();
         let Some(password) = self.password.borrow_mut().take() else {
             return;
@@ -970,6 +1119,7 @@ impl App {
         on!(on_choose_keyboard, |app| app.choose_keyboard());
         on!(on_choose_zone, |app| app.choose_zone());
         on!(on_disk_picked, |app, id| app.pick_disk(&id));
+        on!(on_mode_picked, |app, id| app.pick_mode(&id));
         on!(on_look_again, |app| app.scan());
         on!(on_full_name_edited, |app, text| {
             app.form.borrow_mut().set_full_name(&text);
@@ -1098,6 +1248,7 @@ fn main() -> ExitCode {
         page: Cell::new("welcome"),
         disks: RefCell::new(Vec::new()),
         chosen: RefCell::new(None),
+        beside: Cell::new(false),
         form: RefCell::new(Form {
             host_name: model::DEFAULT_HOST_NAME.to_string(),
             ..Form::default()

@@ -14,7 +14,12 @@ installation. It never writes to a disk itself: that is
    will be typed with at the login screen. There is a field to try the
    keys in. No time zone is chosen for you, and Continue waits until one
    is; UTC is in the list.
-3. **Disk.** Every disk: its model and size, and under them its node
+3. **Disk.** (After the list of disks, once one is chosen, a second list says what to do
+   with it: "Erase the whole disk", or "Install beside the existing system", which is
+   greyed out with its reason on a BIOS computer, a disk without a GPT or an EFI
+   system partition, an empty disk, or one without 10 GB of free space. The review
+   and the question that follow say exactly which: erasing is a red warning and a
+   danger button; installing beside is a plain note and a plain button.) Every disk: its model and size, and under them its node
    (`/dev/sda`), how it is attached as lsblk reports it (SATA, NVMe, USB),
    the end of its serial number, and what is on it now. The ones that
    cannot be chosen are listed the same way, greyed out, with the reason
@@ -26,8 +31,9 @@ installation. It never writes to a disk itself: that is
 4. **You.** Your name, a user name (offered from the name until one is
    typed), the password twice, and a name for the computer. What is wrong
    with a field is said under it once something has been typed.
-5. **Review.** The disk, what is on it now, that all of it is erased, the
-   account, the computer's name, the layout and the zone.
+5. **Review.** The disk, what is on it now, that all of it is erased (or, beside another
+   system, that one partition of N GB is created in free space and nothing that is already
+   on the disk is changed), the account, the computer's name, the layout and the zone.
 6. **Installing**, which becomes **Sengi OS is installed** or **The
    installation failed**. The nine steps are listed and marked as they
    run; the copy shows a percentage, counted in bytes on the new disk.
@@ -139,7 +145,7 @@ A release build has neither.
 
 ## What this does not do
 
-- Install beside another system, encrypt, or lay out partitions by hand.
+- Shrink another system to make room, encrypt, or lay out partitions by hand.
 - Guess the time zone or the keyboard layout.
 - Offer a language: it is in English.
 - Ask about the strength of the password. An empty one is refused.
