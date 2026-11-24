@@ -9,10 +9,13 @@
 #   vm.sh sync          copy the working tree into the VM
 #   vm.sh fetch         copy out/ from the VM back into the repo
 #   vm.sh down          power the VM off
+#
+# SENGI_VM_DIR names the directory that holds the VM disk, to share one VM
+# between checkouts. Commands that touch the tree wait for each other.
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-dir=$root/cache/vm
+dir=${SENGI_VM_DIR:-$root/cache/vm}
 image_url=${SENGI_VM_IMAGE:-https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2}
 port=${SENGI_VM_PORT:-2222}
 cpus=${SENGI_VM_CPUS:-3}
@@ -84,20 +87,35 @@ sync_tree() {
 		"$root/" debian@127.0.0.1:sengi-os/
 }
 
+# One command at a time: several checkouts may share this VM, and each run
+# copies its own tree over the one inside it. The lock is held until the
+# script exits.
+lock() {
+	mkdir -p "$dir"
+	exec 9>"$dir/run.lock"
+	flock 9
+}
+
 case "${1:-}" in
 up) up ;;
-sync) sync_tree ;;
+sync)
+	lock
+	sync_tree
+	;;
 run)
 	shift
+	lock
 	sync_tree
 	vm_ssh "export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/\$(id -u)/bus; cd sengi-os && $*"
 	;;
 fetch)
+	lock
 	mkdir -p "$root/out"
 	# shellcheck disable=SC2086
 	rsync -a -e "ssh $ssh_opts" debian@127.0.0.1:sengi-os/out/ "$root/out/"
 	;;
 down)
+	lock
 	# Hand the blocks the guest has freed back to the host, or the disk
 	# file only ever grows: a few builds take it past 60 GB.
 	vm_ssh sudo fstrim -a >/dev/null 2>&1 || true
