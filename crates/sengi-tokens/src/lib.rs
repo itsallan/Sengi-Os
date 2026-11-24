@@ -135,6 +135,22 @@ mod tests {
     }
 
     #[test]
+    fn the_dock_is_spaced_as_designed() {
+        let tokens = Tokens::builtin();
+        let px = |name: &str| tokens.px(name).unwrap_or_else(|| panic!("{name}"));
+        assert_eq!(px("dock.icon"), 48);
+        assert_eq!(px("dock.gap"), 14);
+        assert_eq!(px("dock.end-padding"), 10);
+        assert_eq!(px("size.dock-padding"), 6);
+        assert_eq!(px("dock.margin"), 6);
+        assert_eq!(px("dock.dot"), 4);
+        assert_eq!(px("dock.dot-gap"), 3);
+        assert_eq!(px("dock.bounce"), 8);
+        assert_eq!(px("motion.bounce-duration"), 300);
+        assert_eq!(tokens.get("motion.bounce-easing"), Some("ease-out"));
+    }
+
+    #[test]
     fn every_colour_is_valid() {
         let tokens = Tokens::builtin();
         for name in tokens.names().filter(|n| n.starts_with("color.")) {
