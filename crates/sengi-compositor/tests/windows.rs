@@ -122,6 +122,34 @@ fn a_window_too_large_for_the_screen_is_asked_to_fit_it() {
 }
 
 #[test]
+fn a_window_too_large_for_a_small_screen_is_shown_once_it_has_shrunk() {
+    let compositor = Compositor::start_args(&["--outputs", "800x600"], None);
+    let mut app = compositor.connect();
+    let (surface, _xdg, _toplevel) = bare_window(&mut app).unwrap();
+    assert!(app.wait(SOON, |seen| seen.window_configures >= 1));
+    // Wider than the whole screen, as Settings and the terminal are.
+    let buffer = app.buffer(890, 630, GREEN).unwrap();
+    surface.attach(Some(&buffer), 0, 0);
+    surface.commit();
+    assert!(
+        app.wait(SOON, |seen| seen
+            .more
+            .toplevel
+            .is_some_and(|(w, _, _)| w > 0)),
+        "it was never told a size"
+    );
+    let (w, h) = told(&app).unwrap();
+    // The client does as it was told and draws that size.
+    app.paint(&surface, w, h, GREEN).unwrap();
+    let picture = app.capture().unwrap();
+    assert_eq!(
+        picture.at(400, 300),
+        rgb(GREEN),
+        "the window was told {w}x{h} and is not on the screen"
+    );
+}
+
+#[test]
 fn a_window_that_asks_for_fullscreen_before_it_is_shown_is_not_fitted() {
     let compositor = Compositor::start(None);
     let mut shell = compositor.connect();
