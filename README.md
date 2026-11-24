@@ -170,5 +170,9 @@ version 3 or (at your option) any later version. The full text is in
 `LICENSE`. The Slint toolkit the programs link against is used under its
 GPL-3.0 option, so the programs as built are distributed under GPL-3.0.
 Work by others that is copied into this repository, and its licence, is
-listed in `THIRD-PARTY-NOTICES.md`. Packages from Debian in the image keep
-their own licences, which are in `/usr/share/doc/<package>/copyright`.
+listed in `THIRD-PARTY-NOTICES.md`. The Rust crates the programs are built
+from are listed with their licences in `THIRD-PARTY-CRATES.txt`, which is in
+the image under `/usr/share/doc/sengi-os/`; `scripts/gen-notices.sh`
+generates it and has to be run again when a `Cargo.lock` changes. Packages
+from Debian in the image keep their own licences, which are in
+`/usr/share/doc/<package>/copyright`.
