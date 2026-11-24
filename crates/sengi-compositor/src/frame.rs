@@ -12,11 +12,13 @@ pub struct Metrics {
     /// Height of the title bar, including the border along its top.
     pub titlebar: i32,
     pub border: i32,
-    /// Side of a square title bar button.
+    /// Diameter of a round title bar button.
     pub button: i32,
     /// Space between buttons.
     pub gap: i32,
     /// Space between the frame edge and the first button.
+    pub inset: i32,
+    /// Space kept clear between the buttons or the edge and the title.
     pub padding: i32,
     /// How far around the frame edge a press starts a resize.
     pub grip: i32,
@@ -82,11 +84,40 @@ impl Metrics {
     pub fn button_rect(&self, button: Button) -> Rect {
         let index = BUTTONS.iter().position(|b| *b == button).unwrap_or(0) as i32;
         Rect::new(
-            self.border + self.padding + index * (self.button + self.gap),
+            self.inset + index * (self.button + self.gap),
             (self.titlebar - self.button) / 2,
             self.button,
             self.button,
         )
+    }
+
+    /// Whether the cell at `(x, y)`, relative to the frame's top-left
+    /// corner, presses `button`: its circle, a pixel wide around it so a
+    /// click at the rim still lands.
+    pub fn button_contains(&self, button: Button, x: i32, y: i32) -> bool {
+        let rect = self.button_rect(button);
+        let radius = self.button as f32 / 2.0 + 1.0;
+        let dx = x as f32 + 0.5 - (rect.x as f32 + self.button as f32 / 2.0);
+        let dy = y as f32 + 0.5 - (rect.y as f32 + self.button as f32 / 2.0);
+        dx * dx + dy * dy <= radius * radius
+    }
+
+    /// Whether `(x, y)`, relative to the frame's top-left corner, is over the
+    /// group of buttons: the circles and the space between them and half a
+    /// gap around, so the pointer between two buttons is still on the
+    /// group. Hovering the group shows the glyphs; it does not press.
+    pub fn in_button_group(&self, x: i32, y: i32) -> bool {
+        let half = self.gap / 2;
+        BUTTONS.into_iter().any(|b| {
+            let rect = self.button_rect(b);
+            Rect::new(
+                rect.x - half,
+                rect.y - half,
+                rect.w + 2 * half,
+                rect.h + 2 * half,
+            )
+            .contains(x, y)
+        })
     }
 
     /// Where the buttons end, relative to the frame's left edge.
@@ -114,13 +145,16 @@ impl Metrics {
             return None;
         }
 
-        // Buttons win over the grip that overlaps their top edge.
+        // Buttons win over a grip that overlaps them, but only inside the
+        // frame: outside it a button's rim is the grip.
         let (local_x, local_y) = (x - frame.x, y - frame.y);
-        if let Some(button) = BUTTONS
-            .into_iter()
-            .find(|b| self.button_rect(*b).contains(local_x, local_y))
-        {
-            return Some(Hit::Button(button));
+        if frame.contains(x, y) {
+            if let Some(button) = BUTTONS
+                .into_iter()
+                .find(|b| self.button_contains(*b, local_x, local_y))
+            {
+                return Some(Hit::Button(button));
+            }
         }
 
         if resizable {
@@ -313,8 +347,9 @@ mod tests {
     const M: Metrics = Metrics {
         titlebar: 30,
         border: 1,
-        button: 26,
-        gap: 4,
+        button: 12,
+        gap: 8,
+        inset: 12,
         padding: 8,
         grip: 4,
         corner: 16,
@@ -339,29 +374,122 @@ mod tests {
 
     #[test]
     fn buttons_are_on_the_left_in_order() {
-        assert_eq!(M.button_rect(Button::Close), Rect::new(9, 2, 26, 26));
-        assert_eq!(M.button_rect(Button::Minimise), Rect::new(39, 2, 26, 26));
-        assert_eq!(M.button_rect(Button::Maximise), Rect::new(69, 2, 26, 26));
-        assert_eq!(M.buttons_end(), 95);
-        assert_eq!(M.min_frame_width(), 104);
+        assert_eq!(M.button_rect(Button::Close), Rect::new(12, 9, 12, 12));
+        assert_eq!(M.button_rect(Button::Minimise), Rect::new(32, 9, 12, 12));
+        assert_eq!(M.button_rect(Button::Maximise), Rect::new(52, 9, 12, 12));
+        assert_eq!(M.buttons_end(), 64);
+        assert_eq!(M.min_frame_width(), 73);
     }
 
     #[test]
     fn hit_buttons() {
         assert_eq!(
-            M.hit(FRAME, 110, 110, true),
+            M.hit(FRAME, 118, 115, true),
             Some(Hit::Button(Button::Close))
         );
         assert_eq!(
-            M.hit(FRAME, 150, 115, true),
+            M.hit(FRAME, 138, 115, true),
             Some(Hit::Button(Button::Minimise))
         );
         assert_eq!(
-            M.hit(FRAME, 180, 127, true),
+            M.hit(FRAME, 158, 115, true),
             Some(Hit::Button(Button::Maximise))
         );
-        // The gap between two buttons is plain title bar.
-        assert_eq!(M.hit(FRAME, 136, 115, true), Some(Hit::Titlebar));
+        // Past the last button it is plain title bar.
+        assert_eq!(M.hit(FRAME, 172, 115, true), Some(Hit::Titlebar));
+    }
+
+    #[test]
+    fn the_gap_between_buttons_is_title_bar() {
+        // Cells 25 to 30 of the bar lie between the close and minimise
+        // circles, more than a pixel from either.
+        for x in 25..=30 {
+            assert_eq!(
+                M.hit(FRAME, 100 + x, 115, true),
+                Some(Hit::Titlebar),
+                "x {x}"
+            );
+        }
+        // The rim, a pixel out, still presses.
+        assert_eq!(
+            M.hit(FRAME, 100 + 24, 115, true),
+            Some(Hit::Button(Button::Close))
+        );
+        assert_eq!(
+            M.hit(FRAME, 100 + 31, 115, true),
+            Some(Hit::Button(Button::Minimise))
+        );
+        assert_eq!(M.hit(FRAME, 100 + 10, 115, true), Some(Hit::Titlebar));
+        assert_eq!(
+            M.hit(FRAME, 100 + 11, 115, true),
+            Some(Hit::Button(Button::Close))
+        );
+    }
+
+    #[test]
+    fn a_button_is_a_circle_not_a_square() {
+        // The corner of the button's square is outside its circle.
+        assert_eq!(M.hit(FRAME, 100 + 12, 109, true), Some(Hit::Titlebar));
+        assert_eq!(M.hit(FRAME, 100 + 23, 120, true), Some(Hit::Titlebar));
+        assert!(M.button_contains(Button::Close, 18, 15));
+        assert!(!M.button_contains(Button::Close, 12, 9));
+    }
+
+    #[test]
+    fn buttons_end_where_the_circle_does_vertically() {
+        let at = |y| M.hit(FRAME, 100 + 18, 100 + y, true);
+        assert_eq!(at(7), Some(Hit::Titlebar));
+        assert_eq!(at(8), Some(Hit::Button(Button::Close)));
+        assert_eq!(at(21), Some(Hit::Button(Button::Close)));
+        assert_eq!(at(22), Some(Hit::Titlebar));
+    }
+
+    #[test]
+    fn the_group_reaches_half_a_gap_around_the_circles() {
+        // Between two buttons and a little above and below them.
+        assert!(M.in_button_group(28, 15));
+        assert!(M.in_button_group(28, 5));
+        assert!(M.in_button_group(28, 24));
+        assert!(!M.in_button_group(28, 4));
+        assert!(!M.in_button_group(28, 25));
+        // From four pixels before the first button to four after the last.
+        assert!(M.in_button_group(8, 15));
+        assert!(!M.in_button_group(7, 15));
+        assert!(M.in_button_group(67, 15));
+        assert!(!M.in_button_group(68, 15));
+    }
+
+    #[test]
+    fn buttons_outside_a_narrow_frame_are_its_grip() {
+        // Narrower than the buttons need: what hangs out of the frame is
+        // the resize grip, not a button.
+        let narrow = Rect::new(100, 100, 20, 100);
+        assert_eq!(
+            M.hit(narrow, 118, 115, true),
+            Some(Hit::Button(Button::Close))
+        );
+        assert_eq!(
+            M.hit(narrow, 122, 150, true),
+            Some(Hit::Resize(edges(false, true, false, false)))
+        );
+        // A window that cannot be resized has no grip there.
+        assert_eq!(M.hit(narrow, 122, 150, false), None);
+        // The close circle is only part of the frame: no press beyond it.
+        assert_eq!(M.hit(narrow, 135, 115, true), None);
+    }
+
+    #[test]
+    fn buttons_beat_the_top_grip_of_a_short_frame() {
+        // A frame so short that the circle reaches its top edge.
+        let flat = Rect::new(100, 100, 402, 18);
+        assert_eq!(
+            M.hit(flat, 118, 110, true),
+            Some(Hit::Button(Button::Close))
+        );
+        assert_eq!(
+            M.hit(flat, 118, 100, true),
+            Some(Hit::Resize(edges(false, false, true, false)))
+        );
     }
 
     #[test]

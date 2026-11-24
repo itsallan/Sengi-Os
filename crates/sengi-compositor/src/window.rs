@@ -29,6 +29,7 @@ use smithay::{
 use crate::{
     decoration::{self, TextBitmap, Theme, Titlebar},
     frame::{self, Edges},
+    input::Drag,
     keys::Edge,
     layout::Rect,
     outputs::scale_key,
@@ -837,10 +838,7 @@ impl State {
         let key = scale_key(scale);
         let to_pixels = |v: i32| (f64::from(v) * scale).round() as i32;
         let border = logical.metrics.border;
-        let hovered = match &self.hovered_button {
-            Some((hovered, button)) if hovered == window => Some(*button),
-            _ => None,
-        };
+        let group_hovered = self.hovered_group.as_ref() == Some(window);
         // The client picks the window's width, so it must not pick how much
         // memory the title bar takes: nothing wider than the screen is
         // painted, the remainder is a flat fill.
@@ -848,10 +846,23 @@ impl State {
         let painted = full.min(self.max_painted_width(scale));
         let active = self.focus_stack.current() == Some(window);
         let square = data(window).restore.get().is_some();
+        // Held down, and the pointer still on it: moving between the buttons
+        // does not change what the bar looks like, only this does.
+        let pressed = match (&self.drag, &self.hovered_button) {
+            (
+                Some(Drag::Press {
+                    window: held,
+                    button,
+                }),
+                Some((over, on)),
+            ) if held == window && over == window && on == button => Some(*button),
+            _ => None,
+        };
         let bar = Titlebar {
             width: to_pixels(painted),
             active,
-            hovered,
+            group_hovered,
+            pressed,
             square,
             cut: painted < full,
         };
@@ -881,7 +892,7 @@ impl State {
         });
         if !unchanged {
             let (title, text) =
-                self.title_bitmap(window, room.max(0) as usize, painter.font.as_ref());
+                self.title_bitmap(window, room.max(0) as usize, painter.title_font.as_ref());
             let canvas = decoration::draw_titlebar(paint, &bar, text.as_deref());
             let size = (bar.width.max(1), paint.metrics.titlebar.max(1));
             // The buffer carries the output's scale, rounded. That is what keeps

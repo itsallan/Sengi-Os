@@ -27,6 +27,19 @@ focus-ring = "#d9773a"
 # The line around a control that cannot be used. It has to show on every
 # surface a control can sit on, which a fill in a surface colour does not.
 outline-disabled = "#4a4e56"
+# The three round buttons of a window frame, each with a darker ring, the
+# glyph shown on them while the pointer is over the group, and the grey they
+# all take when the window is not focused.
+window-close = "#ff5f57"
+window-close-ring = "#e0443e"
+window-close-glyph = "#4d0000"
+window-minimise = "#febc2e"
+window-minimise-ring = "#dea123"
+window-minimise-glyph = "#995700"
+window-maximise = "#28c840"
+window-maximise-ring = "#1aab29"
+window-maximise-glyph = "#006500"
+window-inactive = "#4d4d4d"
 
 [radius]
 base = 6
@@ -108,6 +121,19 @@ settings-sidebar-width = 200
 settings-page-width = 640
 settings-control-width = 200
 settings-control-wide = 240
+
+[window]
+# The round buttons in the title bar: their diameter, the space between two,
+# the space from the frame edge to the first, the width of the ring around
+# each, the side of the glyph box and its stroke, and how much darker a
+# pressed button is, in percent.
+button = 12
+button-gap = 8
+button-inset = 12
+button-ring = 0.5
+button-glyph = 6
+button-glyph-stroke = 1.5
+button-pressed-darken = 15
 
 [motion]
 fast = 120

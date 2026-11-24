@@ -398,6 +398,7 @@ impl State {
         let mut focus = None;
         if self.drag.is_none() {
             let mut hovered = None;
+            let mut group = None;
             let mut frame_cursor = None;
             match self.target_at(location) {
                 Some(Target::Surface {
@@ -406,14 +407,31 @@ impl State {
                 Some(Target::Frame {
                     window,
                     hit: Hit::Button(button),
-                }) => hovered = Some((window, button)),
+                }) => {
+                    group = Some(window.clone());
+                    hovered = Some((window, button));
+                }
+                Some(Target::Frame {
+                    window,
+                    hit: Hit::Titlebar,
+                }) => {
+                    let (x, y) = cell(location);
+                    if self.group_at(&window, x, y) {
+                        group = Some(window);
+                    }
+                }
                 Some(Target::Frame {
                     hit: Hit::Resize(edges),
                     ..
                 }) => frame_cursor = Some(resize_cursor(edges)),
                 _ => {}
             }
+            // The bar is drawn again when what it shows changes.
+            if hovered != self.hovered_button || group != self.hovered_group {
+                self.request_redraw();
+            }
             self.hovered_button = hovered;
+            self.hovered_group = group;
             self.frame_cursor = frame_cursor;
         }
 
@@ -598,7 +616,11 @@ impl State {
                     Hit::Resize(edges) => self.start_resize(&window, edges, (x, y)),
                     Hit::Button(button) => {
                         self.hovered_button = Some((window.clone(), button));
+                        self.hovered_group = Some(window.clone());
                         self.drag = Some(Drag::Press { window, button });
+                        // The button is drawn held down, even when the
+                        // pointer was already on it and nothing else changed.
+                        self.request_redraw();
                     }
                     Hit::Client => {}
                 }
@@ -702,7 +724,13 @@ impl State {
             Some(Drag::Press { window, button }) => {
                 // Shown as pressed only while the pointer is still on it.
                 let on_it = self.button_at(window, x, y) == Some(*button);
-                self.hovered_button = on_it.then(|| (window.clone(), *button));
+                let hovered = on_it.then(|| (window.clone(), *button));
+                let group = self.group_at(window, x, y).then(|| window.clone());
+                if hovered != self.hovered_button || group != self.hovered_group {
+                    self.request_redraw();
+                }
+                self.hovered_button = hovered;
+                self.hovered_group = group;
             }
             None => {}
         }
@@ -756,6 +784,17 @@ impl State {
             Some(Hit::Button(button)) => Some(button),
             _ => None,
         }
+    }
+
+    /// Whether `(x, y)` is over the group of title bar buttons of `window`.
+    fn group_at(&self, window: &Window, x: i32, y: i32) -> bool {
+        if !window::data(window).decorated.get() {
+            return false;
+        }
+        let Some(frame) = self.frame_rect(window) else {
+            return false;
+        };
+        frame.contains(x, y) && self.theme.metrics.in_button_group(x - frame.x, y - frame.y)
     }
 
     fn click_layer(&mut self, surface: WlSurface) {
