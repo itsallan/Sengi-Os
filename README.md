@@ -122,7 +122,9 @@ ask for them, in a terminal: `sudo apt update && sudo apt upgrade`.
 packages, or `sudo flatpak install flathub <app>` for Flatpak apps. Flathub is
 already set up as the Flatpak source (`/etc/flatpak/remotes.d/`); the first
 `sudo flatpak` command creates the Flatpak store. There is no graphical app
-store yet.
+store yet. When Sengi OS is run from the USB stick without installing, every
+change is kept in RAM, so a large Flatpak runtime may not fit and the install
+stops with a "min-free-space-size" error. Install Sengi OS to the disk first.
 
 To try the installer without a spare machine, give QEMU a blank disk beside
 the ISO:
