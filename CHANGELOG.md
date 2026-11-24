@@ -5,19 +5,47 @@ and the measured idle RAM and boot time.
 
 ## Unreleased
 
+### Added
+
+- The launcher shows every installed app as a grid of icons with names while
+  nothing is typed; typing narrows it to the list, which now has a small icon
+  in front of each name. The arrow keys move through the grid.
+- sengi-store, a small app store: type the name of an app, pick it from the
+  Flathub list, and it is installed for your user. It has its own icon at the
+  end of the dock. Flathub is set up as the Flatpak source in the image.
+- The installer can install Sengi OS beside another system: on a UEFI
+  computer, with a GPT disk that has an EFI system partition and 10 GB or more
+  of free space, it adds one partition there and changes nothing else; the
+  other system stays in the boot menu, shown for 3 seconds. Shrink the other
+  system first, from inside it.
 - Wi-Fi and Bluetooth firmware is in the image: Intel (both radios), Realtek,
   MediaTek, Atheros and Broadcom, plus Intel graphics firmware and CPU
   microcode, from Debian's non-free-firmware section.
-- Fixed windows never appearing on small screens such as 800x600: a window
-  asked to shrink never got the frame callback it waits for.
+- The licence: LICENSE (GPL-3.0-or-later), licence fields on every crate, and
+  the licences of the Rust crates the programs are built from in
+  /usr/share/doc/sengi-os.
 
-- sengi-store, a small app store: type the name of an app, pick it from the
-  Flathub list, and it is installed for your user. It has its own icon at the
-  end of the dock.
+### Fixed
 
-- The installer can install Sengi OS beside another system: on a UEFI computer, with a GPT
-  disk that has an EFI system partition and 10 GB or more of free space, it adds one
-  partition there and changes nothing else; the other system stays in the boot menu.
+- Windows never appeared on small screens such as 800x600: a window asked to
+  shrink never got the frame callback it waits for.
+- App icons that draw nothing, such as xterm's small icon, no longer leave a
+  blank tile in the dock: the program's name is tried next, then a letter.
+- The dock's search button is a dark tile like the others, not a permanent
+  orange one.
+- The installed system's boot menu says "Sengi OS", not "Sengi OS GNU/Linux".
+- The time zone list has Kigali, and every other country's own city.
+- What a program started from the dock or the launcher prints goes to the
+  journal, so one that fails to start leaves a trace (`journalctl -t name`).
+
+### Known limits
+
+- Flatpak runtimes are large and the live USB keeps changes in RAM: install
+  Sengi OS to the disk before installing big apps.
+- Secure Boot has to be off.
+- The Store opens a second window if started twice.
+- Dual boot has been tested with a stand-in for Windows, not a real Windows
+  disk, and only on UEFI.
 
 ## 0.8.0
 
