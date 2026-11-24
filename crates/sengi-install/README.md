@@ -6,8 +6,8 @@ each step as a line on standard output. The installer's window,
 [sengi-installer](../sengi-installer/README.md), starts it as root.
 
 **It erases the disk the plan names**, or, when the plan says `beside`, adds one
-partition in free space of it and changes nothing else. It is meant to run in
-the live session.
+partition in free space of it, adds a Sengi OS folder to its EFI system partition and a
+boot entry to the firmware, and changes nothing else. It is meant to run in the live session.
 
     sengi-install start                 install in a service of its own, as root
     sengi-install run [--plan FILE]     install here and now, as root
@@ -112,6 +112,11 @@ What is held to, in code (`beside.rs`), with the test that proves each:
 | Only the new partition is added to the kernel (`partx --add --nr N`, never a re-read of the whole table), and what the kernel then shows must be the old partitions and the new one. Else stop before any format. | `the_kernels_view_has_the_old_partitions_and_the_new_one`, `a_kernel_that_does_not_show_the_new_partition_stops_everything_before_a_format` |
 | Every command is checked before it runs: `mkfs.ext4` may name only the new partition; no other formatter, `wipefs`, `dd`, `sgdisk`, `parted`, `fdisk` at all; nothing but looking at or mounting the old partitions (the EFI system partition may be mounted); no `grub-install` for BIOS, none with `--removable`, none naming a disk. | `nothing_that_writes_may_name_anything_but_the_new_partition`, `beside_another_system_one_partition_is_made_and_nothing_else_is_written` |
 | The disk is held (`O_EXCL`) while the table is written, as in a whole-disk install, so a disk or partition that is mounted, swap or part of another volume is refused. | the whole-disk tests of the hold |
+| Before the format: the disk is the one that was chosen (serial, WWN, size, model), the table is the one that was written, and the node holds the partition that was made, by the identifier chosen for it (`blkid PARTUUID`); the EFI system partition's identifier is the one it had. Else nothing is formatted. | `a_partition_that_is_not_the_one_made_is_not_formatted`, `a_disk_that_is_not_the_one_chosen_any_more_is_not_formatted`, `a_table_that_changed_after_it_was_written_is_not_formatted_on` |
+| Sector 0 is a plain protective MBR, and is the same after the write; names and attributes of the old partitions are the same after the write; `sfdisk -d` may say nothing besides the table. | `only_a_plain_protective_mbr_is_written_beside`, `a_hybrid_mbr_or_a_changed_sector_zero_stops_everything`, `names_and_attributes_are_read_and_a_change_in_them_is_seen`, `a_warning_from_sfdisk_about_the_table_stops_everything` |
+| Secure Boot on stops it; a whole-disk install only warns. | `secure_boot_stops_beside_and_only_warns_for_a_whole_disk` |
+| `blockdev` is not run at all; `partx` only as `--add --nr N DISK`; `efibootmgr` only to list, to make our entry, to put it first, or to delete an entry that starts our loader from this EFI system partition. | `nothing_that_writes_may_name_anything_but_the_new_partition`, `only_the_entry_of_ours_on_this_partition_is_replaced` |
+| A failure after the boot loader went on takes the firmware entry and the folder it made out again. | `a_failure_after_the_boot_loader_went_on_takes_it_out_again` |
 
 `scripts/install-test.sh` with `SENGI_INSTALL_MODE=beside` proves the same on a real
 installation, read from outside the guest: see the top of that script.
@@ -267,6 +272,43 @@ system. No test touches a block device.
 A plan may carry a `[source]` section naming another tree to copy and
 allowing a loop device as the target. That is for trying the program
 against a file; the window never writes it.
+
+## Known limits beside another system
+
+- Only tried on virtual disks, with stand-ins for the other system's files. Not tried
+  on a real Windows disk, on real firmware, on a 4Kn disk, or on a BIOS machine (where it
+  is not offered).
+- Not offered with Secure Boot on (the GRUB put on the EFI system partition is not
+  signed), with a hybrid MBR, with more than one EFI system partition on the disk, or
+  where sfdisk says anything about the table besides the table (a backup copy not at the
+  end of a disk that was made larger, for one).
+- A failure after the new partition was made leaves it there. The installer does not
+  delete partitions: it says what exists, and how to remove it by hand
+  (`sudo sfdisk --delete DISK NUMBER`). What the boot loader step put on the EFI system
+  partition (the `EFI/sengios` folder, if it was not there before) and in the firmware (the
+  entry it made) it does take out again, and says so.
+- Before anything is formatted, the disk is identified again (serial, WWN, size, model),
+  the table is read again and compared with what was written, and the new partition must
+  have the identifier that was chosen for it before it was written (`blkid PARTUUID`), so a
+  name that moved to another disk cannot be formatted. The disk cannot be held
+  (`O_EXCL`) through the format: the kernel refuses to open a partition of a disk that is
+  held.
+- Sector 0 is read before and after, and must be a plain protective MBR; partition names
+  and attributes (Windows marks its recovery partition with them) are compared before and
+  after the write.
+- os-prober runs once, at the install, and again at every kernel update (update-grub).
+  It mounts other systems' partitions with GRUB's own read-only driver (`grub-mount`),
+  which replays no journal and writes nothing; the install test puts an ext4 volume that
+  needs recovery and an NTFS-like volume with a hibernation signature beside the new
+  partition and checks them byte for byte afterwards. Not tried with a real hibernated
+  Windows.
+- Debian's grub-efi and grub-pc packages, whose upgrades run grub-install themselves, are
+  not in the image (the install test checks that none is installed), so an upgrade cannot
+  write to EFI/BOOT or to another system's folder; only update-grub runs, which rewrites
+  `grub.cfg` on the Sengi OS partition.
+- The firmware entries of the other system are not touched. Only an entry named "Sengi OS"
+  that starts `\EFI\sengios\grubx64.efi` from this disk's own EFI system partition is ever
+  replaced; one from a Sengi OS on another disk is left alone.
 
 ## Not done here
 

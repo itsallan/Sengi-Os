@@ -212,6 +212,10 @@ pub trait System {
     /// The partitions of a disk as the kernel has them now: number,
     /// first sector and length, in sectors of 512 bytes.
     fn partitions(&mut self, device: &str) -> Vec<(u32, u64, u64)>;
+    /// Whether UEFI Secure Boot is on.
+    fn secure_boot(&mut self) -> bool;
+    /// Sector 0 of a disk, as root reads it.
+    fn read_sector0(&mut self, device: &str) -> Result<Vec<u8>, String>;
     fn log(&mut self, line: &str);
 }
 
@@ -246,6 +250,21 @@ struct Installer<'a> {
     /// written, and the new partition once there is one.
     before: Option<Table>,
     made: bool,
+    /// The identifier chosen for the new partition before it is written,
+    /// by which it is known again before anything is formatted on it.
+    new_uuid: String,
+    /// The table as it was after the new partition was written.
+    after: Option<Table>,
+    /// Sector 0 of the disk, as it was before anything was written.
+    sector0: Option<Vec<u8>>,
+    /// What was put on the EFI system partition and in the firmware, so
+    /// that a failure can take it out again: whether the folder was made
+    /// by this installation, and the firmware entry it made.
+    made_dir: bool,
+    new_bootnum: Option<String>,
+    /// Firmware entries of ours that were there before and may be
+    /// replaced: those that start the loader on this EFI system partition.
+    deletable: Vec<String>,
 }
 
 /// How much of the file system at `path` is in use, in bytes.
@@ -387,13 +406,30 @@ impl Installer<'_> {
             &beside::nodes(&self.plan.device, before),
             &self.part(self.esp_number),
             new.as_deref(),
+            &self.deletable,
         )
     }
 
     /// The table of the disk as root reads it now.
     fn read_table(&mut self) -> Result<Table, String> {
         let device = self.plan.device.clone();
-        let dump = self.run(&["sfdisk", "-d", &device])?;
+        let command = Command::new(&["sfdisk", "-d", &device]);
+        self.guard(&command.argv)?;
+        let output = self.sys.run(&command, &mut || {})?;
+        // Anything sfdisk says besides the table is a warning about the
+        // table (a backup copy not at the end of a disk that was made
+        // larger, a mismatched protective MBR): not a table to write to.
+        let warning = output
+            .stderr
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .map(|line| line.trim().to_string());
+        let dump = Self::judge(&command, output)?;
+        if let Some(warning) = warning {
+            return Err(format!(
+                "sfdisk reports a problem with the partition table of {device}: {warning}"
+            ));
+        }
         Table::parse_dump(&dump)
     }
 
@@ -433,6 +469,12 @@ impl Installer<'_> {
             if !self.sys.uefi() {
                 return Err(
                     "installing beside another system needs UEFI, and this computer did not start with it"
+                        .to_string(),
+                );
+            }
+            if self.sys.secure_boot() {
+                return Err(
+                    "Secure Boot is on: turn it off in the firmware settings first, since the boot loader put on the EFI system partition is not signed"
                         .to_string(),
                 );
             }
@@ -524,8 +566,15 @@ impl Installer<'_> {
     /// the one the person was shown; the EFI system partition has to be a
     /// FAT volume with room for GRUB.
     fn check_beside(&mut self, beside: &beside::Beside) -> Result<(), String> {
+        // The reads here (the table, the type of the EFI system partition)
+        // change nothing and are not held to the rules of the commands
+        // that write.
         let table = self.read_table()?;
         beside::check_before(&table, beside)?;
+        let device = self.plan.device.clone();
+        let sector0 = self.sys.read_sector0(&device)?;
+        beside::mbr_is_plain(&sector0)?;
+        self.sector0 = Some(sector0);
         self.esp_number = beside.esp;
         // The guard knows the old partitions from here on.
         self.before = Some(table);
@@ -636,7 +685,19 @@ impl Installer<'_> {
         // anything on the disk between the look and the write.
         let before = self.read_table()?;
         beside::check_before(&before, &beside)?;
-        let input = beside::append_input(&before, &region);
+        if self.before.as_ref() != Some(&before) {
+            return Err(
+                "the partition table of the disk changed between the check and the write; nothing was written"
+                    .to_string(),
+            );
+        }
+        if self.sys.read_sector0(&device)?.as_slice() != self.sector0.as_deref().unwrap_or_default()
+        {
+            return Err("sector 0 of the disk changed; nothing was written".to_string());
+        }
+        let id = self.sys.random_id()?;
+        self.new_uuid = beside::make_uuid(&id).ok_or("no identifier could be made")?;
+        let input = beside::append_input(&before, &region, &self.new_uuid);
         let written = self.run_command(&Command {
             argv: [
                 "sfdisk",
@@ -659,9 +720,15 @@ impl Installer<'_> {
         written?;
 
         let after = self.read_table()?;
-        let new = beside::check_after(&before, &after, &beside)?;
+        let uuid = self.new_uuid.clone();
+        let new = beside::check_after(&before, &after, &beside, &uuid)?;
+        if self.sys.read_sector0(&device)?.as_slice() != self.sector0.as_deref().unwrap_or_default()
+        {
+            return Err("sector 0 of the disk changed when the table was written".to_string());
+        }
         self.root_number = new;
         self.made = true;
+        self.tell(Event::Made(new));
         // Only the new partition is added to the kernel; the old ones are
         // not read again, so nothing that is using them is disturbed.
         let number = new.to_string();
@@ -682,7 +749,65 @@ impl Installer<'_> {
         beside::check_kernel(&before, &seen, &region, new).map_err(|why| {
             format!("the kernel does not show the table that was written to {device}: {why}")
         })?;
-        self.before = Some(before);
+        self.after = Some(after);
+        Ok(())
+    }
+
+    /// Beside another system, just before anything is formatted: the
+    /// disk is still the one that was chosen, the table is still the one
+    /// that was written, and the node about to be formatted holds the
+    /// partition that was made, by the identifier chosen for it, and the
+    /// EFI system partition the one that was there. The disk cannot be
+    /// held now, since the new partition is about to be opened for
+    /// formatting; names can move when a disk is plugged in or out, which
+    /// is what this is for.
+    fn verify_before_format(&mut self) -> Result<(), String> {
+        let device = self.plan.device.clone();
+        let plan = self.plan;
+        let disks = self.sys.disks(plan.allow_loop);
+        let same = disks
+            .iter()
+            .find(|disk| disk.path == device)
+            .is_some_and(|disk| {
+                disk.size == plan.size
+                    && disk.model == plan.model
+                    && disk.serial == plan.serial
+                    && disk.wwn == plan.wwn
+            });
+        if !same {
+            return Err(format!(
+                "{device} is no longer the disk that was chosen; nothing was formatted"
+            ));
+        }
+        let now = self.read_table()?;
+        let (Some(after), Some(before)) = (self.after.clone(), self.before.clone()) else {
+            return Err("the partition table was not checked".to_string());
+        };
+        if now != after {
+            return Err(
+                "the partition table of the disk is not the one that was written; nothing was formatted"
+                    .to_string(),
+            );
+        }
+        let root = self.part(self.root_number);
+        let found = self.run(&["blkid", "-s", "PARTUUID", "-o", "value", &root])?;
+        if !found.trim().eq_ignore_ascii_case(&self.new_uuid) {
+            return Err(format!(
+                "{root} is not the partition that was made (its identifier is \u{201c}{}\u{201d}); nothing was formatted",
+                found.trim()
+            ));
+        }
+        let esp = self.part(self.esp_number);
+        let found = self.run(&["blkid", "-s", "PARTUUID", "-o", "value", &esp])?;
+        let was = before
+            .entry(self.esp_number)
+            .map(|entry| entry.uuid.clone())
+            .unwrap_or_default();
+        if found.trim().to_ascii_lowercase() != was {
+            return Err(format!(
+                "{esp} is not the EFI system partition that was there; nothing was formatted"
+            ));
+        }
         Ok(())
     }
 
@@ -712,6 +837,8 @@ impl Installer<'_> {
                 .is_some_and(|before| before.entry(self.root_number).is_some())
         {
             return Err("the partition to format is not one that was just made".to_string());
+        } else {
+            self.verify_before_format()?;
         }
         self.run(&["mkfs.ext4", "-q", "-F", "-L", "sengi-os", &root])?;
         self.run(&["udevadm", "settle", "--timeout=30"])?;
@@ -1002,6 +1129,19 @@ impl Installer<'_> {
     /// first. No BIOS boot sector and no file at the fallback path: those
     /// are somebody else's. The menu then lists what os-prober found.
     fn boot_loader_beside(&mut self) -> Result<(), String> {
+        self.made_dir = !self.at("boot/efi/EFI/sengios").exists();
+        let result = self.boot_loader_beside_steps();
+        if let Err(why) = result {
+            // What this installation put on the EFI system partition and
+            // in the firmware is taken out again, so that the other
+            // system is left as it was. The new partition stays.
+            let notes = self.rollback_boot();
+            return Err(format!("{why}{notes}"));
+        }
+        Ok(())
+    }
+
+    fn boot_loader_beside_steps(&mut self) -> Result<(), String> {
         self.inside(&[
             "grub-install",
             "--target=x86_64-efi",
@@ -1014,10 +1154,17 @@ impl Installer<'_> {
         if !self.at("boot/efi/EFI/sengios/grubx64.efi").is_file() {
             return Err("grub-install left no /boot/efi/EFI/sengios/grubx64.efi".to_string());
         }
+        // Without the fallback path the firmware's entry is the only way
+        // in, so here it is not allowed to fail. Made first, while the EFI
+        // system partition is mounted, so that a failure can still take
+        // the folder out again.
+        self.firmware_entry()
+            .map_err(|why| format!("the firmware did not take a boot entry for Sengi OS: {why}"))?;
         // os-prober looks for a mounted partition at the place it is
         // mounted, which is not a place inside this chroot. Unmounted, it
         // mounts the EFI system partition itself, read-only, and finds
-        // the other system's boot manager on it.
+        // the other system's boot manager on it. (It mounts with GRUB's own
+        // read-only driver, which replays no journal and writes nothing.)
         let efi = self.at("boot/efi").to_string_lossy().into_owned();
         self.run(&["umount", &efi])?;
         // The stick Sengi OS is running from is not another system: its
@@ -1041,11 +1188,55 @@ impl Installer<'_> {
                     .to_string(),
             );
         }
-        self.check_menu(&menu)?;
-        // Without the fallback path the firmware's entry is the only way
-        // in, so here it is not allowed to fail.
-        self.firmware_entry()
-            .map_err(|why| format!("the firmware did not take a boot entry for Sengi OS: {why}"))
+        self.check_menu(&menu)
+    }
+
+    /// Take out again what the boot loader step put on the EFI system
+    /// partition and in the firmware: the firmware entry it made and the
+    /// folder, if the folder was not there before. Says what was done.
+    fn rollback_boot(&mut self) -> String {
+        let mut done = Vec::new();
+        if let Some(number) = self.new_bootnum.clone() {
+            match self.run(&[
+                "efibootmgr",
+                "--quiet",
+                "--bootnum",
+                &number,
+                "--delete-bootnum",
+            ]) {
+                Ok(_) => done.push("the boot entry it made was removed from the firmware"),
+                Err(why) => self
+                    .sys
+                    .log(&format!("could not remove boot entry {number}: {why}")),
+            }
+        }
+        if self.made_dir {
+            let efi = self.at("boot/efi");
+            if !efi.join("EFI").is_dir() {
+                let esp = self.part(self.esp_number);
+                let place = efi.to_string_lossy().into_owned();
+                let _ = fs::create_dir_all(&efi);
+                let _ = self.run(&["mount", "-t", "vfat", "-o", "umask=0077", &esp, &place]);
+            }
+            let folder = efi.join("EFI/sengios");
+            if folder.is_dir() {
+                match fs::remove_dir_all(&folder) {
+                    Ok(()) => done
+                        .push("its folder EFI/sengios was removed from the EFI system partition"),
+                    Err(error) => self
+                        .sys
+                        .log(&format!("could not remove {}: {error}", folder.display())),
+                }
+            }
+        }
+        if done.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ". As far as it could, the installer took its changes back: {}",
+                done.join(", and ")
+            )
+        }
     }
 
     /// `identifier@device` for each file system, as GRUB reads them, of what is on the
@@ -1117,6 +1308,12 @@ impl Installer<'_> {
                 return Err(format!("grub-install left no /{file}"));
             }
         }
+        if self.sys.uefi() && self.sys.secure_boot() {
+            self.warn(
+                "Secure Boot is on, and the boot loader is not signed: the computer may not start Sengi OS until Secure Boot is turned off in the firmware settings."
+                    .to_string(),
+            );
+        }
         if self.sys.uefi() {
             if let Err(why) = self.firmware_entry() {
                 self.warn(format!(
@@ -1131,15 +1328,44 @@ impl Installer<'_> {
     /// installation told it. The disk starts without this, from the
     /// fallback path, so a firmware that refuses is not a failure.
     fn firmware_entry(&mut self) -> Result<(), String> {
-        let listing = self.run(&["efibootmgr"])?;
-        for entry in edit::boot_entries(&listing, edit::EFI_LABEL) {
-            self.run(&[
-                "efibootmgr",
-                "--quiet",
-                "--bootnum",
-                &entry,
-                "--delete-bootnum",
-            ])?;
+        let beside = self.plan.mode == Mode::Beside;
+        let listing = if beside {
+            self.run(&["efibootmgr", "-v"])?
+        } else {
+            self.run(&["efibootmgr"])?
+        };
+        let had = edit::boot_entries(&listing, edit::EFI_LABEL);
+        if beside {
+            // Only what starts our own loader from this EFI system
+            // partition is replaced; an entry of the same name that
+            // belongs to a Sengi OS on another disk is left alone.
+            let esp_id = self
+                .before
+                .as_ref()
+                .and_then(|before| before.entry(self.esp_number))
+                .map(|entry| entry.uuid.clone())
+                .unwrap_or_default();
+            let loader = format!("\\EFI\\{}\\grubx64.efi", edit::EFI_ID);
+            self.deletable = edit::boot_entries_at(&listing, edit::EFI_LABEL, &esp_id, &loader);
+            for entry in self.deletable.clone() {
+                self.run(&[
+                    "efibootmgr",
+                    "--quiet",
+                    "--bootnum",
+                    &entry,
+                    "--delete-bootnum",
+                ])?;
+            }
+        } else {
+            for entry in &had {
+                self.run(&[
+                    "efibootmgr",
+                    "--quiet",
+                    "--bootnum",
+                    entry,
+                    "--delete-bootnum",
+                ])?;
+            }
         }
         let device = self.plan.device.clone();
         let part = self.esp_number.to_string();
@@ -1157,26 +1383,32 @@ impl Installer<'_> {
             "--loader",
             &loader,
         ])?;
-        if self.plan.mode == Mode::Beside {
-            self.entry_first()?;
+        if beside {
+            self.entry_first(&had)?;
         }
         Ok(())
     }
 
     /// The new entry is tried first, and the ones that were there stay,
     /// after it, in the order they were in: Windows still starts.
-    fn entry_first(&mut self) -> Result<(), String> {
+    fn entry_first(&mut self, had: &[String]) -> Result<(), String> {
         let listing = self.run(&["efibootmgr"])?;
-        let ours = edit::boot_entries(&listing, edit::EFI_LABEL);
-        let Some(first) = ours.first() else {
+        // The entry that was just made is the one that was not there.
+        let made: Vec<String> = edit::boot_entries(&listing, edit::EFI_LABEL)
+            .into_iter()
+            .filter(|entry| !had.contains(entry) || self.deletable.contains(entry))
+            .collect();
+        let Some(first) = made.last().cloned() else {
             return Err("the firmware does not list the new entry".to_string());
         };
+        self.new_bootnum = Some(first.clone());
+        self.deletable.push(first.clone());
         let order = edit::boot_order(&listing);
-        if order.first() == Some(first) {
+        if order.first() == Some(&first) {
             return Ok(());
         }
         let mut new_order = vec![first.clone()];
-        new_order.extend(order.into_iter().filter(|entry| entry != first));
+        new_order.extend(order.into_iter().filter(|entry| *entry != first));
         let joined = new_order.join(",");
         self.run(&["efibootmgr", "--quiet", "--bootorder", &joined])?;
         Ok(())
@@ -1262,6 +1494,12 @@ pub fn install(
         root_number: edit::ROOT_PART,
         before: None,
         made: false,
+        new_uuid: String::new(),
+        after: None,
+        sector0: None,
+        made_dir: false,
+        new_bootnum: None,
+        deletable: Vec::new(),
     };
     installer.tell(Event::Log(paths.log.to_string_lossy().into_owned()));
     installer.tell(Event::Disk(plan.device.clone()));
@@ -1349,6 +1587,21 @@ mod tests {
         created: &'static str,
         /// The EFI system partition is not a FAT volume.
         esp_type: &'static str,
+        secure_boot: bool,
+        /// The disk has another serial number once the kernel knows the
+        /// new partition.
+        disk_changes: bool,
+        sector0: Vec<u8>,
+        /// Sector 0 is not what it was after the new partition is written.
+        tamper_mbr: bool,
+        appended: bool,
+        /// The new partition's node holds another partition's identifier.
+        wrong_partuuid: bool,
+        /// What `sfdisk -d` says besides the table.
+        dump_warning: &'static str,
+        /// The partitions the disk is said to have changed under the
+        /// installation: the table read just before the format.
+        late_dump: Option<String>,
         stops_at: Option<&'static str>,
         stopped: bool,
         /// What was asked for after the signal and not run.
@@ -1420,10 +1673,17 @@ mod tests {
                 _ => command.argv.iter().map(String::as_str).collect(),
             };
             let mut stdout = String::new();
+            let mut stderr = String::new();
             match inner[0] {
                 "du" => stdout = "1500000\t/source\n".to_string(),
                 "sfdisk" if inner.contains(&"-d") => {
                     stdout = self.dump.clone().unwrap_or_default();
+                    if self.commands.iter().any(|c| c.starts_with("partx")) {
+                        if let Some(late) = &self.late_dump {
+                            stdout = late.clone();
+                        }
+                    }
+                    stderr = self.dump_warning.to_string();
                 }
                 "sfdisk" if inner.contains(&"--append") => {
                     let Input::Text(text) = &command.input else {
@@ -1433,10 +1693,8 @@ mod tests {
                     let table = crate::beside::Table::parse_dump(&dump).unwrap();
                     let number = (1..).find(|n| table.entry(*n).is_none()).unwrap();
                     let line = format!("/dev/sda{number} : {}\n", text.trim_end());
-                    let mut dump = format!(
-                        "{dump}{}",
-                        line.replace("name=\"Sengi OS\"", "uuid=AAAA-BBBB, name=\"Sengi OS\"")
-                    );
+                    self.appended = true;
+                    let mut dump = format!("{dump}{line}");
                     if self.tamper {
                         dump = dump.replacen("size=      204800", "size=      204799", 1);
                     }
@@ -1444,6 +1702,27 @@ mod tests {
                 }
                 "grub-probe" => stdout = "0000000000000000\n".to_string(),
                 "partx" if !self.stale_table => self.kernel_dump = self.dump.clone(),
+                "blkid" if inner.contains(&"PARTUUID") => {
+                    let node = inner.last().unwrap();
+                    let number: u32 = node
+                        .chars()
+                        .rev()
+                        .take_while(char::is_ascii_digit)
+                        .collect::<String>()
+                        .chars()
+                        .rev()
+                        .collect::<String>()
+                        .parse()
+                        .unwrap();
+                    let table =
+                        crate::beside::Table::parse_dump(self.dump.as_ref().unwrap()).unwrap();
+                    let uuid = table.entry(number).map(|entry| entry.uuid.clone());
+                    stdout = if self.wrong_partuuid && number >= 3 {
+                        "ffffffff-ffff-4fff-8fff-ffffffffffff\n".to_string()
+                    } else {
+                        format!("{}\n", uuid.unwrap_or_default())
+                    };
+                }
                 "blkid" if inner.contains(&"TYPE") => {
                     stdout = format!("{}\n", self.esp_type);
                 }
@@ -1511,18 +1790,24 @@ mod tests {
                     );
                 }
                 "efibootmgr" if inner.contains(&"--create") => self.firmware = self.created,
-                "efibootmgr" if inner.len() == 1 => stdout = self.firmware.to_string(),
+                "efibootmgr" if inner.len() == 1 || inner.contains(&"-v") => {
+                    stdout = self.firmware.to_string()
+                }
                 _ => {}
             }
             Ok(Output {
                 code: Some(0),
                 stdout,
-                stderr: String::new(),
+                stderr,
             })
         }
 
         fn disks(&mut self, _allow_loop: bool) -> Vec<Disk> {
-            self.disks.clone()
+            let mut disks = self.disks.clone();
+            if self.disk_changes && self.commands.iter().any(|c| c.starts_with("partx")) {
+                disks[0].serial = "another disk".to_string();
+            }
+            disks
         }
 
         fn has_program(&mut self, name: &str) -> bool {
@@ -1591,6 +1876,18 @@ mod tests {
                 (2, 4096, 1_048_576),
                 (3, 1_052_672, sectors - 1_052_672 - 2048),
             ]
+        }
+
+        fn secure_boot(&mut self) -> bool {
+            self.secure_boot
+        }
+
+        fn read_sector0(&mut self, _device: &str) -> Result<Vec<u8>, String> {
+            let mut sector = self.sector0.clone();
+            if self.tamper_mbr && self.appended {
+                sector[446 + 20] = 0x83;
+            }
+            Ok(sector)
         }
 
         fn log(&mut self, line: &str) {
@@ -1709,6 +2006,21 @@ mod tests {
             other_system: false,
             created: "",
             esp_type: "vfat",
+            secure_boot: false,
+            disk_changes: false,
+            sector0: {
+                let mut sector = vec![0u8; 512];
+                sector[446 + 4] = 0xee;
+                sector[446 + 8] = 1;
+                sector[510] = 0x55;
+                sector[511] = 0xaa;
+                sector
+            },
+            tamper_mbr: false,
+            appended: false,
+            wrong_partuuid: false,
+            dump_warning: "",
+            late_dump: None,
             stopped: false,
             refused: Vec::new(),
         };
@@ -2367,7 +2679,7 @@ mod tests {
         assert_eq!(
             script,
             format!(
-                "start={}, size={}, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=\"Sengi OS\"\n",
+                "start={}, size={}, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, uuid=01234567-89AB-4DEF-8123-456789ABCDEF, name=\"Sengi OS\"\n",
                 region.start, region.sectors
             )
         );
@@ -2624,5 +2936,172 @@ mod tests {
             "mount -t vfat -o ro,noexec,nosuid,nodev /dev/sda1 {target}"
         )));
         assert!(free_bytes(Path::new("/")).is_some());
+    }
+    #[test]
+    fn a_partition_that_is_not_the_one_made_is_not_formatted() {
+        // The name moved to another disk's partition: it has another
+        // identifier, and mkfs must not run.
+        let mut world = world_beside();
+        world.fake.wrong_partuuid = true;
+        let (result, _) = run(&mut world);
+        let (step, why) = result.unwrap_err();
+        assert_eq!(step, "format");
+        assert!(why.contains("not the partition that was made"), "{why}");
+        assert!(!world.fake.ran("mkfs"));
+        assert!(world.fake.mounted.is_empty());
+    }
+
+    #[test]
+    fn a_disk_that_is_not_the_one_chosen_any_more_is_not_formatted() {
+        let mut world = world_beside();
+        world.fake.disk_changes = true;
+        let (result, _) = run(&mut world);
+        let (step, why) = result.unwrap_err();
+        assert_eq!(step, "format");
+        assert!(why.contains("no longer the disk that was chosen"), "{why}");
+        assert!(!world.fake.ran("mkfs"));
+    }
+
+    #[test]
+    fn a_table_that_changed_after_it_was_written_is_not_formatted_on() {
+        let mut world = world_beside();
+        let region = beside_region();
+        // Somebody else\'s partition where ours was.
+        world.fake.late_dump = Some(format!(
+            "{BESIDE_DUMP}/dev/sda3 : start={}, size={}, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, uuid=CCCC-DDDD\n",
+            region.start, region.sectors
+        ));
+        let (result, _) = run(&mut world);
+        let (step, why) = result.unwrap_err();
+        assert_eq!(step, "format");
+        assert!(why.contains("not the one that was written"), "{why}");
+        assert!(!world.fake.ran("mkfs"));
+    }
+
+    #[test]
+    fn the_new_partition_is_said_when_it_exists() {
+        let mut world = world_beside();
+        let (result, events) = run(&mut world);
+        assert!(result.is_ok());
+        assert!(events.contains(&Event::Beside));
+        assert!(events.contains(&Event::Made(3)));
+        // Said once the table is written and not before.
+        let made = events.iter().position(|e| *e == Event::Made(3)).unwrap();
+        let begun = events
+            .iter()
+            .position(|e| *e == Event::Begin("partition".to_string()))
+            .unwrap();
+        assert!(begun < made);
+    }
+
+    #[test]
+    fn secure_boot_stops_beside_and_only_warns_for_a_whole_disk() {
+        let mut beside = world_beside();
+        beside.fake.secure_boot = true;
+        let (result, _) = run(&mut beside);
+        let (step, why) = result.unwrap_err();
+        assert_eq!(step, "check");
+        assert!(why.contains("Secure Boot is on: turn it off"), "{why}");
+        untouched(&beside);
+        let mut world = world();
+        world.fake.uefi = true;
+        world.fake.secure_boot = true;
+        let (result, events) = run(&mut world);
+        assert!(result.is_ok());
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, Event::Warning(text) if text.contains("Secure Boot is on"))));
+    }
+
+    #[test]
+    fn a_warning_from_sfdisk_about_the_table_stops_everything() {
+        let mut world = world_beside();
+        world.fake.dump_warning =
+            "GPT PMBR size mismatch (4194303 != 8388607) will be corrected by write.\n";
+        let (result, _) = run(&mut world);
+        let (step, why) = result.unwrap_err();
+        assert_eq!(step, "check");
+        assert!(why.contains("PMBR size mismatch"), "{why}");
+        untouched(&world);
+    }
+
+    #[test]
+    fn a_hybrid_mbr_or_a_changed_sector_zero_stops_everything() {
+        let mut world = world_beside();
+        world.fake.sector0[446 + 16 + 4] = 0x07;
+        world.fake.sector0[446 + 16 + 8] = 9;
+        let (result, _) = run(&mut world);
+        let (step, why) = result.unwrap_err();
+        assert_eq!(step, "check");
+        assert!(why.contains("hybrid MBR"), "{why}");
+        untouched(&world);
+        // Written, and sector 0 is not as it was: nothing is formatted.
+        let mut world = world_beside();
+        world.fake.tamper_mbr = true;
+        let (result, _) = run(&mut world);
+        let (step, why) = result.unwrap_err();
+        assert_eq!(step, "partition");
+        assert!(why.contains("sector 0"), "{why}");
+        assert!(!world.fake.ran("partx"));
+        assert!(!world.fake.ran("mkfs"));
+    }
+
+    #[test]
+    fn only_the_entry_of_ours_on_this_partition_is_replaced() {
+        let mut world = world_beside();
+        let esp = "62516844-55d2-4917-a468-c8a0fbb8b6cd";
+        let other = "11111111-2222-4333-8444-555555555555";
+        let entry = |number: &str, name: &str, id: &str, path: &str| {
+            format!("Boot{number}* {name}\tHD(1,GPT,{id},0x800,0x32000)/File({path})\n")
+        };
+        let windows = entry(
+            "0000",
+            "Windows Boot Manager",
+            esp,
+            "\\EFI\\Microsoft\\Boot\\bootmgfw.efi",
+        );
+        let ours = entry("0005", "Sengi OS", esp, "\\EFI\\sengios\\grubx64.efi");
+        let elsewhere = entry("0006", "Sengi OS", other, "\\EFI\\sengios\\grubx64.efi");
+        world.fake.firmware = Box::leak(
+            format!("BootOrder: 0006,0005,0000\n{windows}{ours}{elsewhere}").into_boxed_str(),
+        );
+        world.fake.created = Box::leak(
+            format!("BootOrder: 0005,0006,0000\n{windows}{ours}{elsewhere}").into_boxed_str(),
+        );
+        let (result, _) = run(&mut world);
+        assert!(result.is_ok(), "{result:?}");
+        let fake = &world.fake;
+        assert!(fake.ran("efibootmgr --quiet --bootnum 0005 --delete-bootnum"));
+        assert!(!fake.ran("efibootmgr --quiet --bootnum 0006"));
+        assert!(!fake.ran("efibootmgr --quiet --bootnum 0000"));
+    }
+
+    #[test]
+    fn a_failure_after_the_boot_loader_went_on_takes_it_out_again() {
+        // The order cannot be set: the entry and the folder that were
+        // made are taken out, and the person is told.
+        let mut world = world_beside();
+        world.fake.created = "BootOrder: 0000,0001\nBoot0000* Windows Boot Manager\tHD(1,GPT,x)\nBoot0001* Sengi OS\tHD(1,GPT,x)\n";
+        world.fake.fails = Some("efibootmgr --quiet --bootorder");
+        let (result, _) = run(&mut world);
+        let (step, why) = result.unwrap_err();
+        assert_eq!(step, "boot-loader");
+        assert!(why.contains("took its changes back"), "{why}");
+        assert!(why.contains("boot entry it made was removed"), "{why}");
+        assert!(why.contains("EFI/sengios was removed"), "{why}");
+        assert!(world
+            .fake
+            .ran("efibootmgr --quiet --bootnum 0001 --delete-bootnum"));
+        assert!(!world.target.exists("boot/efi/EFI/sengios"));
+        assert!(world.fake.mounted.is_empty());
+        // And a folder that was there before is not removed.
+        let mut world = world_beside();
+        world
+            .target
+            .write("boot/efi/EFI/sengios/old.txt", "an earlier install");
+        world.fake.fails = Some("efibootmgr --quiet --create");
+        let (result, _) = run(&mut world);
+        assert!(result.is_err());
+        assert!(world.target.exists("boot/efi/EFI/sengios/old.txt"));
     }
 }

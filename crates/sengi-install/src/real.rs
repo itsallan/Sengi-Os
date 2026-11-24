@@ -290,6 +290,19 @@ impl System for Real {
         partitions_in(&Path::new("/sys/class/block").join(name))
     }
 
+    fn secure_boot(&mut self) -> bool {
+        crate::beside::firmware_now().secure_boot
+    }
+
+    fn read_sector0(&mut self, device: &str) -> Result<Vec<u8>, String> {
+        use std::io::Read;
+        let mut sector = vec![0u8; 512];
+        fs::File::open(device)
+            .and_then(|mut file| file.read_exact(&mut sector))
+            .map_err(|error| format!("sector 0 of {device} could not be read: {error}"))?;
+        Ok(sector)
+    }
+
     fn log(&mut self, line: &str) {
         if let Some(log) = &mut self.log {
             let _ = writeln!(log, "[{:7.1}] {line}", self.started.elapsed().as_secs_f32());

@@ -385,7 +385,7 @@ fn list_disks() -> ExitCode {
             Some(refusal) => println!("    Not offered: {}", refusal.words()),
             None => {
                 println!("    Can be installed on");
-                let uefi = Path::new("/sys/firmware/efi").is_dir();
+                let uefi = beside::firmware_now();
                 match beside::offer(&disk, uefi) {
                     Ok(offer) => println!(
                         "    Can be installed beside what is on it, in {} of free space",

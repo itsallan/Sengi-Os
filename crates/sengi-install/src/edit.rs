@@ -107,6 +107,24 @@ pub fn grub_with_menu(text: &str) -> String {
         .replace("GRUB_TIMEOUT=1\n", "GRUB_TIMEOUT=3\n")
 }
 
+/// The entries `efibootmgr -v` lists under `label` that start `loader` from
+/// the partition with this partition identifier (GPT): ours, on this EFI
+/// system partition, and no other entry that happens to have the name.
+pub fn boot_entries_at(listing: &str, label: &str, partuuid: &str, loader: &str) -> Vec<String> {
+    let partuuid = partuuid.to_ascii_lowercase();
+    let loader = loader.to_ascii_lowercase();
+    listing
+        .lines()
+        .filter(|line| {
+            let line = line.to_ascii_lowercase();
+            !partuuid.is_empty()
+                && line.contains(&format!("gpt,{partuuid}"))
+                && line.contains(&loader)
+        })
+        .flat_map(|line| boot_entries(line, label))
+        .collect()
+}
+
 /// Whether GRUB's menu has an entry that os-prober found: something
 /// between the markers of its script.
 pub fn menu_has_other_systems(menu: &str) -> bool {
@@ -624,6 +642,21 @@ user = \"live\"
         assert!(!menu_has_other_systems(""));
         // An entry outside that script is not another system.
         assert!(!menu_has_other_systems("menuentry 'x' {\n}\n"));
+    }
+
+    #[test]
+    fn only_our_own_entry_on_this_partition_may_be_replaced() {
+        let listing = "BootOrder: 0006,0005,0000\nBoot0000* Windows Boot Manager\tHD(1,GPT,62516844-55d2-4917-a468-c8a0fbb8b6cd,0x800,0x32000)/File(\\EFI\\Microsoft\\Boot\\bootmgfw.efi)\nBoot0005* Sengi OS\tHD(1,GPT,62516844-55D2-4917-A468-C8A0FBB8B6CD,0x800,0x32000)/File(\\EFI\\sengios\\grubx64.efi)\nBoot0006* Sengi OS\tHD(1,GPT,11111111-2222-4333-8444-555555555555,0x800,0x32000)/File(\\EFI\\sengios\\grubx64.efi)\nBoot0007* Sengi OS\tHD(1,GPT,62516844-55d2-4917-a468-c8a0fbb8b6cd,0x800,0x32000)/File(\\EFI\\other\\grubx64.efi)\n";
+        let ours = boot_entries_at(
+            listing,
+            "Sengi OS",
+            "62516844-55d2-4917-a468-c8a0fbb8b6cd",
+            "\\EFI\\sengios\\grubx64.efi",
+        );
+        // Not Windows, not the one on another disk, not one that starts
+        // something else.
+        assert_eq!(ours, ["0005"]);
+        assert!(boot_entries_at(listing, "Sengi OS", "", "\\EFI\\sengios\\grubx64.efi").is_empty());
     }
 
     #[test]

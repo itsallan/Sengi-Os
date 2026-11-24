@@ -12,6 +12,7 @@
 //! log /var/log/sengi-install.log
 //! disk /dev/sda
 //! beside
+//! made 3
 //! ```
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +36,9 @@ pub enum Event {
     /// The installation adds a partition beside what is on the disk and
     /// does not erase it. Said right after the disk.
     Beside,
+    /// Beside another system: the new partition exists, and has this
+    /// number. Said as soon as it does.
+    Made(u32),
 }
 
 /// One line: what is said never breaks the framing.
@@ -54,6 +58,7 @@ impl Event {
             Event::Log(path) => format!("log {path}"),
             Event::Disk(path) => format!("disk {path}"),
             Event::Beside => "beside".to_string(),
+            Event::Made(number) => format!("made {number}"),
         }
     }
 
@@ -84,6 +89,11 @@ impl Event {
             }
             "log" if rest.starts_with('/') => Some(Event::Log(rest.to_string())),
             "beside" if rest.is_empty() => Some(Event::Beside),
+            "made" => rest
+                .parse()
+                .ok()
+                .filter(|n| *n > 0 && *n <= 128)
+                .map(Event::Made),
             "disk" if rest.starts_with("/dev/") && !rest.contains(char::is_whitespace) => {
                 Some(Event::Disk(rest.to_string()))
             }
@@ -113,6 +123,7 @@ mod tests {
             Event::Log("/var/log/sengi-install.log".to_string()),
             Event::Disk("/dev/nvme0n1".to_string()),
             Event::Beside,
+            Event::Made(3),
         ] {
             assert_eq!(
                 Event::parse(&event.line()),
@@ -151,6 +162,9 @@ mod tests {
             "disk sda",
             "disk /dev/sda and more",
             "beside it",
+            "made 0",
+            "made 129",
+            "made three",
             "warning",
             "failed",
             "begin ../../x",

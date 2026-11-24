@@ -156,6 +156,13 @@ for left in /usr/bin/sengi-install /usr/bin/sengi-installer /usr/share/applicati
 	[ ! -e "$left" ] || fail "$left is still there"
 done
 if grep -q sengi-installer /etc/xdg/sengi-os/dock.toml; then fail "the installer is still on the dock"; fi
+# Only grub-common, grub2-common and the -bin packages are here. The packages
+# that would run grub-install themselves when they are upgraded (and could
+# write to EFI/BOOT or an EFI system partition that belongs to another
+# system) are not, so the boot loader is only ever put there by the installer.
+for pkg in grub-efi-amd64 grub-efi-amd64-signed grub-pc shim-signed; do
+	if dpkg -s "$pkg" >/dev/null 2>&1; then fail "$pkg is installed: its upgrades would write to the EFI system partition"; fi
+done
 # The way in when the desktop does not start: an entry in GRUB's menu,
 # and the text login it switches on and no other start does.
 grep -q "sengi.text systemd.unit=multi-user.target" /boot/grub/grub.cfg ||
