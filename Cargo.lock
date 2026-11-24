@@ -3691,6 +3691,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sengi-store"
+version = "0.8.0"
+dependencies = [
+ "libc",
+ "sengi-apps",
+ "sengi-text",
+ "slint",
+ "slint-build",
+]
+
+[[package]]
 name = "sengi-system"
 version = "0.8.0"
 dependencies = [

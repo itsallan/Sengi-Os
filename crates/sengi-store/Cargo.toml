@@ -1,0 +1,24 @@
+[package]
+name = "sengi-store"
+description = "The Sengi OS app store: search Flathub by name and install"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+# An ordinary window, as Settings is: the workspace entry with what the
+# software renderer needs to find Inter and to draw the icons.
+slint = { workspace = true, features = ["software-renderer-systemfonts", "software-renderer-path"] }
+
+# The app icons are decoded by running this program again as a child; see
+# main. The same crate knows where the user's data directories are.
+sengi-apps = { path = "../sengi-apps", features = ["icons"] }
+sengi-text = { path = "../sengi-text" }
+
+# Killing the whole process group of a flatpak that has run out of time.
+libc = "0.2"
+
+[build-dependencies]
+slint-build.workspace = true

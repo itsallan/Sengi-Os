@@ -1,0 +1,296 @@
+// The store's window: a search field on top, the apps whose names match
+// under it, and one line at the bottom for what is going on. Built from
+// the shared components and Settings' kit; nothing here has a colour or a
+// size of its own.
+
+import { Tokens, SengiText, SengiLabel, SengiButton } from "components.slint";
+import { Scroll, TextField } from "kit.slint";
+import { NamedIcon } from "icons.slint";
+
+// What an app in the list is doing.
+export enum RowState { available, installing, installed, failed }
+
+export struct Row {
+    id: string,
+    name: string,
+    summary: string,
+    // The icon, if there is one; else a tile with the initial.
+    icon: image,
+    has-icon: bool,
+    letter: string,
+    state: RowState,
+}
+
+// What the window shows and what it reports. Rust fills the one and hears
+// the other.
+export global Store {
+    in property <[Row]> rows;
+    // Said in place of the list when it has nothing to show.
+    in property <string> hint;
+    // The line under the list.
+    in property <string> message;
+    in property <bool> message-is-error: false;
+    in-out property <int> current: 0;
+    callback search(string);
+    callback install(string);
+}
+
+// Work that cannot say how far it has got: a short bar going to and fro.
+component Busy inherits Rectangle {
+    private property <bool> over: false;
+
+    width: Tokens.space-xxl;
+    height: Tokens.space-xs;
+    border-radius: self.height / 2;
+    background: Tokens.color-surface-raised;
+    init => { root.over = true; }
+
+    Rectangle {
+        width: parent.width / 3;
+        x: root.over ? parent.width - self.width : 0;
+        border-radius: parent.border-radius;
+        background: Tokens.color-accent;
+        animate x {
+            duration: Tokens.motion-slow * 3;
+            easing: Tokens.motion-easing;
+            iteration-count: -1;
+            direction: alternate;
+        }
+    }
+}
+
+component AppTile inherits Rectangle {
+    in property <image> icon;
+    in property <bool> has-icon;
+    in property <string> letter;
+
+    width: Tokens.dock-icon;
+    height: Tokens.dock-icon;
+    border-radius: Tokens.radius;
+    background: root.has-icon ? transparent : Tokens.color-surface-raised;
+    border-width: root.has-icon ? 0 : Tokens.border-width;
+    border-color: Tokens.color-border;
+
+    if root.has-icon: Image {
+        width: parent.width;
+        height: parent.height;
+        source: root.icon;
+        image-fit: contain;
+    }
+
+    if !root.has-icon: SengiText {
+        text: root.letter;
+        font-size: Tokens.font-size-xl;
+        font-weight: Tokens.font-weight-bold;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+export component StoreWindow inherits Window {
+    title: "Store";
+    preferred-width: Tokens.settings-page-width + Tokens.space-xxl;
+    preferred-height: Tokens.settings-window-height;
+    min-width: Tokens.chooser-width;
+    min-height: Tokens.settings-window-min-height;
+    background: Tokens.color-bg;
+    default-font-family: Tokens.font-family;
+    default-font-size: Tokens.font-size-md;
+
+    private property <length> line: Tokens.dock-icon + Tokens.space-sm;
+    private property <int> hovered: -1;
+
+    // The renderer keeps two buffers and only one of them knows after a
+    // change of size or scale that it is new, so for a few frames the
+    // whole window is drawn, as Settings does.
+    private property <float> pixel: 1phx / 1px;
+    private property <int> sheet: 0;
+    private property <int> sheets-owed: 0;
+
+    function draw-everything() {
+        root.sheet += 1;
+        root.sheets-owed = 3;
+    }
+
+    function step(by: int) {
+        if Store.rows.length > 0 {
+            Store.current = Math.clamp(Store.current + by, 0, Store.rows.length - 1);
+            list.reveal(Store.current * root.line, root.line);
+        }
+    }
+
+    function use-current() {
+        if Store.current >= 0 && Store.current < Store.rows.length {
+            Store.install(Store.rows[Store.current].id);
+        }
+    }
+
+    changed pixel => { root.draw-everything(); }
+    changed width => { root.draw-everything(); }
+    changed height => { root.draw-everything(); }
+    init => { field.take-focus(); }
+
+    Timer {
+        interval: Tokens.motion-fast;
+        running: root.sheets-owed > 0;
+        triggered => {
+            root.sheet += 1;
+            root.sheets-owed -= 1;
+        }
+    }
+
+    Rectangle {
+        background: Math.mod(root.sheet, 2) == 0 ? transparent : Tokens.color-bg.transparentize(1);
+    }
+
+    VerticalLayout {
+        padding: Tokens.space-lg;
+        spacing: Tokens.space-md;
+
+        field := TextField {
+            placeholder: "Search apps by name";
+            edited(text) => {
+                Store.current = 0;
+                Store.search(text);
+            }
+            accepted => { root.use-current(); }
+            cancelled => {
+                self.clear();
+                Store.current = 0;
+                Store.search("");
+            }
+            stepped(by) => { root.step(by); }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+
+            list := Scroll {
+                content-height: Store.rows.length * root.line;
+
+                for app[index] in Store.rows: Rectangle {
+                    private property <bool> lit: root.hovered == index || Store.current == index;
+
+                    y: index * root.line;
+                    height: root.line;
+                    border-radius: Tokens.radius;
+                    background: self.lit ? Tokens.color-surface-hover : transparent;
+                    animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+
+                    TouchArea {
+                        changed has-hover => {
+                            if self.has-hover {
+                                root.hovered = index;
+                            } else if root.hovered == index {
+                                root.hovered = -1;
+                            }
+                        }
+                        clicked => {
+                            Store.current = index;
+                            field.take-focus();
+                        }
+
+                        HorizontalLayout {
+                            padding-left: Tokens.space-sm;
+                            padding-right: Tokens.space-md;
+                            spacing: Tokens.space-md;
+
+                            VerticalLayout {
+                                alignment: center;
+                                AppTile {
+                                    icon: app.icon;
+                                    has-icon: app.has-icon;
+                                    letter: app.letter;
+                                }
+                            }
+
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: center;
+                                spacing: Tokens.space-xxs;
+
+                                SengiText {
+                                    text: app.name;
+                                    font-weight: Tokens.font-weight-medium;
+                                    overflow: elide;
+                                }
+
+                                SengiLabel {
+                                    text: app.summary;
+                                    font-weight: Tokens.font-weight-regular;
+                                    overflow: elide;
+                                }
+                            }
+
+                            if app.state == RowState.installing: HorizontalLayout {
+                                spacing: Tokens.space-sm;
+                                alignment: end;
+                                VerticalLayout {
+                                    alignment: center;
+                                    Busy { }
+                                }
+                                SengiText {
+                                    text: "Installing";
+                                    color: Tokens.color-text-muted;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            if app.state == RowState.installed: HorizontalLayout {
+                                spacing: Tokens.space-sm;
+                                alignment: end;
+                                VerticalLayout {
+                                    alignment: center;
+                                    NamedIcon {
+                                        name: "check";
+                                        ink: Tokens.color-accent;
+                                    }
+                                }
+                                SengiText {
+                                    text: "Installed";
+                                    color: Tokens.color-text-muted;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            if app.state == RowState.available || app.state == RowState.failed: VerticalLayout {
+                                alignment: center;
+                                SengiButton {
+                                    text: app.state == RowState.failed ? "Try again" : "Install";
+                                    primary: Store.current == index;
+                                    focusable: false;
+                                    clicked => {
+                                        Store.current = index;
+                                        Store.install(app.id);
+                                        field.take-focus();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if Store.rows.length == 0: SengiText {
+                width: parent.width;
+                height: parent.height;
+                text: Store.hint;
+                color: Tokens.color-text-muted;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+
+        SengiLabel {
+            text: Store.message;
+            color: Store.message-is-error ? Tokens.color-danger : Tokens.color-text-muted;
+            font-weight: Tokens.font-weight-regular;
+            font-size: Tokens.font-size-md;
+            height: Tokens.list-row-height;
+            vertical-alignment: top;
+            wrap: word-wrap;
+            overflow: elide;
+        }
+    }
+}
