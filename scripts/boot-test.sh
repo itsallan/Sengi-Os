@@ -243,8 +243,8 @@ rm -f "$out/before.ppm" "$out/with.ppm"
 
 # Settings again, this time by clicking its icon in the dock, which is what
 # a person with a mouse does. The dock is centred at the bottom edge with
-# the search button, the installer, the terminal and Settings in a row, and
-# Settings is the last of the four. The icons are one icon width plus one gap
+# the search button, the installer, the terminal, Settings and the Store in a
+# row, and Settings is the fourth of the five. The icons are one icon width plus one gap
 # apart, both from tokens/sengi.toml; their middles are about 43 px above the
 # bottom edge, measured on the screenshots (the shelf has the running dot to
 # make room for under the icon). A click anywhere on the icon counts. The guest's
@@ -256,7 +256,7 @@ dock_token() {
 }
 dock_fail=
 dock_icon_pitch=$(($(dock_token icon) + $(dock_token gap)))
-dock_x=$((screen_w / 2 + dock_icon_pitch * 3 / 2))
+dock_x=$((screen_w / 2 + dock_icon_pitch))
 dock_y=$((screen_h - 43))
 echo "screendump $out/before.ppm" >&3
 sleep 1
@@ -282,6 +282,27 @@ if [ -z "$dock_fail" ] && [ "$(cmp -l "$out/before.ppm" "$out/after.ppm" 2>/dev/
 	dock_fail="the desktop did not come back after Settings was closed from the dock"
 fi
 rm -f "$out/before.ppm" "$out/with.ppm" "$out/after.ppm"
+
+# The Store, from its icon next to Settings: the same click, one icon further
+# on. Closed again with the window shortcut, as Settings is.
+store_fail=
+store_x=$((screen_w / 2 + dock_icon_pitch * 2))
+echo "screendump $out/before.ppm" >&3
+sleep 1
+pointer "$store_x" "$dock_y"
+click
+sleep 4
+shot store
+echo "screendump $out/with.ppm" >&3
+sleep 1
+changed=$(cmp -l "$out/before.ppm" "$out/with.ppm" 2>/dev/null | wc -l)
+if [ "$changed" -lt "$window_bytes" ]; then
+	store_fail="a click on the dock's Store icon opened no window ($changed bytes of the screen changed)"
+	key esc 1
+fi
+key meta_l-q 2
+pointer $((screen_w / 8)) $((screen_h / 2))
+rm -f "$out/before.ppm" "$out/with.ppm"
 
 key meta_l-ret 3
 shot terminal
@@ -664,6 +685,10 @@ if [ -n "$settings_fail" ]; then
 fi
 if [ -n "$dock_fail" ]; then
 	echo "FAIL: $dock_fail" >&2
+	fail=1
+fi
+if [ -n "$store_fail" ]; then
+	echo "FAIL: $store_fail" >&2
 	fail=1
 fi
 if [ -n "$lock_fail" ]; then
