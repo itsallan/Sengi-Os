@@ -35,10 +35,12 @@ component Tile inherits Rectangle {
 }
 
 component SearchIcon inherits Tile {
-    background: Tokens.color-accent;
+    background: Tokens.color-bg;
+    border-width: Tokens.border-width;
+    border-color: Tokens.color-border;
     SengiIcon {
         name: "magnifying-glass";
-        ink: Tokens.color-accent-text;
+        ink: Tokens.color-accent;
         width: Tokens.dock-item / 2;
         height: self.width;
     }
