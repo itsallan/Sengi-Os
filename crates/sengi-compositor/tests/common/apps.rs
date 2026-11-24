@@ -401,6 +401,35 @@ impl Client {
         Ok((surface, bar))
     }
 
+    /// A dock along the bottom edge that keeps `height` rows for itself.
+    pub fn dock(
+        &mut self,
+        height: u32,
+        argb: u32,
+    ) -> Result<(WlSurface, ZwlrLayerSurfaceV1), Failure> {
+        let shell: ZwlrLayerShellV1 = self.globals.bind(&self.handle, 1..=4, ())?;
+        let surface = self.compositor.create_surface(&self.handle, ());
+        let dock = shell.get_layer_surface(
+            &surface,
+            None,
+            Layer::Top,
+            "test dock".into(),
+            &self.handle,
+            (),
+        );
+        dock.set_size(0, height);
+        dock.set_anchor(Anchor::Bottom | Anchor::Left | Anchor::Right);
+        dock.set_exclusive_zone(height as i32);
+        surface.commit();
+        if !self.wait(SOON, |seen| seen.more.layer_configure.is_some()) {
+            return Err("the dock was never configured".into());
+        }
+        let (serial, width, height) = self.seen.more.layer_configure.take().unwrap_or_default();
+        dock.ack_configure(serial);
+        self.paint(&surface, width as i32, height as i32, argb)?;
+        Ok((surface, dock))
+    }
+
     /// Gives `surface` a buffer of one colour and this size.
     pub fn paint(
         &mut self,

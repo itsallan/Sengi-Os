@@ -433,6 +433,9 @@ pub fn send_frames(state: &State, output: &Output) {
             surface_primary_scanout_output,
         );
     }
+    for window in state.pending_windows.iter() {
+        window.send_frame(output, time, throttle, surface_primary_scanout_output);
+    }
     for window in state.space.elements().chain(state.minimised.iter()) {
         window.send_frame(output, time, throttle, surface_primary_scanout_output);
     }

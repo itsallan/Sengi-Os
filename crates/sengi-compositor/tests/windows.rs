@@ -611,3 +611,61 @@ fn a_button_is_drawn_darker_while_it_is_held() {
         held.write_ppm(&dir.join("window-pressed.ppm")).unwrap();
     }
 }
+
+/// A window the way winit and foot behave: the first buffer asks for a
+/// frame callback, and nothing more is drawn until that callback comes.
+#[test]
+fn a_big_window_that_waits_for_a_frame_callback_is_shown_on_a_small_screen() {
+    let compositor = Compositor::start_args(&["--outputs", "800x600"], None);
+    let mut shell = compositor.connect();
+    let _bar = shell.bar(28, RED).unwrap();
+    let _dock = shell.dock(72, RED).unwrap();
+    let mut app = compositor.connect();
+    let (surface, _xdg, _toplevel) = bare_window(&mut app).unwrap();
+    assert!(app.wait(SOON, |seen| seen.window_configures >= 1));
+    let buffer = app.buffer(890, 630, GREEN).unwrap();
+    surface.attach(Some(&buffer), 0, 0);
+    surface.frame(&app.handle, ());
+    surface.commit();
+    assert!(
+        app.wait(SOON, |seen| seen
+            .more
+            .toplevel
+            .is_some_and(|(w, _, _)| w > 0)),
+        "it was never told a size"
+    );
+    let (w, h) = told(&app).unwrap();
+    // The client draws the new size only once its frame callback is done.
+    assert!(
+        app.wait(Duration::from_secs(4), |seen| seen.frames >= 1),
+        "no frame callback ever came, so the client cannot answer"
+    );
+    app.paint(&surface, w, h, GREEN).unwrap();
+    let picture = app.capture().unwrap();
+    assert_eq!(
+        picture.at(400, 300),
+        rgb(GREEN),
+        "the window was told {w}x{h} and is not on the screen"
+    );
+}
+
+#[test]
+fn a_big_window_that_never_answers_a_shrink_request_is_shown_as_it_is() {
+    let compositor = Compositor::start_args(&["--outputs", "800x600"], None);
+    let mut app = compositor.connect();
+    let (surface, _xdg, _toplevel) = bare_window(&mut app).unwrap();
+    assert!(app.wait(SOON, |seen| seen.window_configures >= 1));
+    let buffer = app.buffer(890, 630, GREEN).unwrap();
+    surface.attach(Some(&buffer), 0, 0);
+    surface.commit();
+    // It is told to shrink and says nothing more.
+    assert!(app.wait(SOON, |seen| seen.more.toplevel.is_some()));
+    std::thread::sleep(Duration::from_millis(1600));
+    app.roundtrip().unwrap();
+    let picture = app.capture().unwrap();
+    assert_eq!(
+        picture.at(100, 100),
+        rgb(GREEN),
+        "the window is still not on the screen"
+    );
+}

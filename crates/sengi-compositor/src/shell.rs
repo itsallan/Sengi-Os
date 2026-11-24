@@ -32,6 +32,10 @@ use smithay::{
     xwayland::XWaylandClientData,
 };
 
+use std::time::Duration;
+
+use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+
 use crate::{
     frame::Edges,
     input::cell,
@@ -39,6 +43,10 @@ use crate::{
     state::{has_buffer, ClientState, State},
     window,
 };
+
+/// How long a window asked to shrink may take to answer before it is shown
+/// at the size it has.
+const WAIT_FOR_SHRINK: Duration = Duration::from_secs(1);
 
 impl CompositorHandler for State {
     fn compositor_state(&mut self) -> &mut CompositorState {
@@ -359,10 +367,46 @@ impl State {
             window::data(&window).fitted.set(true);
             let fit = (size.w.min(most.w.max(1)), size.h.min(most.h.max(1)));
             window::request_size(&window, fit, false);
+            self.wake_unmapped(&window);
+            self.map_if_still_waiting(window);
             return;
         }
 
-        self.pending_windows.remove(index);
+        self.map_pending_window(&window);
+    }
+
+    /// Sends the frame callback an unmapped window would otherwise never
+    /// get. Clients such as foot and winit draw again only after the
+    /// callback of their last frame, so without it a window asked to shrink
+    /// could not answer.
+    fn wake_unmapped(&self, window: &Window) {
+        let Some(output) = self.active_output() else {
+            return;
+        };
+        let time = self.start_time.elapsed();
+        window.send_frame(&output, time, None, |_, _| Some(output.clone()));
+    }
+
+    /// A window that was asked to shrink and has not answered in a second
+    /// is shown as it is.
+    fn map_if_still_waiting(&mut self, window: Window) {
+        let timer = Timer::from_duration(WAIT_FOR_SHRINK);
+        let _ = self.loop_handle.insert_source(timer, move |_, _, state| {
+            if state.pending_windows.contains(&window) {
+                state.map_pending_window(&window);
+            }
+            TimeoutAction::Drop
+        });
+    }
+
+    /// Puts a window whose first buffer is in onto the screen.
+    fn map_pending_window(&mut self, window: &Window) {
+        let size = window.geometry().size;
+        if size.w <= 0 || size.h <= 0 {
+            return;
+        }
+        self.pending_windows.retain(|w| w != window);
+        let window = window.clone();
         let fullscreen = window::data(&window).fullscreen.get().is_some();
         let decorated = window::wants_server_decoration(&window) && !fullscreen;
         window::data(&window).decorated.set(decorated);
