@@ -19,9 +19,15 @@ and the measured idle RAM and boot time.
   end of the dock. Flathub is set up as the Flatpak source in the image.
 - The installer can install Sengi OS beside another system: on a UEFI
   computer, with a GPT disk that has an EFI system partition and 10 GB or more
-  of free space, it adds one partition there and changes nothing else; the
-  other system stays in the boot menu, shown for 3 seconds. Shrink the other
-  system first, from inside it.
+  of free space, it adds one partition there, adds a Sengi OS folder to the EFI system
+  partition and puts Sengi OS first in the firmware boot list; the other
+  system's files are not touched and it stays in the boot menu, shown for 3
+  seconds. Shrink the other system first, from inside it.
+  Known limits: not offered with Secure Boot on or with a hybrid MBR; a
+  BitLocker or TPM setup may ask for its recovery key once after the boot list
+  changes; the 3-second menu wait is left out of the boot-time figure the
+  install test reports (it is waiting for a person, and is reported on its
+  own); only tried on virtual disks.
 - Wi-Fi and Bluetooth firmware is in the image: Intel (both radios), Realtek,
   MediaTek, Atheros and Broadcom, plus Intel graphics firmware and CPU
   microcode, from Debian's non-free-firmware section.

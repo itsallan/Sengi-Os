@@ -92,7 +92,15 @@ esp_start=2048
 esp_sectors=532480
 other_start=534528
 other_sectors=2097152
-free_start=$((other_start + other_sectors))
+# Two more systems' partitions, which a boot loader must only look at: an
+# ext4 volume that was not shut down (its journal needs recovery, which a
+# mount that is allowed to write would do), and what an NTFS volume of a
+# Windows that hibernated looks like at its start.
+ext_start=$((other_start + other_sectors))
+ext_sectors=131072
+ntfs_start=$((ext_start + ext_sectors))
+ntfs_sectors=131072
+free_start=$((ntfs_start + ntfs_sectors))
 marker_other="SENGI-OTHER-SYSTEM-DATA do not touch"
 marker_boot="SENGI-OTHER-SYSTEM-BOOT-FILE do not touch"
 
@@ -112,8 +120,8 @@ prepare_beside() {
 	done
 	raw=$out/before.img
 	truncate -s "$disk_size" "$raw"
-	printf 'label: gpt\nstart=%s, size=%s, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name="EFI System Partition"\nstart=%s, size=%s, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name="Basic data partition"\n' \
-		"$esp_start" "$esp_sectors" "$other_start" "$other_sectors" | sfdisk -q "$raw"
+	printf 'label: gpt\nstart=%s, size=%s, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name="EFI System Partition"\nstart=%s, size=%s, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name="Basic data partition"\nstart=%s, size=%s, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="Linux filesystem"\nstart=%s, size=%s, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name="Windows data"\n' \
+		"$esp_start" "$esp_sectors" "$other_start" "$other_sectors" "$ext_start" "$ext_sectors" "$ntfs_start" "$ntfs_sectors" | sfdisk -q "$raw"
 	# The EFI system partition, with what another system keeps there.
 	truncate -s $((esp_sectors * 512)) "$out/esp.img"
 	mkfs.vfat -F 32 -n ESP "$out/esp.img" >/dev/null
@@ -134,6 +142,21 @@ prepare_beside() {
 			i=$((i + 1))
 		done
 	} | dd of="$raw" bs=512 seek="$other_start" conv=notrunc status=none
+	# The ext4 volume, with its journal marked as needing recovery.
+	truncate -s $((ext_sectors * 512)) "$out/ext.img"
+	mkfs.ext4 -q -F -O has_journal "$out/ext.img"
+	echo "$marker_other" >"$out/before.marker2"
+	debugfs -w -R "write $out/before.marker2 marker.txt" "$out/ext.img" >/dev/null 2>&1
+	debugfs -w -R "feature needs_recovery" "$out/ext.img" >/dev/null 2>&1
+	dd if="$out/ext.img" of="$raw" bs=512 seek="$ext_start" conv=notrunc status=none
+	rm -f "$out/ext.img" "$out/before.marker2"
+	# The start of an NTFS volume, and the signature of a hibernation file
+	# further in.
+	{
+		printf '\353\122\220NTFS    '
+		dd if=/dev/zero bs=1 count=500 status=none
+	} | dd of="$raw" bs=512 seek="$ntfs_start" conv=notrunc status=none
+	printf 'hibr%s' "$marker_other" | dd of="$raw" bs=1M seek=$((ntfs_start / 2048 + 1)) conv=notrunc status=none
 	sfdisk -d "$raw" >"$out/before.dump"
 	mdir -i "$raw@@$((esp_start * 512))" -/ -b :: | sort >"$out/before.files"
 	qemu-img convert -O qcow2 "$raw" "$disk"
@@ -379,6 +402,20 @@ rm -f "$out/mon.in"
 # now against the disk as it was made. Nothing is trusted that the guest
 # says about itself.
 dual_fail=0
+# The firmware, as the installed system lists it: Sengi OS is the first thing
+# it tries. (Entries of the computer's own, Windows' among them, are kept by
+# the installer and checked in its unit tests: the firmware of this test starts
+# with none.)
+if [ "$mode" = beside ]; then
+	order=$(sed -n 's/^BootOrder: *\([0-9A-Fa-f]*\).*/\1/p' "$out/guest-info-installed.txt" | head -1)
+	if [ -n "$order" ] && grep -q "^Boot$order\*\{0,1\} *Sengi OS" "$out/guest-info-installed.txt"; then
+		echo "ok: Sengi OS is first in the firmware's boot order ($order)"
+	else
+		echo "FAIL: Sengi OS is not first in the firmware's boot order ('$order')" >&2
+		annotate "FAIL: Sengi OS is not first in the firmware's boot order"
+		fail=1
+	fi
+fi
 # Seconds GRUB's menu waits for a person to choose between systems. Where
 # another system is found the menu is shown, and the wait is the
 # person's, not the system's: it is left out of the boot figure and
@@ -424,19 +461,19 @@ verify_beside() {
 		a=$(grep "^$key:" "$out/after.dump")
 		[ "$a" = "$b" ] && check_ok "table $key is as it was" || check_fail "table $key changed: '$b' became '$a'"
 	done
-	for n in 1 2; do
+	for n in 1 2 3 4; do
 		b=$(grep -E "^[^ ]*$n :" "$out/before.dump" | sed 's/^[^:]*://')
 		a=$(grep -E "^[^ ]*$n :" "$out/after.dump" | sed 's/^[^:]*://')
 		[ -n "$b" ] && [ "$a" = "$b" ] && check_ok "partition $n (start, size, type, identifier, name) is as it was" ||
 			check_fail "partition $n changed: '$b' became '$a'"
 	done
 	count=$(grep -c -E '^[^ ]+ :' "$out/after.dump")
-	[ "$count" = 3 ] && check_ok "there is one more partition, three in all" || check_fail "there are $count partitions, not 3"
+	[ "$count" = 5 ] && check_ok "there is one more partition, five in all" || check_fail "there are $count partitions, not 5"
 
 	# The new one: Linux, inside the free space, and nowhere else.
-	new_start=$(part_field "$out/after.dump" 3 start)
-	new_size=$(part_field "$out/after.dump" 3 size)
-	new_type=$(part_field "$out/after.dump" 3 type)
+	new_start=$(part_field "$out/after.dump" 5 start)
+	new_size=$(part_field "$out/after.dump" 5 size)
+	new_type=$(part_field "$out/after.dump" 5 type)
 	last_lba=$(sed -n 's/^last-lba: //p' "$out/after.dump")
 	new_end=$((new_start + new_size))
 	[ "$new_type" = 0FC63DAF-8483-4772-8E79-3D69D8477DE4 ] && check_ok "the new partition is of the Linux type" ||
@@ -454,6 +491,8 @@ verify_beside() {
 	# partition, and what is left over around the new one.
 	same_sectors "the gap in front of the first partition" 34 $((esp_start - 34))
 	same_sectors "the other system's partition" "$other_start" "$other_sectors"
+	same_sectors "the other system's ext4 volume that needs recovery" "$ext_start" "$ext_sectors"
+	same_sectors "the other system's NTFS volume" "$ntfs_start" "$ntfs_sectors"
 	same_sectors "the space between the other system and the new partition" "$free_start" $((new_start - free_start))
 	same_sectors "the space after the new partition" "$new_end" $((last_lba + 1 - new_end))
 	# And it is what was written there: the marker is still the first line.
@@ -600,7 +639,9 @@ if [ -n "$menu_fail" ]; then
 	fail=1
 fi
 fi
-expected="user=$user host=$host zone=$zone root=/dev/vda3 type=ext4 firmware=$firmware keyboard=$keyboard"
+root_node=/dev/vda3
+[ "$mode" = beside ] && root_node=/dev/vda5
+expected="user=$user host=$host zone=$zone root=$root_node type=ext4 firmware=$firmware keyboard=$keyboard"
 if [ "$installed" != "$expected" ]; then
 	echo "FAIL: the installed system is '$installed', and what was asked for is '$expected'" >&2
 	fail=1

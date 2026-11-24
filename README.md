@@ -102,17 +102,25 @@ again. Log in with the password you chose.
 "Erase the whole disk" is described next. "Install beside the existing
 system" is offered when the computer started with UEFI and the disk has a
 GPT, an EFI system partition and at least 10 GB of free (unallocated) space:
-it adds one partition in that free space and changes nothing that is already
-on the disk. It does not shrink, move or format anything, and does not touch
-the other system's files on the EFI system partition: it only adds its own
-folder there, `EFI/sengios`, and an entry in the firmware's boot list, in
-front of the other system's. Sengi OS's boot menu then lists Windows or
+it adds one partition in that free space, adds a Sengi OS folder
+(`EFI/sengios`) to the EFI system partition, and puts a Sengi OS entry first in
+the firmware's boot list, in front of the other system's. Your other files
+are not touched: nothing is shrunk, moved, formatted or overwritten, and the
+other system's own files on the EFI system partition, and its entry in the
+firmware's list, stay as they are. (The partition table itself is
+rewritten to add the partition, and the firmware's list changes, which is why
+BitLocker or a TPM may ask the other system for a recovery key once: have it
+at hand.) It is not offered while Secure Boot is on, because the boot loader
+is not signed: turn Secure Boot off in the firmware settings first. Sengi OS's boot menu then lists Windows or
 whatever else GRUB's os-prober finds, and is shown for three seconds when
 there is something to choose from; with nothing else on the disk it stays
 hidden, as after a whole-disk install. When the option is not offered the
 row says why; to make room, shrink the other system first, from inside it.
 Back up what you want to keep anyway: this part is new, and it has been
-tried on virtual disks only.
+tried on virtual disks only. If an installation fails after the partition
+was made, the installer says what exists and how to remove the partition
+(`sudo sfdisk --delete DISK NUMBER` from the live session, after looking at
+`lsblk`); it does not delete partitions itself.
 
 **What it erases (whole-disk install).** The whole disk you choose: every partition and
 everything on them, with no way back. The installer shows what is on each
