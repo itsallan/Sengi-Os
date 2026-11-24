@@ -1,5 +1,7 @@
 //! wl_compositor and xdg-shell handling: toplevels and popups.
 
+use std::time::Duration;
+
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
     delegate_compositor, delegate_xdg_decoration, delegate_xdg_shell,
@@ -9,6 +11,7 @@ use smithay::{
         WindowSurfaceType,
     },
     input::pointer::{Focus, GrabStartData},
+    reexports::calloop::timer::{TimeoutAction, Timer},
     reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
     reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as ToplevelState,
     reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::{ResizeEdge, WmCapabilities},
@@ -31,10 +34,6 @@ use smithay::{
     },
     xwayland::XWaylandClientData,
 };
-
-use std::time::Duration;
-
-use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 
 use crate::{
     frame::Edges,
@@ -380,6 +379,7 @@ impl State {
     /// callback of their last frame, so without it a window asked to shrink
     /// could not answer.
     fn wake_unmapped(&self, window: &Window) {
+        // Right only with one screen; a window has no output before it is shown.
         let Some(output) = self.active_output() else {
             return;
         };
