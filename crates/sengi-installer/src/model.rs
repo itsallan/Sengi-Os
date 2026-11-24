@@ -2,7 +2,7 @@
 //! machine has. Nothing here knows about Slint, so it is tested as it is.
 
 use sengi_config::settings::Layout;
-use sengi_install::beside::{self, Beside, Offer};
+use sengi_install::beside::{self, Beside, Firmware, Offer};
 use sengi_install::disks::{self, Disk};
 use sengi_install::install::STEPS;
 use sengi_install::names;
@@ -156,8 +156,13 @@ pub const BESIDE: &str = "beside";
 
 /// What installing beside another system would use on `disk`, or why it
 /// cannot be offered.
-pub fn beside_offer(disk: &Disk, uefi: bool) -> Result<Offer, beside::Why> {
-    beside::offer(disk, uefi)
+/// What the person is told, in these words and no other, wherever the
+/// way of installing beside another system is described: what it adds, and
+/// that nothing of the other system is touched.
+pub const BESIDE_CHANGES: &str = "adds one partition in the free space, adds a Sengi OS folder to the EFI system partition, and puts Sengi OS first in the firmware boot list. Your other files are not touched.";
+
+pub fn beside_offer(disk: &Disk, firmware: impl Into<Firmware>) -> Result<Offer, beside::Why> {
+    beside::offer(disk, firmware)
 }
 
 /// The plan's part for an offer.
@@ -173,11 +178,11 @@ pub fn beside_of(offer: &Offer) -> Beside {
 
 /// The two rows: erase the disk, and install beside what is there. The
 /// second is switched off, with the reason, where it cannot be done.
-pub fn mode_rows(disk: &Disk, uefi: bool, beside_chosen: bool) -> Vec<ModeRow> {
-    let (beside_detail, beside_enabled) = match beside_offer(disk, uefi) {
+pub fn mode_rows(disk: &Disk, firmware: impl Into<Firmware>, beside_chosen: bool) -> Vec<ModeRow> {
+    let (beside_detail, beside_enabled) = match beside_offer(disk, firmware) {
         Ok(offer) => (
             format!(
-                "Adds one partition of {} in free space. Nothing that is already on the disk is changed.",
+                "Adds one partition of {} in free space and a Sengi OS folder on the EFI system partition. Your other files are not touched.",
                 disks::size_words(offer.region().bytes())
             ),
             true,
@@ -209,7 +214,7 @@ pub fn change_note(disk: &Disk, offer: Option<&Offer>) -> (String, bool) {
         None => (erase_warning(disk), true),
         Some(offer) => (
             format!(
-                "Sengi OS will be added beside what is on {} ({}), in {} of free space. Nothing that is already on the disk is changed.",
+                "Sengi OS will be added beside what is on {} ({}), in {} of free space. It {BESIDE_CHANGES}",
                 disk_title(disk),
                 disk.path,
                 disks::size_words(offer.region().bytes())
@@ -228,7 +233,7 @@ pub fn question(disk: &Disk, offer: Option<&Offer>) -> (&'static str, String, &'
         Some(offer) => (
             "Install beside the existing system?",
             format!(
-                "This creates one partition of {} in free space on {} ({}). Nothing that is already on the disk is changed.",
+                "This creates one partition of {} in free space on {} ({}), adds a Sengi OS folder to the EFI system partition, and puts Sengi OS first in the firmware boot list. Your other files are not touched.",
                 disks::size_words(offer.region().bytes()),
                 disk_title(disk),
                 disk_place(disk)
@@ -392,9 +397,13 @@ pub fn review_beside(
         (
             "What changes",
             format!(
-                "Creates one partition of {} in free space. Nothing that is already on the disk is changed.",
+                "Creates one partition of {} in free space, adds a Sengi OS folder to the EFI system partition, and puts Sengi OS first in the firmware boot list. Your other files are not touched.",
                 disks::size_words(offer.region().bytes())
             ),
+        ),
+        (
+            "Good to know",
+            "If the other system uses BitLocker or a TPM, it may ask for its recovery key after the boot list changes. Have the key at hand.".to_string(),
         ),
         (
             "Put on it",
@@ -501,6 +510,9 @@ pub struct Progress {
     pub disk: String,
     /// It adds a partition beside what is there and erases nothing.
     pub beside: bool,
+    /// Beside another system: the number of the partition it made, once
+    /// it has.
+    pub made: Option<u32>,
     pub outcome: Outcome,
 }
 
@@ -520,6 +532,7 @@ impl Default for Progress {
             log: String::new(),
             disk: String::new(),
             beside: false,
+            made: None,
             outcome: Outcome::Running,
         }
     }
@@ -556,6 +569,7 @@ impl Progress {
             Event::Log(path) => self.log = sengi_text::line(&path, 200),
             Event::Disk(path) => self.disk = sengi_text::line(&path, 64),
             Event::Beside => self.beside = true,
+            Event::Made(number) => self.made = Some(number),
             Event::Done(seconds) => self.outcome = Outcome::Done(seconds),
             Event::Failed(id, why) => {
                 if let Some(step) = self.step(&id) {
@@ -610,6 +624,56 @@ impl Progress {
             .map(|step| step.title)
     }
 
+    /// Beside another system: what is on the disk now that it failed, and
+    /// how to take the new partition off again. The partition is not removed
+    /// by the installer: deleting a partition is the one thing it is built
+    /// never to do, and a person can see what they are removing.
+    fn beside_left(&self) -> String {
+        let step_started = |id: &str| {
+            self.steps
+                .iter()
+                .any(|step| step.id == id && step.state != StepState::Waiting)
+        };
+        let disk = if self.disk.is_empty() {
+            "the disk".to_string()
+        } else {
+            self.disk.clone()
+        };
+        let mut said = Vec::new();
+        let mut remove = String::new();
+        match self.made {
+            Some(number) => {
+                let node = sengi_install::disks::partition_path(&disk, number);
+                said.push(format!(
+                    "The new partition, number {number} of {disk} ({node}), exists in the free space."
+                ));
+                remove = format!(
+                    " To take it off again, start the computer from the live stick, open a terminal and type: sudo sfdisk --delete {disk} {number} \u{2014} after looking at lsblk {disk} to be sure that {node} is the new one, the last in the list. Until you do, this installer will not offer to install beside here, since the new partition fills the free space."
+                );
+            }
+            None if step_started("partition") => {
+                said.push(format!(
+                    "A new partition may have been added to the free space of {disk}: look at lsblk {disk}, and remove it with sudo sfdisk --delete {disk} NUMBER if it is there and not wanted."
+                ));
+            }
+            None => {}
+        }
+        if step_started("boot-loader") {
+            said.push(
+                "A Sengi OS folder and a boot entry in the firmware may have been added to the EFI system partition; the installer took them out again as far as it could, as said above."
+                    .to_string(),
+            );
+        }
+        if step_started("format") {
+            said.push(
+                "Your other partitions were checked before the new one was formatted and were as they had been."
+                    .to_string(),
+            );
+        }
+        said.push("This live session is as it was.".to_string());
+        format!("{}{remove}", said.join(" "))
+    }
+
     /// What the failure page says: on which disk, in which step, why,
     /// and what that leaves. `disk` is what to call the disk; its node
     /// is added if that does not already have it.
@@ -628,12 +692,12 @@ impl Progress {
             Some(step) => format!("Installing on {on} stopped at \u{201c}{step}\u{201d}"),
             None => format!("Installing on {on} did not start"),
         };
-        let left = if self.disk_was_touched() && self.beside {
-            "A new partition may have been added to the free space of the disk. Nothing else was written to it on purpose. This live session is as it was, and the installer can be run again."
+        let left: String = if self.disk_was_touched() && self.beside {
+            self.beside_left()
         } else if self.disk_was_touched() {
-            "The disk was being written and no longer holds what it did. This live session is as it was, and the installer can be run again."
+            "The disk was being written and no longer holds what it did. This live session is as it was, and the installer can be run again.".to_string()
         } else {
-            "Nothing on the computer was changed."
+            "Nothing on the computer was changed.".to_string()
         };
         format!("{at}: {why}. {left}")
     }
@@ -1055,9 +1119,7 @@ mod tests {
             "{}",
             rows[1].detail
         );
-        assert!(rows[1]
-            .detail
-            .contains("Nothing that is already on the disk is changed."));
+        assert!(rows[1].detail.contains("Your other files are not touched."));
         // Chosen, it is the checked one.
         let chosen = mode_rows(&disk, true, true);
         assert!(chosen[1].checked && !chosen[0].checked);
@@ -1109,7 +1171,7 @@ mod tests {
         let size = sengi_install::disks::size_words(offer.region().bytes());
         assert_eq!(
             value("What changes"),
-            format!("Creates one partition of {size} in free space. Nothing that is already on the disk is changed.")
+            format!("Creates one partition of {size} in free space, adds a Sengi OS folder to the EFI system partition, and puts Sengi OS first in the firmware boot list. Your other files are not touched.")
         );
         assert!(value("On it now").contains("Windows (NTFS)"));
         assert!(value("Put on it").starts_with("Sengi OS in the new partition"));
@@ -1130,7 +1192,7 @@ mod tests {
         let (title, body, confirm, danger) = question(&disk, Some(&offer));
         assert_eq!(title, "Install beside the existing system?");
         assert!(body.starts_with("This creates one partition of "));
-        assert!(body.ends_with("Nothing that is already on the disk is changed."));
+        assert!(body.ends_with("Your other files are not touched."));
         assert_eq!(confirm, "Install");
         assert!(!danger);
         let (title, body, confirm, danger) = question(&disk, None);
@@ -1140,7 +1202,7 @@ mod tests {
         assert!(danger);
         // The note says it in the quiet colour, and the erasing one warns.
         let (note, warns) = change_note(&disk, Some(&offer));
-        assert!(!warns && note.contains("Nothing that is already on the disk is changed."));
+        assert!(!warns && note.contains("Your other files are not touched."));
         let (note, warns) = change_note(&disk, None);
         assert!(warns && note.contains("will be erased"));
     }
@@ -1179,5 +1241,106 @@ mod tests {
             "{words}"
         );
         assert!(!words.contains("no longer holds what it did"), "{words}");
+    }
+    #[test]
+    fn a_failure_after_the_partition_exists_says_what_exists_and_how_to_remove_it() {
+        let mut progress = Progress::default();
+        for line in [
+            "disk /dev/vdb",
+            "beside",
+            "begin check",
+            "end check",
+            "begin partition",
+            "made 3",
+            "end partition",
+            "begin format",
+            "end format",
+            "begin boot-loader",
+        ] {
+            progress.apply(Event::parse(line).unwrap());
+        }
+        assert_eq!(progress.made, Some(3));
+        progress.apply(Event::Failed(
+            "boot-loader".to_string(),
+            "the firmware did not take a boot entry".to_string(),
+        ));
+        let words = progress.failure_words("");
+        assert!(
+            words.contains("number 3 of /dev/vdb (/dev/vdb3), exists"),
+            "{words}"
+        );
+        assert!(words.contains("sudo sfdisk --delete /dev/vdb 3"), "{words}");
+        assert!(words.contains("lsblk /dev/vdb"), "{words}");
+        assert!(words.contains("folder and a boot entry"), "{words}");
+        assert!(
+            words.contains("will not offer to install beside here"),
+            "{words}"
+        );
+        assert!(words.contains("were as they had been"), "{words}");
+        // It does not claim the installer can simply be run again.
+        assert!(!words.contains("can be run again"), "{words}");
+    }
+
+    #[test]
+    fn a_failure_before_the_partition_exists_does_not_tell_anyone_to_delete_anything_unseen() {
+        let mut progress = Progress::default();
+        for line in [
+            "disk /dev/vdb",
+            "beside",
+            "begin check",
+            "end check",
+            "begin partition",
+        ] {
+            progress.apply(Event::parse(line).unwrap());
+        }
+        progress.apply(Event::Failed(
+            "partition".to_string(),
+            "sfdisk said no".to_string(),
+        ));
+        let words = progress.failure_words("");
+        assert!(words.contains("may have been added"), "{words}");
+        assert!(words.contains("look at lsblk /dev/vdb"), "{words}");
+        assert!(!words.contains("were as they had been"), "{words}");
+        // And one that only looked changed nothing.
+        let mut early = Progress::default();
+        for line in ["beside", "begin check"] {
+            early.apply(Event::parse(line).unwrap());
+        }
+        early.apply(Event::Failed(
+            "check".to_string(),
+            "Secure Boot is on".to_string(),
+        ));
+        assert!(early
+            .failure_words("")
+            .ends_with("Nothing on the computer was changed."));
+    }
+
+    #[test]
+    fn what_the_review_says_it_changes_is_what_changes_and_the_other_system_may_ask_for_a_key() {
+        let disk = windows_disk();
+        let offer = beside_offer(&disk, true).unwrap();
+        let rows = review_beside(&filled(), &disk, &offer, "x", "UTC");
+        let all: String = rows.iter().map(|(_, value)| value.as_str()).collect();
+        for word in [
+            "EFI system partition",
+            "firmware boot list",
+            "BitLocker",
+            "recovery key",
+        ] {
+            assert!(all.contains(word), "{word}");
+        }
+        // The old promise, which was untrue, is gone everywhere.
+        assert!(!all.contains("Nothing that is already on the disk is changed"));
+        let rows = mode_rows(&disk, true, false);
+        assert!(rows[1]
+            .detail
+            .contains("a Sengi OS folder on the EFI system partition"));
+        // Secure Boot is a reason in the row, and the choice cannot be made.
+        let on = Firmware {
+            uefi: true,
+            secure_boot: true,
+        };
+        let rows = mode_rows(&disk, on, true);
+        assert!(!rows[1].enabled && rows[1].detail.contains("Secure Boot is on"));
     }
 }

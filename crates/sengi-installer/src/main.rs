@@ -11,7 +11,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -164,13 +164,16 @@ fn facts(pairs: Vec<(&str, String)>) -> ModelRc<InfoRow> {
     )
 }
 
-fn uefi() -> bool {
-    Path::new("/sys/firmware/efi").is_dir()
+fn firmware() -> sengi_install::beside::Firmware {
+    sengi_install::beside::firmware_now()
 }
 
 /// What the disks of a demo look like when the machine is not asked.
-fn demo_uefi() -> bool {
-    true
+fn demo_uefi() -> sengi_install::beside::Firmware {
+    sengi_install::beside::Firmware {
+        uefi: true,
+        secure_boot: false,
+    }
 }
 
 /// Disks to show when there is no machine to ask.
@@ -644,9 +647,9 @@ impl App {
         self.set_can_next();
     }
 
-    fn uefi_now(&self) -> bool {
+    fn uefi_now(&self) -> sengi_install::beside::Firmware {
         match self.demo {
-            Demo::Off => uefi(),
+            Demo::Off => firmware(),
             _ => demo_uefi(),
         }
     }
@@ -758,7 +761,7 @@ impl App {
                 disk,
                 &self.layout_name(),
                 &self.zone.borrow(),
-                self.uefi_now(),
+                self.uefi_now().uefi,
             ),
         };
         wizard.set_review(facts(rows));

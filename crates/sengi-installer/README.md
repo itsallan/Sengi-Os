@@ -32,8 +32,10 @@ installation. It never writes to a disk itself: that is
    typed), the password twice, and a name for the computer. What is wrong
    with a field is said under it once something has been typed.
 5. **Review.** The disk, what is on it now, that all of it is erased (or, beside another
-   system, that one partition of N GB is created in free space and nothing that is already
-   on the disk is changed), the account, the computer's name, the layout and the zone.
+   system, that one partition of N GB is created in free space, a Sengi OS folder is added to the
+   EFI system partition and Sengi OS is put first in the firmware boot list, and that
+   other files are not touched; and that BitLocker or a TPM may ask for a recovery key),
+   the account, the computer's name, the layout and the zone.
 6. **Installing**, which becomes **Sengi OS is installed** or **The
    installation failed**. The nine steps are listed and marked as they
    run; the copy shows a percentage, counted in bytes on the new disk.
