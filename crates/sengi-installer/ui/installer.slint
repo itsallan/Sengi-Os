@@ -215,6 +215,8 @@ component DiskPage inherits Page {
             }
         }
 
+        if Wizard.disk-chosen: Gap { }
+
         if Wizard.disk-chosen: SectionLabel {
             text: "What to do with it";
         }
@@ -231,6 +233,8 @@ component DiskPage inherits Page {
             warning: Wizard.note-warns;
             text: Wizard.erase-warning;
         }
+
+        if Wizard.disk-chosen: Gap { }
 
         HorizontalLayout {
             alignment: start;
