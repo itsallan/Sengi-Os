@@ -56,6 +56,14 @@ fn icon_names(source: &str) -> Vec<String> {
         if before.is_some_and(|c| c.is_alphanumeric() || c == '-') {
             continue;
         }
+        // `in property <string> name: "..."` declares a property, it does
+        // not name an icon.
+        if text[..text.len() - rest.len() - "name:".len()]
+            .trim_end()
+            .ends_with('>')
+        {
+            continue;
+        }
         let end = rest.find([';', ',', '}']).unwrap_or(rest.len());
         let statement = &rest[..end];
         let mut parts = statement.split('"');
@@ -89,13 +97,15 @@ fn every_icon_the_interface_names_has_a_file() {
         files.len() > 10,
         "the icon files are in ui/icons/phosphor/bold"
     );
+    // Settings draws some names itself, in NamedIcon, see the next tests.
+    let named = fs::read_to_string(root().join("crates/sengi-settings/ui/icons.slint")).unwrap();
     let mut used = 0;
     for path in slint_sources() {
         let source = fs::read_to_string(&path).unwrap();
         for name in icon_names(&source) {
             used += 1;
             assert!(
-                files.contains(&name),
+                files.contains(&name) || named.contains(&format!("root.name == \"{name}\"")),
                 "{} names the icon {name:?}, which has no file",
                 path.display()
             );
