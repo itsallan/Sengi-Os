@@ -71,6 +71,15 @@ const NAMED_KEYS: &[(&str, u32)] = &[
     ("right", 106),
     ("down", 108),
     ("super", 125),
+    ("print", 99),
+    ("mute", 113),
+    ("volumedown", 114),
+    ("volumeup", 115),
+    ("brightnessdown", 224),
+    ("brightnessup", 225),
+    ("kbdtoggle", 228),
+    ("kbddown", 229),
+    ("kbdup", 230),
 ];
 
 /// Characters in evdev code order, starting at the code in the first field.

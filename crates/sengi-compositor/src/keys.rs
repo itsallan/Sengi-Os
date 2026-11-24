@@ -17,6 +17,15 @@ pub const DOWN: u32 = 0xff54;
 const AUDIO_LOWER: u32 = 0x1008_ff11;
 const AUDIO_MUTE: u32 = 0x1008_ff12;
 const AUDIO_RAISE: u32 = 0x1008_ff13;
+/// The brightness keys of the screen and of the keyboard light, and Print.
+const MON_BRIGHTNESS_UP: u32 = 0x1008_ff02;
+const MON_BRIGHTNESS_DOWN: u32 = 0x1008_ff03;
+const KBD_LIGHT_TOGGLE: u32 = 0x1008_ff04;
+const KBD_BRIGHTNESS_UP: u32 = 0x1008_ff05;
+const KBD_BRIGHTNESS_DOWN: u32 = 0x1008_ff06;
+const PRINT: u32 = 0xff61;
+/// What Alt+Print produces: xkb puts Sys_Req on the Print key's second level.
+const SYS_REQ: u32 = 0xff15;
 /// What Shift+Tab produces.
 const ISO_LEFT_TAB: u32 = 0xfe20;
 /// XF86Switch_VT_1; the other eleven follow it.
@@ -51,6 +60,8 @@ pub enum Action {
     /// Alt+an arrow: the window to that edge of the screen.
     MoveToEdge(Edge),
     Volume(Volume),
+    Brightness(Brightness),
+    Screenshot(Shot),
     /// A key while the switcher or a menu is open.
     Overlay(Step),
 }
@@ -73,6 +84,25 @@ pub enum Edge {
     Right,
     Up,
     Down,
+}
+
+/// What the brightness keys do. The program that carries them out is
+/// sengi-brightness; the compositor itself has no bus to ask logind on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Brightness {
+    Up,
+    Down,
+    KeyboardUp,
+    KeyboardDown,
+    KeyboardToggle,
+}
+
+/// What Print takes a picture of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shot {
+    Screen,
+    /// The window that has the keyboard.
+    Window,
 }
 
 /// What the volume keys do.
@@ -118,6 +148,20 @@ pub fn binding(mods: Mods, keysym: u32) -> Option<Action> {
         AUDIO_RAISE => return Some(Action::Volume(Volume::Up)),
         AUDIO_LOWER => return Some(Action::Volume(Volume::Down)),
         AUDIO_MUTE => return Some(Action::Volume(Volume::Mute)),
+        MON_BRIGHTNESS_UP => return Some(Action::Brightness(Brightness::Up)),
+        MON_BRIGHTNESS_DOWN => return Some(Action::Brightness(Brightness::Down)),
+        KBD_BRIGHTNESS_UP => return Some(Action::Brightness(Brightness::KeyboardUp)),
+        KBD_BRIGHTNESS_DOWN => return Some(Action::Brightness(Brightness::KeyboardDown)),
+        KBD_LIGHT_TOGGLE => return Some(Action::Brightness(Brightness::KeyboardToggle)),
+        // With Alt held xkb has already turned Print into Sys_Req.
+        SYS_REQ if !mods.ctrl && !mods.logo => return Some(Action::Screenshot(Shot::Window)),
+        PRINT if !mods.ctrl && !mods.logo => {
+            return Some(Action::Screenshot(if mods.alt || mods.shift {
+                Shot::Window
+            } else {
+                Shot::Screen
+            }))
+        }
         _ => {}
     }
     let letter = char::from_u32(keysym)
@@ -162,6 +206,21 @@ pub fn binding(mods: Mods, keysym: u32) -> Option<Action> {
     None
 }
 
+/// The tail of the volume commands: what the indicator shows is read from
+/// the sink again, so it is what the keys really did. Skipped on a system
+/// without it.
+macro_rules! show_volume {
+    () => {
+        "command -v sengi-osd >/dev/null 2>&1 && exec sengi-osd volume"
+    };
+}
+
+/// True for the keys of the keyboard's own media row. They change a level
+/// and show it, which is no more than the lock screen may be told to do.
+pub fn works_when_locked(action: Action) -> bool {
+    matches!(action, Action::Volume(_) | Action::Brightness(_))
+}
+
 /// The shell command an action runs, for the ones that start a program.
 pub fn command(action: Action) -> Option<&'static str> {
     match action {
@@ -174,16 +233,27 @@ pub fn command(action: Action) -> Option<&'static str> {
         Action::Terminal => Some(
             "if command -v sengi-run >/dev/null 2>&1; then exec sengi-run foot; else exec foot; fi",
         ),
-        // The locker is configurable and tracked, see `State::spawn_locker`.
         // wpctl is what PipeWire's session manager ships; the sink is the
         // one the session chose.
-        Action::Volume(Volume::Up) => Some(
-            "wpctl set-mute @DEFAULT_AUDIO_SINK@ 0; wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+",
-        ),
-        Action::Volume(Volume::Down) => {
-            Some("wpctl set-mute @DEFAULT_AUDIO_SINK@ 0; wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-")
-        }
-        Action::Volume(Volume::Mute) => Some("wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"),
+        // Each then has the on-screen indicator show where it ended up.
+        Action::Volume(Volume::Up) => Some(concat!(
+            "wpctl set-mute @DEFAULT_AUDIO_SINK@ 0; wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+; ",
+            show_volume!()
+        )),
+        Action::Volume(Volume::Down) => Some(concat!(
+            "wpctl set-mute @DEFAULT_AUDIO_SINK@ 0; wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-; ",
+            show_volume!()
+        )),
+        Action::Volume(Volume::Mute) => Some(concat!(
+            "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle; ",
+            show_volume!()
+        )),
+        Action::Brightness(Brightness::Up) => Some("exec sengi-brightness up"),
+        Action::Brightness(Brightness::Down) => Some("exec sengi-brightness down"),
+        Action::Brightness(Brightness::KeyboardUp) => Some("exec sengi-brightness kbd-up"),
+        Action::Brightness(Brightness::KeyboardDown) => Some("exec sengi-brightness kbd-down"),
+        Action::Brightness(Brightness::KeyboardToggle) => Some("exec sengi-brightness kbd-toggle"),
+        Action::Screenshot(Shot::Screen) => Some("exec sengi-shot"),
         // The locker is configurable and tracked, see `State::spawn_locker`.
         // The window actions are carried out by `State::run_action`.
         Action::Lock
@@ -194,6 +264,7 @@ pub fn command(action: Action) -> Option<&'static str> {
         | Action::Maximise
         | Action::Snap(_)
         | Action::MoveToEdge(_)
+        | Action::Screenshot(Shot::Window)
         | Action::SwitchVt(_) => None,
     }
 }
@@ -272,6 +343,77 @@ mod tests {
         );
         let up = command(Action::Volume(Volume::Up)).unwrap();
         assert!(up.contains("wpctl set-volume") && up.contains("5%+"));
+    }
+
+    #[test]
+    fn the_brightness_keys_run_sengi_brightness_and_work_on_the_lock_screen() {
+        let none = Mods::default();
+        for (keysym, key, word) in [
+            (MON_BRIGHTNESS_UP, Brightness::Up, "up"),
+            (MON_BRIGHTNESS_DOWN, Brightness::Down, "down"),
+            (KBD_BRIGHTNESS_UP, Brightness::KeyboardUp, "kbd-up"),
+            (KBD_BRIGHTNESS_DOWN, Brightness::KeyboardDown, "kbd-down"),
+            (KBD_LIGHT_TOGGLE, Brightness::KeyboardToggle, "kbd-toggle"),
+        ] {
+            let action = Action::Brightness(key);
+            assert_eq!(binding(none, keysym), Some(action));
+            assert_eq!(binding(LOGO, keysym), Some(action));
+            assert_eq!(
+                command(action),
+                Some(&*format!("exec sengi-brightness {word}"))
+            );
+            assert!(works_when_locked(action));
+        }
+        assert!(works_when_locked(Action::Volume(Volume::Mute)));
+        assert!(!works_when_locked(Action::Launcher));
+        assert!(!works_when_locked(Action::Screenshot(Shot::Screen)));
+    }
+
+    #[test]
+    fn the_volume_keys_show_the_indicator_after_the_change() {
+        for volume in [Volume::Up, Volume::Down, Volume::Mute] {
+            let text = command(Action::Volume(volume)).unwrap();
+            let (change, show) = text.split_once("; command -v").unwrap();
+            assert!(change.contains("wpctl"));
+            assert!(show.contains("sengi-osd volume"));
+        }
+    }
+
+    #[test]
+    fn print_takes_the_screen_and_alt_or_shift_print_the_window() {
+        let shift = Mods {
+            shift: true,
+            ..Mods::default()
+        };
+        assert_eq!(
+            binding(Mods::default(), PRINT),
+            Some(Action::Screenshot(Shot::Screen))
+        );
+        assert_eq!(binding(ALT, PRINT), Some(Action::Screenshot(Shot::Window)));
+        assert_eq!(
+            binding(shift, PRINT),
+            Some(Action::Screenshot(Shot::Window))
+        );
+        // xkb turns Alt+Print into Sys_Req.
+        assert_eq!(
+            binding(ALT, SYS_REQ),
+            Some(Action::Screenshot(Shot::Window))
+        );
+        assert_eq!(
+            binding(
+                Mods {
+                    ctrl: true,
+                    ..Mods::default()
+                },
+                PRINT
+            ),
+            None
+        );
+        assert_eq!(
+            command(Action::Screenshot(Shot::Screen)),
+            Some("exec sengi-shot")
+        );
+        assert_eq!(command(Action::Screenshot(Shot::Window)), None);
     }
 
     #[test]

@@ -22,7 +22,7 @@ use smithay::{
 use crate::{
     cursor::resize_cursor,
     frame::{self, Button, Edges, Hit},
-    keys::{self, Action, Mods, Step},
+    keys::{self, Action, Mods, Shot, Step},
     layout::Rect,
     overlay::{MenuKind, Overlay},
     state::State,
@@ -267,7 +267,8 @@ impl State {
                     // for a shortcut to start anything for.
                     Some(action)
                         if (data.is_locked() || data.login_screen)
-                            && !matches!(action, Action::SwitchVt(_)) =>
+                            && !matches!(action, Action::SwitchVt(_))
+                            && !keys::works_when_locked(action) =>
                     {
                         FilterResult::Forward
                     }
@@ -287,6 +288,37 @@ impl State {
         {
             self.run_action(Action::Overlay(Step::Activate));
         }
+    }
+
+    /// Alt+Print: sengi-shot is asked for the frame of the window in front,
+    /// in the coordinates of the output it is on.
+    fn screenshot_focused_window(&mut self) {
+        let Some(window) = self.focus_stack.current().cloned() else {
+            return;
+        };
+        let (Some(frame), Some(output)) =
+            (self.frame_rect(&window), self.output_of_window(&window))
+        else {
+            return;
+        };
+        let Some(origin) = self.space.output_geometry(&output).map(|place| place.loc) else {
+            return;
+        };
+        let name = output.name();
+        let plain = !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'));
+        let which = if plain {
+            format!("--output {name} ")
+        } else {
+            String::new()
+        };
+        let (x, y) = (frame.x - origin.x, frame.y - origin.y);
+        self.spawn(&format!(
+            "exec sengi-shot {which}--region {x},{y},{},{}",
+            frame.w, frame.h
+        ));
     }
 
     fn run_action(&mut self, action: Action) {
@@ -347,7 +379,12 @@ impl State {
                     switch(vt);
                 }
             }
-            Action::Launcher | Action::Terminal | Action::Volume(_) => {}
+            Action::Screenshot(Shot::Window) => self.screenshot_focused_window(),
+            Action::Launcher
+            | Action::Terminal
+            | Action::Volume(_)
+            | Action::Brightness(_)
+            | Action::Screenshot(Shot::Screen) => {}
         }
     }
 
