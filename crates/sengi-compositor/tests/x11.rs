@@ -61,8 +61,30 @@ const X_KEY_B: u8 = 56;
 const START: &str = "";
 const RED: u32 = 0x00b0_2020;
 
-/// Whether the Xwayland binary is on the path. Without it the test says so.
+static X11_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+thread_local! {
+    // Held from the first call in a test until its thread ends.
+    static X11_TURN: std::cell::RefCell<Option<std::sync::MutexGuard<'static, ()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Whether Xwayland is installed. When it is, the test also waits for its
+/// turn: the compositors of these tests pick their display number from the
+/// same /tmp/.X<n>-lock files, and one test killing or cleaning up an
+/// Xwayland must not meet another that is starting, so they run one at a time.
 fn xwayland_installed(test: &str) -> bool {
+    let found = xwayland_found(test);
+    if found {
+        X11_TURN.with(|turn| {
+            *turn.borrow_mut() = Some(X11_TESTS.lock().unwrap_or_else(|held| held.into_inner()));
+        });
+    }
+    found
+}
+
+/// Whether the Xwayland binary is on the path. Without it the test says so.
+fn xwayland_found(test: &str) -> bool {
     let found = std::env::var_os("PATH").is_some_and(|path| {
         std::env::split_paths(&path).any(|dir: PathBuf| dir.join("Xwayland").is_file())
     });
