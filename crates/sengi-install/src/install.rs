@@ -1022,7 +1022,7 @@ impl Installer<'_> {
         self.run(&["umount", &efi])?;
         // The stick Sengi OS is running from is not another system: its
         // partitions are left out of the search.
-        let skipped = self.medium_uuids();
+        let skipped = self.medium_skips();
         let mut grub = edit::grub_default_beside();
         if !skipped.is_empty() {
             grub = edit::with_skip_list(&grub, &skipped);
@@ -1048,9 +1048,9 @@ impl Installer<'_> {
             .map_err(|why| format!("the firmware did not take a boot entry for Sengi OS: {why}"))
     }
 
-    /// The file system identifiers, as GRUB reads them, of what is on the
+    /// `identifier@device` for each file system, as GRUB reads them, of what is on the
     /// disk the live system runs from. What cannot be read is left out.
-    fn medium_uuids(&mut self) -> Vec<String> {
+    fn medium_skips(&mut self) -> Vec<String> {
         let disks = self.sys.disks(self.plan.allow_loop);
         let mut nodes = Vec::new();
         for disk in disks.iter().filter(|disk| disk.medium) {
@@ -1066,8 +1066,10 @@ impl Installer<'_> {
                 let uuid = uuid.trim().to_string();
                 let plain =
                     !uuid.is_empty() && uuid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
-                if plain && !found.contains(&uuid) {
-                    found.push(uuid);
+                // GRUB matches the identifier and the device together.
+                let entry = format!("{uuid}@{node}");
+                if plain && !found.contains(&entry) {
+                    found.push(entry);
                 }
             }
         }
@@ -2430,7 +2432,7 @@ mod tests {
             grub,
             edit::with_skip_list(
                 &edit::grub_default_beside(),
-                &["0000000000000000".to_string()]
+                &["0000000000000000@/dev/sdz3".to_string()]
             )
         );
         assert!(grub.contains("GRUB_DISABLE_OS_PROBER=false"));

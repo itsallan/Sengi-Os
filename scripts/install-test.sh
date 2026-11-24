@@ -21,7 +21,7 @@
 # instead (it needs SENGI_UEFI). The disk is made first, on the host and
 # without root, to look like a computer that came with another system: a
 # GPT with an EFI system partition that holds files of the other system
-# (among them a stand-in for the Windows boot manager), a partition of the
+# (among them stand-ins for the Windows boot manager and its BCD, which is what os-prober looks for), a partition of the
 # other system with data in it, and about 12 GiB free. After the
 # installation, and before the installed disk is started, the disk image
 # is read from outside the guest and everything is checked: the old
@@ -120,6 +120,7 @@ prepare_beside() {
 	echo "$marker_boot" >"$out/before.marker"
 	mmd -i "$out/esp.img" ::/EFI ::/EFI/Microsoft ::/EFI/Microsoft/Boot ::/EFI/Boot
 	mcopy -i "$out/esp.img" "$out/before.marker" ::/EFI/Microsoft/Boot/bootmgfw.efi
+	mcopy -i "$out/esp.img" "$out/before.marker" ::/EFI/Microsoft/Boot/BCD
 	mcopy -i "$out/esp.img" "$out/before.marker" ::/EFI/Boot/bootx64.efi
 	dd if="$out/esp.img" of="$raw" bs=512 seek="$esp_start" conv=notrunc status=none
 	rm -f "$out/esp.img"
@@ -473,7 +474,7 @@ verify_beside() {
 	else
 		check_ok "no file of the other system is gone from the EFI system partition"
 	fi
-	for file in ::/EFI/Microsoft/Boot/bootmgfw.efi ::/EFI/Boot/bootx64.efi; do
+	for file in ::/EFI/Microsoft/Boot/bootmgfw.efi ::/EFI/Microsoft/Boot/BCD ::/EFI/Boot/bootx64.efi; do
 		content=$(mcopy -i "$esp" "$file" - 2>/dev/null | head -1)
 		[ "$content" = "$marker_boot" ] && check_ok "$file is as it was" || check_fail "$file changed"
 	done
