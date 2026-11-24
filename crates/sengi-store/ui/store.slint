@@ -98,6 +98,9 @@ export component StoreWindow inherits Window {
     default-font-size: Tokens.font-size-md;
 
     private property <length> line: Tokens.dock-icon + Tokens.space-sm;
+    // However wide the window is, the list stays as wide as it opens.
+    private property <length> side: Math.max(Tokens.space-lg,
+        (root.width - Tokens.settings-page-width - Tokens.space-xxl) / 2 + Tokens.space-lg);
     private property <int> hovered: -1;
 
     // The renderer keeps two buffers and only one of them knows after a
@@ -144,7 +147,10 @@ export component StoreWindow inherits Window {
     }
 
     VerticalLayout {
-        padding: Tokens.space-lg;
+        padding-top: Tokens.space-lg;
+        padding-bottom: Tokens.space-lg;
+        padding-left: root.side;
+        padding-right: root.side;
         spacing: Tokens.space-md;
 
         field := TextField {
