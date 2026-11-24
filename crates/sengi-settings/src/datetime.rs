@@ -33,8 +33,10 @@ use crate::text;
 use crate::ui::{DateTimeData, InfoRow};
 
 const ZONEINFO: &str = "/usr/share/zoneinfo";
-/// The table of zones people choose between, one per populated area.
-const ZONE_TABLE: &str = "/usr/share/zoneinfo/zone1970.tab";
+/// The table of zones people choose between, one per country and area.
+/// Not `zone1970.tab`: that one merges places whose clocks agree since 1970,
+/// so Kigali, Bujumbura and Lusaka are only there as Africa/Maputo.
+const ZONE_TABLE: &str = "/usr/share/zoneinfo/zone.tab";
 pub const MAX_ZONES: usize = 1024;
 
 /// Where `date` is, on a merged `/usr` or not. Never looked for in PATH.
@@ -84,8 +86,9 @@ fn zone_from(countries: &str, name: &str, comment: &str) -> Option<Zone> {
     })
 }
 
-/// Reads `zone1970.tab`: tab-separated country codes, coordinates, zone
-/// name and an optional comment, with `#` lines for people.
+/// Reads `zone.tab` (`zone1970.tab` has the same layout): tab-separated
+/// country codes, coordinates, zone name and an optional comment, with `#`
+/// lines for people.
 pub fn parse_zones(table: &str) -> Vec<Zone> {
     let mut zones: Vec<Zone> = table
         .lines()
@@ -405,6 +408,28 @@ XX\t+0\tEurope/Paris\tlisted twice
         assert_eq!(york.region, "America · Eastern (most areas)");
         assert_eq!(zones[5].region, "America/Argentina · Tierra del Fuego");
         assert_eq!(zones[0].region, "Europe");
+    }
+
+    #[test]
+    fn every_country_keeps_its_own_city_in_the_list() {
+        // zone.tab has one line per country, so Kigali is there; the merged
+        // zone1970.tab only has Maputo for all of them.
+        let zones = parse_zones("MZ\t-2558+03235\tAfrica/Maputo\nRW\t-0157+03004\tAfrica/Kigali\n");
+        let names: Vec<&str> = zones.iter().map(|zone| zone.name.as_str()).collect();
+        assert_eq!(names, ["Africa/Kigali", "Africa/Maputo"]);
+        assert_eq!(zones[0].city, "Kigali");
+        assert_eq!(zones[0].region, "Africa");
+    }
+
+    #[test]
+    fn the_list_offered_on_this_system_has_kigali() {
+        // Skipped where tzdata is not installed.
+        if !Path::new(ZONE_TABLE).is_file() {
+            return;
+        }
+        let zones = zones();
+        assert!(zones.iter().any(|zone| zone.name == "Africa/Kigali"));
+        assert!(zones.iter().any(|zone| zone.name == "Africa/Maputo"));
     }
 
     #[test]
