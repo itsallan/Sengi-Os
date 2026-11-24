@@ -7,6 +7,10 @@ and the measured idle RAM and boot time.
 
 ### Added
 
+- Laptop keys: the screen brightness keys step the backlight by 5 percent and
+  never go below 5 percent, and the keyboard light keys (up, down, on/off)
+  work too, also on the lock screen. They run sengi-brightness, which asks
+  logind, so no root is needed.
 - The launcher shows every installed app as a grid of icons with names while
   nothing is typed; typing narrows it to the list, which now has a small icon
   in front of each name. The arrow keys move through the grid.
