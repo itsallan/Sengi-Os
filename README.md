@@ -118,6 +118,12 @@ for updates in the background: the timers Debian uses for that are switched
 off. Until Sengi OS has its own way of offering updates, they come when you
 ask for them, in a terminal: `sudo apt update && sudo apt upgrade`.
 
+**Installing apps.** From a terminal, `sudo apt install <package>` for Debian's
+packages, or `sudo flatpak install flathub <app>` for Flatpak apps. Flathub is
+already set up as the Flatpak source (`/etc/flatpak/remotes.d/`); the first
+`sudo flatpak` command creates the Flatpak store. There is no graphical app
+store yet.
+
 To try the installer without a spare machine, give QEMU a blank disk beside
 the ISO:
 

@@ -21,3 +21,12 @@ one asks to be kept. The licence text sits next to the files it covers.
   (https://slint.dev/terms-and-conditions). That grant is "only", not "or
   later", so a built Sengi OS program is distributed under GPL-3.0. Our own
   source files stay GPL-3.0-or-later.
+
+## Flathub repository file
+
+- What: `image/rootfs/etc/flatpak/remotes.d/flathub.flatpakrepo`, the file
+  Flathub publishes at https://dl.flathub.org/repo/flathub.flatpakrepo,
+  unchanged. It names the Flathub repository and holds its public signing
+  key, so Flatpak can add Flathub as a source.
+- Licence: none is stated by Flathub for the file. It is configuration, not
+  a program, and carries no code of ours.
