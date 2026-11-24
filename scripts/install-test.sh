@@ -49,7 +49,11 @@ annotate() {
 	[ -z "${GITHUB_ACTIONS:-}" ] || echo "::error::$*"
 	return 0
 }
-trap 'rc=$?; [ "$rc" -eq 0 ] || annotate "install-test.sh ended with status $rc"' EXIT
+on_exit() {
+	status=$?
+	[ "$status" -eq 0 ] || annotate "install-test.sh ended with status $status"
+}
+trap on_exit EXIT
 
 iso=${1:?usage: install-test.sh ISO [OUTDIR]}
 out=${2:-test-output/install}
