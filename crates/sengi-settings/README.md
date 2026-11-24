@@ -259,7 +259,8 @@ given only until it exits; a kept mode is not written to a file yet).
 - The time zone chosen here is the user's own: `clock.time-zone`, written
   as `TZ` into labwc's environment, so that everything the session
   starts from then on has it. Programs already running keep the old zone
-  until the next login. The list is tzdata's `zone1970.tab`, searched by
+  until the next login. The list is tzdata's `zone.tab`, which has a line for every country
+  (`zone1970.tab` would lose Kigali to Maputo), searched by
   typing.
 - `clock.format` is `24h` or `12h`, for the clock in the bar.
 - The system's zone and the state of network time are read from
