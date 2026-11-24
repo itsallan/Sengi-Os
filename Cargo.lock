@@ -3542,6 +3542,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sengi-brightness"
+version = "0.8.0"
+dependencies = [
+ "sengi-system",
+]
+
+[[package]]
 name = "sengi-clock"
 version = "0.8.0"
 dependencies = [

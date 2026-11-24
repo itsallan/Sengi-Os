@@ -1,0 +1,11 @@
+[package]
+name = "sengi-brightness"
+description = "Steps the screen and keyboard backlight for the brightness keys"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+# logind sets the brightness for an ordinary user; no root and no polkit.
+sengi-system = { path = "../sengi-system", features = ["services"] }

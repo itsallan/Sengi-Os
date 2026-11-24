@@ -188,12 +188,20 @@ impl Machine for Sysfs {
     }
 
     fn try_set_backlight(&self, name: &str, raw: u32) -> Result<(), Refusal> {
+        self.set_brightness("backlight", name, raw)
+    }
+}
+
+impl Sysfs {
+    /// Sets one device of a logind brightness class: `backlight` for a
+    /// panel, `leds` for a light such as the keyboard's.
+    pub fn set_brightness(&self, class: &str, name: &str, raw: u32) -> Result<(), Refusal> {
         let result: zbus::Result<()> = self.bus.call(
             LOGIND,
             SESSION_PATH,
             SESSION,
             "SetBrightness",
-            &("backlight", name, raw),
+            &(class, name, raw),
         );
         result.map_err(|error| {
             eprintln!("{}: setting the brightness: {error}", crate::program_name());
