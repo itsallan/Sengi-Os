@@ -211,7 +211,11 @@ mod tests {
     #[test]
     fn menu_rows_are_22_pixels_in_6_of_padding_with_pulled_in_separators() {
         let theme = Theme::from_tokens(&sengi_tokens::Tokens::builtin());
-        let layout = menu(&theme, None, &[Row::Item("a"), Row::Separator, Row::Item("b")]);
+        let layout = menu(
+            &theme,
+            None,
+            &[Row::Item("a"), Row::Separator, Row::Item("b")],
+        );
         let rows: Vec<_> = layout.parts.iter().map(|part| part.rect).collect();
         let width = theme.card.menu_width;
         assert_eq!(rows[0], Rect::new(6, 6, width - 12, 22));
