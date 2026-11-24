@@ -92,6 +92,12 @@ pub fn grub_default_beside() -> String {
     )
 }
 
+/// `text` with the search for other systems told to leave out the file
+/// systems with these identifiers.
+pub fn with_skip_list(text: &str, uuids: &[String]) -> String {
+    format!("{text}GRUB_OS_PROBER_SKIP_LIST=\"{}\"\n", uuids.join(" "))
+}
+
 /// The same with the menu shown for a few seconds, which is how a person
 /// gets to the other system when there is one. Used only where one was
 /// found: a disk with nothing else on it keeps its hidden menu, which is
@@ -591,6 +597,22 @@ user = \"live\"
         assert!(shown.contains("GRUB_TIMEOUT=3\n"));
         assert!(shown.contains("GRUB_DISABLE_OS_PROBER=false\n"));
         assert!(shown.contains("GRUB_DEFAULT=0\n"));
+    }
+
+    #[test]
+    fn the_stick_is_left_out_of_the_search_for_other_systems() {
+        let text = with_skip_list(
+            &grub_default_beside(),
+            &[
+                "0000000000000000".to_string(),
+                "2024-01-01-00-00-00-00".to_string(),
+            ],
+        );
+        assert!(text
+            .ends_with("GRUB_OS_PROBER_SKIP_LIST=\"0000000000000000 2024-01-01-00-00-00-00\"\n"));
+        // Still one setting each, and the menu variant keeps it.
+        assert_eq!(text.matches("GRUB_DISABLE_OS_PROBER=").count(), 1);
+        assert!(grub_with_menu(&text).contains("GRUB_OS_PROBER_SKIP_LIST="));
     }
 
     #[test]

@@ -1011,12 +1011,28 @@ impl Installer<'_> {
             "--no-nvram",
             "--no-uefi-secure-boot",
         ])?;
+        if !self.at("boot/efi/EFI/sengios/grubx64.efi").is_file() {
+            return Err("grub-install left no /boot/efi/EFI/sengios/grubx64.efi".to_string());
+        }
+        // os-prober looks for a mounted partition at the place it is
+        // mounted, which is not a place inside this chroot. Unmounted, it
+        // mounts the EFI system partition itself, read-only, and finds
+        // the other system's boot manager on it.
+        let efi = self.at("boot/efi").to_string_lossy().into_owned();
+        self.run(&["umount", &efi])?;
+        // The stick Sengi OS is running from is not another system: its
+        // partitions are left out of the search.
+        let skipped = self.medium_uuids();
+        let mut grub = edit::grub_default_beside();
+        if !skipped.is_empty() {
+            grub = edit::with_skip_list(&grub, &skipped);
+        }
+        self.write("etc/default/grub", &grub)?;
         self.inside(&["update-grub"])?;
         let mut menu = self.read("boot/grub/grub.cfg")?;
         if edit::menu_has_other_systems(&menu) {
             // Somebody has to be able to choose: the menu is shown.
-            let grub = edit::grub_with_menu(&edit::grub_default_beside());
-            self.write("etc/default/grub", &grub)?;
+            self.write("etc/default/grub", &edit::grub_with_menu(&grub))?;
             self.inside(&["update-grub"])?;
             menu = self.read("boot/grub/grub.cfg")?;
         } else {
@@ -1026,13 +1042,36 @@ impl Installer<'_> {
             );
         }
         self.check_menu(&menu)?;
-        if !self.at("boot/efi/EFI/sengios/grubx64.efi").is_file() {
-            return Err("grub-install left no /boot/efi/EFI/sengios/grubx64.efi".to_string());
-        }
         // Without the fallback path the firmware's entry is the only way
         // in, so here it is not allowed to fail.
         self.firmware_entry()
             .map_err(|why| format!("the firmware did not take a boot entry for Sengi OS: {why}"))
+    }
+
+    /// The file system identifiers, as GRUB reads them, of what is on the
+    /// disk the live system runs from. What cannot be read is left out.
+    fn medium_uuids(&mut self) -> Vec<String> {
+        let disks = self.sys.disks(self.plan.allow_loop);
+        let mut nodes = Vec::new();
+        for disk in disks.iter().filter(|disk| disk.medium) {
+            if !disk.fstype.is_empty() {
+                nodes.push(disk.path.clone());
+            }
+            nodes.extend(disk.parts.iter().map(|part| format!("/dev/{}", part.name)));
+        }
+        let mut found: Vec<String> = Vec::new();
+        for node in nodes {
+            let probed = self.inside(&["grub-probe", "--target=fs_uuid", "--device", &node]);
+            if let Ok(uuid) = probed {
+                let uuid = uuid.trim().to_string();
+                let plain =
+                    !uuid.is_empty() && uuid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+                if plain && !found.contains(&uuid) {
+                    found.push(uuid);
+                }
+            }
+        }
+        found
     }
 
     fn boot_loader(&mut self) -> Result<(), String> {
@@ -1401,6 +1440,7 @@ mod tests {
                     }
                     self.dump = Some(dump);
                 }
+                "grub-probe" => stdout = "0000000000000000\n".to_string(),
                 "partx" if !self.stale_table => self.kernel_dump = self.dump.clone(),
                 "blkid" if inner.contains(&"TYPE") => {
                     stdout = format!("{}\n", self.esp_type);
@@ -2274,6 +2314,22 @@ mod tests {
         world.fake.dump = Some(BESIDE_DUMP.to_string());
         world.fake.kernel_dump = Some(BESIDE_DUMP.to_string());
         world.fake.uefi = true;
+        // The stick the live system runs from, with a partition of its own.
+        let mut stick = world.fake.disks[0].clone();
+        stick.name = "sdz".to_string();
+        stick.path = "/dev/sdz".to_string();
+        stick.medium = true;
+        stick.parts = vec![crate::disks::Part {
+            name: "sdz3".to_string(),
+            number: 3,
+            start: 1,
+            size: 1,
+            kind: String::new(),
+            uuid: String::new(),
+            fstype: "hfsplus".to_string(),
+            label: String::new(),
+        }];
+        world.fake.disks.push(stick);
         world.fake.firmware =
             "BootCurrent: 0000\nBootOrder: 0000\nBoot0000* Windows Boot Manager\tHD(1,GPT,x)\n";
         world.fake.created = "BootOrder: 0001,0000\nBoot0001* Sengi OS\tHD(1,GPT,x)\nBoot0000* Windows Boot Manager\tHD(1,GPT,x)\n";
@@ -2359,9 +2415,24 @@ mod tests {
         // The new entry is first already, so the order is left as it is.
         assert!(!fake.ran("efibootmgr --quiet --bootorder"));
 
+        // The EFI system partition is let go before GRUB looks for other
+        // systems, which then mount it themselves; the stick is left out.
+        assert!(
+            fake.position(&format!("umount {target}/boot/efi"))
+                < fake.position(&format!("chroot {target} update-grub"))
+        );
+        assert!(fake.ran(&format!(
+            "chroot {target} grub-probe --target=fs_uuid --device /dev/sdz3"
+        )));
         // Other systems are looked for, and nothing else is different.
         let grub = world.target.read("etc/default/grub");
-        assert_eq!(grub, edit::grub_default_beside());
+        assert_eq!(
+            grub,
+            edit::with_skip_list(
+                &edit::grub_default_beside(),
+                &["0000000000000000".to_string()]
+            )
+        );
         assert!(grub.contains("GRUB_DISABLE_OS_PROBER=false"));
         assert!(fake.ran(&format!("mount --bind /run {target}/run")));
         let fstab = world.target.read("etc/fstab");

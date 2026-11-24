@@ -378,6 +378,11 @@ rm -f "$out/mon.in"
 # now against the disk as it was made. Nothing is trusted that the guest
 # says about itself.
 dual_fail=0
+# Seconds GRUB's menu waits for a person to choose between systems. Where
+# another system is found the menu is shown, and the wait is the
+# person's, not the system's: it is left out of the boot figure and
+# reported on its own.
+menu_wait=0
 check_fail() {
 	echo "FAIL: $1" >&2
 	annotate "FAIL: $1"
@@ -492,6 +497,10 @@ verify_beside() {
 	*) check_fail "the boot menu does not list Sengi OS" ;;
 	esac
 	# Sengi OS comes first in the menu.
+	grub_default=$(debugfs -R "cat /etc/default/grub" "$target" 2>/dev/null)
+	case $grub_default in
+	*GRUB_TIMEOUT_STYLE=menu*) menu_wait=$(printf '%s\n' "$grub_default" | sed -n 's/^GRUB_TIMEOUT=//p' | head -1) ;;
+	esac
 	first_entry=$(printf '%s\n' "$menu" | sed -n "s/^menuentry '\\([^']*\\)'.*/\\1/p" | head -1)
 	case $first_entry in
 	"Sengi OS"*) check_ok "Sengi OS is the first entry of the menu" ;;
@@ -557,13 +566,14 @@ serial=$report
 
 ram_mb=$(tr -d '\r' <"$serial" | sed -n 's/.*SENGI-IDLE ram_mb=\([0-9]*\).*/\1/p' | head -1)
 installed=$(tr -d '\r' <"$serial" | sed -n 's/.*SENGI-INSTALLED //p' | head -1)
-total_s=$(echo "$login_s $desktop_s" | awk '{printf "%.1f", $1 + $2}')
+total_s=$(echo "$login_s $desktop_s ${menu_wait:-0}" | awk '{printf "%.1f", $1 + $2 - $3}')
 grep SENGI-INFO "$serial" | sed 's/.*SENGI-INFO //' >"$out/guest-info-installed.txt" || true
 {
 	echo "install_s=$install_s"
 	echo "installed_boot_to_login_s=$login_s"
 	echo "installed_login_to_desktop_s=$desktop_s"
 	echo "installed_boot_s=$total_s"
+	echo "installed_menu_wait_s=${menu_wait:-0}"
 	echo "installed_idle_ram_mb=$ram_mb"
 	echo "install_live_boot_s=$live_s"
 	echo "install_firmware=$firmware"
