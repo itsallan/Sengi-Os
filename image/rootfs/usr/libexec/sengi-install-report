@@ -109,6 +109,11 @@ firmware=bios
 layout=$(sed -n 's/^XKB_DEFAULT_LAYOUT=//p' /usr/share/sengi-os/greeter/environment)
 echo "SENGI-INSTALLED user=$user host=$(cat /etc/hostname) zone=$(cat /etc/timezone 2>/dev/null) root=$root_source type=$root_type firmware=$firmware keyboard=$layout" >$port
 
+# The boot menu says "Sengi OS", not "Sengi OS GNU/Linux".
+if grep -E '^[[:space:]]*(menuentry|submenu) ' /boot/grub/grub.cfg 2>/dev/null | grep -q 'GNU/Linux'; then
+	fail "the boot menu still says GNU/Linux"
+fi
+
 # The live image's account and its way to root are gone.
 if id live >/dev/null 2>&1; then fail "there is a live user"; fi
 [ ! -e /etc/sudoers.d/live ] || fail "the live user's sudo rule is still there"
