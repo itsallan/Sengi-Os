@@ -6,7 +6,7 @@
 // (the desktop menu and the window menu), and the keys work as the session
 // menu's do: the arrows move the highlight, Return chooses, Escape closes.
 
-import { Tokens, SengiText, SengiSurface } from "components.slint";
+import { Tokens, SengiText, SengiSurface, SengiIcon } from "components.slint";
 
 export struct MenuRow {
     id: int,
@@ -36,20 +36,6 @@ export struct MenuPanel {
     left: length,
     right: length,
     top: length,
-}
-
-// Marks are drawn as stroked paths on the same 16 unit grid as bar icons.
-component Mark inherits Path {
-    in property <color> ink;
-    width: Tokens.bar-icon;
-    height: Tokens.bar-icon;
-    viewbox-width: 16;
-    viewbox-height: 16;
-    stroke: root.ink;
-    stroke-width: Tokens.icon-stroke;
-    stroke-line-cap: round;
-    stroke-line-join: round;
-    fill: transparent;
 }
 
 component Row inherits Rectangle {
@@ -95,13 +81,13 @@ component Row inherits Rectangle {
         if root.marks: Rectangle {
             width: Tokens.bar-icon;
 
-            if root.entry.check && root.entry.on: Mark {
+            if root.entry.check && root.entry.on: SengiIcon {
                 ink: root.ink;
-                commands: "M3.5 8.5l3 3 6-7";
+                name: "check";
             }
-            if root.entry.check && root.entry.mixed: Mark {
+            if root.entry.check && root.entry.mixed: SengiIcon {
                 ink: root.ink;
-                commands: "M4 8h8";
+                name: "minus";
             }
             if root.entry.radio && root.entry.on: Rectangle {
                 width: Tokens.space-sm;
@@ -130,9 +116,9 @@ component Row inherits Rectangle {
         if root.entry.submenu: Rectangle {
             width: Tokens.bar-icon;
 
-            Mark {
+            SengiIcon {
                 ink: root.ink;
-                commands: "M6 3.5l4.5 4.5-4.5 4.5";
+                name: "caret-right";
             }
         }
     }

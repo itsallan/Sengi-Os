@@ -1,6 +1,6 @@
 // The Sengi OS dock: a centred panel of app icons at the bottom of the screen.
 
-import { Tokens, SengiText } from "components.slint";
+import { Tokens, SengiText, SengiIcon } from "components.slint";
 
 export enum DockIcon {
     // The search button, drawn here.
@@ -28,18 +28,6 @@ export struct DockItem {
     present: bool,
 }
 
-// Our own icons are drawn as stroked paths on the 40 unit grid of the tile.
-component Glyph inherits Path {
-    width: 100%;
-    height: 100%;
-    viewbox-width: 40;
-    viewbox-height: 40;
-    stroke-width: Tokens.icon-stroke * 2;
-    stroke-line-cap: round;
-    stroke-line-join: round;
-    fill: transparent;
-}
-
 component Tile inherits Rectangle {
     width: Tokens.dock-item;
     height: Tokens.dock-item;
@@ -48,9 +36,11 @@ component Tile inherits Rectangle {
 
 component SearchIcon inherits Tile {
     background: Tokens.color-accent;
-    Glyph {
-        stroke: Tokens.color-accent-text;
-        commands: "M25 18a7 7 0 1 1-14 0a7 7 0 1 1 14 0z M23.5 23.5L30 30";
+    SengiIcon {
+        name: "magnifying-glass";
+        ink: Tokens.color-accent-text;
+        width: Tokens.dock-item / 2;
+        height: self.width;
     }
 }
 
@@ -58,13 +48,11 @@ component TerminalIcon inherits Tile {
     background: Tokens.color-bg;
     border-width: Tokens.border-width;
     border-color: Tokens.color-border;
-    Glyph {
-        stroke: Tokens.color-accent;
-        commands: "M10 13l7 7l-7 7";
-    }
-    Glyph {
-        stroke: Tokens.color-text;
-        commands: "M21 28h9";
+    SengiIcon {
+        name: "terminal";
+        ink: Tokens.color-accent;
+        width: Tokens.dock-item / 2;
+        height: self.width;
     }
 }
 

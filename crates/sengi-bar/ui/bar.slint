@@ -1,6 +1,6 @@
 // The Sengi OS top bar: menu on the left, status and session on the right.
 
-import { Tokens, SengiText } from "components.slint";
+import { Tokens, SengiText, SengiIcon } from "components.slint";
 import { TrayMenu, MenuPanel, MenuRow } from "tray-menu.slint";
 
 // The menu is drawn by this same program, started again for the purpose.
@@ -59,30 +59,17 @@ component BarItem inherits Rectangle {
     @children
 }
 
-// Icons are drawn as stroked paths on a 16 unit grid.
-component Icon inherits Path {
-    width: Tokens.bar-icon;
-    height: Tokens.bar-icon;
-    viewbox-width: 16;
-    viewbox-height: 16;
-    stroke: Tokens.color-text;
-    stroke-width: Tokens.icon-stroke;
-    stroke-line-cap: round;
-    stroke-line-join: round;
-    fill: transparent;
-}
-
-component NotificationsIcon inherits Icon {
-    commands: "M8 2a4 4 0 0 0-4 4v3l-1.5 2.5h11L12 9V6a4 4 0 0 0-4-4z M6.5 13.5a1.5 1.5 0 0 0 3 0";
+component NotificationsIcon inherits SengiIcon {
+    name: "bell";
 }
 
 // Three dots: there are more tray icons than fit.
-component MoreIcon inherits Icon {
-    commands: "M3.5 8h.01 M8 8h.01 M12.5 8h.01";
+component MoreIcon inherits SengiIcon {
+    name: "dots-three";
 }
 
-component PowerIcon inherits Icon {
-    commands: "M5 4.2a5 5 0 1 0 6 0 M8 2v5.5";
+component PowerIcon inherits SengiIcon {
+    name: "power";
 }
 
 component IconItem inherits Rectangle {

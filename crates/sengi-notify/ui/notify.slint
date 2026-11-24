@@ -5,7 +5,7 @@
 // are. With the centre open it covers the output, see-through around the
 // panel, so that a click anywhere else lands on it and closes the centre.
 
-import { Tokens, SengiText, SengiLabel, SengiSurface, SengiButton, SengiToggle } from "components.slint";
+import { Tokens, SengiText, SengiLabel, SengiSurface, SengiButton, SengiToggle, SengiIcon } from "components.slint";
 
 export struct ActionItem {
     key: string,
@@ -34,7 +34,6 @@ export struct HistoryItem {
     critical: bool,
 }
 
-// Stroked on a 16 unit grid, like the icons in the bar.
 component CloseButton inherits Rectangle {
     callback clicked();
 
@@ -44,16 +43,11 @@ component CloseButton inherits Rectangle {
     background: touch.has-hover ? Tokens.color-surface-hover : transparent;
     animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
 
-    Path {
+    SengiIcon {
+        name: "x";
         width: Tokens.font-size-lg;
         height: self.width;
-        viewbox-width: 16;
-        viewbox-height: 16;
-        commands: "M4.5 4.5l7 7 M11.5 4.5l-7 7";
-        stroke: touch.has-hover ? Tokens.color-text : Tokens.color-text-muted;
-        stroke-width: Tokens.icon-stroke;
-        stroke-line-cap: round;
-        fill: transparent;
+        ink: touch.has-hover ? Tokens.color-text : Tokens.color-text-muted;
     }
 
     touch := TouchArea {
