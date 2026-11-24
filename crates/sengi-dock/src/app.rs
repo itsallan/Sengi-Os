@@ -71,8 +71,9 @@ struct State {
     rows: Vec<Row>,
     /// Icons by item key.
     icons: HashMap<String, IconState>,
-    /// Icons to start decoding: item key, icon name, pixels per side.
-    wanted: Vec<(String, String, u32)>,
+    /// Icons to start decoding: item key, the icon names to try in order,
+    /// pixels per side.
+    wanted: Vec<(String, Vec<String>, u32)>,
     decoder: Decoder,
     launches: Launches,
     /// The dock's generation the icons were looked up in.
@@ -120,11 +121,16 @@ impl State {
             Icon::Named(name) => {
                 if !self.icons.contains_key(&item.key) {
                     // Decoding happens elsewhere; see `start_decoding`.
-                    let state = if name.is_empty() {
+                    let names: Vec<String> = std::iter::once(name)
+                        .chain(&item.alternatives)
+                        .filter(|name| !name.is_empty())
+                        .cloned()
+                        .collect();
+                    let state = if names.is_empty() {
                         IconState::Ready(None)
                     } else {
                         let pixels = self.icon_pixels(icon_size);
-                        self.wanted.push((item.key.clone(), name.clone(), pixels));
+                        self.wanted.push((item.key.clone(), names, pixels));
                         IconState::Loading
                     };
                     self.icons.insert(item.key.clone(), state);
@@ -305,9 +311,12 @@ impl App {
         let spawned = std::thread::Builder::new()
             .name("icons".into())
             .spawn(move || {
-                for (key, name, pixels) in wanted {
-                    let icon = icons::find(&dirs, None, &name, pixels, Contexts::Apps)
-                        .and_then(|path| decoder.decode_file(&path, pixels, DECODE_TIMEOUT));
+                for (key, names, pixels) in wanted {
+                    // The first name that has an image that draws something.
+                    let icon = names.iter().find_map(|name| {
+                        icons::find(&dirs, None, name, pixels, Contexts::Apps)
+                            .and_then(|path| decoder.decode_file(&path, pixels, DECODE_TIMEOUT))
+                    });
                     deliver(Message::Icon { key, pixels, icon });
                 }
             });

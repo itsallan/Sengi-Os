@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
-use sengi_apps::{matching, AppIndex, DesktopEntry, Env};
+use sengi_apps::{exec, matching, AppIndex, DesktopEntry, Env};
 
 use crate::windows::Window;
 
@@ -57,6 +57,9 @@ pub struct Item {
     pub key: String,
     pub name: String,
     pub icon: Icon,
+    /// Other icon names to try, in order, when `icon` is not found or draws
+    /// nothing: the program the app starts, then its app_id.
+    pub alternatives: Vec<String>,
     /// Shown on the fallback tile when the icon cannot be loaded.
     pub letter: String,
     /// Whether clicking can start the app: it has a desktop entry.
@@ -354,12 +357,29 @@ impl Dock {
             // an icon is installed under it.
             None => (key.clone(), Icon::Named(key.clone()), false),
         };
+        // An entry's own icon may be missing or may draw nothing (xterm's
+        // is made of text), while the program's name is often an icon too.
+        let mut alternatives: Vec<String> = Vec::new();
+        let own_name = match &icon {
+            Icon::Named(own) => own.as_str(),
+            _ => "",
+        };
+        let program = self
+            .apps
+            .get(&key)
+            .and_then(|entry| exec::program_name(&entry.exec));
+        for other in program.into_iter().chain([key.clone()]) {
+            if other != own_name && !other.is_empty() && !alternatives.contains(&other) {
+                alternatives.push(other);
+            }
+        }
         Item {
             kind,
             letter: sengi_text::initial(&name),
             key,
             name,
             icon,
+            alternatives,
             launchable,
             windows,
         }
@@ -412,6 +432,7 @@ impl Dock {
             key: LAUNCHER_KEY.to_string(),
             name: "Search".to_string(),
             icon: Icon::Search,
+            alternatives: Vec::new(),
             letter: String::new(),
             launchable: true,
             windows: Vec::new(),
@@ -448,6 +469,7 @@ impl Dock {
                     letter: sengi_text::initial(&name),
                     name,
                     icon: Icon::Named(String::new()),
+                    alternatives: Vec::new(),
                     launchable: false,
                     windows: refs(group),
                 });
@@ -523,6 +545,25 @@ mod tests {
         assert!(items[1].running());
         assert!(items[1].focused());
         assert_eq!(items[1].window_count(), 1);
+    }
+
+    #[test]
+    fn an_icon_that_may_draw_nothing_has_the_program_name_to_fall_back_on() {
+        // Debian's xterm: the entry's icon is made of text, the program's
+        // name is an icon of its own, and the X11 window's class finds it.
+        let mut xterm = entry("debian-xterm", "XTerm", "xterm");
+        xterm.icon = "mini.xterm".into();
+        xterm.wm_class = Some("XTerm".into());
+        let mut dock = Dock::new(
+            AppIndex::from_entries(vec![xterm]),
+            Vec::new(),
+            Vec::new(),
+            env(),
+        );
+        let items = dock.items(&[window(1, "XTerm")]);
+        assert_eq!(items[1].name, "XTerm");
+        assert_eq!(items[1].icon, Icon::Named("mini.xterm".into()));
+        assert_eq!(items[1].alternatives, ["xterm", "debian-xterm"]);
     }
 
     #[test]
@@ -784,6 +825,7 @@ mod tests {
             key: "foot".into(),
             name: "Foot".into(),
             icon: Icon::Terminal,
+            alternatives: Vec::new(),
             letter: "F".into(),
             launchable: true,
             windows,

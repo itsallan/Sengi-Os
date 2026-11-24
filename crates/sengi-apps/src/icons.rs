@@ -289,6 +289,13 @@ pub struct Pixels {
     pub data: Vec<u8>,
 }
 
+impl Pixels {
+    /// Whether every pixel is fully transparent.
+    pub fn is_blank(&self) -> bool {
+        self.data.iter().skip(3).step_by(4).all(|&alpha| alpha == 0)
+    }
+}
+
 /// How every PNG file begins.
 const PNG_MAGIC: &[u8] = b"\x89PNG\r\n\x1a\n";
 
@@ -323,13 +330,17 @@ pub fn load(path: &Path, pixels: u32) -> Option<Pixels> {
         return None;
     }
     let bytes = read_icon(path)?;
+    // An image with nothing drawn in it is no icon: an SVG made of text,
+    // which is not drawn because no fonts are loaded, comes out empty. The
+    // caller then falls back to another name or to a letter, not a blank.
+    let drawn = |icon: Pixels| (!icon.is_blank()).then_some(icon);
     if bytes.starts_with(PNG_MAGIC) {
         let (width, height, rgba) = decode_png(&bytes)?;
-        return Some(fit(&rgba, width, height, pixels));
+        return drawn(fit(&rgba, width, height, pixels));
     }
     #[cfg(feature = "svg")]
     if bytes.len() as u64 <= MAX_SVG_BYTES {
-        return render_svg(&bytes, pixels);
+        return render_svg(&bytes, pixels).and_then(drawn);
     }
     None
 }
@@ -904,7 +915,33 @@ mod tray_tests {
              <image width=\"8\" height=\"8\" xlink:href=\"/dev/zero\"/></svg>",
         )
         .unwrap();
-        assert!(load(&outer, 8).unwrap().data.iter().all(|&byte| byte == 0));
+        // Nothing was read from /dev/zero, so nothing is drawn: no icon.
+        assert!(load(&outer, 8).is_none());
+    }
+
+    #[test]
+    fn an_svg_that_draws_nothing_is_no_icon() {
+        let root = temp_dir("icons");
+        // Text is not drawn, as no fonts are loaded: xterm's small icon is
+        // made of it.
+        let text = root.join("text.svg");
+        fs::write(
+            &text,
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 16 16\">\
+             <text x=\"1\" y=\"12\" font-size=\"10\">xterm</text></svg>",
+        )
+        .unwrap();
+        assert!(load(&text, 32).is_none());
+
+        // The same size with something drawn in it is an icon.
+        let shape = root.join("shape.svg");
+        fs::write(
+            &shape,
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 16 16\">\
+             <rect x=\"4\" y=\"4\" width=\"8\" height=\"8\"/></svg>",
+        )
+        .unwrap();
+        assert!(load(&shape, 32).is_some());
     }
 
     #[test]
@@ -1250,7 +1287,20 @@ mod app_tests {
 
         let grey_alpha = root.join("ga.png");
         write_png(&grey_alpha, 1, 1, png::ColorType::GrayscaleAlpha, &[255, 0]);
-        assert_eq!(load(&grey_alpha, 2).unwrap().data, [0; 16]);
+        // Fully transparent: nothing to show, so no icon.
+        assert!(load(&grey_alpha, 2).is_none());
+        let grey_alpha_seen = root.join("ga-seen.png");
+        write_png(
+            &grey_alpha_seen,
+            1,
+            1,
+            png::ColorType::GrayscaleAlpha,
+            &[255, 255],
+        );
+        assert_eq!(
+            load(&grey_alpha_seen, 2).unwrap().data,
+            [255, 255, 255, 255].repeat(4)
+        );
     }
 
     #[test]
@@ -1301,9 +1351,9 @@ mod app_tests {
                 ),
             )
             .unwrap();
-            // It renders, promptly, with nothing where the image would be.
-            let pixels = load(&path, 8).unwrap();
-            assert!(pixels.data.iter().all(|&byte| byte == 0));
+            // It is read promptly, with nothing where the image would be,
+            // which leaves no icon at all.
+            assert!(load(&path, 8).is_none());
         }
     }
 
