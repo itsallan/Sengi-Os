@@ -113,6 +113,10 @@ one account that uses `sudo` with its password, and a locked root account.
 or another system (dual boot); choosing or laying out partitions by hand.
 Secure Boot has to be off.
 
+**Firmware.** Wi-Fi and Bluetooth chips usually need firmware that is not free
+software. The image includes Debian's set for the common ones (Intel,
+Realtek, MediaTek, Atheros, Broadcom); see `THIRD-PARTY-NOTICES.md`.
+
 **Updates do not install themselves.** An installed Sengi OS does not look
 for updates in the background: the timers Debian uses for that are switched
 off. Until Sengi OS has its own way of offering updates, they come when you

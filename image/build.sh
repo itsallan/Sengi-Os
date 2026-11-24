@@ -84,9 +84,13 @@ install -D -m 0755 "$work/target/release/sengi-compositor" "$work/overlay/usr/bi
 
 components=main
 packages=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$src/image/packages.list" | paste -sd, -)
-if [ "${SENGI_NONFREE_FIRMWARE:-0}" = 1 ]; then
+# Wi-Fi and Bluetooth chips need firmware that is not free software, from
+# Debian's non-free-firmware section: Intel (Wi-Fi and Bluetooth are in one
+# package), Realtek, MediaTek, Atheros and Broadcom, plus Intel graphics
+# firmware and CPU microcode. SENGI_NONFREE_FIRMWARE=0 builds without it.
+if [ "${SENGI_NONFREE_FIRMWARE:-1}" = 1 ]; then
 	components="main non-free-firmware"
-	packages="$packages,firmware-iwlwifi,firmware-intel-graphics,intel-microcode"
+	packages="$packages,firmware-iwlwifi,firmware-realtek,firmware-mediatek,firmware-atheros,firmware-brcm80211,firmware-intel-graphics,intel-microcode"
 fi
 
 mmdebstrap --variant=minbase \

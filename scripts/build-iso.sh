@@ -17,7 +17,7 @@ mkdir -p "$root/out"
 "$engine" run --rm --privileged --security-opt label=disable \
 	-v "$root":/src:ro -v "$root/out":/out -v /work \
 	-e SUITE="$SUITE" -e SNAPSHOT="$SNAPSHOT" -e SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
-	-e VERSION="$version" -e SENGI_NONFREE_FIRMWARE="${SENGI_NONFREE_FIRMWARE:-0}" \
+	-e VERSION="$version" -e SENGI_NONFREE_FIRMWARE="${SENGI_NONFREE_FIRMWARE:-1}" \
 	"$tag" /src/image/build.sh
 
 cat "$root/out/sengi-os-$version-amd64.iso.sha256"

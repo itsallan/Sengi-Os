@@ -30,3 +30,15 @@ one asks to be kept. The licence text sits next to the files it covers.
   key, so Flatpak can add Flathub as a source.
 - Licence: none is stated by Flathub for the file. It is configuration, not
   a program, and carries no code of ours.
+
+## Hardware firmware
+
+- What: the image includes Debian's `firmware-iwlwifi`, `firmware-realtek`,
+  `firmware-mediatek`, `firmware-atheros`, `firmware-brcm80211` and
+  `firmware-intel-graphics` packages, and `intel-microcode`, from the
+  `non-free-firmware` section. They are binary files that the kernel loads
+  into Wi-Fi, Bluetooth and graphics chips. Nothing of ours links them.
+- Licence: each maker's own, which is not free software but allows
+  redistribution. The texts are in the image under
+  `/usr/share/doc/<package>/copyright`. Build the image without them with
+  `SENGI_NONFREE_FIRMWARE=0 scripts/build-iso.sh`.

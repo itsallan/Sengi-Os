@@ -3,6 +3,12 @@
 All notable changes to Sengi OS. Each release section lists what is in its ISO
 and the measured idle RAM and boot time.
 
+## Unreleased
+
+- Wi-Fi and Bluetooth firmware is in the image: Intel (both radios), Realtek,
+  MediaTek, Atheros and Broadcom, plus Intel graphics firmware and CPU
+  microcode, from Debian's non-free-firmware section.
+
 ## 0.8.0
 
 Our own compositor: sengi-compositor is now what Sengi OS runs. labwc stays
