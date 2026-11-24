@@ -43,6 +43,13 @@ set -eu
 # A monitor whose QEMU has gone is a broken pipe; the script says what
 # happened and does not die of it.
 trap "" PIPE
+# On a CI runner a failure is also an annotation, which can be read without
+# the log.
+annotate() {
+	[ -z "${GITHUB_ACTIONS:-}" ] || echo "::error::$*"
+	return 0
+}
+trap 'rc=$?; [ "$rc" -eq 0 ] || annotate "install-test.sh ended with status $rc"' EXIT
 
 iso=${1:?usage: install-test.sh ISO [OUTDIR]}
 out=${2:-test-output/install}
@@ -234,6 +241,7 @@ type_text() {
 
 give_up() {
 	echo "FAIL: $1" >&2
+	annotate "FAIL: $1"
 	shot "${2:-failure}"
 	stop
 	sed -n 's/.*SENGI-FAIL /FAIL: /p' "$out"/serial-*.log >&2
@@ -366,6 +374,7 @@ rm -f "$out/mon.in"
 dual_fail=0
 check_fail() {
 	echo "FAIL: $1" >&2
+	annotate "FAIL: $1"
 	echo "FAIL: $1" >>"$out/dualboot-checks.txt"
 	dual_fail=1
 }
