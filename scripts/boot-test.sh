@@ -300,6 +300,17 @@ if [ "$changed" -lt "$window_bytes" ]; then
 	store_fail="a click on the dock's Store icon opened no window ($changed bytes of the screen changed)"
 	key esc 1
 fi
+
+# Search for something. With a network the list of Flathub comes in and the
+# matches are shown; without one the window says it cannot reach it. The
+# shot shows which, and the test does not depend on it.
+if [ -z "$store_fail" ]; then
+	for letter in f i r e; do
+		key "$letter" 0.3
+	done
+	sleep 20
+	shot store-search
+fi
 key meta_l-q 2
 pointer $((screen_w / 8)) $((screen_h / 2))
 rm -f "$out/before.ppm" "$out/with.ppm"
