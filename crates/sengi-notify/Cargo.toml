@@ -4,6 +4,7 @@ description = "The Sengi OS notification service and notification centre"
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
+license.workspace = true
 build = "build.rs"
 
 [dependencies]

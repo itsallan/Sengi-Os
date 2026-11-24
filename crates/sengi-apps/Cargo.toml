@@ -4,6 +4,7 @@ description = "Desktop entries, launching and icons for the Sengi OS shell"
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [features]
 # Icon lookup and the decoder child. Off unless asked for, so a program that

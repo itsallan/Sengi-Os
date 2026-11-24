@@ -4,6 +4,7 @@ description = "System services for the Sengi OS shell: buses, Wi-Fi, Bluetooth, 
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [features]
 # The hand-opened bus connections, for a program that speaks D-Bus itself.

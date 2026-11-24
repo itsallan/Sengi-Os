@@ -4,6 +4,7 @@ description = "Puts Sengi OS on a disk: the part of the installer that runs as r
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [dependencies]
 # The plan is written in the settings file's format and read by its parser,
