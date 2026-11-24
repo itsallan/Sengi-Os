@@ -3,12 +3,15 @@
 //! layer-shell surface and the preview example.
 
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
 
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use sengi_apps::decoder::Pixels;
+use slint::{ComponentHandle, Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
-use crate::cli::Invocation;
+use crate::cli::{Invocation, Mode};
+use crate::icons::Request;
 use crate::session::Session;
 
 slint::include_modules!();
@@ -59,8 +62,30 @@ fn keep_edge_spaces(text: &str) -> String {
     )
 }
 
-fn show(window: &LauncherWindow, session: &Session) {
-    let rows: Vec<Row> = session
+/// How the results are laid out: the application search shows a grid of
+/// every app while nothing is typed, and a list once something is.
+#[derive(Clone, Copy)]
+struct Layout {
+    apps: bool,
+    columns: usize,
+    grid_rows: usize,
+    list_lines: usize,
+}
+
+/// The icons decoded so far, by candidate index.
+type Icons = Rc<RefCell<HashMap<usize, Image>>>;
+
+/// Takes an icon that has been decoded, on the UI thread, to show it.
+pub type IconSink = Rc<dyn Fn(usize, Option<Pixels>)>;
+
+fn to_image(pixels: Pixels) -> Image {
+    let buffer =
+        SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&pixels.data, pixels.size, pixels.size);
+    Image::from_rgba8_premultiplied(buffer)
+}
+
+fn rows(session: &Session, icons: &HashMap<usize, Image>) -> Vec<Row> {
+    session
         .visible()
         .iter()
         .map(|hit| {
@@ -72,13 +97,28 @@ fn show(window: &LauncherWindow, session: &Session) {
                     matched,
                 })
                 .collect();
+            let icon = icons.get(&hit.index);
             Row {
                 name: ModelRc::new(VecModel::from(name)),
                 detail: SharedString::from(candidate.detail.as_str()),
+                title: SharedString::from(candidate.name.as_str()),
+                icon: icon.cloned().unwrap_or_default(),
+                has_icon: icon.is_some(),
+                letter: SharedString::from(sengi_text::initial(&candidate.name)),
             }
         })
-        .collect();
-    window.set_rows(ModelRc::new(VecModel::from(rows)));
+        .collect()
+}
+
+fn show(window: &LauncherWindow, session: &mut Session, icons: &HashMap<usize, Image>, layout: Layout) {
+    let grid = layout.apps && session.query().is_empty() && !session.hits().is_empty();
+    if grid {
+        session.set_grid(layout.columns, layout.grid_rows);
+    } else if session.columns() != 0 {
+        session.set_lines(layout.list_lines);
+    }
+    window.set_grid(grid);
+    window.set_rows(ModelRc::new(VecModel::from(rows(session, icons))));
     // Whatever went wrong belonged to the previous choice.
     window.set_error(SharedString::new());
     window.set_total_rows(session.hits().len() as i32);
@@ -86,27 +126,60 @@ fn show(window: &LauncherWindow, session: &Session) {
     window.set_selected(session.selected_row().map_or(-1, |row| row as i32));
 }
 
+/// The icons to load for `session`: the ones for what is listed first, then
+/// the rest, so the first screen fills in before the ones scrolled off it.
+pub fn icon_requests(session: &Session) -> Vec<Request> {
+    let mut order: Vec<usize> = session.hits().iter().map(|hit| hit.index).collect();
+    let listed: HashSet<usize> = order.iter().copied().collect();
+    order.extend((0..session.candidate_count()).filter(|index| !listed.contains(index)));
+    order
+        .into_iter()
+        .filter_map(|index| {
+            let names = session.candidate(index).icons.clone();
+            (!names.is_empty()).then_some(Request { index, names })
+        })
+        .collect()
+}
+
+/// The size, in pixels, icons are wanted at for `window`.
+pub fn icon_pixels(window: &LauncherWindow) -> u32 {
+    let scale = window.window().scale_factor();
+    (window.get_app_icon_px() * scale).round().max(1.0) as u32
+}
+
 /// Connect `window` to `session`, laid out as `invocation` asks.
 ///
 /// A picked result is first put to `check`. If that fails the panel stays
 /// open and shows the message. Otherwise, or when the panel is dismissed,
 /// `finish` is called, once; closing the window is up to the caller.
+///
+/// Returns where decoded icons are to be delivered, from the UI thread.
 pub fn attach(
     window: &LauncherWindow,
     mut session: Session,
     invocation: &Invocation,
     check: impl Fn(usize) -> Result<(), String> + 'static,
     finish: impl Fn(Outcome) + 'static,
-) {
+) -> IconSink {
     // The length of a full list is a design token, so it is settled here.
     let full = usize::try_from(window.get_full_lines()).unwrap_or(1);
     session.set_lines(invocation.lines_for(session.candidate_count(), full));
 
+    let apps = invocation.mode == Mode::Apps;
+    let layout = Layout {
+        apps,
+        columns: usize::try_from(window.get_columns()).unwrap_or(1).max(1),
+        grid_rows: usize::try_from(window.get_grid_rows()).unwrap_or(1).max(1),
+        list_lines: session.lines(),
+    };
     window.set_prompt(invocation.prompt().into());
     window.set_compact(invocation.compact());
+    window.set_icons(apps);
+    window.set_grid_capable(apps);
     window.set_max_lines(session.lines() as i32);
     window.set_query(session.query().into());
-    show(window, &session);
+    let icons: Icons = Rc::default();
+    show(window, &mut session, &icons.borrow(), layout);
 
     let session = Rc::new(RefCell::new(session));
     // Only the first outcome counts: closing the surface after a choice
@@ -119,28 +192,29 @@ pub fn attach(
     });
 
     window.on_query_edited({
-        let (weak, session) = (window.as_weak(), session.clone());
+        let (weak, session, icons) = (window.as_weak(), session.clone(), icons.clone());
         move |query| {
             let Some(window) = weak.upgrade() else { return };
             session.borrow_mut().set_query(query.as_str());
-            show(&window, &session.borrow());
+            show(&window, &mut session.borrow_mut(), &icons.borrow(), layout);
         }
     });
     window.on_move_selection({
-        let (weak, session) = (window.as_weak(), session.clone());
+        let (weak, session, icons) = (window.as_weak(), session.clone(), icons.clone());
         move |delta| {
             let Some(window) = weak.upgrade() else { return };
             session.borrow_mut().move_selection(delta);
-            show(&window, &session.borrow());
+            show(&window, &mut session.borrow_mut(), &icons.borrow(), layout);
         }
     });
     let accept = Rc::new({
-        let (weak, session, finish) = (window.as_weak(), session.clone(), finish.clone());
+        let (weak, session, icons, finish) =
+            (window.as_weak(), session.clone(), icons.clone(), finish.clone());
         move |index: usize| match check(index) {
             Ok(()) => finish(Outcome::Accepted(index)),
             Err(message) => {
                 if let Some(window) = weak.upgrade() {
-                    show(&window, &session.borrow());
+                    show(&window, &mut session.borrow_mut(), &icons.borrow(), layout);
                     window.set_error(message.into());
                 }
             }
@@ -168,6 +242,19 @@ pub fn attach(
         }
     });
     window.on_dismiss(move || finish(Outcome::Dismissed));
+
+    let weak = window.as_weak();
+    Rc::new(move |index, pixels| {
+        let Some(window) = weak.upgrade() else { return };
+        if let Some(pixels) = pixels {
+            icons.borrow_mut().insert(index, to_image(pixels));
+        }
+        // Only what is on screen is redrawn.
+        let session = session.borrow();
+        if session.visible().iter().any(|hit| hit.index == index) {
+            window.set_rows(ModelRc::new(VecModel::from(rows(&session, &icons.borrow()))));
+        }
+    })
 }
 
 #[cfg(test)]

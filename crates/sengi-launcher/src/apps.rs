@@ -93,10 +93,16 @@ const WRAPPERS: &[&str] = &[
 
 fn candidate(entry: &DesktopEntry, usage: &Usage, now: u64) -> Candidate {
     let mut keywords = entry.keywords.clone();
+    // The entry's own icon, then the program's name: some entries name an
+    // icon that draws nothing, and the program is often an icon of its own.
+    let mut icons = vec![entry.icon.clone()];
     // Let people type the command they know, e.g. "foot" for Terminal.
     if let Some(program) = program_name(&entry.exec) {
+        icons.push(program.clone());
         keywords.push(program);
     }
+    icons.retain(|name| !name.is_empty());
+    icons.dedup();
     let detail = if entry.generic_name == entry.name {
         ""
     } else {
@@ -104,6 +110,7 @@ fn candidate(entry: &DesktopEntry, usage: &Usage, now: u64) -> Candidate {
     };
     Candidate::new(&entry.name)
         .detail(detail)
+        .icons(icons)
         .keywords(keywords)
         .comment(&entry.comment)
         .weight(usage.weight(&entry.id, now))

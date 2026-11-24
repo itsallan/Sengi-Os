@@ -257,6 +257,8 @@ pub struct Candidate {
     pub name: String,
     /// Shown next to the name; also searched.
     pub detail: String,
+    /// Icon names to try, best first. Empty for a menu line.
+    pub icons: Vec<String>,
     pub weight: Weight,
     name_folded: Folded,
     sort_name: String,
@@ -273,6 +275,7 @@ impl Candidate {
         Candidate {
             name,
             detail: String::new(),
+            icons: Vec::new(),
             weight: (0, 0),
             name_folded,
             sort_name,
@@ -285,6 +288,11 @@ impl Candidate {
     pub fn detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = detail.into();
         self.detail_folded = Folded::new(&self.detail);
+        self
+    }
+
+    pub fn icons<S: Into<String>>(mut self, icons: impl IntoIterator<Item = S>) -> Self {
+        self.icons = icons.into_iter().map(Into::into).collect();
         self
     }
 

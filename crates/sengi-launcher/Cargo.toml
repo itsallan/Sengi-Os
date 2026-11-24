@@ -10,6 +10,7 @@ build = "build.rs"
 [dependencies]
 sengi-apps = { path = "../sengi-apps" }
 sengi-layer = { path = "../sengi-layer" }
+sengi-text = { path = "../sengi-text" }
 # No features: only the single-instance socket, which is plain std.
 sengi-system = { path = "../sengi-system" }
 # Not the workspace entry: that one pulls in the winit backend. sengi-layer
@@ -19,6 +20,8 @@ slint = { version = "1.18", default-features = false, features = ["compat-1-2", 
 [dev-dependencies]
 # Only examples/preview.rs opens a normal window.
 slint = { version = "1.18", default-features = false, features = ["compat-1-2", "std", "backend-winit"] }
+# The render test writes pictures of the panel.
+png = "0.18"
 
 [build-dependencies]
 slint-build.workspace = true

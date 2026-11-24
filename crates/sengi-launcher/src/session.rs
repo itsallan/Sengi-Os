@@ -12,6 +12,8 @@ pub struct Session {
     hits: Vec<Hit>,
     selected: usize,
     top: usize,
+    /// Items per row when laid out as a grid, else 0 for a list.
+    columns: usize,
 }
 
 impl Session {
@@ -25,6 +27,7 @@ impl Session {
             hits: Vec::new(),
             selected: 0,
             top: 0,
+            columns: 0,
         };
         session.set_query("");
         session
@@ -39,12 +42,52 @@ impl Session {
     }
 
     /// Change how many rows fit on screen, keeping the selection in view.
+    /// The results are a list from here on.
     pub fn set_lines(&mut self, lines: usize) {
+        self.columns = 0;
         self.lines = lines.max(1);
         self.top = self.top.min(self.selected);
         if self.selected >= self.top + self.lines {
             self.top = self.selected + 1 - self.lines;
         }
+    }
+
+    /// Lay the results out as a grid of `columns` by `rows` cells on screen,
+    /// keeping the selection in view. The first cell shown is always the
+    /// start of a row.
+    pub fn set_grid(&mut self, columns: usize, rows: usize) {
+        self.columns = columns.max(1);
+        self.lines = self.columns * rows.max(1);
+        self.top = self.top / self.columns * self.columns;
+        self.scroll_to_selected();
+    }
+
+    /// Items per row of the grid, or 0 when the results are a list.
+    pub fn columns(&self) -> usize {
+        self.columns
+    }
+
+    fn scroll_to_selected(&mut self) {
+        if self.columns == 0 {
+            if self.selected < self.top {
+                self.top = self.selected;
+            } else if self.selected >= self.top + self.lines {
+                self.top = self.selected + 1 - self.lines;
+            }
+            return;
+        }
+        // Whole rows: the grid scrolls by a row, never by a cell.
+        let rows = self.lines / self.columns;
+        let row = self.selected / self.columns;
+        let top_row = self.top / self.columns;
+        let top_row = if row < top_row {
+            row
+        } else if row >= top_row + rows {
+            row + 1 - rows
+        } else {
+            top_row
+        };
+        self.top = top_row * self.columns;
     }
 
     pub fn candidate_count(&self) -> usize {
@@ -67,11 +110,7 @@ impl Session {
         let last = self.hits.len() - 1;
         let target = self.selected as i64 + delta as i64;
         self.selected = target.clamp(0, last as i64) as usize;
-        if self.selected < self.top {
-            self.top = self.selected;
-        } else if self.selected >= self.top + self.lines {
-            self.top = self.selected + 1 - self.lines;
-        }
+        self.scroll_to_selected();
     }
 
     /// All results, best first.
@@ -241,5 +280,50 @@ mod tests {
         s.set_lines(20);
         assert_eq!(view(&s).len(), 3);
         assert_eq!(s.chosen(), Some(7));
+    }
+
+    #[test]
+    fn a_grid_moves_by_cells_and_scrolls_by_whole_rows() {
+        let mut s = session(20, 8);
+        s.set_grid(6, 2);
+        assert_eq!(s.columns(), 6);
+        assert_eq!(s.visible().len(), 12);
+        assert_eq!(s.first_visible(), 0);
+
+        // Down one row, and again: the second row is the last one on screen,
+        // the third pulls the first off.
+        s.move_selection(6);
+        assert_eq!((s.first_visible(), s.selected_row()), (0, Some(6)));
+        s.move_selection(6);
+        assert_eq!((s.first_visible(), s.selected_row()), (6, Some(6)));
+        // Back up: no scrolling until the selection leaves the top row.
+        s.move_selection(-6);
+        assert_eq!((s.first_visible(), s.selected_row()), (6, Some(0)));
+        s.move_selection(-1);
+        assert_eq!((s.first_visible(), s.selected_row()), (0, Some(5)));
+    }
+
+    #[test]
+    fn the_last_row_of_a_grid_may_be_short() {
+        let mut s = session(20, 8);
+        s.set_grid(6, 2);
+        s.move_selection(18);
+        assert_eq!(s.chosen(), Some(18));
+        assert_eq!(s.first_visible(), 12);
+        assert_eq!(s.visible().len(), 8);
+        // Down from the short row stays on the last item.
+        s.move_selection(6);
+        assert_eq!(s.chosen(), Some(19));
+    }
+
+    #[test]
+    fn going_back_to_a_list_forgets_the_grid() {
+        let mut s = session(20, 8);
+        s.set_grid(6, 2);
+        s.move_selection(13);
+        s.set_lines(5);
+        assert_eq!(s.columns(), 0);
+        assert_eq!(s.visible().len(), 5);
+        assert!(s.visible().iter().any(|hit| hit.index == 13));
     }
 }

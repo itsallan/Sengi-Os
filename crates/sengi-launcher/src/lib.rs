@@ -8,6 +8,7 @@
 
 pub mod apps;
 pub mod cli;
+pub mod icons;
 pub mod instance;
 pub mod matcher;
 pub mod menu;

@@ -3619,9 +3619,11 @@ dependencies = [
 name = "sengi-launcher"
 version = "0.8.0"
 dependencies = [
+ "png",
  "sengi-apps",
  "sengi-layer",
  "sengi-system",
+ "sengi-text",
  "slint",
  "slint-build",
 ]
