@@ -122,11 +122,11 @@ for updates in the background: the timers Debian uses for that are switched
 off. Until Sengi OS has its own way of offering updates, they come when you
 ask for them, in a terminal: `sudo apt update && sudo apt upgrade`.
 
-**Installing apps.** From a terminal, `sudo apt install <package>` for Debian's
+**Installing apps.** The Store, the last icon on the dock, finds apps on
+Flathub by name and installs them for your user, with no password. From a terminal, `sudo apt install <package>` for Debian's
 packages, or `sudo flatpak install flathub <app>` for Flatpak apps. Flathub is
 already set up as the Flatpak source (`/etc/flatpak/remotes.d/`); the first
-`sudo flatpak` command creates the Flatpak store. There is no graphical app
-store yet. When Sengi OS is run from the USB stick without installing, every
+`sudo flatpak` command creates the Flatpak store. When Sengi OS is run from the USB stick without installing, every
 change is kept in RAM, so a large Flatpak runtime may not fit and the install
 stops with a "min-free-space-size" error. Install Sengi OS to the disk first.
 

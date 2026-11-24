@@ -11,6 +11,10 @@ and the measured idle RAM and boot time.
 
 - Fixed windows never appearing on small screens such as 800x600: a window asked to shrink never got the frame callback it waits for.
 
+- sengi-store, a small app store: type the name of an app, pick it from the
+  Flathub list, and it is installed for your user. It has its own icon at the
+  end of the dock.
+
 ## 0.8.0
 
 Our own compositor: sengi-compositor is now what Sengi OS runs. labwc stays
