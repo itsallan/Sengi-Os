@@ -33,15 +33,17 @@ pub fn start(
     decoder: Decoder,
     deliver: impl Fn(usize, Option<Pixels>) + Send + 'static,
 ) {
-    let spawned = std::thread::Builder::new().name("icons".into()).spawn(move || {
-        for request in requests {
-            let icon = request
-                .names
-                .iter()
-                .find_map(|name| decoder.decode(name, "", pixels, TIMEOUT));
-            deliver(request.index, icon);
-        }
-    });
+    let spawned = std::thread::Builder::new()
+        .name("icons".into())
+        .spawn(move || {
+            for request in requests {
+                let icon = request
+                    .names
+                    .iter()
+                    .find_map(|name| decoder.decode(name, "", pixels, TIMEOUT));
+                deliver(request.index, icon);
+            }
+        });
     if let Err(error) = spawned {
         eprintln!("sengi-launcher: cannot load icons: {error}");
     }

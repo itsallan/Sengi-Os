@@ -31,9 +31,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use crate::env::Env;
 use crate::decoder::MAX_PATH;
 pub use crate::decoder::{Decoder, Pixels, DECODE_FLAG, MAX_PIXELS, THIS_PROGRAM};
+use crate::env::Env;
 
 /// Largest source image we are willing to decode, in pixels per side.
 const MAX_SOURCE: u32 = 2048;
@@ -42,10 +42,8 @@ const MAX_SOURCE: u32 = 2048;
 const MAX_PNG_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_SVG_BYTES: u64 = 1024 * 1024;
 
-
 /// How long a decode may take before it is given up on.
 pub const DECODE_TIMEOUT: Duration = Duration::from_secs(1);
-
 
 /// Address space the decoding child may use.
 const DECODE_MEMORY: u64 = 512 * 1024 * 1024;
@@ -483,7 +481,6 @@ pub fn run_decoder(args: &[String]) -> Option<ExitCode> {
         ExitCode::FAILURE
     })
 }
-
 
 #[cfg(test)]
 pub mod testing {

@@ -8,7 +8,9 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use sengi_apps::decoder::Pixels;
-use slint::{ComponentHandle, Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
+use slint::{
+    ComponentHandle, Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel,
+};
 
 use crate::cli::{Invocation, Mode};
 use crate::icons::Request;
@@ -110,7 +112,12 @@ fn rows(session: &Session, icons: &HashMap<usize, Image>) -> Vec<Row> {
         .collect()
 }
 
-fn show(window: &LauncherWindow, session: &mut Session, icons: &HashMap<usize, Image>, layout: Layout) {
+fn show(
+    window: &LauncherWindow,
+    session: &mut Session,
+    icons: &HashMap<usize, Image>,
+    layout: Layout,
+) {
     let grid = layout.apps && session.query().is_empty() && !session.hits().is_empty();
     if grid {
         session.set_grid(layout.columns, layout.grid_rows);
@@ -208,8 +215,12 @@ pub fn attach(
         }
     });
     let accept = Rc::new({
-        let (weak, session, icons, finish) =
-            (window.as_weak(), session.clone(), icons.clone(), finish.clone());
+        let (weak, session, icons, finish) = (
+            window.as_weak(),
+            session.clone(),
+            icons.clone(),
+            finish.clone(),
+        );
         move |index: usize| match check(index) {
             Ok(()) => finish(Outcome::Accepted(index)),
             Err(message) => {
@@ -252,7 +263,10 @@ pub fn attach(
         // Only what is on screen is redrawn.
         let session = session.borrow();
         if session.visible().iter().any(|hit| hit.index == index) {
-            window.set_rows(ModelRc::new(VecModel::from(rows(&session, &icons.borrow()))));
+            window.set_rows(ModelRc::new(VecModel::from(rows(
+                &session,
+                &icons.borrow(),
+            ))));
         }
     })
 }

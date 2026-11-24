@@ -33,7 +33,6 @@ impl Pixels {
     }
 }
 
-
 /// The running program, to start again as a helper. Not `current_exe`:
 /// after a package upgrade that names a file that is gone, or worse, the
 /// new version, which may not speak to this one. This is the binary we
