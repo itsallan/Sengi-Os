@@ -48,9 +48,8 @@ pub fn menu(theme: &Theme, font: Option<&Font>, rows: &[Row]) -> Layout {
     for row in rows {
         match row {
             Row::Item(label) => {
-                let text = font.map(|font| {
-                    font.fit(label, (width - 2 * (pad + card.pad_x)).max(0) as usize)
-                });
+                let text = font
+                    .map(|font| font.fit(label, (width - 2 * (pad + card.pad_x)).max(0) as usize));
                 parts.push(Part {
                     rect: Rect::new(pad, y, width - 2 * pad, card.menu_row),
                     separator: false,
