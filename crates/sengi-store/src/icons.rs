@@ -9,6 +9,17 @@ use crate::catalog::valid_id;
 /// Sizes in the order they are wanted: the app list draws 40 px.
 const SIZES: [&str; 2] = ["64x64", "128x128"];
 
+/// Whether Flatpak has unpacked appstream data for the user's Flathub:
+/// the names and icons the list is worth showing with.
+pub fn has_appstream(data_home: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(data_home.join("flatpak/appstream/flathub")) else {
+        return false;
+    };
+    entries
+        .filter_map(|entry| entry.ok())
+        .any(|entry| entry.path().join("active").exists())
+}
+
 /// The icon file of `id` in the user's Flathub appstream data under
 /// `data_home` (normally `~/.local/share`), if there is one.
 pub fn find(data_home: &Path, id: &str) -> Option<PathBuf> {
@@ -62,11 +73,13 @@ mod tests {
         );
         assert_eq!(find(&dir, "a.b.None"), None);
         assert_eq!(find(&dir, "../../x.y"), None);
+        assert!(has_appstream(&dir));
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn no_appstream_means_no_icons() {
         assert_eq!(find(Path::new("/nonexistent"), "a.b.C"), None);
+        assert!(!has_appstream(Path::new("/nonexistent")));
     }
 }

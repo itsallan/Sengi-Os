@@ -215,7 +215,7 @@ export component StoreWindow inherits Window {
                                     overflow: elide;
                                 }
 
-                                SengiLabel {
+                                if app.summary != "": SengiLabel {
                                     text: app.summary;
                                     font-weight: Tokens.font-weight-regular;
                                     overflow: elide;

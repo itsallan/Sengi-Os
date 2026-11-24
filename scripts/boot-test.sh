@@ -319,6 +319,8 @@ if [ -z "$store_fail" ]; then
 	done
 	sleep 20
 	shot store-search
+	sleep 30
+	shot store-updated
 fi
 key meta_l-q 2
 pointer $((screen_w / 8)) $((screen_h / 2))

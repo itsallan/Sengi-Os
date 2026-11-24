@@ -266,7 +266,14 @@ fn load(shared: Shared) {
     if let Ok(installed) = flatpak.installed() {
         shared.lock().rows.set_installed(installed);
     }
-    if let Ok(apps) = flatpak.list_remote(true) {
+    // Without the appstream data the list has no real names and no icons,
+    // so on a first start it waits for the refresh below.
+    let cached = if icons::has_appstream(&shared.data_home) {
+        flatpak.list_remote(true)
+    } else {
+        Ok(Vec::new())
+    };
+    if let Ok(apps) = cached {
         if !apps.is_empty() {
             let mut data = shared.lock();
             data.catalog = apps;
@@ -289,7 +296,15 @@ fn load(shared: Shared) {
             Ok(_) => failure = Some(Error::Failed("the list is empty".to_string())),
             Err(error) => failure = Some(error),
         },
-        Err(error) => failure = Some(error),
+        Err(error) => {
+            // The refresh failed: a rough list is better than none.
+            if shared.lock().catalog.is_empty() {
+                if let Ok(apps) = flatpak.list_remote(true) {
+                    shared.lock().catalog = apps;
+                }
+            }
+            failure = Some(error);
+        }
     }
     finish_load(&shared, failure);
 }
