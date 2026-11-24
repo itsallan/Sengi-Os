@@ -47,6 +47,9 @@ and the measured idle RAM and boot time.
 - The time zone list has Kigali, and every other country's own city.
 - What a program started from the dock or the launcher prints goes to the
   journal, so one that fails to start leaves a trace (`journalctl -t name`).
+- Polish pass: the sections of the Display, Sound and installer Disk pages are
+  spaced like the other pages, the Store list keeps a readable width on a wide
+  screen, and the launcher's letter tiles match the dock's and the Store's.
 
 ### Known limits
 
