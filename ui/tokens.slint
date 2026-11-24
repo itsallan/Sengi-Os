@@ -49,8 +49,18 @@ export global Tokens {
     out property <int> font-weight-bold: 600;
 
     out property <length> bar-height: 28px;
+    out property <length> menu-row: 22px;
+    out property <length> menu-padding: 6px;
+    out property <length> menu-separator-inset: 6px;
     out property <length> dock-icon: 40px;
     out property <length> dock-padding: 6px;
+    out property <length> dock-item: 48px;
+    out property <length> dock-gap: 14px;
+    out property <length> dock-end-padding: 10px;
+    out property <length> dock-margin: 6px;
+    out property <length> dock-dot: 4px;
+    out property <length> dock-dot-gap: 3px;
+    out property <length> dock-bounce: 8px;
     out property <length> titlebar-height: 30px;
     out property <length> launcher-width: 640px;
     out property <length> menu-width: 320px;
@@ -83,6 +93,8 @@ export global Tokens {
     out property <duration> motion-base: 200ms;
     out property <duration> motion-slow: 320ms;
     out property <easing> motion-easing: cubic-bezier(0.2, 0, 0, 1);
+    out property <duration> motion-bounce: 300ms;
+    out property <easing> motion-bounce-easing: ease-out;
     out property <duration> click-guard: 400ms;
     out property <duration> input-settle: 300ms;
     out property <duration> notification-timeout: 5000ms;

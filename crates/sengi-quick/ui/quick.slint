@@ -486,8 +486,8 @@ export component QuickWindow inherits Window {
                             x: wifi.icon-x;
                             y: (parent.height - self.height) / 2;
                             level: root.wifi-enabled && root.wifi-on ? root.wifi-level : 0;
-                            faint: root.wifi-enabled && root.wifi-on
-                                ? Tokens.color-text-muted : Tokens.color-text-disabled;
+                            ink: root.wifi-enabled && root.wifi-on
+                                ? Tokens.color-text : Tokens.color-text-disabled;
                         }
 
                         wifi-switch := SengiToggle {

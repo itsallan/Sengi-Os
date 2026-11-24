@@ -49,8 +49,18 @@ export global Tokens {
     out property <int> font-weight-bold: @{type.weight-bold};
 
     out property <length> bar-height: @{size.bar-height}px;
+    out property <length> menu-row: @{menu.row}px;
+    out property <length> menu-padding: @{menu.padding}px;
+    out property <length> menu-separator-inset: @{menu.separator-inset}px;
     out property <length> dock-icon: @{size.dock-icon}px;
     out property <length> dock-padding: @{size.dock-padding}px;
+    out property <length> dock-item: @{dock.icon}px;
+    out property <length> dock-gap: @{dock.gap}px;
+    out property <length> dock-end-padding: @{dock.end-padding}px;
+    out property <length> dock-margin: @{dock.margin}px;
+    out property <length> dock-dot: @{dock.dot}px;
+    out property <length> dock-dot-gap: @{dock.dot-gap}px;
+    out property <length> dock-bounce: @{dock.bounce}px;
     out property <length> titlebar-height: @{size.titlebar-height}px;
     out property <length> launcher-width: @{size.launcher-width}px;
     out property <length> menu-width: @{size.menu-width}px;
@@ -83,6 +93,8 @@ export global Tokens {
     out property <duration> motion-base: @{motion.base}ms;
     out property <duration> motion-slow: @{motion.slow}ms;
     out property <easing> motion-easing: @{motion.easing};
+    out property <duration> motion-bounce: @{motion.bounce-duration}ms;
+    out property <easing> motion-bounce-easing: @{motion.bounce-easing};
     out property <duration> click-guard: @{timing.click-guard}ms;
     out property <duration> input-settle: @{timing.input-settle}ms;
     out property <duration> notification-timeout: @{timing.notification-timeout}ms;

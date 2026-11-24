@@ -17,8 +17,13 @@ use crate::{
 pub struct CardMetrics {
     /// Width of a menu.
     pub menu_width: i32,
-    /// Height of a row of a menu, and of a tile of the switcher.
+    /// Height of a tile of the switcher.
     pub row: i32,
+    /// Height of a row of a menu, the space between a menu's edge and its
+    /// rows, and how far a separator is pulled in from the ends of a row.
+    pub menu_row: i32,
+    pub menu_pad: i32,
+    pub menu_inset: i32,
     /// Space inside a card around its rows or tiles, across and down.
     pub pad_x: i32,
     pub pad_y: i32,
@@ -143,6 +148,9 @@ impl Theme {
             card: CardMetrics {
                 menu_width: px("size.menu-width"),
                 row: px("size.list-row-height"),
+                menu_row: px("menu.row"),
+                menu_pad: px("menu.padding"),
+                menu_inset: px("menu.separator-inset"),
                 pad_x: px("space.md"),
                 pad_y: px("space.sm"),
                 gap: px("space.sm"),
@@ -183,6 +191,9 @@ impl Theme {
             card: CardMetrics {
                 menu_width: px(self.card.menu_width),
                 row: px(self.card.row),
+                menu_row: px(self.card.menu_row),
+                menu_pad: px(self.card.menu_pad),
+                menu_inset: px(self.card.menu_inset),
                 pad_x: px(self.card.pad_x),
                 pad_y: px(self.card.pad_y),
                 gap: px(self.card.gap),
