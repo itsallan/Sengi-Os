@@ -15,6 +15,10 @@ and the measured idle RAM and boot time.
   Flathub list, and it is installed for your user. It has its own icon at the
   end of the dock.
 
+- The installer can install Sengi OS beside another system: on a UEFI computer, with a GPT
+  disk that has an EFI system partition and 10 GB or more of free space, it adds one
+  partition there and changes nothing else; the other system stays in the boot menu.
+
 ## 0.8.0
 
 Our own compositor: sengi-compositor is now what Sengi OS runs. labwc stays

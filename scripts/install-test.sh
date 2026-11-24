@@ -17,6 +17,21 @@
 # file that sengi-session looks for, through a credential, since the
 # installed disk carries no choice.
 #
+# SENGI_INSTALL_MODE=beside tests "install beside the existing system"
+# instead (it needs SENGI_UEFI). The disk is made first, on the host and
+# without root, to look like a computer that came with another system: a
+# GPT with an EFI system partition that holds files of the other system
+# (among them a stand-in for the Windows boot manager), a partition of the
+# other system with data in it, and about 12 GiB free. After the
+# installation, and before the installed disk is started, the disk image
+# is read from outside the guest and everything is checked: the old
+# partitions, their types and identifiers, the data in the other system's
+# partition, every file that was on the EFI system partition and every
+# gap between partitions are as they were; there is one new Linux
+# partition, inside the free space, with an ext4 file system that is
+# clean; GRUB is in a directory of its own; the boot menu lists the other
+# system. Then the disk is started alone, as in the other mode.
+#
 # The only disk that is ever written is OUTDIR/disk.qcow2, which this
 # script makes. The ISO is attached read-only.
 #
@@ -35,7 +50,15 @@ budget_boot_s=${SENGI_BUDGET_BOOT_S:-10}
 budget_ram_mb=${SENGI_BUDGET_RAM_MB:-400}
 timeout_s=${SENGI_BOOT_TIMEOUT_S:-300}
 install_timeout_s=${SENGI_INSTALL_TIMEOUT_S:-900}
-disk_size=${SENGI_INSTALL_DISK_SIZE:-16G}
+mode=${SENGI_INSTALL_MODE:-erase}
+case $mode in
+erase) disk_size=${SENGI_INSTALL_DISK_SIZE:-16G} ;;
+beside) disk_size=${SENGI_INSTALL_DISK_SIZE:-14G} ;;
+*)
+	echo "SENGI_INSTALL_MODE is erase or beside" >&2
+	exit 2
+	;;
+esac
 
 # What the test answers the installer with.
 full_name="Test User"
@@ -48,9 +71,67 @@ keyboard=gb
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
 rm -f "$out"/serial-*.log "$out"/*.png "$out"/*.ppm "$out/install-metrics.txt" \
-	"$out/mon.in" "$out/disk.qcow2" "$out/vars.fd" "$out"/monitor-*.log "$out"/guest-info-*.txt
+	"$out/mon.in" "$out/disk.qcow2" "$out/vars.fd" "$out"/monitor-*.log "$out"/guest-info-*.txt \
+	"$out"/before.* "$out"/after.* "$out"/esp.img "$out/dualboot-checks.txt"
 disk=$out/disk.qcow2
-qemu-img create -q -f qcow2 "$disk" "$disk_size"
+
+# Sectors of 512 bytes. The EFI system partition and the other system's
+# partition are made first; what is left to the end of the disk is free.
+esp_start=2048
+esp_sectors=532480
+other_start=534528
+other_sectors=2097152
+free_start=$((other_start + other_sectors))
+marker_other="SENGI-OTHER-SYSTEM-DATA do not touch"
+marker_boot="SENGI-OTHER-SYSTEM-BOOT-FILE do not touch"
+
+# A disk as a computer with another system on it comes: made as a raw
+# file with the tools of the host, none of which needs root, then turned
+# into the qcow2 the guest gets.
+prepare_beside() {
+	[ -n "${SENGI_UEFI:-}" ] || {
+		echo "SENGI_INSTALL_MODE=beside needs SENGI_UEFI: installing beside another system is only offered under UEFI" >&2
+		exit 2
+	}
+	for tool in sfdisk mkfs.vfat mmd mcopy mdir sha256sum dd debugfs e2fsck truncate; do
+		command -v "$tool" >/dev/null 2>&1 || {
+			echo "SENGI_INSTALL_MODE=beside needs $tool on this computer" >&2
+			exit 2
+		}
+	done
+	raw=$out/before.img
+	truncate -s "$disk_size" "$raw"
+	printf 'label: gpt\nstart=%s, size=%s, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name="EFI System Partition"\nstart=%s, size=%s, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name="Basic data partition"\n' \
+		"$esp_start" "$esp_sectors" "$other_start" "$other_sectors" | sfdisk -q "$raw"
+	# The EFI system partition, with what another system keeps there.
+	truncate -s $((esp_sectors * 512)) "$out/esp.img"
+	mkfs.vfat -F 32 -n ESP "$out/esp.img" >/dev/null
+	echo "$marker_boot" >"$out/before.marker"
+	mmd -i "$out/esp.img" ::/EFI ::/EFI/Microsoft ::/EFI/Microsoft/Boot ::/EFI/Boot
+	mcopy -i "$out/esp.img" "$out/before.marker" ::/EFI/Microsoft/Boot/bootmgfw.efi
+	mcopy -i "$out/esp.img" "$out/before.marker" ::/EFI/Boot/bootx64.efi
+	dd if="$out/esp.img" of="$raw" bs=512 seek="$esp_start" conv=notrunc status=none
+	rm -f "$out/esp.img"
+	# The other system's partition: data that has to come out the same.
+	{
+		printf '%s\n' "$marker_other"
+		dd if=/dev/zero bs=512 count=7 status=none
+		i=0
+		while [ "$i" -lt 64 ]; do
+			printf '%s %s\n' "$marker_other" "$i"
+			i=$((i + 1))
+		done
+	} | dd of="$raw" bs=512 seek="$other_start" conv=notrunc status=none
+	sfdisk -d "$raw" >"$out/before.dump"
+	mdir -i "$raw@@$((esp_start * 512))" -/ -b :: | sort >"$out/before.files"
+	qemu-img convert -O qcow2 "$raw" "$disk"
+}
+
+if [ "$mode" = beside ]; then
+	prepare_beside
+else
+	qemu-img create -q -f qcow2 "$disk" "$disk_size"
+fi
 
 accel=tcg cpu=max
 if [ -w /dev/kvm ]; then accel=kvm cpu=host; fi
@@ -204,6 +285,15 @@ key ret 1.5
 shot installer-disk
 key ret 1
 shot installer-disk-chosen
+# The way to use the disk is a list of its own after the list of disks:
+# erasing is the one that is chosen, and the second is installing beside
+# the other system.
+key tab
+if [ "$mode" = beside ]; then
+	key down
+	key ret 1
+	shot installer-disk-beside
+fi
 key tab
 key tab
 key tab
@@ -269,6 +359,135 @@ done
 exec 3>&-
 wait "$qemu" 2>/dev/null || true
 rm -f "$out/mon.in"
+
+# Beside another system, read from outside the guest: the disk as it is
+# now against the disk as it was made. Nothing is trusted that the guest
+# says about itself.
+dual_fail=0
+check_fail() {
+	echo "FAIL: $1" >&2
+	echo "FAIL: $1" >>"$out/dualboot-checks.txt"
+	dual_fail=1
+}
+check_ok() {
+	echo "ok: $1" >>"$out/dualboot-checks.txt"
+}
+# sha256 of $3 sectors of image $1 from sector $2.
+hash_sectors() {
+	dd if="$1" bs=512 skip="$2" count="$3" status=none | sha256sum | cut -d" " -f1
+}
+# A field of the line that describes partition $2 in the dump $1.
+part_field() {
+	grep -E "^[^ ]*$2 :" "$1" | sed -n "s/.*[ ,]$3= *\\([^,]*\\).*/\\1/p" | head -1
+}
+same_sectors() {
+	what=$1 start=$2 count=$3
+	[ "$count" -gt 0 ] || return 0
+	b=$(hash_sectors "$out/before.img" "$start" "$count")
+	a=$(hash_sectors "$out/after.img" "$start" "$count")
+	if [ "$a" = "$b" ]; then
+		check_ok "$what is byte for byte as it was"
+	else
+		check_fail "$what changed (sectors $start to $((start + count - 1)))"
+	fi
+}
+
+verify_beside() {
+	: >"$out/dualboot-checks.txt"
+	qemu-img convert -O raw "$disk" "$out/after.img"
+	sfdisk -d "$out/after.img" >"$out/after.dump"
+
+	# The table: the same disk, the same two partitions to the letter.
+	for key in label label-id unit first-lba last-lba sector-size; do
+		b=$(grep "^$key:" "$out/before.dump")
+		a=$(grep "^$key:" "$out/after.dump")
+		[ "$a" = "$b" ] && check_ok "table $key is as it was" || check_fail "table $key changed: '$b' became '$a'"
+	done
+	for n in 1 2; do
+		b=$(grep -E "^[^ ]*$n :" "$out/before.dump" | sed 's/^[^:]*://')
+		a=$(grep -E "^[^ ]*$n :" "$out/after.dump" | sed 's/^[^:]*://')
+		[ -n "$b" ] && [ "$a" = "$b" ] && check_ok "partition $n (start, size, type, identifier, name) is as it was" ||
+			check_fail "partition $n changed: '$b' became '$a'"
+	done
+	count=$(grep -c -E '^[^ ]+ :' "$out/after.dump")
+	[ "$count" = 3 ] && check_ok "there is one more partition, three in all" || check_fail "there are $count partitions, not 3"
+
+	# The new one: Linux, inside the free space, and nowhere else.
+	new_start=$(part_field "$out/after.dump" 3 start)
+	new_size=$(part_field "$out/after.dump" 3 size)
+	new_type=$(part_field "$out/after.dump" 3 type)
+	last_lba=$(sed -n 's/^last-lba: //p' "$out/after.dump")
+	new_end=$((new_start + new_size))
+	[ "$new_type" = 0FC63DAF-8483-4772-8E79-3D69D8477DE4 ] && check_ok "the new partition is of the Linux type" ||
+		check_fail "the new partition is of type '$new_type'"
+	if [ "$new_start" -ge "$free_start" ] && [ "$new_end" -le $((last_lba + 1)) ]; then
+		check_ok "the new partition (sectors $new_start to $((new_end - 1))) is inside the free space (from $free_start)"
+	else
+		check_fail "the new partition ($new_start, $new_size sectors) is not inside the free space (from $free_start to $last_lba)"
+	fi
+	[ $((new_size * 512)) -ge 10737418240 ] && check_ok "the new partition has the 10 GiB or more that was free" ||
+		check_fail "the new partition is only $new_size sectors"
+
+	# Every byte outside the new partition and the EFI system
+	# partition: in front of the first partition, the other system's
+	# partition, and what is left over around the new one.
+	same_sectors "the gap in front of the first partition" 34 $((esp_start - 34))
+	same_sectors "the other system's partition" "$other_start" "$other_sectors"
+	same_sectors "the space between the other system and the new partition" "$free_start" $((new_start - free_start))
+	same_sectors "the space after the new partition" "$new_end" $((last_lba + 1 - new_end))
+	# And it is what was written there: the marker is still the first line.
+	first=$(dd if="$out/after.img" bs=512 skip="$other_start" count=1 status=none | head -1)
+	[ "$first" = "$marker_other" ] && check_ok "the other system's data can be read" || check_fail "the other system's data is gone"
+
+	# The EFI system partition: every file that was there is there and
+	# unchanged; what is new is under EFI/sengios and nowhere else.
+	esp="$out/after.img@@$((esp_start * 512))"
+	mdir -i "$esp" -/ -b :: | sort >"$out/after.files"
+	if grep -v -x -F -f "$out/before.files" "$out/after.files" | grep -v -i '^::/EFI/sengios' | grep -q .; then
+		check_fail "the EFI system partition has new files outside EFI/sengios: $(grep -v -x -F -f "$out/before.files" "$out/after.files" | grep -v -i '^::/EFI/sengios' | tr '\n' ' ')"
+	else
+		check_ok "the only new files on the EFI system partition are under EFI/sengios"
+	fi
+	if grep -v -x -F -f "$out/after.files" "$out/before.files" | grep -q .; then
+		check_fail "files of the other system are gone from the EFI system partition"
+	else
+		check_ok "no file of the other system is gone from the EFI system partition"
+	fi
+	for file in ::/EFI/Microsoft/Boot/bootmgfw.efi ::/EFI/Boot/bootx64.efi; do
+		content=$(mcopy -i "$esp" "$file" - 2>/dev/null | head -1)
+		[ "$content" = "$marker_boot" ] && check_ok "$file is as it was" || check_fail "$file changed"
+	done
+	grep -q -i '^::/EFI/sengios/grubx64.efi$' "$out/after.files" && check_ok "GRUB is in EFI/sengios" ||
+		check_fail "there is no EFI/sengios/grubx64.efi"
+
+	# The new file system.
+	target="$out/after.img?offset=$((new_start * 512))"
+	if e2fsck -fn "$target" >"$out/after.fsck" 2>&1; then
+		check_ok "the new ext4 file system is clean"
+	else
+		check_fail "e2fsck does not find the new file system clean: $(tail -3 "$out/after.fsck" | tr '\n' ' ')"
+	fi
+	menu=$(debugfs -R "cat /boot/grub/grub.cfg" "$target" 2>/dev/null)
+	case $menu in
+	*"Windows Boot Manager"*) check_ok "the boot menu lists the other system" ;;
+	*) check_fail "the boot menu does not list the other system" ;;
+	esac
+	case $menu in
+	*"menuentry 'Sengi OS"*) check_ok "the boot menu lists Sengi OS" ;;
+	*) check_fail "the boot menu does not list Sengi OS" ;;
+	esac
+	# Sengi OS comes first in the menu.
+	first_entry=$(printf '%s\n' "$menu" | sed -n "s/^menuentry '\\([^']*\\)'.*/\\1/p" | head -1)
+	case $first_entry in
+	"Sengi OS"*) check_ok "Sengi OS is the first entry of the menu" ;;
+	*) check_fail "the first entry of the menu is '$first_entry'" ;;
+	esac
+	sed 's/^/dualboot: /' "$out/dualboot-checks.txt"
+}
+
+if [ "$mode" = beside ]; then
+	verify_beside
+fi
 
 # Second half: the disk alone. What the first half wrote is still on its
 # way to the host's disk, since QEMU was told not to wait for it. Left to
@@ -346,6 +565,7 @@ cat "$out/install-metrics.txt"
 echo "installed: $installed"
 
 fail=0
+[ "${dual_fail:-0}" = 0 ] || fail=1
 if grep -q SENGI-FAIL "$out"/serial-*.log; then
 	sed -n 's/.*SENGI-FAIL /FAIL: /p' "$out"/serial-*.log >&2
 	fail=1

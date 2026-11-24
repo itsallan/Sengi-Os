@@ -91,14 +91,30 @@ first icon in the dock (or search for "install"). It asks, in this order:
 2. The disk.
 3. Your name, a user name, a password and a name for the computer.
 4. To look over all of it. Nothing on the computer has been changed until
-   you press "Erase disk and install" there and answer the question that
-   follows.
+   you press "Erase disk and install" (or "Install Sengi OS", beside
+   another system) there and answer the question that follows.
 
 Then it installs, which takes a few minutes, and offers to restart. Take the
 stick out when the screen goes dark, or the computer may start from the stick
 again. Log in with the password you chose.
 
-**What it erases.** The whole disk you choose: every partition and
+**Erase the whole disk, or install beside.** On the disk page you say which.
+"Erase the whole disk" is described next. "Install beside the existing
+system" is offered when the computer started with UEFI and the disk has a
+GPT, an EFI system partition and at least 10 GB of free (unallocated) space:
+it adds one partition in that free space and changes nothing that is already
+on the disk. It does not shrink, move or format anything, and does not touch
+the other system's files on the EFI system partition: it only adds its own
+folder there, `EFI/sengios`, and an entry in the firmware's boot list, in
+front of the other system's. Sengi OS's boot menu then lists Windows or
+whatever else GRUB's os-prober finds, and is shown for three seconds when
+there is something to choose from; with nothing else on the disk it stays
+hidden, as after a whole-disk install. When the option is not offered the
+row says why; to make room, shrink the other system first, from inside it.
+Back up what you want to keep anyway: this part is new, and it has been
+tried on virtual disks only.
+
+**What it erases (whole-disk install).** The whole disk you choose: every partition and
 everything on them, with no way back. The installer shows what is on each
 disk before you choose, and again before it starts. It does not offer the
 stick it is running from, a disk that is in use, or one smaller than 8 GB.
@@ -108,9 +124,14 @@ one disk, read the list with care.
 **What you get.** A GPT disk with an EFI system partition and one ext4
 partition, no swap partition (zram does that), GRUB for both UEFI and BIOS,
 one account that uses `sudo` with its password, and a locked root account.
+Beside another system you get one ext4 partition in the free space, GRUB for
+UEFI in `EFI/sengios` of the EFI system partition that was there, and the same
+account.
 
-**What is not offered yet.** Encrypting the disk; installing beside Windows
-or another system (dual boot); choosing or laying out partitions by hand.
+**What is not offered yet.** Encrypting the disk; shrinking or moving
+another system to make room (do that from inside it first); installing beside
+a system on a BIOS/MBR computer or a disk without an EFI system partition;
+choosing or laying out partitions by hand.
 Secure Boot has to be off.
 
 **Firmware.** Wi-Fi and Bluetooth chips usually need firmware that is not free
