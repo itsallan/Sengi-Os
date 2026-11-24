@@ -68,6 +68,11 @@ fi
 # were without it.
 cargo build --release --locked --manifest-path "$src/Cargo.toml" -p sengi-settings -p sengi-installer -p sengi-store
 programs="$programs sengi-settings sengi-installer sengi-store"
+# The store runs flatpak and speaks to no bus.
+if grep -a -q -e zbus "$work/target/release/sengi-store"; then
+	echo "sengi-store has zbus linked in, which it must not" >&2
+	exit 1
+fi
 for program in $programs; do
 	install -D -m 0755 "$work/target/release/$program" "$work/overlay/usr/bin/$program"
 done

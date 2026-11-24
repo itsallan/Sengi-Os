@@ -322,7 +322,8 @@ if [ -z "$store_fail" ]; then
 	sleep 30
 	shot store-updated
 fi
-key meta_l-q 2
+# Only when the window is there: the shortcut would close some other one.
+if [ -z "$store_fail" ]; then key meta_l-q 2; fi
 pointer $((screen_w / 8)) $((screen_h / 2))
 rm -f "$out/before.ppm" "$out/with.ppm"
 

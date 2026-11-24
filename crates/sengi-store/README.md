@@ -28,7 +28,11 @@ Settings.
 Everything goes through the `flatpak` command, for the user's own
 installation, so there is no root, no polkit and no network code of our
 own. Each call has a time limit, and a call that goes over it is killed
-with whatever it started.
+with whatever it started. A limit is how long flatpak may say nothing, so a big install that keeps printing is not cut off. Closing the window kills what is still running: Flatpak deploys an app only when all of it has arrived, so a cut-off install leaves nothing half installed and the next try carries on.
+
+Installs use `-y`: no question is asked and no permission list is shown. The Store also checks that the user's `flathub` remote is the real one, with signatures checked, and refuses to go on if it is not. Before an install it asks again what is installed, so an app that is there already, for the user or the system, is not installed twice.
+
+The Store does not stop a second copy of itself from opening.
 
 | When | Command | Limit |
 | --- | --- | --- |
@@ -36,7 +40,7 @@ with whatever it started.
 | Start | `flatpak list --app --columns=application` | 20 s |
 | Start | `flatpak --user remote-ls --cached --app --columns=application,name,description flathub` | 60 s |
 | Start | `flatpak --user update --appstream`, then `remote-ls` again without `--cached` | 120 s, 60 s |
-| Install | `flatpak --user install -y --noninteractive flathub <id>` | 30 min |
+| Install | `flatpak --user install -y --noninteractive flathub app/<id>` | 10 min without a word from flatpak |
 
 The list on the disk is shown at once, so the Store is usable while the
 network is asked, and offline it still searches what Flatpak fetched the
