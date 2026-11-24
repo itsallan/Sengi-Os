@@ -29,6 +29,10 @@ timeout_s=${SENGI_BOOT_TIMEOUT_S:-300}
 screen=${SENGI_SCREEN:-1280x800}
 screen_w=${screen%x*}
 screen_h=${screen#*x}
+if ! printf "%s" "$screen" | grep -Eq "^[0-9]+x[0-9]+\$"; then
+	echo "usage: SENGI_SCREEN=WIDTHxHEIGHT, for example 800x600 (got '$screen')" >&2
+	exit 2
+fi
 
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
@@ -217,6 +221,11 @@ settings_fail=
 window_bytes=300000
 echo "screendump $out/before.ppm" >&3
 sleep 1
+# The pointer and dock maths assume the guest really runs at $screen.
+size_fail=
+if [ "$(head -n 2 "$out/before.ppm" 2>/dev/null | tr "\n" " ")" != "P6 $screen_w $screen_h " ]; then
+	size_fail="the guest screen is not ${screen_w}x${screen_h}: $(head -n 2 "$out/before.ppm" 2>/dev/null | tr "\n" " ")"
+fi
 key meta_l-spc 2
 for letter in s e t t i n g s; do
 	key "$letter" 0.3
@@ -688,6 +697,10 @@ if [ "$got" != "$want" ]; then
 fi
 if grep -q SENGI-FAIL "$out/serial.log"; then
 	sed -n 's/.*SENGI-FAIL /FAIL: /p' "$out/serial.log" >&2
+	fail=1
+fi
+if [ -n "$size_fail" ]; then
+	echo "FAIL: $size_fail" >&2
 	fail=1
 fi
 if [ -n "$settings_fail" ]; then
