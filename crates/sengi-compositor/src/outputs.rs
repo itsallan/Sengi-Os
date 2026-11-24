@@ -124,6 +124,8 @@ pub struct Painter {
     /// The title typeface, which is heavier than the rest of the text.
     pub title_font: Option<Font>,
     pub cursors: crate::cursor::Cursors,
+    /// The window shadow, unless the tokens turn it off.
+    pub shadows: Option<crate::shadow::ShadowSet>,
 }
 
 /// A scale as a key: thousandths, which is also what is stored.
@@ -263,6 +265,14 @@ impl State {
 
     /// What to paint with at `scale`. A scale no output has falls back on
     /// the default one.
+    /// The shadow pictures for `scale`, if shadows are on.
+    pub fn shadow_set(&self, scale: f64) -> Option<&crate::shadow::ShadowSet> {
+        if !self.config.appearance.window_shadows {
+            return None;
+        }
+        self.painter(scale).shadows.as_ref()
+    }
+
     pub fn painter(&self, scale: f64) -> &Painter {
         let key = scale_key(scale);
         self.painters
@@ -297,12 +307,22 @@ impl State {
                         font.as_ref(),
                     );
                     let cursors = crate::cursor::Cursors::new(&theme, scale);
+                    let shadows = theme.shadow.visible().then(|| {
+                        crate::shadow::ShadowSet::new(
+                            &self.theme.shadow,
+                            self.theme.radius,
+                            &theme.shadow,
+                            theme.radius,
+                            scale,
+                        )
+                    });
                     self.painters.push(Painter {
                         scale,
                         theme,
                         font,
                         title_font,
                         cursors,
+                        shadows,
                     });
                 }
             }
@@ -314,6 +334,10 @@ impl State {
                 .frame
                 .borrow_mut()
                 .retain(|key, _| keys.contains(key));
+            window::data(window)
+                .shadows
+                .borrow_mut()
+                .retain(|(key, _), _| keys.contains(key));
         }
     }
 

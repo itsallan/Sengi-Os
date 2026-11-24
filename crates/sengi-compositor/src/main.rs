@@ -36,6 +36,7 @@ mod render;
 mod screencopy;
 mod script;
 mod security;
+mod shadow;
 mod shell;
 mod state;
 mod text;

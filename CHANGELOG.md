@@ -11,6 +11,10 @@ and the measured idle RAM and boot time.
   never go below 5 percent, and the keyboard light keys (up, down, on/off)
   work too, also on the lock screen. They run sengi-brightness, which asks
   logind, so no root is needed.
+- Windows have a soft shadow, darker for the window you are working in. It
+  is drawn in flat steps with no blur, costs nothing per frame, and can be
+  switched off with `window-shadows = false` under `[appearance]` in
+  `settings.toml`.
 - The launcher shows every installed app as a grid of icons with names while
   nothing is typed; typing narrows it to the list, which now has a small icon
   in front of each name. The arrow keys move through the grid.

@@ -184,6 +184,16 @@ sengi-notify and sengi-lock included):
   centred title in Inter, rounded top corners, 1 px border, separate looks
   for the focused and unfocused window, hover highlight on buttons. All
   sizes and colours are read from `tokens/sengi.toml`.
+- A soft shadow around framed windows, moved down a little, darker for the
+  focused window than for the others, none for a window that fills the
+  screen or is maximised or snapped. It is a stack of flat translucent
+  rounded rectangles of growing size and falling opacity, no gradient and no
+  blur: eight small pictures (four corners and four strips, stretched along
+  the sides) painted once per screen scale and focus state, so a window
+  costs eight textured rectangles and nothing is painted per frame. Steps,
+  reach, offset, opacity and colour are the `[shadow]` tokens; zero steps
+  turn it off. `[appearance] window-shadows = false` in `settings.toml`
+  turns it off for one user, at the next SIGHUP. Menus and popups have none.
 - Drag the title bar to move. Drag an edge or corner to resize; the opposite
   edges stay put, a window never gets narrower than its buttons, and the
   title bar cannot be pushed under the bar. Drags are Smithay pointer
@@ -590,6 +600,8 @@ tells the compositor it is running under: `labwc --reconfigure` there,
   device that cannot be tapped.
 - `[touchpad]`: `speed`, `natural-scroll`, `tap-to-click`,
   `disable-while-typing`, for those that can.
+- `[appearance]`: `window-shadows`, whether framed windows have a shadow
+  (on unless set).
 
 `sengi-settings --screen off`, which swayidle runs after the time set in
 `[power]`, switches the outputs off through wlr-output-power-management.

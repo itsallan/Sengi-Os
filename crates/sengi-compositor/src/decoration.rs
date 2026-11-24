@@ -9,6 +9,7 @@ use sengi_tokens::{Rgba, Tokens};
 use crate::{
     frame::{Button, Metrics, BUTTONS},
     layout::Rect,
+    shadow::ShadowStyle,
 };
 
 /// The sizes of the cards the compositor draws over the desktop: the
@@ -76,6 +77,7 @@ pub struct Theme {
     /// The surface a card of settings sits on, one step above the bar.
     pub raised: Rgba,
     pub card: CardMetrics,
+    pub shadow: ShadowStyle,
 }
 
 impl Theme {
@@ -145,6 +147,7 @@ impl Theme {
             accent: color("color.accent"),
             accent_text: color("color.accent-text"),
             raised: color("color.surface-raised"),
+            shadow: ShadowStyle::from_tokens(tokens),
             card: CardMetrics {
                 menu_width: px("size.menu-width"),
                 row: px("size.list-row-height"),
@@ -188,6 +191,7 @@ impl Theme {
             accent: self.accent,
             accent_text: self.accent_text,
             raised: self.raised,
+            shadow: self.shadow.scaled(scale),
             card: CardMetrics {
                 menu_width: px(self.card.menu_width),
                 row: px(self.card.row),
@@ -427,12 +431,26 @@ pub struct Titlebar {
 /// client's own square corner would otherwise show. The left corner is at
 /// the left of the canvas, or the right one when `right` is set. The rest of
 /// the canvas is the border, or clear above it, so the client shows through.
+#[cfg(test)]
 pub fn draw_bottom_corner(
     size: i32,
     radius: f32,
     border: i32,
     edge: Rgba,
     desktop: Rgba,
+    right: bool,
+) -> Canvas {
+    draw_bottom_corner_over(size, radius, border, edge, &|_, _| desktop, right)
+}
+
+/// As `draw_bottom_corner`, with what is behind the window at each pixel of
+/// the corner given by `behind`: the desktop with the window's shadow on it.
+pub fn draw_bottom_corner_over(
+    size: i32,
+    radius: f32,
+    border: i32,
+    edge: Rgba,
+    behind: &dyn Fn(usize, usize) -> Rgba,
     right: bool,
 ) -> Canvas {
     let size = size.max(1);
@@ -456,7 +474,7 @@ pub fn draw_bottom_corner(
         for x in 0..size as usize {
             let outside = outer.coverage(x, y);
             let inside = inner.coverage(x, y);
-            canvas.blend(x, y, desktop, 1.0 - outside);
+            canvas.blend(x, y, behind(x, y), 1.0 - outside);
             canvas.blend(x, y, edge, (outside - inside).max(0.0));
         }
     }

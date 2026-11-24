@@ -13,6 +13,13 @@ pub struct Config {
     pub keyboard: Keyboard,
     pub mouse: Mouse,
     pub touchpad: Touchpad,
+    pub appearance: Appearance,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Appearance {
+    /// Whether framed windows have a shadow.
+    pub window_shadows: bool,
 }
 
 /// The layouts as XKB takes them: names, variants and options, each a
@@ -126,6 +133,9 @@ impl Config {
                 natural_scroll: settings.flag("touchpad", "natural-scroll"),
                 tap: settings.flag("touchpad", "tap-to-click"),
                 disable_while_typing: settings.flag("touchpad", "disable-while-typing"),
+            },
+            appearance: Appearance {
+                window_shadows: settings.flag("appearance", "window-shadows"),
             },
         }
     }
@@ -246,6 +256,13 @@ mod tests {
         assert!(config.mouse.natural_scroll && config.mouse.left_handed);
         assert_eq!(config.touchpad.speed, 1.0);
         assert!(!config.touchpad.tap && !config.touchpad.disable_while_typing);
+    }
+
+    #[test]
+    fn shadows_are_on_unless_switched_off() {
+        assert!(config("").appearance.window_shadows);
+        let off = config("[appearance]\nwindow-shadows = false\n");
+        assert!(!off.appearance.window_shadows);
     }
 
     #[test]

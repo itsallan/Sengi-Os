@@ -28,6 +28,7 @@ use smithay::{
 
 use crate::{
     decoration::{self, TextBitmap, Theme, Titlebar},
+    shadow::{self, Falloff},
     frame::{self, Edges},
     input::Drag,
     keys::Edge,
@@ -109,6 +110,9 @@ pub struct WindowData {
     pub fullscreen: Cell<Option<Option<Rect>>>,
     /// The frame as painted for each scale an output has, by `scale_key`.
     pub frame: RefCell<HashMap<u32, FrameBuffers>>,
+    /// The shadow pictures of this window, by `scale_key` and whether it is
+    /// focused.
+    pub shadows: RefCell<HashMap<(u32, bool), crate::shadow::Buffers>>,
     /// The title last rasterised, the room it had and its pixels, if the
     /// typeface is there.
     pub title: RefCell<TitleCache>,
@@ -915,13 +919,33 @@ impl State {
                     .color("color.desktop")
                     .expect("tokens define color.desktop");
                 let size = to_pixels(corner).max(1);
+                let shade = (self.config.appearance.window_shadows && paint.shadow.visible())
+                    .then(|| Falloff::new(&paint.shadow, paint.shadow.peak(active)));
+                let frame_w = to_pixels(full);
+                let frame_h = to_pixels(logical.metrics.titlebar + height + border);
                 [false, true].map(|right| {
-                    let picture = decoration::draw_bottom_corner(
+                    // What the corner covers is the desktop, with the shadow on it.
+                    let behind = |x: usize, y: usize| match &shade {
+                        Some(falloff) => {
+                            let left = if right { frame_w - size } else { 0 };
+                            let alpha = falloff.at(
+                                frame_w,
+                                frame_h,
+                                paint.radius,
+                                paint.shadow.offset,
+                                left + x as i32,
+                                frame_h - size + y as i32,
+                            );
+                            shadow::over(&paint.shadow, alpha, desktop)
+                        }
+                        None => desktop,
+                    };
+                    let picture = decoration::draw_bottom_corner_over(
                         size,
                         to_pixels(radius) as f32,
                         to_pixels(border),
                         logical.border,
-                        desktop,
+                        &behind,
                         right,
                     );
                     MemoryRenderBuffer::from_slice(

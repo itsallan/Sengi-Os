@@ -146,6 +146,8 @@ where
             1.0,
         ));
         frame(state, window, location, renderer, scale, &mut elements);
+        // Last, so it is behind the window and in front of those below.
+        shadow(state, window, location, renderer, scale, &mut elements);
     }
     layers(
         output,
@@ -304,6 +306,75 @@ fn frame<R>(
             1.0,
             Kind::Unspecified,
         )));
+    }
+}
+
+/// Adds the shadow around the frame of `window`: eight pieces from the
+/// pictures shared at this scale. None for a window that fills the screen.
+fn shadow<R>(
+    state: &State,
+    window: &Window,
+    location: Point<i32, Logical>,
+    renderer: &mut R,
+    scale: Scale<f64>,
+    elements: &mut Vec<OutputElement<R>>,
+) where
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Clone + Send + Texture + 'static,
+{
+    let data = window::data(window);
+    if !data.decorated.get() || data.restore.get().is_some() {
+        return;
+    }
+    let Some(set) = state.shadow_set(scale.x) else {
+        return;
+    };
+    let style = &state.theme.shadow;
+    let metrics = &state.theme.metrics;
+    let size = window.geometry().size;
+    let active = state.focus_stack.current() == Some(window);
+    let mut cache = data.shadows.borrow_mut();
+    let buffers = cache
+        .entry((scale_key(scale.x), active))
+        .or_insert_with(|| set.buffers(active));
+    let (frame_w, frame_h) = (
+        size.w.saturating_add(2 * metrics.border),
+        metrics.titlebar + size.h + metrics.border,
+    );
+    let (side, reach) = (set.side, set.reach);
+    let (spread, drop) = (style.spread, style.offset);
+    let strip_w = frame_w - 2 * reach;
+    let strip_h = frame_h - 2 * reach;
+    let origin = location - Point::from((metrics.border, metrics.titlebar));
+    let (right, below) = (frame_w - reach, drop + frame_h - reach);
+    let parts = [
+        (-spread, drop - spread, side, side),
+        (right, drop - spread, side, side),
+        (-spread, below, side, side),
+        (right, below, side, side),
+        (reach, drop - spread, strip_w, side),
+        (reach, below, strip_w, side),
+        (-spread, drop + reach, side, strip_h),
+        (right, drop + reach, side, strip_h),
+    ];
+    for (index, (buffer, (x, y, w, h))) in buffers.iter().zip(parts).enumerate() {
+        if w <= 0 || h <= 0 {
+            continue;
+        }
+        let at = origin + Point::from((x, y));
+        let element = MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            at.to_f64().to_physical_precise_round(scale),
+            buffer,
+            None,
+            Some(set.source(index)),
+            Some(Size::from((w, h))),
+            Kind::Unspecified,
+        );
+        match element {
+            Ok(element) => elements.push(OutputElement::Memory(element)),
+            Err(err) => crate::say!("cannot draw a shadow: {err:?}"),
+        }
     }
 }
 

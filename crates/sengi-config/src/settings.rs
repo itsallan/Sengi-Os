@@ -33,6 +33,7 @@ pub const KEYS: &[(&str, &str, Default)] = &[
     ("touchpad", "natural-scroll", Default::Flag(false)),
     ("touchpad", "tap-to-click", Default::Flag(true)),
     ("touchpad", "disable-while-typing", Default::Flag(true)),
+    ("appearance", "window-shadows", Default::Flag(true)),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

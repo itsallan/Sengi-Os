@@ -1132,7 +1132,14 @@ impl State {
         if let Some(configure) = self.configure_inputs.as_mut() {
             configure(&config);
         }
+        let shadows_changed = self.config.appearance != config.appearance;
         self.config = config;
+        if shadows_changed {
+            // The bottom corners are painted over the shadow.
+            for window in self.space.elements().chain(self.minimised.iter()) {
+                window::data(window).frame.borrow_mut().clear();
+            }
+        }
         crate::say!("settings read again");
         self.reload_output_layout();
     }
