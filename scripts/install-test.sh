@@ -331,7 +331,9 @@ shot installer-confirm
 if grep -q 'SENGI-INSTALL begin' "$serial"; then
 	give_up "the installation started before the question was answered" installer-confirm
 fi
-key tab
+# The question that erases starts on Cancel, and Install is one stop on.
+# The one beside another system is not dangerous: it starts on Install.
+if [ "$mode" != beside ]; then key tab; fi
 key ret 0.5
 wait_serial 'SENGI-INSTALL begin check' 30 || give_up "the installation did not start" installer-progress
 if wait_serial 'SENGI-INSTALL begin copy' 120; then
