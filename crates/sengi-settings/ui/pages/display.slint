@@ -56,40 +56,36 @@ export component DisplayPage inherits Page {
             text: DisplayData.note;
         }
 
-        if DisplayData.has-backlight: VerticalLayout {
-            spacing: Tokens.space-sm;
+        if DisplayData.has-backlight: Card {
+            SettingRow {
+                title: "Brightness";
 
-            Card {
-                SettingRow {
-                    title: "Brightness";
-
-                    VerticalLayout {
-                        alignment: center;
-                        NamedIcon {
-                            name: "sun";
-                            ink: Tokens.color-text-muted;
-                        }
-                    }
-
-                    VerticalLayout {
-                        alignment: center;
-                        Slider {
-                            width: Metrics.control;
-                            value <=> DisplayData.brightness-value;
-                            changed(to) => { DisplayData.brightness(to); }
-                            changed moving => { DisplayData.brightness-held = self.moving; }
-                        }
-                    }
-
-                    RowValue {
-                        width: Tokens.value-column-sm;
-                        text: DisplayData.brightness-value + "%";
+                VerticalLayout {
+                    alignment: center;
+                    NamedIcon {
+                        name: "sun";
+                        ink: Tokens.color-text-muted;
                     }
                 }
-            }
 
-            Gap { }
+                VerticalLayout {
+                    alignment: center;
+                    Slider {
+                        width: Metrics.control;
+                        value <=> DisplayData.brightness-value;
+                        changed(to) => { DisplayData.brightness(to); }
+                        changed moving => { DisplayData.brightness-held = self.moving; }
+                    }
+                }
+
+                RowValue {
+                    width: Tokens.value-column-sm;
+                    text: DisplayData.brightness-value + "%";
+                }
+            }
         }
+
+        if DisplayData.has-backlight: Gap { }
 
         for output in DisplayData.outputs: VerticalLayout {
             spacing: Tokens.space-sm;
