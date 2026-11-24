@@ -10,6 +10,8 @@ use std::ffi::OsString;
 use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::catalog::{self, App};
@@ -17,7 +19,15 @@ use crate::catalog::{self, App};
 /// The remote the image ships a description of.
 const REMOTE: &str = "flathub";
 const REPO_FILE: &str = "/etc/flatpak/remotes.d/flathub.flatpakrepo";
+const REPO_URL_BASE: &str = "https://dl.flathub.org/repo/";
 const REPO_URL: &str = "https://dl.flathub.org/repo/flathub.flatpakrepo";
+
+/// No call goes on longer than this, however much it prints.
+const HARD_LIMIT: Duration = Duration::from_secs(4 * 3600);
+
+/// How long the output of a call that has ended is waited for. A helper
+/// it left behind may hold the pipes open.
+const DRAIN_WAIT: Duration = Duration::from_secs(2);
 
 /// The most output of one call that is kept. The whole of Flathub's
 /// listing is about 400 kB.
@@ -38,7 +48,9 @@ impl Default for Limits {
             quick: Duration::from_secs(20),
             appstream: Duration::from_secs(120),
             listing: Duration::from_secs(60),
-            install: Duration::from_secs(30 * 60),
+            // How long an install may go without a word from flatpak, not
+            // how long it may take: a big one keeps printing as it goes.
+            install: Duration::from_secs(10 * 60),
         }
     }
 }
@@ -67,12 +79,41 @@ impl std::fmt::Display for Error {
 pub struct Flatpak {
     program: OsString,
     limits: Limits,
+    /// Process groups of the calls under way, for `stop_all`.
+    running: Arc<Mutex<Vec<libc::pid_t>>>,
 }
 
 impl Default for Flatpak {
     fn default() -> Self {
         Self::new("flatpak", Limits::default())
     }
+}
+
+/// Whether the user's `flathub` remote is Flathub, with its signatures
+/// checked. `listing` is `flatpak remotes --columns=name,url,options`.
+pub fn check_remote(listing: &str) -> Result<(), String> {
+    for line in listing.lines() {
+        let mut columns = line.split('\t');
+        if columns.next().map(str::trim) != Some(REMOTE) {
+            continue;
+        }
+        let url = columns.next().unwrap_or("").trim().trim_end_matches('/');
+        let options = columns.next().unwrap_or("");
+        if url != REPO_URL_BASE.trim_end_matches('/') {
+            return Err(
+                "This user's \"flathub\" source is not Flathub. Fix it with flatpak remotes"
+                    .to_string(),
+            );
+        }
+        if options.contains("no-gpg-verify") {
+            return Err(
+                "This user's Flathub source does not check signatures. Fix it with flatpak remotes"
+                    .to_string(),
+            );
+        }
+        return Ok(());
+    }
+    Err("The Flathub source is missing".to_string())
 }
 
 /// The last thing a failed command said, without its `error:` label.
@@ -87,12 +128,40 @@ fn last_line(stderr: &[u8], stdout: &[u8]) -> String {
     "Flatpak failed".to_string()
 }
 
-fn drain(source: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
-    std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = source.take(MAX_OUTPUT).read_to_end(&mut bytes);
-        bytes
-    })
+/// What a reader thread has got so far, and whether it has reached the end.
+#[derive(Default)]
+struct Pipe {
+    bytes: Mutex<Vec<u8>>,
+    done: AtomicBool,
+}
+
+fn drain(
+    mut source: impl Read + Send + 'static,
+    last_word: Arc<Mutex<Instant>>,
+) -> (Arc<Pipe>, std::thread::JoinHandle<()>) {
+    let pipe = Arc::new(Pipe::default());
+    let mine = pipe.clone();
+    let handle = std::thread::spawn(move || {
+        let mut chunk = [0u8; 8192];
+        while let Ok(n) = source.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            *last_word.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+            let mut bytes = mine.bytes.lock().unwrap_or_else(|e| e.into_inner());
+            if (bytes.len() as u64) < MAX_OUTPUT {
+                bytes.extend_from_slice(&chunk[..n]);
+            }
+        }
+        mine.done.store(true, Ordering::Release);
+    });
+    (pipe, handle)
+}
+
+fn text(pipe: &Option<(Arc<Pipe>, std::thread::JoinHandle<()>)>) -> Vec<u8> {
+    pipe.as_ref()
+        .map(|(p, _)| p.bytes.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        .unwrap_or_default()
 }
 
 impl Flatpak {
@@ -100,46 +169,102 @@ impl Flatpak {
         Self {
             program: program.into(),
             limits,
+            running: Arc::default(),
+        }
+    }
+
+    fn spawn(&self, args: &[&str]) -> std::io::Result<std::process::Child> {
+        let mut tries = 0;
+        loop {
+            let spawned = Command::new(&self.program)
+                .args(args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                // Its own group, so that its helpers go when it does.
+                .process_group(0)
+                .spawn();
+            // A script that was written a moment ago may still be open for
+            // writing in another thread's fork.
+            match spawned {
+                Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && tries < 20 => {
+                    tries += 1;
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                other => return other,
+            }
+        }
+    }
+
+    /// Kills every call under way, and what they started. Used when the
+    /// window is closed: an install stopped half way is not deployed by
+    /// Flatpak, so nothing is left running and nothing is left broken.
+    pub fn stop_all(&self) {
+        let groups = self.running.lock().unwrap_or_else(|e| e.into_inner());
+        for pid in groups.iter() {
+            // SAFETY: killpg only sends a signal.
+            unsafe { libc::killpg(*pid, libc::SIGKILL) };
         }
     }
 
     /// Runs flatpak with `args` and gives what it wrote, or says why not.
-    /// After `limit` the command and anything it started are killed.
+    /// It is stopped, with anything it started, if it says nothing for
+    /// `limit` (or has gone on for hours).
     pub fn run(&self, args: &[&str], limit: Duration) -> Result<String, Error> {
-        let mut child = Command::new(&self.program)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            // Its own group, so that its helpers go when it does.
-            .process_group(0)
-            .spawn()
-            .map_err(|error| match error.kind() {
-                std::io::ErrorKind::NotFound => Error::Missing,
-                _ => Error::Failed(sengi_text::line(&error.to_string(), 200)),
-            })?;
+        let mut child = self.spawn(args).map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => Error::Missing,
+            _ => Error::Failed(sengi_text::line(&error.to_string(), 200)),
+        })?;
         let pid = child.id() as libc::pid_t;
-        let out = child.stdout.take().map(drain);
-        let err = child.stderr.take().map(drain);
-
+        self.running
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(pid);
         let started = Instant::now();
+        let last_word = Arc::new(Mutex::new(started));
+        let out = child.stdout.take().map(|s| drain(s, last_word.clone()));
+        let err = child.stderr.take().map(|s| drain(s, last_word.clone()));
+
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Some(status),
-                Ok(None) if started.elapsed() < limit => {
-                    std::thread::sleep(Duration::from_millis(10));
+                Ok(None) => {
+                    let quiet = last_word
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .elapsed();
+                    if quiet < limit && started.elapsed() < HARD_LIMIT {
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
                 }
-                _ => {
-                    // SAFETY: killpg only sends a signal.
-                    unsafe { libc::killpg(pid, libc::SIGKILL) };
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    break None;
-                }
+                Err(_) => {}
             }
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
         };
-        let stdout = out.and_then(|h| h.join().ok()).unwrap_or_default();
-        let stderr = err.and_then(|h| h.join().ok()).unwrap_or_default();
+        // Whatever it left behind goes too, so the pipes close.
+        // SAFETY: killpg only sends a signal.
+        unsafe { libc::killpg(pid, libc::SIGKILL) };
+        self.running
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|p| *p != pid);
+
+        // A helper that left its group may still hold the pipes: the output
+        // is waited for a little, and then taken as it is.
+        let waited = Instant::now();
+        while waited.elapsed() < DRAIN_WAIT
+            && [&out, &err].iter().any(|p| {
+                p.as_ref()
+                    .is_some_and(|(p, _)| !p.done.load(Ordering::Acquire))
+            })
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let stdout = text(&out);
+        let stderr = text(&err);
         match status {
             None => Err(Error::TimedOut),
             Some(status) if status.success() => Ok(String::from_utf8_lossy(&stdout).into_owned()),
@@ -162,8 +287,13 @@ impl Flatpak {
         self.run(
             &["--user", "remote-add", "--if-not-exists", REMOTE, source],
             limit,
-        )
-        .map(|_| ())
+        )?;
+        // --if-not-exists keeps whatever is there under that name.
+        let remotes = self.run(
+            &["--user", "remotes", "--columns=name,url,options"],
+            self.limits.quick,
+        )?;
+        check_remote(&remotes).map_err(Error::Failed)
     }
 
     /// Fetches the newest descriptions and icons of the apps.
@@ -197,8 +327,17 @@ impl Flatpak {
         if !catalog::valid_id(id) {
             return Err(Error::Failed("That is not an app ID".to_string()));
         }
+        // -y: no question is asked, and no permission list is shown.
+        let target = format!("app/{id}");
         self.run(
-            &["--user", "install", "-y", "--noninteractive", REMOTE, id],
+            &[
+                "--user",
+                "install",
+                "-y",
+                "--noninteractive",
+                REMOTE,
+                &target,
+            ],
             self.limits.install,
         )
         .map(|_| ())
@@ -258,10 +397,10 @@ pub mod testing {
 
     pub fn quick() -> Limits {
         Limits {
-            quick: Duration::from_millis(500),
-            appstream: Duration::from_millis(500),
-            listing: Duration::from_millis(500),
-            install: Duration::from_millis(500),
+            quick: Duration::from_secs(5),
+            appstream: Duration::from_secs(5),
+            listing: Duration::from_secs(5),
+            install: Duration::from_secs(5),
         }
     }
 }
@@ -292,7 +431,7 @@ mod tests {
         fake.flatpak(quick()).install("org.gimp.GIMP").unwrap();
         assert_eq!(
             fake.calls(),
-            ["--user install -y --noninteractive flathub org.gimp.GIMP"]
+            ["--user install -y --noninteractive flathub app/org.gimp.GIMP"]
         );
     }
 
@@ -346,6 +485,72 @@ mod tests {
         let started = Instant::now();
         assert_eq!(fake.flatpak(limits).installed(), Err(Error::TimedOut));
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_helper_left_behind_after_flatpak_ends_does_not_hang_it() {
+        // The parent says its piece and exits; a helper in another group
+        // keeps both pipes open for a long time.
+        let fake = Fake::new(
+            "left",
+            "echo 'org.gimp.GIMP'\nsetsid sleep 30 </dev/null &\nexit 0",
+        );
+        let started = Instant::now();
+        let set = fake.flatpak(quick()).installed().unwrap();
+        assert!(set.contains("org.gimp.GIMP"));
+        assert!(started.elapsed() < Duration::from_secs(4));
+    }
+
+    #[test]
+    fn a_call_that_keeps_talking_is_not_stopped_for_being_slow() {
+        let fake = Fake::new(
+            "talk",
+            "for i in 1 2 3 4 5 6 7 8; do echo $i; sleep 0.15; done",
+        );
+        let limits = Limits {
+            install: Duration::from_millis(500),
+            ..quick()
+        };
+        assert!(fake.flatpak(limits).install("org.gimp.GIMP").is_ok());
+    }
+
+    #[test]
+    fn closing_the_window_stops_what_is_running() {
+        let fake = Fake::new("stop", "sleep 30");
+        let flatpak = fake.flatpak(quick());
+        let worker = {
+            let flatpak = flatpak.clone();
+            std::thread::spawn(move || flatpak.install("org.gimp.GIMP"))
+        };
+        std::thread::sleep(Duration::from_millis(500));
+        let started = Instant::now();
+        flatpak.stop_all();
+        assert!(worker.join().unwrap().is_err());
+        assert!(started.elapsed() < Duration::from_secs(4));
+    }
+
+    #[test]
+    fn a_user_remote_that_is_not_flathub_is_refused() {
+        let good = "flathub\thttps://dl.flathub.org/repo/\tuser\nother\thttp://x\t\n";
+        assert!(check_remote(good).is_ok());
+        assert!(check_remote("flathub\thttps://dl.flathub.org/repo\t\n").is_ok());
+        assert!(check_remote("flathub\thttps://evil.example/repo/\tuser\n").is_err());
+        assert!(
+            check_remote("flathub\thttps://dl.flathub.org/repo/\tuser,no-gpg-verify\n").is_err()
+        );
+        assert!(check_remote("other\thttp://x\t\n").is_err());
+    }
+
+    #[test]
+    fn the_remote_is_added_and_then_checked() {
+        let fake = Fake::new(
+            "remote",
+            "case \"$*\" in *remotes*) printf 'flathub\\thttps://dl.flathub.org/repo/\\tuser\\n';; esac",
+        );
+        fake.flatpak(quick()).ensure_remote().unwrap();
+        let calls = fake.calls();
+        assert!(calls[0].starts_with("--user remote-add --if-not-exists flathub "));
+        assert_eq!(calls[1], "--user remotes --columns=name,url,options");
     }
 
     #[test]
