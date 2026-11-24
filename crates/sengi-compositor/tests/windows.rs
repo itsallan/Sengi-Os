@@ -624,6 +624,7 @@ fn a_big_window_that_waits_for_a_frame_callback_is_shown_on_a_small_screen() {
     let (surface, _xdg, _toplevel) = bare_window(&mut app).unwrap();
     assert!(app.wait(SOON, |seen| seen.window_configures >= 1));
     let buffer = app.buffer(890, 630, GREEN).unwrap();
+    let committed = std::time::Instant::now();
     surface.attach(Some(&buffer), 0, 0);
     surface.frame(&app.handle, ());
     surface.commit();
@@ -635,13 +636,23 @@ fn a_big_window_that_waits_for_a_frame_callback_is_shown_on_a_small_screen() {
         "it was never told a size"
     );
     let (w, h) = told(&app).unwrap();
+    assert!(
+        w <= 800 && h <= 500,
+        "told to be {w}x{h}, which does not fit what the bar and dock leave"
+    );
     // The client draws the new size only once its frame callback is done.
     assert!(
-        app.wait(Duration::from_secs(4), |seen| seen.frames >= 1),
+        app.wait(Duration::from_millis(900), |seen| seen.frames >= 1),
         "no frame callback ever came, so the client cannot answer"
     );
     app.paint(&surface, w, h, GREEN).unwrap();
     let picture = app.capture().unwrap();
+    // The compositor gives up waiting after a second: showing the window
+    // sooner than that is the callback's doing, not the fallback's.
+    assert!(
+        committed.elapsed() < Duration::from_millis(900),
+        "too slow to tell the callback from the fallback"
+    );
     assert_eq!(
         picture.at(400, 300),
         rgb(GREEN),
@@ -656,16 +667,27 @@ fn a_big_window_that_never_answers_a_shrink_request_is_shown_as_it_is() {
     let (surface, _xdg, _toplevel) = bare_window(&mut app).unwrap();
     assert!(app.wait(SOON, |seen| seen.window_configures >= 1));
     let buffer = app.buffer(890, 630, GREEN).unwrap();
+    let committed = std::time::Instant::now();
     surface.attach(Some(&buffer), 0, 0);
     surface.commit();
     // It is told to shrink and says nothing more.
     assert!(app.wait(SOON, |seen| seen.more.toplevel.is_some()));
-    std::thread::sleep(Duration::from_millis(1600));
-    app.roundtrip().unwrap();
-    let picture = app.capture().unwrap();
-    assert_eq!(
-        picture.at(100, 100),
+    std::thread::sleep(Duration::from_millis(300).saturating_sub(committed.elapsed()));
+    let early = app.capture().unwrap();
+    assert_ne!(
+        early.at(100, 100),
         rgb(GREEN),
-        "the window is still not on the screen"
+        "the window was shown before it had been given time to answer"
     );
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if app.capture().unwrap().at(100, 100) == rgb(GREEN) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the window is still not on the screen after five seconds"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
