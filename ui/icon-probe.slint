@@ -1,0 +1,39 @@
+// One icon, on its own, for the pixel tests of the icon library: which of
+// the icon components it is, and the state it is drawn in. Not shown to the
+// user.
+
+import { Tokens, SengiIcon, SengiSignalIcon, SengiSpeakerIcon, SengiBatteryIcon } from "components.slint";
+
+export component IconProbe inherits Window {
+    // "name", "signal", "speaker" or "battery".
+    in property <string> kind: "name";
+    in property <string> name;
+    in property <int> level;
+    in property <bool> flag;
+
+    width: Tokens.bar-icon * 4;
+    height: Tokens.bar-icon * 4;
+    background: Tokens.color-bg;
+
+    if root.kind == "name": SengiIcon {
+        width: parent.width;
+        height: parent.height;
+        name: root.name;
+    }
+    if root.kind == "signal": SengiSignalIcon {
+        width: parent.width;
+        height: parent.height;
+        level: root.level;
+    }
+    if root.kind == "speaker": SengiSpeakerIcon {
+        width: parent.width;
+        height: parent.height;
+        muted: root.flag;
+    }
+    if root.kind == "battery": SengiBatteryIcon {
+        width: parent.width;
+        height: parent.height;
+        percent: root.level;
+        charging: root.flag;
+    }
+}

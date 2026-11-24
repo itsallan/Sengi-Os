@@ -22,13 +22,33 @@ export component SengiIcon inherits Path {
     fill: root.ink;
 }
 
-// Wi-Fi at `level` 0 to 4: no bars, one, two, or all of them.
-export component SengiSignalIcon inherits SengiIcon {
+// Wi-Fi at `level` 0 to 4: no bars, one, two, or all of them. The bars that
+// are not lit stay drawn in `faint`, so level 0 is still the Wi-Fi symbol
+// (Phosphor's own "wifi-none" is a lone dot).
+export component SengiSignalIcon inherits Rectangle {
     in property <int> level: 4;
+    in property <brush> ink: Tokens.color-text;
+    in property <brush> faint: Tokens.color-text-disabled;
 
-    name: root.level >= 4 ? "wifi-high"
-        : root.level == 3 ? "wifi-medium"
-        : root.level == 2 ? "wifi-low" : "wifi-none";
+    width: Tokens.bar-icon;
+    height: Tokens.bar-icon;
+
+    SengiIcon {
+        width: parent.width;
+        height: parent.height;
+        name: "wifi-high";
+        ink: root.faint;
+    }
+
+    SengiIcon {
+        width: parent.width;
+        height: parent.height;
+        visible: root.level > 0;
+        name: root.level >= 4 ? "wifi-high"
+            : root.level == 3 ? "wifi-medium"
+            : root.level == 2 ? "wifi-low" : "wifi-none";
+        ink: root.ink;
+    }
 }
 
 export component SengiSpeakerIcon inherits SengiIcon {
