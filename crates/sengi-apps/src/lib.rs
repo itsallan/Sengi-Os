@@ -10,6 +10,7 @@
 //! item's icon and decodes it in a resource-limited child process; `svg`
 //! adds scalable icons.
 
+pub mod decoder;
 pub mod desktop;
 pub mod env;
 pub mod exec;
