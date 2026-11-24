@@ -2,9 +2,9 @@
 // is drawn by a helper on a surface of its own that covers the output: the
 // menu hangs under the icon and a click anywhere else closes it.
 //
-// Rows are sized and lit like the rows of the session menu that
-// sengi-launcher draws, and the keys do the same: the arrows move the
-// highlight, Return chooses, Escape closes.
+// Rows are sized and lit like the rows of the menus the compositor draws
+// (the desktop menu and the window menu), and the keys work as the session
+// menu's do: the arrows move the highlight, Return chooses, Escape closes.
 
 import { Tokens, SengiText, SengiSurface } from "components.slint";
 
@@ -64,16 +64,14 @@ component Row inherits Rectangle {
     // The pointer came over the row, or the program asked for its place.
     callback entered();
 
-    private property <color> ink: root.entry.enabled ? Tokens.color-text : Tokens.color-text-disabled;
+    private property <color> ink: !root.entry.enabled ? Tokens.color-text-disabled
+        : root.selected ? Tokens.color-accent-text : Tokens.color-text;
 
-    // The launcher's row: a line of large text with small space above and
-    // below it.
-    height: root.entry.separator ? Tokens.space-sm + Tokens.border-width
-        : Tokens.font-size-lg + Tokens.space-sm * 2;
+    height: root.entry.separator ? Tokens.space-sm + Tokens.border-width : Tokens.menu-row;
     min-width: line.min-width;
     preferred-width: line.preferred-width;
     border-radius: Tokens.radius;
-    background: root.selected && !root.entry.separator ? Tokens.color-surface-hover : transparent;
+    background: root.selected && !root.entry.separator ? Tokens.color-accent : transparent;
 
     changed requested => {
         if root.requested {
@@ -82,9 +80,9 @@ component Row inherits Rectangle {
     }
 
     if root.entry.separator: Rectangle {
-        x: Tokens.space-md;
+        x: Tokens.menu-separator-inset;
         y: (parent.height - self.height) / 2;
-        width: parent.width - Tokens.space-md * 2;
+        width: parent.width - Tokens.menu-separator-inset * 2;
         height: Tokens.border-width;
         background: Tokens.color-border;
     }
@@ -124,7 +122,7 @@ component Row inherits Rectangle {
             horizontal-stretch: 1;
             text: root.entry.label;
             color: root.ink;
-            font-size: Tokens.font-size-lg;
+            font-size: Tokens.font-size-md;
             vertical-alignment: center;
             overflow: elide;
         }
@@ -227,7 +225,7 @@ export component TrayMenu inherits Window {
             content-height: list.preferred-height;
 
             list := VerticalLayout {
-                padding: Tokens.space-sm;
+                padding: Tokens.menu-padding;
 
                 for row in panel.rows: item := Row {
                     entry: row;
