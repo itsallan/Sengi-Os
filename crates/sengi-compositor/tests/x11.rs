@@ -109,8 +109,19 @@ struct XClient {
 
 impl XClient {
     fn connect(display: u32) -> Self {
-        let (conn, screen) =
-            x11rb::connect(Some(&format!(":{display}"))).expect("a connection to Xwayland");
+        // Xwayland takes the socket before it can answer on it, and a loaded
+        // runner can be slow to start it: ask again for a while.
+        let name = format!(":{display}");
+        let end = std::time::Instant::now() + Duration::from_secs(10);
+        let (conn, screen) = loop {
+            match x11rb::connect(Some(&name)) {
+                Ok(connected) => break connected,
+                Err(error) if std::time::Instant::now() >= end => {
+                    panic!("no connection to Xwayland on {name}: {error}")
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(100)),
+            }
+        };
         let root = conn.setup().roots[screen].root;
         let delete = conn
             .intern_atom(false, b"WM_DELETE_WINDOW")
