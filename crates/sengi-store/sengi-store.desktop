@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Store
+GenericName=App Store
+Comment=Find apps on Flathub and install them
+Exec=sengi-store
+Icon=sengi-store
+Terminal=false
+StartupWMClass=sengi-store
+Categories=System;PackageManager;
+Keywords=apps;store;install;flatpak;flathub;software;

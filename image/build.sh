@@ -61,13 +61,13 @@ if grep -a -q -e zbus "$work/target/release/sengi-install"; then
 	echo "sengi-install has zbus linked in, which it must not" >&2
 	exit 1
 fi
-# Settings and the installer are ordinary windows, the two programs that
+# Settings, the store and the installer are ordinary windows, the programs that
 # want the toolkit's window backend and its font lookup. Built together
 # with the others they would turn those features on for all of them, so
 # they get a build to themselves and the shell's programs stay what they
 # were without it.
-cargo build --release --locked --manifest-path "$src/Cargo.toml" -p sengi-settings -p sengi-installer
-programs="$programs sengi-settings sengi-installer"
+cargo build --release --locked --manifest-path "$src/Cargo.toml" -p sengi-settings -p sengi-installer -p sengi-store
+programs="$programs sengi-settings sengi-installer sengi-store"
 for program in $programs; do
 	install -D -m 0755 "$work/target/release/$program" "$work/overlay/usr/bin/$program"
 done
@@ -75,6 +75,8 @@ install -D -m 0644 "$src/crates/sengi-installer/sengi-installer.desktop" \
 	"$work/overlay/usr/share/applications/sengi-installer.desktop"
 install -D -m 0644 "$src/crates/sengi-settings/sengi-settings.desktop" \
 	"$work/overlay/usr/share/applications/sengi-settings.desktop"
+install -D -m 0644 "$src/crates/sengi-store/sengi-store.desktop" \
+	"$work/overlay/usr/share/applications/sengi-store.desktop"
 
 # The compositor preview is a workspace of its own, so Smithay stays out of
 # everyone else's build. No window backend and no test switches in the image.
