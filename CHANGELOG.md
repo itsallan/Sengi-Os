@@ -8,8 +8,8 @@ and the measured idle RAM and boot time.
 - Wi-Fi and Bluetooth firmware is in the image: Intel (both radios), Realtek,
   MediaTek, Atheros and Broadcom, plus Intel graphics firmware and CPU
   microcode, from Debian's non-free-firmware section.
-
-- Fixed windows never appearing on small screens such as 800x600: a window asked to shrink never got the frame callback it waits for.
+- Fixed windows never appearing on small screens such as 800x600: a window
+  asked to shrink never got the frame callback it waits for.
 
 - sengi-store, a small app store: type the name of an app, pick it from the
   Flathub list, and it is installed for your user. It has its own icon at the
