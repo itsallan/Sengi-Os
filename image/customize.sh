@@ -28,6 +28,17 @@ VERSION_ID="$VERSION"
 HOME_URL="https://github.com/itsallan/Sengi-Os"
 BUG_REPORT_URL="https://github.com/itsallan/Sengi-Os/issues"
 REL
+
+# Debian's grub script adds " GNU/Linux" to any distributor name that does not
+# already end with it, so the installed system's boot menu would read "Sengi
+# OS GNU/Linux". The installed system is a copy of this image, so the fix is
+# made here. The build stops if the line is not found, which is how a change
+# in Debian's script gets noticed.
+grub_line='OS="${GRUB_DISTRIBUTOR} GNU/Linux"'
+grep -qF "$grub_line" "$root/etc/grub.d/10_linux" || { echo "10_linux no longer has: $grub_line" >&2; exit 1; }
+sed -i 's|OS="${GRUB_DISTRIBUTOR} GNU/Linux"|OS="${GRUB_DISTRIBUTOR}"|' "$root/etc/grub.d/10_linux"
+if grep -qF "$grub_line" "$root/etc/grub.d/10_linux"; then echo "10_linux still adds GNU/Linux" >&2; exit 1; fi
+
 echo sengios >"$root/etc/hostname"
 printf '127.0.0.1\tlocalhost\n127.0.1.1\tsengios\n::1\tlocalhost ip6-localhost ip6-loopback\n' >"$root/etc/hosts"
 
