@@ -3,8 +3,74 @@
 // tokens; edit the .in file.
 
 import { Tokens } from "tokens.slint";
+import { IconPaths } from "icon-paths.slint";
 
 export { Tokens }
+
+// One of the Phosphor Bold icons in ui/icons/phosphor/bold, by its name without
+// the "-bold" ending, filled in `ink`. It is the size of a bar icon unless
+// its width and height are set. A name that has no file draws nothing.
+export component SengiIcon inherits Path {
+    in property <string> name;
+    in property <brush> ink: Tokens.color-text;
+
+    width: Tokens.bar-icon;
+    height: Tokens.bar-icon;
+    viewbox-width: 256;
+    viewbox-height: 256;
+    commands: IconPaths.path(root.name);
+    fill: root.ink;
+}
+
+// Wi-Fi at `level` 0 to 4: no bars, one, two, or all of them. The bars that
+// are not lit stay drawn in `faint`, so level 0 is still the Wi-Fi symbol
+// (Phosphor's own "wifi-none" is a lone dot).
+export component SengiSignalIcon inherits Rectangle {
+    in property <int> level: 4;
+    in property <brush> ink: Tokens.color-text;
+    in property <brush> faint: Tokens.color-text-disabled;
+
+    width: Tokens.bar-icon;
+    height: Tokens.bar-icon;
+
+    SengiIcon {
+        width: parent.width;
+        height: parent.height;
+        name: "wifi-high";
+        ink: root.faint;
+    }
+
+    SengiIcon {
+        width: parent.width;
+        height: parent.height;
+        visible: root.level > 0;
+        name: root.level >= 4 ? "wifi-high"
+            : root.level == 3 ? "wifi-medium"
+            : root.level == 2 ? "wifi-low" : "wifi-none";
+        ink: root.ink;
+    }
+}
+
+export component SengiSpeakerIcon inherits SengiIcon {
+    in property <bool> muted: false;
+
+    name: root.muted ? "speaker-x" : "speaker-high";
+}
+
+// A battery at `percent`, in the nearest of five fills, or the charging one.
+// `charge` colours it while it is not charging, for a low battery.
+export component SengiBatteryIcon inherits SengiIcon {
+    in property <int> percent: 100;
+    in property <bool> charging: false;
+    in property <brush> charge: root.ink;
+
+    name: root.charging ? "battery-charging"
+        : root.percent > 87 ? "battery-full"
+        : root.percent > 62 ? "battery-high"
+        : root.percent > 37 ? "battery-medium"
+        : root.percent > 12 ? "battery-low" : "battery-empty";
+    fill: root.charging ? root.ink : root.charge;
+}
 
 export component SengiText inherits Text {
     color: Tokens.color-text;

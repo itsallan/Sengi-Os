@@ -135,11 +135,36 @@ button-glyph = 6
 button-glyph-stroke = 1.5
 button-pressed-darken = 15
 
+[menu]
+# A menu's rows: the height of a row, the space between the menu's edge and
+# its rows, and how far a separator line is pulled in from the row's ends.
+row = 22
+padding = 6
+separator-inset = 6
+
+[dock]
+# The shelf the dock sits on. The icon is the visible app icon; the gap is the
+# space between two icons, kept the same next to every one; the padding is at
+# each end of the shelf (above and below the icons it is size.dock-padding);
+# the margin lifts the shelf off the bottom of the screen. The dot under a
+# running app is `dot` wide, `dot-gap` below the icon. A launching icon
+# jumps `bounce` high.
+icon = 48
+gap = 14
+end-padding = 10
+margin = 6
+dot = 4
+dot-gap = 3
+bounce = 8
+
 [motion]
 fast = 120
 base = 200
 slow = 320
 easing = "cubic-bezier(0.2, 0, 0, 1)"
+# How long the launch bounce takes up and down together, and how it eases.
+bounce-duration = 300
+bounce-easing = "ease-out"
 
 [timing]
 notification-timeout = 5000

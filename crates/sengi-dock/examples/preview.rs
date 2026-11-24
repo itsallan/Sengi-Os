@@ -220,8 +220,9 @@ fn main() -> std::process::ExitCode {
         // Slots are all one width, so the pointer position follows from it.
         let (width, height) = app.size();
         let count = app.ui().get_items().iter().count() as f32;
-        let slot = (width as f32 - 8.0) / count.max(1.0);
-        LogicalPosition::new(4.0 + slot * (index + 0.5), height as f32 - 28.0)
+        let edge = app.ui().get_side_padding();
+        let slot = (width as f32 - edge * 2.0) / count.max(1.0);
+        LogicalPosition::new(edge + slot * (index + 0.5), height as f32 - 28.0)
     };
 
     if let Some(index) = hover.or(press) {

@@ -3,7 +3,10 @@
 # the snapshot's updates and security suites as well: the base image already
 # carries fixes from them, and a -dev package wants its library at the very
 # same version.
-FROM docker.io/library/debian:trixie-slim
+# The base image is pinned to a dated build as well. trixie-slim moves on
+# its own and can carry a library newer than the snapshot has, which makes
+# a -dev package impossible to install.
+FROM docker.io/library/debian:trixie-20261104-slim
 
 ARG SNAPSHOT
 ENV DEBIAN_FRONTEND=noninteractive

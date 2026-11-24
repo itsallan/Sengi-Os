@@ -1,6 +1,6 @@
 // The Sengi OS dock: a centred panel of app icons at the bottom of the screen.
 
-import { Tokens, SengiText } from "components.slint";
+import { Tokens, SengiText, SengiIcon } from "components.slint";
 
 export enum DockIcon {
     // The search button, drawn here.
@@ -28,29 +28,19 @@ export struct DockItem {
     present: bool,
 }
 
-// Our own icons are drawn as stroked paths on the 40 unit grid of the tile.
-component Glyph inherits Path {
-    width: 100%;
-    height: 100%;
-    viewbox-width: 40;
-    viewbox-height: 40;
-    stroke-width: Tokens.icon-stroke * 2;
-    stroke-line-cap: round;
-    stroke-line-join: round;
-    fill: transparent;
-}
-
 component Tile inherits Rectangle {
-    width: Tokens.dock-icon;
-    height: Tokens.dock-icon;
+    width: Tokens.dock-item;
+    height: Tokens.dock-item;
     border-radius: Tokens.radius;
 }
 
 component SearchIcon inherits Tile {
     background: Tokens.color-accent;
-    Glyph {
-        stroke: Tokens.color-accent-text;
-        commands: "M25 18a7 7 0 1 1-14 0a7 7 0 1 1 14 0z M23.5 23.5L30 30";
+    SengiIcon {
+        name: "magnifying-glass";
+        ink: Tokens.color-accent-text;
+        width: Tokens.dock-item / 2;
+        height: self.width;
     }
 }
 
@@ -58,13 +48,11 @@ component TerminalIcon inherits Tile {
     background: Tokens.color-bg;
     border-width: Tokens.border-width;
     border-color: Tokens.color-border;
-    Glyph {
-        stroke: Tokens.color-accent;
-        commands: "M10 13l7 7l-7 7";
-    }
-    Glyph {
-        stroke: Tokens.color-text;
-        commands: "M21 28h9";
+    SengiIcon {
+        name: "terminal";
+        ink: Tokens.color-accent;
+        width: Tokens.dock-item / 2;
+        height: self.width;
     }
 }
 
@@ -90,8 +78,8 @@ component Indicator inherits Rectangle {
     in property <bool> focused;
     in property <bool> launching;
 
-    height: Tokens.space-xs;
-    width: root.focused ? Tokens.space-lg : root.running || root.launching ? Tokens.space-xs : 0;
+    height: Tokens.dock-dot;
+    width: root.focused ? Tokens.space-lg : root.running || root.launching ? Tokens.dock-dot : 0;
     border-radius: self.height / 2;
     background: root.running ? Tokens.color-accent : Tokens.color-text-muted;
     opacity: root.running || root.launching ? 1 : 0;
@@ -109,9 +97,13 @@ component Slot inherits Rectangle {
 
     // A click with Ctrl or Shift held counts as a middle click.
     property <bool> modified: false;
-    property <length> icon-bottom: icon.y + icon.height;
+    // Room above the panel for the icon to jump into while it launches.
+    property <length> top: Tokens.dock-bounce;
+    property <bool> launching: root.item.launching;
+    property <bool> lifted: false;
 
-    width: root.item.present ? Tokens.dock-icon + Tokens.space-xs * 2 : 0;
+    // Half the gap on each side of the icon, so two icons are a gap apart.
+    width: root.item.present ? Tokens.dock-item + Tokens.dock-gap : 0;
     opacity: root.item.present ? 1 : 0;
     clip: true;
     animate width, opacity {
@@ -119,11 +111,31 @@ component Slot inherits Rectangle {
         easing: Tokens.motion-easing;
     }
 
+    // The icon jumps once when the app is clicked: up for half the bounce
+    // time and back down for the other half.
+    changed launching => {
+        if self.launching {
+            root.lifted = true;
+            bounce-timer.running = true;
+        }
+    }
+
+    bounce-timer := Timer {
+        interval: Tokens.motion-bounce / 2;
+        running: false;
+        triggered => {
+            root.lifted = false;
+            self.running = false;
+        }
+    }
+
     // Reaches around the icon and its indicator, so it shows as a clear
     // band even behind an icon that is itself a solid tile.
     Rectangle {
-        y: Tokens.space-xxs;
-        height: parent.height - Tokens.space-xxs * 2;
+        x: Tokens.dock-gap / 2 - Tokens.space-xs;
+        width: Tokens.dock-item + Tokens.space-xs * 2;
+        y: root.top + Tokens.space-xxs;
+        height: parent.height - root.top - Tokens.space-xxs * 2;
         border-radius: Tokens.radius;
         background: touch.pressed ? Tokens.color-surface-raised
             : touch.has-hover ? Tokens.color-surface-hover : transparent;
@@ -134,9 +146,14 @@ component Slot inherits Rectangle {
     }
 
     icon := Rectangle {
-        y: Tokens.dock-padding + Tokens.space-xxs;
-        width: Tokens.dock-icon;
-        height: Tokens.dock-icon;
+        x: Tokens.dock-gap / 2;
+        y: root.top + Tokens.dock-padding - (root.lifted ? Tokens.dock-bounce : 0px);
+        width: Tokens.dock-item;
+        height: Tokens.dock-item;
+        animate y {
+            duration: Tokens.motion-bounce / 2;
+            easing: Tokens.motion-bounce-easing;
+        }
 
         if root.item.icon == DockIcon.search: SearchIcon { }
         if root.item.icon == DockIcon.terminal: TerminalIcon { }
@@ -144,20 +161,23 @@ component Slot inherits Rectangle {
             letter: root.item.letter;
         }
         if root.item.icon == DockIcon.image: Image {
-            width: Tokens.dock-icon;
-            height: Tokens.dock-icon;
+            width: Tokens.dock-item;
+            height: Tokens.dock-item;
             source: root.item.image;
         }
     }
 
     Indicator {
-        y: root.icon-bottom + (root.height - root.icon-bottom - self.height) / 2;
+        x: Tokens.dock-gap / 2 + (Tokens.dock-item - self.width) / 2;
+        y: root.top + Tokens.dock-padding + Tokens.dock-item + Tokens.dock-dot-gap;
         running: root.item.running;
         focused: root.item.focused;
         launching: root.item.launching;
     }
 
     touch := TouchArea {
+        y: root.top;
+        height: parent.height - root.top;
         enabled: root.item.present;
         clicked => {
             if root.modified {
@@ -216,15 +236,15 @@ export component Dock inherits Window {
         root.items.length * root.slot-width + root.side-padding * 2;
     out property <length> dock-height: root.panel-height + (root.show-labels ? root.label-space : 0);
     // The panel alone: what to reserve as the exclusive zone, plus the margin.
-    // Below the icons there is a little more room than above, for the
-    // running indicator.
-    out property <length> panel-height: Tokens.dock-icon + Tokens.space-xxs * 4 + Tokens.dock-padding * 2;
+    // The icons have their padding above and below, and the running dot sits
+    // in the room under them.
+    out property <length> panel-height: Tokens.dock-padding + Tokens.dock-item + Tokens.dock-dot-gap + Tokens.dock-dot + Tokens.dock-padding;
     // The panel's width at this moment, which moves while rows slide.
     out property <length> panel-width: panel.width;
     // Gap between the panel and the bottom edge of the screen.
-    out property <length> bottom-margin: Tokens.space-sm;
+    out property <length> bottom-margin: Tokens.dock-margin;
     // Logical size of the bitmaps to put in DockItem.image.
-    out property <length> icon-size: Tokens.dock-icon;
+    out property <length> icon-size: Tokens.dock-item;
     // How long a row takes to slide in or out; remove a row this long after
     // turning `present` off.
     out property <duration> slide-duration: Tokens.motion-base;
@@ -240,8 +260,8 @@ export component Dock inherits Window {
 
     // The width one item takes, and the padding at each end of the panel:
     // what decides how many items fit across a screen.
-    out property <length> slot-width: Tokens.dock-icon + Tokens.space-xs * 2;
-    out property <length> side-padding: Tokens.dock-padding - Tokens.space-xxs;
+    out property <length> slot-width: Tokens.dock-item + Tokens.dock-gap;
+    out property <length> side-padding: Tokens.dock-end-padding - Tokens.dock-gap / 2;
     property <length> label-space: Tokens.font-size-sm + Tokens.space-sm * 2 + Tokens.space-xs;
     property <int> hovered: -1;
     property <string> hovered-name;
@@ -265,6 +285,10 @@ export component Dock inherits Window {
         border-radius: Tokens.radius;
 
         row := HorizontalLayout {
+            // Taller than the panel by the height of the launch bounce, which
+            // reaches above it.
+            y: -Tokens.dock-bounce;
+            height: root.panel-height + Tokens.dock-bounce;
             padding-left: root.side-padding;
             padding-right: root.side-padding;
 

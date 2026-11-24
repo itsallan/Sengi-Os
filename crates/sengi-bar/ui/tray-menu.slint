@@ -2,11 +2,11 @@
 // is drawn by a helper on a surface of its own that covers the output: the
 // menu hangs under the icon and a click anywhere else closes it.
 //
-// Rows are sized and lit like the rows of the session menu that
-// sengi-launcher draws, and the keys do the same: the arrows move the
-// highlight, Return chooses, Escape closes.
+// Rows are sized and lit like the rows of the menus the compositor draws
+// (the desktop menu and the window menu), and the keys work as the session
+// menu's do: the arrows move the highlight, Return chooses, Escape closes.
 
-import { Tokens, SengiText, SengiSurface } from "components.slint";
+import { Tokens, SengiText, SengiSurface, SengiIcon } from "components.slint";
 
 export struct MenuRow {
     id: int,
@@ -38,20 +38,6 @@ export struct MenuPanel {
     top: length,
 }
 
-// Marks are drawn as stroked paths on the same 16 unit grid as bar icons.
-component Mark inherits Path {
-    in property <color> ink;
-    width: Tokens.bar-icon;
-    height: Tokens.bar-icon;
-    viewbox-width: 16;
-    viewbox-height: 16;
-    stroke: root.ink;
-    stroke-width: Tokens.icon-stroke;
-    stroke-line-cap: round;
-    stroke-line-join: round;
-    fill: transparent;
-}
-
 component Row inherits Rectangle {
     in property <MenuRow> entry;
     in property <bool> marks;
@@ -64,16 +50,14 @@ component Row inherits Rectangle {
     // The pointer came over the row, or the program asked for its place.
     callback entered();
 
-    private property <color> ink: root.entry.enabled ? Tokens.color-text : Tokens.color-text-disabled;
+    private property <color> ink: !root.entry.enabled ? Tokens.color-text-disabled
+        : root.selected ? Tokens.color-accent-text : Tokens.color-text;
 
-    // The launcher's row: a line of large text with small space above and
-    // below it.
-    height: root.entry.separator ? Tokens.space-sm + Tokens.border-width
-        : Tokens.font-size-lg + Tokens.space-sm * 2;
+    height: root.entry.separator ? Tokens.space-sm + Tokens.border-width : Tokens.menu-row;
     min-width: line.min-width;
     preferred-width: line.preferred-width;
     border-radius: Tokens.radius;
-    background: root.selected && !root.entry.separator ? Tokens.color-surface-hover : transparent;
+    background: root.selected && !root.entry.separator ? Tokens.color-accent : transparent;
 
     changed requested => {
         if root.requested {
@@ -82,9 +66,9 @@ component Row inherits Rectangle {
     }
 
     if root.entry.separator: Rectangle {
-        x: Tokens.space-md;
+        x: Tokens.menu-separator-inset;
         y: (parent.height - self.height) / 2;
-        width: parent.width - Tokens.space-md * 2;
+        width: parent.width - Tokens.menu-separator-inset * 2;
         height: Tokens.border-width;
         background: Tokens.color-border;
     }
@@ -97,13 +81,13 @@ component Row inherits Rectangle {
         if root.marks: Rectangle {
             width: Tokens.bar-icon;
 
-            if root.entry.check && root.entry.on: Mark {
+            if root.entry.check && root.entry.on: SengiIcon {
                 ink: root.ink;
-                commands: "M3.5 8.5l3 3 6-7";
+                name: "check";
             }
-            if root.entry.check && root.entry.mixed: Mark {
+            if root.entry.check && root.entry.mixed: SengiIcon {
                 ink: root.ink;
-                commands: "M4 8h8";
+                name: "minus";
             }
             if root.entry.radio && root.entry.on: Rectangle {
                 width: Tokens.space-sm;
@@ -124,7 +108,7 @@ component Row inherits Rectangle {
             horizontal-stretch: 1;
             text: root.entry.label;
             color: root.ink;
-            font-size: Tokens.font-size-lg;
+            font-size: Tokens.font-size-md;
             vertical-alignment: center;
             overflow: elide;
         }
@@ -132,9 +116,9 @@ component Row inherits Rectangle {
         if root.entry.submenu: Rectangle {
             width: Tokens.bar-icon;
 
-            Mark {
+            SengiIcon {
                 ink: root.ink;
-                commands: "M6 3.5l4.5 4.5-4.5 4.5";
+                name: "caret-right";
             }
         }
     }
@@ -227,7 +211,7 @@ export component TrayMenu inherits Window {
             content-height: list.preferred-height;
 
             list := VerticalLayout {
-                padding: Tokens.space-sm;
+                padding: Tokens.menu-padding;
 
                 for row in panel.rows: item := Row {
                     entry: row;

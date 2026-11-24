@@ -7,7 +7,7 @@
 // the focus colour, inside the control.
 
 import { Tokens, SengiText, SengiLabel, SengiSurface, SengiButton } from "components.slint";
-import { Icon, NamedIcon } from "icons.slint";
+import { NamedIcon } from "icons.slint";
 
 // The tokens this window is laid out with, under the names the kit and
 // the pages use.
@@ -611,7 +611,7 @@ export component ChoiceButton inherits Rectangle {
         VerticalLayout {
             alignment: center;
             NamedIcon {
-                name: "chevrons";
+                name: "caret-up-down";
                 ink: root.enabled ? Tokens.color-text-muted : Tokens.color-text-disabled;
             }
         }
