@@ -3,6 +3,10 @@
 //! Desktop Entry specification and executed directly.
 
 use std::fmt;
+use std::io::Write;
+use std::net::Shutdown;
+use std::os::fd::OwnedFd;
+use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -13,6 +17,8 @@ use crate::env::Env;
 pub const TERMINAL: [&str; 2] = ["foot", "-e"];
 /// Puts the app in its own systemd scope so the focused app can be prioritised.
 pub const RUNNER: &str = "sengi-run";
+/// Where journald takes the output of a program, one connection per program.
+const JOURNAL_STREAM: &str = "/run/systemd/journal/stdout";
 
 /// Why an Exec line cannot be run.
 #[derive(Debug, PartialEq, Eq)]
@@ -229,19 +235,71 @@ pub fn program_name(exec: &str) -> Option<String> {
 /// exits, init collects it and a long-lived caller such as the dock is left
 /// with no zombie to reap. It gets a session of its own, so nothing aimed at
 /// the caller reaches it and it outlives the caller. It starts in
-/// `working_dir` if that is a directory, with no standard input or output.
+/// `working_dir` if that is a directory, with no standard input and its
+/// output going to the journal under the program's name, so a program that
+/// fails on start leaves a trace. Without a journal the output is dropped.
 pub fn spawn(argv: &[String], working_dir: Option<&Path>) -> std::io::Result<()> {
+    spawn_logged(argv, working_dir, Path::new(JOURNAL_STREAM))
+}
+
+/// The name the journal files a program's output under: the program, or the
+/// one `sengi-run` starts for it.
+fn log_name(argv: &[String]) -> String {
+    let base = |arg: &String| arg.rsplit('/').next().unwrap_or_default().to_string();
+    let first = argv.first().map(base).unwrap_or_default();
+    let name = match argv.get(1) {
+        Some(next) if first == RUNNER => base(next),
+        _ => first,
+    };
+    let name: String = name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || "-_.+".contains(*c))
+        .take(64)
+        .collect();
+    if name.is_empty() {
+        "sengi-app".to_string()
+    } else {
+        name
+    }
+}
+
+/// A connection to journald that a program can use as its output. The
+/// protocol is the one `systemd-cat` speaks: seven lines naming the stream,
+/// then the output itself.
+fn journal_stream(socket: &Path, name: &str) -> std::io::Result<UnixStream> {
+    let stream = UnixStream::connect(socket)?;
+    // identifier, unit, priority (info), then no level prefix and no
+    // forwarding to syslog, kmsg or the console.
+    (&stream).write_all(format!("{name}\n\n6\n0\n0\n0\n0\n").as_bytes())?;
+    stream.shutdown(Shutdown::Read)?;
+    Ok(stream)
+}
+
+fn spawn_logged(
+    argv: &[String],
+    working_dir: Option<&Path>,
+    journal: &Path,
+) -> std::io::Result<()> {
     use std::os::unix::process::CommandExt;
 
     let (program, args) = argv
         .split_first()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "empty command"))?;
     let mut command = Command::new(program);
-    command
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    command.args(args).stdin(Stdio::null());
+    // One connection, shared by output and errors so they come out in order.
+    let logged = journal_stream(journal, &log_name(argv))
+        .and_then(|stream| Ok((stream.try_clone()?, stream)));
+    match logged {
+        Ok((out, err)) => {
+            command
+                .stdout(Stdio::from(OwnedFd::from(out)))
+                .stderr(Stdio::from(OwnedFd::from(err)));
+        }
+        Err(_) => {
+            command.stdout(Stdio::null()).stderr(Stdio::null());
+        }
+    }
     if let Some(dir) = working_dir.filter(|dir| dir.is_dir()) {
         command.current_dir(dir);
     }
@@ -492,6 +550,66 @@ mod tests {
     fn spawn_reports_missing_programs() {
         assert!(spawn(&["/no/such/program".to_string()], None).is_err());
         assert!(spawn(&[], None).is_err());
+    }
+
+    #[test]
+    fn a_program_is_logged_under_its_own_name() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(log_name(&args(&["/usr/bin/vim", "a.txt"])), "vim");
+        assert_eq!(
+            log_name(&args(&["/usr/bin/sengi-run", "foot", "-e", "vim"])),
+            "foot"
+        );
+        assert_eq!(log_name(&args(&["sengi-run"])), "sengi-run");
+        assert_eq!(log_name(&args(&["/opt/we ird\n/na me"])), "name");
+        assert_eq!(log_name(&args(&["/"])), "sengi-app");
+        assert_eq!(log_name(&[]), "sengi-app");
+    }
+
+    #[test]
+    fn output_and_errors_go_to_the_journal_under_the_programs_name() {
+        use std::io::Read;
+        use std::os::unix::net::UnixListener;
+
+        let tmp = TempDir::new();
+        tmp.write("noisy", "#!/bin/sh\necho hello\necho oops >&2\n");
+        tmp.make_executable("noisy");
+        let socket = tmp.path().join("journal");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let argv = vec![tmp.path().join("noisy").display().to_string()];
+        spawn_logged(&argv, None, &socket).unwrap();
+        // The connection is made before the program starts, so it is waiting.
+        listener.set_nonblocking(true).unwrap();
+        let (mut stream, _) = listener.accept().expect("the program was given no journal");
+        stream.set_nonblocking(false).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut text = String::new();
+        stream.read_to_string(&mut text).unwrap();
+        // The header names the stream and says info, and the program's
+        // standard output and error follow in the order it wrote them.
+        assert_eq!(text, "noisy\n\n6\n0\n0\n0\n0\nhello\noops\n");
+    }
+
+    #[test]
+    fn a_program_still_starts_when_there_is_no_journal() {
+        let tmp = TempDir::new();
+        let out = tmp.path().join("out");
+        tmp.write("touch-it", "#!/bin/sh\necho ran > \"$1\"\n");
+        tmp.make_executable("touch-it");
+        let argv = vec![
+            tmp.path().join("touch-it").display().to_string(),
+            out.display().to_string(),
+        ];
+        spawn_logged(&argv, None, &tmp.path().join("no-such-socket")).unwrap();
+        for _ in 0..200 {
+            if out.exists() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the program did not run");
     }
 
     #[test]
