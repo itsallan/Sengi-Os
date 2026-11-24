@@ -49,6 +49,7 @@ use std::path::PathBuf;
 use sengi_config::settings::{zone_is_plain, Layout};
 use sengi_config::{Document, Value};
 
+use crate::beside::{self, Beside};
 use crate::names;
 
 pub const VERSION: i64 = 1;
@@ -59,7 +60,7 @@ pub const LIVE_ROOT: &str = "/run/sengi/rootfs";
 pub const LIVE_KERNEL: &str = "/run/sengi/medium/live/vmlinuz";
 
 /// Every key a plan may have.
-const KEYS: [(&str, &str); 15] = [
+const KEYS: [(&str, &str); 19] = [
     ("plan", "version"),
     ("disk", "device"),
     ("disk", "mode"),
@@ -75,14 +76,31 @@ const KEYS: [(&str, &str); 15] = [
     ("system", "keyboard"),
     ("source", "root"),
     ("source", "kernel"),
+    ("beside", "start"),
+    ("beside", "sectors"),
+    ("beside", "esp"),
+    ("beside", "table"),
 ];
 /// And one more, kept apart because it is not text.
 const ALLOW_LOOP: (&str, &str) = ("source", "allow-loop");
+
+/// What is done to the disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// The whole disk is erased and Sengi OS takes it.
+    Erase,
+    /// One partition is added in free space; nothing else is changed.
+    Beside,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
     /// The whole disk: `/dev/sda`, `/dev/nvme0n1`.
     pub device: String,
+    pub mode: Mode,
+    /// For [`Mode::Beside`]: where, and what the disk looked like when the
+    /// person was shown it.
+    pub beside: Option<Beside>,
     /// Its size in bytes and its model, as its chooser saw them.
     pub size: u64,
     pub model: String,
@@ -97,6 +115,52 @@ pub struct Plan {
     pub source_root: PathBuf,
     pub kernel: PathBuf,
     pub allow_loop: bool,
+}
+
+/// The `[beside]` section: there for the mode that needs it and for no
+/// other, and with a stretch that can be written to.
+fn parse_beside(document: &Document, mode: Mode, size: u64) -> Result<Option<Beside>, String> {
+    let has_any = KEYS
+        .iter()
+        .any(|(section, key)| *section == "beside" && document.get(section, key).is_some());
+    if mode == Mode::Erase {
+        return if has_any {
+            Err("the plan erases the disk and also has a [beside] section".to_string())
+        } else {
+            Ok(None)
+        };
+    }
+    let number = |key: &str| match document.get("beside", key) {
+        Some(Value::Number(number)) if *number > 0 => Ok(*number as u64),
+        _ => Err(format!(
+            "the plan has no beside.{key}, or it is not a number"
+        )),
+    };
+    let start = number("start")?;
+    let sectors = number("sectors")?;
+    let esp = number("esp")?;
+    let table = match document.get("beside", "table") {
+        Some(Value::Text(text)) if !text.is_empty() => text.clone(),
+        _ => return Err("the plan does not say what the partition table was".to_string()),
+    };
+    if esp > 128 {
+        return Err("beside.esp is not a partition number".to_string());
+    }
+    if !start.is_multiple_of(beside::ALIGN) || !sectors.is_multiple_of(beside::ALIGN) {
+        return Err("the free space does not start and end on a whole mebibyte".to_string());
+    }
+    if sectors.saturating_mul(512) < beside::MIN_BYTES {
+        return Err("the free space is too small to install in".to_string());
+    }
+    if start.saturating_add(sectors) > size / 512 {
+        return Err("the free space is not on the disk".to_string());
+    }
+    Ok(Some(Beside {
+        start,
+        sectors,
+        esp: esp as u32,
+        table,
+    }))
 }
 
 /// Whether `device` is written as the node of a whole disk is: `/dev/`
@@ -143,12 +207,15 @@ impl Plan {
         if !device_is_plain(&device) {
             return Err(format!("{device} is not the name of a disk"));
         }
-        let mode = needed("disk", "mode")?;
-        if mode != "erase" {
-            return Err(format!(
-                "disk.mode is \"{mode}\"; this version only erases a whole disk (\"erase\")"
-            ));
-        }
+        let mode = match needed("disk", "mode")?.as_str() {
+            "erase" => Mode::Erase,
+            "beside" => Mode::Beside,
+            other => {
+                return Err(format!(
+                    "disk.mode is \"{other}\"; this version knows \"erase\" and \"beside\""
+                ))
+            }
+        };
         let encryption = text_of("disk", "encryption")?.unwrap_or_else(|| "none".to_string());
         if encryption != "none" {
             return Err(format!(
@@ -159,6 +226,7 @@ impl Plan {
             Some(Value::Number(size)) if *size > 0 => *size as u64,
             _ => return Err("the plan does not say how large the disk is".to_string()),
         };
+        let beside = parse_beside(&document, mode, size)?;
         let model = text_of("disk", "model")?.unwrap_or_default();
         let serial = text_of("disk", "serial")?.unwrap_or_default();
         let wwn = text_of("disk", "wwn")?.unwrap_or_default();
@@ -195,6 +263,8 @@ impl Plan {
 
         Ok(Plan {
             device,
+            mode,
+            beside,
             size,
             model,
             serial,
@@ -214,9 +284,13 @@ impl Plan {
     /// from the live image's.
     pub fn render(&self) -> String {
         let text = |text: &str| Value::text(text).render();
+        let mode = match self.mode {
+            Mode::Erase => "erase",
+            Mode::Beside => "beside",
+        };
         let mut out = format!(
             "[plan]\nversion = {VERSION}\n\n\
-             [disk]\ndevice = {}\nmode = \"erase\"\nencryption = \"none\"\nsize = {}\nmodel = {}\nserial = {}\nwwn = {}\n\n\
+             [disk]\ndevice = {}\nmode = \"{mode}\"\nencryption = \"none\"\nsize = {}\nmodel = {}\nserial = {}\nwwn = {}\n\n\
              [user]\nname = {}\nfull-name = {}\n\n\
              [system]\nhost-name = {}\ntime-zone = {}\nkeyboard = {}\n",
             text(&self.device),
@@ -230,6 +304,15 @@ impl Plan {
             text(&self.time_zone),
             text(&self.keyboard.render()),
         );
+        if let Some(beside) = &self.beside {
+            out.push_str(&format!(
+                "\n[beside]\nstart = {}\nsectors = {}\nesp = {}\ntable = {}\n",
+                beside.start,
+                beside.sectors,
+                beside.esp,
+                text(&beside.table)
+            ));
+        }
         let root = self.source_root.to_string_lossy();
         let kernel = self.kernel.to_string_lossy();
         if root != LIVE_ROOT || kernel != LIVE_KERNEL || self.allow_loop {
@@ -356,7 +439,7 @@ keyboard = \"fr(azerty)\"
             .contains("version 2"));
         assert!(Plan::parse(&with("\"erase\"", "\"alongside\""))
             .unwrap_err()
-            .contains("only erases"));
+            .contains("knows \"erase\" and \"beside\""));
         let encrypted = with(
             "mode = \"erase\"",
             "mode = \"erase\"\nencryption = \"luks\"",
@@ -407,5 +490,66 @@ keyboard = \"fr(azerty)\"
         assert!(plan.allow_loop);
         assert!(Plan::parse(&format!("{PLAN}\n[source]\nroot = \"relative\"\n")).is_err());
         assert!(Plan::parse(&format!("{PLAN}\n[source]\nallow-loop = \"yes\"\n")).is_err());
+    }
+    const BESIDE: &str = "\n[beside]\nstart = 42182656\nsectors = 25165824\nesp = 1\ntable = \"gpt abc;1:2048:204800:c12a:u1\"\n";
+
+    fn beside_plan() -> String {
+        format!("{}{BESIDE}", with("\"erase\"", "\"beside\""))
+    }
+
+    #[test]
+    fn a_plan_to_install_beside_another_system_says_where() {
+        let plan = Plan::parse(&beside_plan()).unwrap();
+        assert_eq!(plan.mode, Mode::Beside);
+        let beside = plan.beside.clone().unwrap();
+        assert_eq!(beside.start, 42_182_656);
+        assert_eq!(beside.sectors, 25_165_824);
+        assert_eq!(beside.esp, 1);
+        assert_eq!(beside.table, "gpt abc;1:2048:204800:c12a:u1");
+        assert_eq!(Plan::parse(&plan.render()), Ok(plan));
+        // A plan to erase has none of this, and writes none.
+        let erase = Plan::parse(PLAN).unwrap();
+        assert_eq!(erase.mode, Mode::Erase);
+        assert_eq!(erase.beside, None);
+        assert!(!erase.render().contains("[beside]"));
+    }
+
+    #[test]
+    fn a_plan_beside_without_its_place_is_refused() {
+        let without = with("\"erase\"", "\"beside\"");
+        assert!(Plan::parse(&without).is_err());
+        for key in ["start", "sectors", "esp", "table"] {
+            let plan = beside_plan();
+            let kept: Vec<&str> = plan.lines().filter(|line| !line.starts_with(key)).collect();
+            let text = kept.join("\n");
+            let problem = Plan::parse(&text).unwrap_err();
+            assert!(
+                problem.contains(&format!("beside.{key}")) || problem.contains("table"),
+                "{key}: {problem}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_plan_that_erases_and_names_free_space_is_refused() {
+        // The one that says "erase" must never carry a place to keep.
+        let text = format!("{PLAN}{BESIDE}");
+        assert!(Plan::parse(&text).unwrap_err().contains("[beside]"));
+    }
+
+    #[test]
+    fn free_space_that_cannot_be_written_to_is_refused() {
+        for (old, new) in [
+            ("start = 42182656", "start = 42182657"),
+            ("sectors = 25165824", "sectors = 25165825"),
+            ("sectors = 25165824", "sectors = 2048"),
+            ("sectors = 25165824", "sectors = 999999999999"),
+            ("esp = 1", "esp = 0"),
+            ("esp = 1", "esp = 4000"),
+            ("table = \"gpt abc;1:2048:204800:c12a:u1\"", "table = \"\""),
+        ] {
+            let text = beside_plan().replace(old, new);
+            assert!(Plan::parse(&text).is_err(), "{new}");
+        }
     }
 }

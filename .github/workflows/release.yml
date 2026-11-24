@@ -31,7 +31,7 @@ jobs:
         timeout-minutes: 10
         run: |
           sudo -E apt-get $APT_OPTS update -q
-          sudo -E apt-get $APT_OPTS install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf
+          sudo -E apt-get $APT_OPTS install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf mtools dosfstools e2fsprogs
           # Let the runner's user open KVM. Setting the mode directly cannot
           # hang the way waiting on udev can.
           sudo chmod 666 /dev/kvm || true
@@ -46,6 +46,10 @@ jobs:
         run: |
           SENGI_UEFI=/usr/share/OVMF/OVMF_CODE_4M.fd SENGI_UEFI_VARS=/usr/share/OVMF/OVMF_VARS_4M.fd \
             scripts/install-test.sh out/sengi-os-$(cat VERSION)-amd64.iso test-output/install-uefi
+      - name: Install test, beside another system, UEFI
+        run: |
+          SENGI_INSTALL_MODE=beside SENGI_UEFI=/usr/share/OVMF/OVMF_CODE_4M.fd SENGI_UEFI_VARS=/usr/share/OVMF/OVMF_VARS_4M.fd \
+            scripts/install-test.sh out/sengi-os-$(cat VERSION)-amd64.iso test-output/install-beside
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}

@@ -73,3 +73,6 @@ grub2-common
 grub-pc-bin
 grub-efi-amd64-bin
 efibootmgr
+# Installing beside another system: update-grub runs os-prober to put
+# Windows and other systems in the boot menu.
+os-prober

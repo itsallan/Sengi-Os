@@ -24,7 +24,14 @@ const NOT_DISKS: [&str; 8] = ["ram", "zram", "sr", "fd", "dm-", "md", "nbd", "mt
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Part {
     pub name: String,
+    /// The number in the table, and where it starts, in sectors of 512 bytes.
+    pub number: u32,
+    pub start: u64,
     pub size: u64,
+    /// The partition type and the partition identifier of a GPT, as udev
+    /// gives them, in small letters. Empty where there are none.
+    pub kind: String,
+    pub uuid: String,
     /// The kind of file system, as blkid names it, or empty.
     pub fstype: String,
     pub label: String,
@@ -46,6 +53,10 @@ pub struct Disk {
     /// How it is attached, as lsblk names it: `sata`, `nvme`, `usb`.
     pub tran: String,
     pub read_only: bool,
+    /// The kind of partition table, as lsblk names it: `gpt`, `dos`, or
+    /// nothing. And the identifier the table has, in small letters.
+    pub pttype: String,
+    pub ptuuid: String,
     pub parts: Vec<Part>,
     /// A file system straight on the disk, with no partitions.
     pub fstype: String,
@@ -207,7 +218,7 @@ pub struct Sources<'a> {
     pub mountinfo: &'a str,
     /// `/proc/swaps`.
     pub swaps: &'a str,
-    /// What `lsblk -P -o NAME,FSTYPE,LABEL,TRAN,SERIAL,WWN` printed.
+    /// What `lsblk -P -o NAME,FSTYPE,LABEL,TRAN,SERIAL,WWN,PTTYPE,PTUUID,PARTTYPE,PARTUUID` printed.
     pub contents: &'a str,
     /// Where the live medium is mounted.
     pub medium: &'a str,
@@ -329,6 +340,8 @@ pub fn scan(sources: &Sources, allow_loop: bool) -> Vec<Disk> {
             wwn: told(sources.contents, &name, "WWN"),
             tran: told(sources.contents, &name, "TRAN"),
             read_only: read_trimmed(&dir.join("ro")) == "1",
+            pttype: told(sources.contents, &name, "PTTYPE"),
+            ptuuid: told(sources.contents, &name, "PTUUID").to_ascii_lowercase(),
             parts: Vec::new(),
             fstype,
             label,
@@ -355,7 +368,13 @@ pub fn scan(sources: &Sources, allow_loop: bool) -> Vec<Disk> {
             disk.held |= has_entries(&part_dir.join("holders"));
             let (fstype, label) = contents_of(sources.contents, &part);
             disk.parts.push(Part {
+                number: read_trimmed(&part_dir.join("partition"))
+                    .parse()
+                    .unwrap_or(0),
+                start: read_trimmed(&part_dir.join("start")).parse().unwrap_or(0),
                 size: sectors(&part_dir.join("size")),
+                kind: told(sources.contents, &part, "PARTTYPE").to_ascii_lowercase(),
+                uuid: told(sources.contents, &part, "PARTUUID").to_ascii_lowercase(),
                 name: part,
                 fstype,
                 label,
@@ -380,7 +399,11 @@ pub fn scan(sources: &Sources, allow_loop: bool) -> Vec<Disk> {
 /// the disks are then listed without their contents.
 fn lsblk() -> String {
     Command::new("lsblk")
-        .args(["-P", "-o", "NAME,FSTYPE,LABEL,TRAN,SERIAL,WWN"])
+        .args([
+            "-P",
+            "-o",
+            "NAME,FSTYPE,LABEL,TRAN,SERIAL,WWN,PTTYPE,PTUUID,PARTTYPE,PARTUUID",
+        ])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
@@ -606,6 +629,10 @@ pub(crate) mod tests {
     fn what_is_on_a_disk_is_said_in_a_line() {
         let part = |size: u64, fstype: &str, label: &str| Part {
             name: String::new(),
+            number: 0,
+            start: 0,
+            kind: String::new(),
+            uuid: String::new(),
             size,
             fstype: fstype.to_string(),
             label: label.to_string(),

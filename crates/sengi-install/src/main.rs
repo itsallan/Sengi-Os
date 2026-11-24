@@ -22,7 +22,7 @@ use sengi_install::names::{self, MAX_PASSWORD_BYTES};
 use sengi_install::plan::Plan;
 use sengi_install::progress::Event;
 use sengi_install::real::{Real, INTERRUPTED};
-use sengi_install::{disks, LOCK, LOG, PROGRESS, REQUEST, TARGET, UNIT};
+use sengi_install::{beside, disks, LOCK, LOG, PROGRESS, REQUEST, TARGET, UNIT};
 use sengi_system::secret::{self, Secret};
 
 const USAGE: &str = "\
@@ -31,13 +31,14 @@ usage: sengi-install start
        sengi-install disks
        sengi-install --help | --version
 
-start   Erase a disk and install Sengi OS on it, as the plan says, in a
-        service of its own (sengi-install.service) that goes on whatever
+start   Install Sengi OS as the plan says: erase a disk and take it, or
+        add one partition in free space beside another system and
+        change nothing else. Runs in a service of its own (sengi-install.service) that goes on whatever
         becomes of whoever started it. Returns as soon as it is started.
         Follow it in /run/sengi-install/progress.
 run     The same, here and now, until it is done.
 disks   List the disks of this machine and whether each can be installed
-        on.
+        on, and whether beside what is on it.
 
 start and run need root. For both, the first line of standard input is
 the password of the account to create, and the plan follows it; run can
@@ -382,7 +383,17 @@ fn list_disks() -> ExitCode {
         println!("    Now on it: {}", plain(&disks::contents_words(&disk)));
         match disks::refusal(&disk) {
             Some(refusal) => println!("    Not offered: {}", refusal.words()),
-            None => println!("    Can be installed on"),
+            None => {
+                println!("    Can be installed on");
+                let uefi = Path::new("/sys/firmware/efi").is_dir();
+                match beside::offer(&disk, uefi) {
+                    Ok(offer) => println!(
+                        "    Can be installed beside what is on it, in {} of free space",
+                        disks::size_words(offer.region().bytes())
+                    ),
+                    Err(why) => println!("    Not beside what is on it: {}", why.words()),
+                }
+            }
         }
     }
     ExitCode::SUCCESS

@@ -5,8 +5,9 @@ and asks nothing: it is given a plan, does what the plan says, and reports
 each step as a line on standard output. The installer's window,
 [sengi-installer](../sengi-installer/README.md), starts it as root.
 
-**It erases the disk the plan names.** It is meant to run in the live
-session.
+**It erases the disk the plan names**, or, when the plan says `beside`, adds one
+partition in free space of it and changes nothing else. It is meant to run in
+the live session.
 
     sengi-install start                 install in a service of its own, as root
     sengi-install run [--plan FILE]     install here and now, as root
@@ -69,16 +70,62 @@ installation that is already running.
     time-zone = "Europe/Paris"
     keyboard = "fr(azerty)"
 
-`mode` and `encryption` have one value each in this version. They are there
-so that a later version that installs beside another system, or encrypts,
-adds values and not a new format. A plan with a key or a value this version
-does not know is refused whole.
+`mode` is `erase` or `beside`; `encryption` has one value in this version. A plan with a
+key or a value this version does not know is refused whole.
+
+For `mode = "beside"` the plan has one more section, written by the window from what it
+showed the person:
+
+    [beside]
+    start = 42182656      # first sector of the free space, of 512 bytes, on a mebibyte
+    sectors = 25165824    # its length
+    esp = 1               # the number of the EFI system partition already on the disk
+    table = "gpt f6691c2b-...;1:2048:204800:c12a7328-...:62516844-...;2:..."
+
+`table` says exactly which partition table that was: its identifier, and each partition's
+number, start, length, type and own identifier. `erase` with a `[beside]` section, and
+`beside` without one, are refused.
 
 `size`, `model`, `serial` and `wwn` are what the disk was when the person
 chose it; the last two are empty for a disk that has none (a virtual disk,
 some card readers). If `device` is no longer a disk with all four the same,
 nothing is touched. Two disks of one model and size differ in their serial
 numbers.
+
+## Installing beside another system
+
+Only for a disk that a whole-disk install would be offered too, and only when this
+computer was started by UEFI. The window lists a disk's free stretches of 10 GiB or more
+from what the kernel and udev say (`/sys`, `lsblk`: no root needed); this program reads the
+table again as root with `sfdisk -d`. Both come to the same one-line snapshot of the table.
+The biggest stretch is used, all of it.
+
+What is held to, in code (`beside.rs`), with the test that proves each:
+
+| Rule | Test |
+|---|---|
+| The table must still be the one that was shown (identifier, every partition's number, start, length, type, identifier), read as root just before writing. A partition added, moved or retyped since stops the installation before anything is written. | `a_table_that_changed_since_it_was_shown_stops_everything`, `a_table_that_changed_since_it_was_shown_is_not_written_to` |
+| The region must be on whole mebibytes, inside the table's usable sectors, at least 10 GiB, and overlap no partition. | `a_region_that_touches_a_partition_is_refused`, `free_space_that_is_not_free_is_not_written_to` |
+| The EFI system partition named must still be one, and a FAT volume with 10 MiB free (looked at by mounting it read-only). | `beside_another_system_needs_uefi_and_a_fat_system_partition` |
+| sfdisk only runs with `-d` or `--append`, with `--wipe never`, and is given one line. Nothing is deleted, resized or moved. | `nothing_that_writes_may_name_anything_but_the_new_partition`, `sfdisk_is_given_one_line_for_the_new_partition` |
+| After writing, the table is read again: every old partition (number, start, length, type, identifier) and the table's identifier must be as they were, and exactly one new one, the one asked for, must be there. Else the installation stops before any format. | `what_was_written_is_checked_against_what_there_was`, `an_old_partition_that_changed_stops_everything_before_a_format` |
+| Only the new partition is added to the kernel (`partx --add --nr N`, never a re-read of the whole table), and what the kernel then shows must be the old partitions and the new one. Else stop before any format. | `the_kernels_view_has_the_old_partitions_and_the_new_one`, `a_kernel_that_does_not_show_the_new_partition_stops_everything_before_a_format` |
+| Every command is checked before it runs: `mkfs.ext4` may name only the new partition; no other formatter, `wipefs`, `dd`, `sgdisk`, `parted`, `fdisk` at all; nothing but looking at or mounting the old partitions (the EFI system partition may be mounted); no `grub-install` for BIOS, none with `--removable`, none naming a disk. | `nothing_that_writes_may_name_anything_but_the_new_partition`, `beside_another_system_one_partition_is_made_and_nothing_else_is_written` |
+| The disk is held (`O_EXCL`) while the table is written, as in a whole-disk install, so a disk or partition that is mounted, swap or part of another volume is refused. | the whole-disk tests of the hold |
+
+`scripts/install-test.sh` with `SENGI_INSTALL_MODE=beside` proves the same on a real
+installation, read from outside the guest: see the top of that script.
+
+What is done beside another system: one partition (Linux type, name "Sengi OS") and
+`mkfs.ext4` on it; the new system is copied and set up as in a whole-disk install, with the
+existing EFI system partition mounted at `/boot/efi`; GRUB for UEFI only, as
+`EFI/sengios/grubx64.efi` (no BIOS boot sector, no fallback file at `EFI/BOOT/BOOTX64.EFI`:
+those are the other system's); `os-prober` is switched on for this mode only
+(`GRUB_DISABLE_OS_PROBER=false`), so Windows and others are in the menu; when it finds
+one, the menu is shown for three seconds, and else stays hidden; and a firmware entry
+"Sengi OS" is made and put first in the boot order, the others after it in their order.
+Where whole-disk installs let the firmware refuse an entry (the fallback path starts the
+disk), here it is a failure, since there is no fallback. There is no swap partition.
 
 ## What is refused
 
@@ -223,7 +270,7 @@ against a file; the window never writes it.
 
 ## Not done here
 
-- Encryption, installing beside another system, partitions by hand.
+- Encryption, shrinking another system to make room, partitions by hand.
 - Reinstalling the boot loader when a GRUB package is updated. The `grub-pc`
   and `grub-efi-amd64` packages, which would do that, are not in the image;
   `update-grub` still runs when a kernel is installed.

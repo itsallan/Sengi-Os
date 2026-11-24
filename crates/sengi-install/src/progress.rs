@@ -11,6 +11,7 @@
 //! failed partition sfdisk ended with status 1
 //! log /var/log/sengi-install.log
 //! disk /dev/sda
+//! beside
 //! ```
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,6 +32,9 @@ pub enum Event {
     /// The disk that is being installed on. Said first, so that a window
     /// opened while an installation runs knows what it is looking at.
     Disk(String),
+    /// The installation adds a partition beside what is on the disk and
+    /// does not erase it. Said right after the disk.
+    Beside,
 }
 
 /// One line: what is said never breaks the framing.
@@ -49,6 +53,7 @@ impl Event {
             Event::Failed(step, why) => format!("failed {step} {}", flat(why)),
             Event::Log(path) => format!("log {path}"),
             Event::Disk(path) => format!("disk {path}"),
+            Event::Beside => "beside".to_string(),
         }
     }
 
@@ -78,6 +83,7 @@ impl Event {
                 Some(Event::Failed(step(name)?, why.to_string()))
             }
             "log" if rest.starts_with('/') => Some(Event::Log(rest.to_string())),
+            "beside" if rest.is_empty() => Some(Event::Beside),
             "disk" if rest.starts_with("/dev/") && !rest.contains(char::is_whitespace) => {
                 Some(Event::Disk(rest.to_string()))
             }
@@ -106,6 +112,7 @@ mod tests {
             Event::Failed("check".to_string(), String::new()),
             Event::Log("/var/log/sengi-install.log".to_string()),
             Event::Disk("/dev/nvme0n1".to_string()),
+            Event::Beside,
         ] {
             assert_eq!(
                 Event::parse(&event.line()),
@@ -143,6 +150,7 @@ mod tests {
             "log relative/path",
             "disk sda",
             "disk /dev/sda and more",
+            "beside it",
             "warning",
             "failed",
             "begin ../../x",

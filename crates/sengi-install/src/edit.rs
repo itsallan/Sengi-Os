@@ -82,6 +82,57 @@ GRUB_DISABLE_OS_PROBER=true
 GRUB_DISABLE_RECOVERY=true
 ";
 
+/// What GRUB is told on a disk that holds another system: the same, with
+/// the search for other systems switched on, so that Windows and the like
+/// are in the menu.
+pub fn grub_default_beside() -> String {
+    GRUB_DEFAULT.replace(
+        "GRUB_DISABLE_OS_PROBER=true",
+        "GRUB_DISABLE_OS_PROBER=false",
+    )
+}
+
+/// The same with the menu shown for a few seconds, which is how a person
+/// gets to the other system when there is one. Used only where one was
+/// found: a disk with nothing else on it keeps its hidden menu, which is
+/// quicker.
+pub fn grub_with_menu(text: &str) -> String {
+    text.replace("GRUB_TIMEOUT_STYLE=hidden", "GRUB_TIMEOUT_STYLE=menu")
+        .replace("GRUB_TIMEOUT=1\n", "GRUB_TIMEOUT=3\n")
+}
+
+/// Whether GRUB's menu has an entry that os-prober found: something
+/// between the markers of its script.
+pub fn menu_has_other_systems(menu: &str) -> bool {
+    let mut inside = false;
+    for line in menu.lines() {
+        if line.starts_with("### BEGIN") && line.contains("30_os-prober") {
+            inside = true;
+        } else if line.starts_with("### END") && line.contains("30_os-prober") {
+            inside = false;
+        } else if inside && line.trim_start().starts_with("menuentry ") {
+            return true;
+        }
+    }
+    false
+}
+
+/// The order the firmware tries its entries in, from what `efibootmgr`
+/// prints: `BootOrder: 0003,0001,0000`.
+pub fn boot_order(listing: &str) -> Vec<String> {
+    listing
+        .lines()
+        .find_map(|line| line.strip_prefix("BootOrder:"))
+        .map(|order| {
+            order
+                .split(',')
+                .map(|entry| entry.trim().to_string())
+                .filter(|entry| !entry.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// The word on the kernel's command line that says "without the desktop".
 pub const TEXT_MODE_FLAG: &str = "sengi.text";
 
@@ -522,5 +573,42 @@ user = \"live\"
     fn grub_is_hidden_and_waits_a_second_for_esc() {
         assert!(GRUB_DEFAULT.contains("GRUB_TIMEOUT=1\n"));
         assert!(GRUB_DEFAULT.contains("GRUB_TIMEOUT_STYLE=hidden\n"));
+    }
+    #[test]
+    fn beside_another_system_grub_looks_for_it_and_shows_a_menu_only_if_found() {
+        let beside = grub_default_beside();
+        assert!(beside.contains("GRUB_DISABLE_OS_PROBER=false\n"));
+        assert!(!beside.contains("GRUB_DISABLE_OS_PROBER=true"));
+        // Nothing else differs from the default.
+        assert_eq!(
+            beside.replace("OS_PROBER=false", "OS_PROBER=true"),
+            GRUB_DEFAULT
+        );
+        // Whole-disk installs never look at other disks.
+        assert!(GRUB_DEFAULT.contains("GRUB_DISABLE_OS_PROBER=true\n"));
+        let shown = grub_with_menu(&beside);
+        assert!(shown.contains("GRUB_TIMEOUT_STYLE=menu\n"));
+        assert!(shown.contains("GRUB_TIMEOUT=3\n"));
+        assert!(shown.contains("GRUB_DISABLE_OS_PROBER=false\n"));
+        assert!(shown.contains("GRUB_DEFAULT=0\n"));
+    }
+
+    #[test]
+    fn other_systems_in_the_menu_are_told_from_our_own_entries() {
+        let ours = "### BEGIN /etc/grub.d/10_linux ###\nmenuentry 'Sengi OS' {\n}\n### END /etc/grub.d/10_linux ###\n### BEGIN /etc/grub.d/30_os-prober ###\n### END /etc/grub.d/30_os-prober ###\n";
+        assert!(!menu_has_other_systems(ours));
+        let windows = "### BEGIN /etc/grub.d/10_linux ###\nmenuentry 'Sengi OS' {\n}\n### END /etc/grub.d/10_linux ###\n### BEGIN /etc/grub.d/30_os-prober ###\nmenuentry 'Windows Boot Manager (on /dev/sda1)' --class windows {\n\tchainloader /EFI/Microsoft/Boot/bootmgfw.efi\n}\n### END /etc/grub.d/30_os-prober ###\n";
+        assert!(menu_has_other_systems(windows));
+        assert!(!menu_has_other_systems(""));
+        // An entry outside that script is not another system.
+        assert!(!menu_has_other_systems("menuentry 'x' {\n}\n"));
+    }
+
+    #[test]
+    fn the_firmwares_order_is_read() {
+        let listing = "BootCurrent: 0001\nTimeout: 0 seconds\nBootOrder: 0003,0001,0000\nBoot0000* Windows Boot Manager\n";
+        assert_eq!(boot_order(listing), ["0003", "0001", "0000"]);
+        assert!(boot_order("BootOrder: \n").is_empty());
+        assert!(boot_order("").is_empty());
     }
 }

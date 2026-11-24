@@ -8,6 +8,7 @@
 //! window, sengi-installer, uses the first three and `progress`, and
 //! starts this program for the rest.
 
+pub mod beside;
 pub mod disks;
 pub mod edit;
 pub mod install;
