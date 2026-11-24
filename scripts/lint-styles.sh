@@ -18,7 +18,8 @@ report() {
 
 # Generated Slint files are checked through their .in sources.
 files=$(find image/rootfs ui crates/*/ui -type f \
-	! -name '*.png' ! -name tokens.slint ! -name components.slint ! -path '*/target/*' 2>/dev/null)
+	! -name '*.png' ! -name tokens.slint ! -name components.slint ! -path '*/target/*' \
+	! -path 'image/rootfs/usr/share/doc/*' 2>/dev/null)
 
 # shellcheck disable=SC2086
 report "literal colour (use a colour token)" \
