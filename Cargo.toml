@@ -7,6 +7,7 @@ exclude = ["crates/sengi-compositor"]
 version = "0.8.0"
 edition = "2021"
 repository = "https://github.com/itsallan/Sengi-Os"
+license = "GPL-3.0-or-later"
 
 [workspace.dependencies]
 slint = { version = "1.18", default-features = false, features = ["compat-1-2", "std", "backend-winit", "renderer-software"] }

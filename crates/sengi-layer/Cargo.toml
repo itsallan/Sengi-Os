@@ -4,6 +4,7 @@ description = "Runs Slint components on wlr-layer-shell surfaces for the Sengi O
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [dependencies]
 # Not the workspace entry: that one pulls in the winit backend, which this

@@ -3,6 +3,7 @@ name = "sengi-compositor"
 description = "Wayland compositor for Sengi OS"
 version = "0.8.0"
 edition = "2021"
+license = "GPL-3.0-or-later"
 publish = false
 
 # Kept out of the main workspace on purpose: Smithay is a heavy dependency and

@@ -156,3 +156,13 @@ sengi-compositor, the default, the installed system included.
 | `crates/` | Rust workspace |
 | `image/` | ISO build and the root filesystem overlay |
 | `scripts/` | Build, test and release scripts |
+
+## Licence
+
+Sengi OS's own source code is licensed under the GNU General Public License,
+version 3 or (at your option) any later version. The full text is in
+`LICENSE`. The Slint toolkit the programs link against is used under its
+GPL-3.0 option, so the programs as built are distributed under GPL-3.0.
+Work by others that is copied into this repository, and its licence, is
+listed in `THIRD-PARTY-NOTICES.md`. Packages from Debian in the image keep
+their own licences, which are in `/usr/share/doc/<package>/copyright`.

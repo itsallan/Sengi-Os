@@ -4,6 +4,7 @@ description = "The Sengi OS dock"
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
+license.workspace = true
 build = "build.rs"
 
 [features]
