@@ -91,6 +91,15 @@ notification-width = 360
 bar-icon = 16
 button = 26
 launcher-lines = 8
+# The all-apps grid the launcher shows before anything is typed: columns and
+# rows on screen, the size of one cell, the app icon in it, and the smaller
+# icon beside a name in the list of results.
+launcher-grid-columns = 6
+launcher-grid-rows = 4
+launcher-cell-width = 104
+launcher-cell-height = 100
+launcher-app-icon = 48
+launcher-row-icon = 24
 # The password field of the lock screen and the login screen, and one of
 # the dots it shows for each character typed.
 password-field-width = 280

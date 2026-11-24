@@ -65,6 +65,12 @@ export global Tokens {
     out property <length> launcher-width: @{size.launcher-width}px;
     out property <length> menu-width: @{size.menu-width}px;
     out property <int> launcher-lines: @{size.launcher-lines};
+    out property <int> launcher-grid-columns: @{size.launcher-grid-columns};
+    out property <int> launcher-grid-rows: @{size.launcher-grid-rows};
+    out property <length> launcher-cell-width: @{size.launcher-cell-width}px;
+    out property <length> launcher-cell-height: @{size.launcher-cell-height}px;
+    out property <length> launcher-app-icon: @{size.launcher-app-icon}px;
+    out property <length> launcher-row-icon: @{size.launcher-row-icon}px;
     out property <length> notification-width: @{size.notification-width}px;
     out property <length> bar-icon: @{size.bar-icon}px;
     out property <length> button: @{size.button}px;
