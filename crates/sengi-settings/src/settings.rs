@@ -317,18 +317,18 @@ mod tests {
         assert!(s.set("power", "nonsense", Value::Number(1)).is_err());
         assert!(!tmp.path().join("sengi-os").exists());
         // Setting the value already in effect writes nothing.
-        s.set("power", "lock-after", Value::Number(300)).unwrap();
+        s.set("power", "lock-after", Value::Number(0)).unwrap();
         assert!(!tmp.path().join("sengi-os").exists());
         // A directory where the file should be: the write fails.
         std::fs::create_dir_all(tmp.path().join("sengi-os/settings.toml")).unwrap();
         assert!(s.set("power", "lock-after", Value::Number(60)).is_err());
-        assert_eq!(s.number("power", "lock-after"), 300);
+        assert_eq!(s.number("power", "lock-after"), 0);
         // Nowhere to write at all.
         let mut homeless = settings("", "");
         assert!(homeless
             .set("power", "lock-after", Value::Number(60))
             .is_err());
-        assert_eq!(homeless.number("power", "lock-after"), 300);
+        assert_eq!(homeless.number("power", "lock-after"), 0);
     }
 
     #[test]

@@ -22,9 +22,11 @@ pub const MAX_WALLPAPER_PATH: usize = 1024;
 /// Every key this version knows, with its default. The README lists the
 /// same table for people.
 pub const KEYS: &[(&str, &str, Default)] = &[
+    ("power", "dim-after", Default::Number(120)),
     ("power", "blank-after", Default::Number(300)),
-    ("power", "lock-after", Default::Number(300)),
+    ("power", "lock-after", Default::Number(0)),
     ("power", "lock-on-sleep", Default::Flag(true)),
+    ("power", "lid", Default::Text("sleep")),
     ("clock", "format", Default::Text("24h")),
     ("clock", "time-zone", Default::Text("")),
     ("keyboard", "layouts", Default::List(&["us"])),
@@ -76,7 +78,11 @@ pub fn check(section: &str, key: &str, value: &Value) -> Result<Value, String> {
         _ => Err("must be a whole number".to_string()),
     };
     match (section, key) {
-        ("power", "blank-after" | "lock-after") => number(0, MAX_IDLE_SECONDS),
+        ("power", "dim-after" | "blank-after" | "lock-after") => number(0, MAX_IDLE_SECONDS),
+        ("power", "lid") => match value {
+            Value::Text(text) if text == "sleep" || text == "nothing" => Ok(value.clone()),
+            _ => Err("must be \"sleep\" or \"nothing\"".to_string()),
+        },
         ("keyboard", "repeat-delay") => number(100, 2000),
         ("keyboard", "repeat-rate") => number(1, 100),
         (_, "speed") => number(-100, 100),
@@ -386,6 +392,25 @@ mod tests {
         assert_eq!(s.number("power", "lock-after"), 60);
         assert_eq!(s.number("power", "blank-after"), 120);
         assert!(s.flag("power", "lock-on-sleep"));
+    }
+
+    #[test]
+    fn the_screen_dims_then_goes_off_and_only_sleep_locks_unless_asked() {
+        let s = settings("", "");
+        assert_eq!(s.number("power", "dim-after"), 120);
+        assert_eq!(s.number("power", "blank-after"), 300);
+        assert_eq!(s.number("power", "lock-after"), 0);
+        assert!(s.flag("power", "lock-on-sleep"));
+        assert_eq!(s.text("power", "lid"), "sleep");
+    }
+
+    #[test]
+    fn the_lid_is_sleep_or_nothing() {
+        let bad = |value| check("power", "lid", &value).is_err();
+        assert!(!bad(Value::text("sleep")));
+        assert!(!bad(Value::text("nothing")));
+        assert!(bad(Value::text("poweroff")));
+        assert!(bad(Value::Number(1)));
     }
 
     #[test]
