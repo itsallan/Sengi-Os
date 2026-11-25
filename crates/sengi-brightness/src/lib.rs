@@ -2,7 +2,7 @@
 //! takes a screen or a keyboard light.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use sengi_system::backlight::{self, Backlight};
 
@@ -97,6 +97,36 @@ pub fn read_keyboard(leds: &Path) -> Option<Backlight> {
     found.into_iter().next()
 }
 
+/// How bright the screen is left when the computer is left alone, as a
+/// share of what it was.
+pub const DIM_PERCENT: u64 = 30;
+
+/// The raw value to dim the screen to, or `None` if it is as dim as that
+/// already. It never goes below the lowest the keys allow.
+pub fn dim_target(light: &Backlight) -> Option<u32> {
+    let share = (u64::from(light.brightness) * DIM_PERCENT / 100) as u32;
+    let target = share.max(light.floor());
+    (target < light.brightness).then_some(target)
+}
+
+/// Where the brightness from before dimming is kept, in the session's
+/// runtime directory: the screen is dimmed while this file exists.
+pub fn saved_path(runtime: &Path) -> PathBuf {
+    runtime.join("sengi-brightness-before-dim")
+}
+
+/// Takes the saved brightness out of its file, if there is one. Moving the
+/// file is what takes it, so of two programs asking at once only one gets
+/// it.
+pub fn take_saved(runtime: &Path) -> Option<u32> {
+    let path = saved_path(runtime);
+    let mine = runtime.join(format!("sengi-brightness-taken-{}", std::process::id()));
+    fs::rename(&path, &mine).ok()?;
+    let text = fs::read_to_string(&mine).ok();
+    let _ = fs::remove_file(&mine);
+    text?.trim().parse().ok()
+}
+
 /// What the on-screen indicator is told, in its own words.
 pub fn osd_arguments(key: Key, percent: u32) -> [String; 3] {
     let kind = match key {
@@ -172,6 +202,38 @@ mod tests {
         assert_eq!(next_keyboard(&off, Key::KeyboardToggle), 2);
         let one_level = light(0, 1);
         assert_eq!(next_keyboard(&one_level, Key::KeyboardToggle), 1);
+    }
+
+    #[test]
+    fn dimming_leaves_a_third_of_the_brightness_and_never_less_than_the_floor() {
+        assert_eq!(dim_target(&light(1000, 1000)), Some(300));
+        assert_eq!(dim_target(&light(400, 1000)), Some(120));
+        // Near the floor of five percent it stops there.
+        assert_eq!(dim_target(&light(100, 1000)), Some(50));
+        // Already as dim as dimming would make it, or dimmer.
+        assert_eq!(dim_target(&light(50, 1000)), None);
+        assert_eq!(dim_target(&light(10, 1000)), None);
+        // A panel with a handful of steps.
+        assert_eq!(dim_target(&light(15, 15)), Some(4));
+        assert_eq!(dim_target(&light(1, 15)), None);
+    }
+
+    #[test]
+    fn the_saved_brightness_is_taken_once() {
+        let dir =
+            std::env::temp_dir().join(format!("sengi-brightness-saved-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        assert_eq!(take_saved(&dir), None);
+        fs::write(saved_path(&dir), "812\n").unwrap();
+        assert_eq!(take_saved(&dir), Some(812));
+        assert_eq!(take_saved(&dir), None);
+        assert!(!saved_path(&dir).exists());
+        // Rubbish in the file is taken away and means nothing.
+        fs::write(saved_path(&dir), "bright").unwrap();
+        assert_eq!(take_saved(&dir), None);
+        assert!(!saved_path(&dir).exists());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
