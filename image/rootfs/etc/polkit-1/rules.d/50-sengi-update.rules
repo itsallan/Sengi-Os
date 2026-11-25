@@ -1,0 +1,8 @@
+// Updating the system asks for the password of the person who is signed in,
+// if they may use sudo, and not for a list of every administrator: the
+// text prompt pkexec shows in Settings can only ask one person.
+polkit.addAdminRule(function(action, subject) {
+    if (action.id == "org.sengi.os.update" && subject.isInGroup("sudo")) {
+        return ["unix-user:" + subject.user];
+    }
+});

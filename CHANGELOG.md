@@ -7,6 +7,15 @@ and the measured idle RAM and boot time.
 
 ### Added
 
+- Settings, Updates (sengi-update): looks for updates to the system's packages
+  and to Flatpak apps, lists them with their versions and marks the security
+  ones, and updates both with **Update all** with a real progress bar, a step
+  count, downloaded bytes and a Cancel that works until the install starts.
+  It asks for your password in Settings (through pkexec and polkit, with no
+  stored password and no background program), never removes a package or
+  changes the Debian release, refuses on a low battery or while another apt
+  runs, says "Restart needed" when the system asks for it, and shows a count on
+  the sidebar. The live system says updates are available after installing.
 - Settings, Display: the displays drawn where they are, a Position choice for
   each (left of, right of, above, below or mirroring another), and a Main
   display, which is where the bar and the dock go. Positions and scales are

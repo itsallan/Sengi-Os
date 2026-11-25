@@ -32,6 +32,10 @@ greetd
 # everyone but root. Not enabled: logind's first question starts it, which
 # is swayidle's when the session comes up.
 polkitd
+# Settings, Updates runs sengi-update as root through pkexec, which brings
+# its own password prompt for a program that has no polkit agent. Nothing
+# is resident: pkexec runs for the length of one update.
+pkexec
 labwc
 xwayland
 swayidle
