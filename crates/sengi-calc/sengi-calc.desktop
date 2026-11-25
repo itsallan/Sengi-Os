@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Calculator
+GenericName=Calculator
+Comment=Add, subtract, multiply and divide
+Exec=sengi-calc
+Icon=sengi-calc
+Terminal=false
+StartupWMClass=sengi-calc
+Categories=Utility;Calculator;
+Keywords=calculator;math;arithmetic;sum;percent;

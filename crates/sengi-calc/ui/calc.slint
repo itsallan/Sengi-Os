@@ -1,0 +1,257 @@
+// The Calculator window: the last few sums, the display, and the keys.
+// Built from the shared components; nothing here has a colour or a size of
+// its own.
+
+import { Tokens, SengiText, SengiLabel, SengiButton } from "components.slint";
+export { ThemeSwitch } from "components.slint";
+
+export struct HistoryItem {
+    expression: string,
+    result: string,
+}
+
+// What the window shows and what it reports. Rust fills the one and hears
+// the other.
+export global Pad {
+    // What is typed, with the signs of arithmetic.
+    in property <string> expression;
+    // The answer so far, shown small while a sum is being typed.
+    in property <string> preview;
+    // What went wrong, said in place of the preview.
+    in property <string> error;
+    in property <string> notice;
+    // What Ctrl+C and the Copy key take.
+    in property <string> copy-text;
+    // Newest last.
+    in property <[HistoryItem]> history;
+
+    // A key as the keyboard sends it, as text. True if it was one of ours.
+    callback key(string) -> bool;
+    callback recall(int);
+    callback copied();
+    callback close-requested();
+}
+
+// A key of the pad: sends its own text unless told otherwise.
+component PadKey inherits SengiButton {
+    in property <string> send;
+
+    focusable: false;
+    horizontal-stretch: 1;
+    vertical-stretch: 1;
+    clicked => {
+        Pad.key(root.send != "" ? root.send : root.text);
+    }
+}
+
+export component CalcWindow inherits Window {
+    title: "Calculator";
+    preferred-width: Tokens.calc-window-width;
+    preferred-height: Tokens.calc-window-height;
+    min-width: Tokens.calc-window-width;
+    min-height: Tokens.calc-window-height;
+    background: Tokens.color-bg;
+    default-font-family: Tokens.font-family;
+    default-font-size: Tokens.font-size-md;
+    forward-focus: scope;
+
+    // The renderer keeps two buffers and only one of them knows after a
+    // change of size or scale that it is new, so for a few frames the
+    // whole window is drawn, as Settings does.
+    private property <float> pixel: 1phx / 1px;
+    private property <int> sheet: 0;
+    private property <int> sheets-owed: 0;
+
+    function draw-everything() {
+        root.sheet += 1;
+        root.sheets-owed = 3;
+    }
+
+    function copy() {
+        copy-source.select-all();
+        copy-source.copy();
+        Pad.copied();
+    }
+
+    changed pixel => { root.draw-everything(); }
+    changed width => { root.draw-everything(); }
+    changed height => { root.draw-everything(); }
+
+    Timer {
+        interval: Tokens.motion-fast;
+        running: root.sheets-owed > 0;
+        triggered => {
+            root.sheet += 1;
+            root.sheets-owed -= 1;
+        }
+    }
+
+    Rectangle {
+        background: Math.mod(root.sheet, 2) == 0 ? transparent : Tokens.color-bg.transparentize(1);
+    }
+
+    // The text Ctrl+C takes: the toolkit copies a selection, so this holds
+    // the answer, selected, out of sight.
+    copy-source := TextInput {
+        visible: false;
+        width: 0;
+        height: 0;
+        read-only: true;
+        text: Pad.copy-text;
+    }
+
+    scope := FocusScope {
+        key-pressed(event) => {
+            if event.modifiers.control {
+                if event.text == "c" || event.text == "C" {
+                    if Pad.copy-text != "" {
+                        root.copy();
+                    }
+                } else if event.text == "w" || event.text == "W" || event.text == "q" || event.text == "Q" {
+                    Pad.close-requested();
+                } else {
+                    return EventResult.reject;
+                }
+                return EventResult.accept;
+            }
+            if event.modifiers.alt || event.modifiers.meta {
+                return EventResult.reject;
+            }
+            return Pad.key(event.text) ? EventResult.accept : EventResult.reject;
+        }
+
+        VerticalLayout {
+            padding: Tokens.space-md;
+            spacing: Tokens.space-sm;
+
+            // The last few sums, newest at the bottom. A click brings an
+            // answer back.
+            Rectangle {
+                vertical-stretch: 1;
+                clip: true;
+
+                VerticalLayout {
+                    alignment: end;
+
+                    for item[index] in Pad.history: Rectangle {
+                        height: Tokens.space-xl;
+
+                        touch := TouchArea {
+                            clicked => { Pad.recall(index); }
+                        }
+
+                        HorizontalLayout {
+                            alignment: end;
+                            SengiLabel {
+                                text: item.expression + " = " + item.result;
+                                color: touch.has-hover ? Tokens.color-text : Tokens.color-text-muted;
+                                font-weight: Tokens.font-weight-regular;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // The display.
+            Rectangle {
+                height: Tokens.calc-display-height;
+                background: Tokens.color-surface;
+                border-radius: Tokens.radius;
+                border-width: Tokens.border-width;
+                border-color: Tokens.color-border;
+
+                VerticalLayout {
+                    padding: Tokens.space-md;
+                    padding-top: Tokens.space-sm;
+                    padding-bottom: Tokens.space-sm;
+                    spacing: Tokens.space-xs;
+
+                    SengiText {
+                        vertical-stretch: 1;
+                        text: Pad.expression == "" ? "0" : Pad.expression;
+                        color: Pad.expression == "" ? Tokens.color-text-disabled : Tokens.color-text;
+                        // A long sum is set smaller rather than lost
+                        // off the end.
+                        font-size: Pad.expression.character-count > 26 ? Tokens.font-size-md
+                            : Pad.expression.character-count > 17 ? Tokens.font-size-lg
+                            : Tokens.font-size-xl;
+                        font-weight: Tokens.font-weight-medium;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    SengiLabel {
+                        height: Tokens.font-size-md;
+                        text: Pad.error != "" ? Pad.error
+                            : Pad.notice != "" ? Pad.notice
+                            : Pad.preview != "" ? "= " + Pad.preview : "";
+                        color: Pad.error != "" ? Tokens.color-danger
+                            : Pad.notice != "" ? Tokens.color-accent-strong : Tokens.color-text-muted;
+                        horizontal-alignment: right;
+                        overflow: elide;
+                    }
+                }
+            }
+
+            GridLayout {
+                vertical-stretch: 3;
+                spacing: Tokens.space-sm;
+
+                Row {
+                    PadKey { text: "C"; send: "\u{1b}"; }
+                    PadKey { text: "("; }
+                    PadKey { text: ")"; }
+                    PadKey { text: "Back"; send: "\u{8}"; }
+                }
+
+                Row {
+                    PadKey { text: "7"; }
+                    PadKey { text: "8"; }
+                    PadKey { text: "9"; }
+                    PadKey { text: "\u{f7}"; }
+                }
+
+                Row {
+                    PadKey { text: "4"; }
+                    PadKey { text: "5"; }
+                    PadKey { text: "6"; }
+                    PadKey { text: "\u{d7}"; }
+                }
+
+                Row {
+                    PadKey { text: "1"; }
+                    PadKey { text: "2"; }
+                    PadKey { text: "3"; }
+                    PadKey { text: "\u{2212}"; }
+                }
+
+                Row {
+                    PadKey { text: "0"; }
+                    PadKey { text: "."; }
+                    PadKey { text: "%"; }
+                    PadKey { text: "+"; }
+                }
+
+                Row {
+                    SengiButton {
+                        text: "Copy";
+                        focusable: false;
+                        enabled: Pad.copy-text != "";
+                        horizontal-stretch: 1;
+                        vertical-stretch: 1;
+                        clicked => { root.copy(); }
+                    }
+
+                    PadKey {
+                        colspan: 3;
+                        text: "=";
+                        primary: true;
+                    }
+                }
+            }
+        }
+    }
+}
