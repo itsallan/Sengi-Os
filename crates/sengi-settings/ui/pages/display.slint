@@ -57,6 +57,10 @@ export component DisplayPage inherits Page {
         }
 
         if DisplayData.has-backlight: Card {
+            // The page is squeezed when its rows are counted short, and
+            // this card would give way first.
+            min-height: Metrics.row + Tokens.border-width * 2;
+
             SettingRow {
                 title: "Brightness";
 
@@ -85,7 +89,9 @@ export component DisplayPage inherits Page {
             }
         }
 
-        if DisplayData.has-backlight: Gap { }
+        if DisplayData.has-backlight: Gap {
+            min-height: Tokens.space-md;
+        }
 
         for output in DisplayData.outputs: VerticalLayout {
             spacing: Tokens.space-sm;
