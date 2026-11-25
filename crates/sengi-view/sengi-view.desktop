@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Image Viewer
+GenericName=Image Viewer
+Comment=Look at PNG and JPEG pictures
+Exec=sengi-view %F
+Icon=sengi-view
+Terminal=false
+NoDisplay=true
+StartupWMClass=sengi-view
+Categories=Graphics;Viewer;
+MimeType=image/png;image/jpeg;
+Keywords=image;picture;photo;png;jpeg;jpg;

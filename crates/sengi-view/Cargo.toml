@@ -1,0 +1,29 @@
+[package]
+name = "sengi-view"
+description = "The Sengi OS image viewer: PNG and JPEG pictures in a window"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+# An ordinary window, as Settings and Files are: the workspace entry with
+# what the software renderer needs to find Inter and to draw the icons.
+slint = { workspace = true, features = ["software-renderer-systemfonts", "software-renderer-path"] }
+
+# What an argument names: a path or a file:// address.
+sengi-open = { path = "../sengi-open" }
+
+# The two decoders, both pure Rust. The pictures are decoded here, straight
+# to the size they are drawn at, not through the toolkit's image loader.
+png = "0.18"
+zune-jpeg = "0.5"
+zune-core = "0.5"
+
+[build-dependencies]
+slint-build.workspace = true
+
+[dev-dependencies]
+# The window with no display, to drive it with keys and draw it.
+sengi-shots = { path = "../sengi-shots" }

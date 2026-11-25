@@ -1,0 +1,288 @@
+// The Image Viewer window: a bar with the name and the buttons, the picture
+// in a view that can be dragged, and one line at the bottom. Built from the
+// shared components; nothing here has a colour or a size of its own.
+
+import { Tokens, SengiText, SengiLabel, SengiButton } from "components.slint";
+
+// What the window shows and what it reports. Rust fills the one and hears
+// the other.
+export global View {
+    // The picture as it is drawn: the original, or a smaller copy of a big
+    // one. It is stretched to the size of the original times the zoom.
+    in property <image> picture;
+    // Counts up with each picture, so that one the same size as the last
+    // still starts fitted to the window.
+    in property <int> serial: 0;
+    // The size of the original, in pixels.
+    in property <int> pixels-wide: 0;
+    in property <int> pixels-high: 0;
+    in property <string> title: "Image Viewer";
+    in property <string> name;
+    // "640 x 480 px, 12 KB".
+    in property <string> info;
+    // "3 of 12".
+    in property <string> position;
+    // Said in place of the picture: it is loading, or why it is not shown.
+    in property <string> message;
+    in property <bool> message-is-error: false;
+    in property <bool> has-picture: false;
+    in property <bool> can-browse: false;
+    // 1 is the size of the original; 0 fits the picture to the window.
+    in-out property <float> zoom: 0;
+    // Where the view is dragged to.
+    in-out property <length> pan-x: 0;
+    in-out property <length> pan-y: 0;
+    // What the picture is drawn at now, as a fraction of its size.
+    in-out property <float> scale: 1;
+
+    callback previous();
+    callback next();
+    callback close();
+}
+
+export component ViewWindow inherits Window {
+    title: View.title;
+    preferred-width: Tokens.settings-window-width;
+    preferred-height: Tokens.settings-window-height;
+    min-width: Tokens.settings-window-min-width;
+    min-height: Tokens.settings-window-min-height;
+    background: Tokens.color-bg;
+    default-font-family: Tokens.font-family;
+    default-font-size: Tokens.font-size-md;
+
+    private property <int> serial: View.serial;
+    private property <length> picture-w: View.pixels-wide * 1px;
+    private property <length> picture-h: View.pixels-high * 1px;
+    private property <float> fit: View.pixels-wide <= 0 ? 1
+        : Math.min(1, Math.min(area.width / root.picture-w, area.height / root.picture-h));
+    private property <float> shown: View.zoom > 0 ? View.zoom : root.fit;
+    private property <length> content-w: Math.max(root.picture-w * root.shown, area.width);
+    private property <length> content-h: Math.max(root.picture-h * root.shown, area.height);
+
+    // The renderer keeps two buffers and only one of them knows after a
+    // change of size or scale that it is new, so for a few frames the
+    // whole window is drawn, as Settings does.
+    private property <float> pixel: 1phx / 1px;
+    private property <int> sheet: 0;
+    private property <int> sheets-owed: 0;
+
+    function draw-everything() {
+        root.sheet += 1;
+        root.sheets-owed = 3;
+    }
+
+    // Zooms to `target`, keeping what is at the middle of the view there.
+    function zoom-to(target: float) {
+        if !View.has-picture {
+            return;
+        }
+        let next = Math.clamp(target, 0.02, 32);
+        let old-w = root.picture-w * root.shown;
+        let old-h = root.picture-h * root.shown;
+        let old-x = Math.max((area.width - old-w) / 2, 0px);
+        let old-y = Math.max((area.height - old-h) / 2, 0px);
+        let mid-x = (area.width / 2 - flick.content-x - old-x) / old-w;
+        let mid-y = (area.height / 2 - flick.content-y - old-y) / old-h;
+        View.zoom = next;
+        let new-w = root.picture-w * next;
+        let new-h = root.picture-h * next;
+        let new-x = Math.max((area.width - new-w) / 2, 0px);
+        let new-y = Math.max((area.height - new-h) / 2, 0px);
+        flick.content-x = Math.min(Math.max(area.width / 2 - new-x - mid-x * new-w, area.width - root.content-w), 0px);
+        flick.content-y = Math.min(Math.max(area.height / 2 - new-y - mid-y * new-h, area.height - root.content-h), 0px);
+    }
+
+    function fit-to-window() {
+        View.zoom = 0;
+        flick.content-x = 0;
+        flick.content-y = 0;
+    }
+
+    changed pixel => { root.draw-everything(); }
+    changed width => { root.draw-everything(); }
+    changed height => { root.draw-everything(); }
+    changed shown => { View.scale = root.shown; }
+    // A new picture starts fitted to the window.
+    changed serial => { root.fit-to-window(); }
+
+    Timer {
+        interval: Tokens.motion-fast;
+        running: root.sheets-owed > 0;
+        triggered => {
+            root.sheet += 1;
+            root.sheets-owed -= 1;
+        }
+    }
+
+    Rectangle {
+        background: Math.mod(root.sheet, 2) == 0 ? transparent : Tokens.color-bg.transparentize(1);
+    }
+
+    scope := FocusScope {
+        init => { self.focus(); }
+
+        key-pressed(event) => {
+            if event.modifiers.control {
+                if event.text == "w" || event.text == "W" || event.text == "q" || event.text == "Q" {
+                    View.close();
+                    return EventResult.accept;
+                }
+                return EventResult.reject;
+            }
+            if event.text == Key.LeftArrow {
+                View.previous();
+            } else if event.text == Key.RightArrow {
+                View.next();
+            } else if event.text == "+" || event.text == "=" {
+                root.zoom-to(root.shown * 1.25);
+            } else if event.text == "-" || event.text == "_" {
+                root.zoom-to(root.shown / 1.25);
+            } else if event.text == "0" {
+                root.zoom-to(1);
+            } else if event.text == "9" || event.text == "f" || event.text == "F" {
+                root.fit-to-window();
+            } else {
+                return EventResult.reject;
+            }
+            return EventResult.accept;
+        }
+
+        VerticalLayout {
+            HorizontalLayout {
+                padding: Tokens.space-md;
+                spacing: Tokens.space-sm;
+
+                SengiText {
+                    horizontal-stretch: 1;
+                    text: View.name;
+                    font-weight: Tokens.font-weight-medium;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                SengiButton {
+                    text: "Previous";
+                    enabled: View.can-browse;
+                    focusable: false;
+                    clicked => { View.previous(); }
+                }
+
+                SengiButton {
+                    text: "Next";
+                    enabled: View.can-browse;
+                    focusable: false;
+                    clicked => { View.next(); }
+                }
+
+                SengiButton {
+                    text: "-";
+                    enabled: View.has-picture;
+                    focusable: false;
+                    clicked => { root.zoom-to(root.shown / 1.25); }
+                }
+
+                SengiButton {
+                    text: "+";
+                    enabled: View.has-picture;
+                    focusable: false;
+                    clicked => { root.zoom-to(root.shown * 1.25); }
+                }
+
+                SengiButton {
+                    text: "100%";
+                    enabled: View.has-picture;
+                    focusable: false;
+                    clicked => { root.zoom-to(1); }
+                }
+
+                SengiButton {
+                    text: "Fit";
+                    enabled: View.has-picture;
+                    focusable: false;
+                    clicked => { root.fit-to-window(); }
+                }
+            }
+
+            Rectangle {
+                height: Tokens.border-width;
+                background: Tokens.color-border;
+            }
+
+            area := Rectangle {
+                // Its size comes from the window, never from what is in it:
+                // the zoom that sizes the picture is computed from this size.
+                vertical-stretch: 1;
+                preferred-width: 0;
+                preferred-height: 0;
+                min-width: 0;
+                min-height: 0;
+                clip: true;
+
+                flick := Flickable {
+                    visible: View.has-picture;
+                    content-width: root.content-w;
+                    content-height: root.content-h;
+                    changed content-x => { View.pan-x = self.content-x; }
+                    changed content-y => { View.pan-y = self.content-y; }
+
+                    Image {
+                        x: Math.max((root.content-w - self.width) / 2, 0px);
+                        y: Math.max((root.content-h - self.height) / 2, 0px);
+                        width: root.picture-w * root.shown;
+                        height: root.picture-h * root.shown;
+                        source: View.picture;
+                        image-fit: fill;
+                    }
+                }
+
+                if View.message != "": VerticalLayout {
+                    alignment: center;
+                    padding: Tokens.space-xl;
+                    spacing: Tokens.space-md;
+
+                    SengiText {
+                        text: View.message;
+                        color: View.message-is-error ? Tokens.color-text : Tokens.color-text-muted;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+
+            Rectangle {
+                height: Tokens.border-width;
+                background: Tokens.color-border;
+            }
+
+            HorizontalLayout {
+                padding-left: Tokens.space-md;
+                padding-right: Tokens.space-md;
+                padding-top: Tokens.space-sm;
+                padding-bottom: Tokens.space-sm;
+                spacing: Tokens.space-md;
+
+                SengiLabel {
+                    horizontal-stretch: 1;
+                    text: View.info;
+                    font-weight: Tokens.font-weight-regular;
+                    overflow: elide;
+                }
+
+                SengiLabel {
+                    text: View.position;
+                    font-weight: Tokens.font-weight-regular;
+                }
+
+                SengiLabel {
+                    // A fixed size: the text must not take part in the layout,
+                    // which the zoom (and so this text) is computed from.
+                    width: Tokens.value-column-sm;
+                    height: Tokens.space-lg;
+                    text: View.has-picture ? Math.round(View.scale * 100) + "%" : "";
+                    horizontal-alignment: right;
+                    font-weight: Tokens.font-weight-regular;
+                }
+            }
+        }
+    }
+}
