@@ -23,6 +23,7 @@ use std::{
 };
 
 use sengi_tokens::{Rgba, Tokens};
+use smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration_manager::Mode as KdeMode;
 use smithay::{
     backend::{
         allocator::dmabuf::Dmabuf,
@@ -77,6 +78,7 @@ use smithay::{
         session_lock::SessionLockManagerState,
         shell::{
             wlr_layer::{KeyboardInteractivity, Layer, WlrLayerShellState},
+            kde::decoration::KdeDecorationState,
             xdg::{decoration::XdgDecorationState, XdgShellState},
         },
         shm::{ShmHandler, ShmState},
@@ -303,6 +305,7 @@ pub struct State {
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
     _xdg_decoration_state: XdgDecorationState,
+    pub kde_decoration_state: KdeDecorationState,
     _cursor_shape_state: CursorShapeManagerState,
     pub layer_shell_state: WlrLayerShellState,
     pub foreign_toplevels: ForeignToplevelState,
@@ -348,6 +351,7 @@ impl State {
         let compositor_state = CompositorState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
+        let kde_decoration_state = KdeDecorationState::new::<Self>(&dh, KdeMode::Server);
         let foreign_toplevels = ForeignToplevelState::new(&dh);
         let cursor_shape_state = CursorShapeManagerState::new::<Self>(&dh);
         // Only a locker we started gets to see the lock.
@@ -561,6 +565,7 @@ impl State {
             compositor_state,
             xdg_shell_state,
             _xdg_decoration_state: xdg_decoration_state,
+            kde_decoration_state,
             _cursor_shape_state: cursor_shape_state,
             layer_shell_state,
             foreign_toplevels,

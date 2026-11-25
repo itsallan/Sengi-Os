@@ -136,7 +136,12 @@ fn a_window_that_fills_half_the_screen_has_none() {
     shot(&picture, "shadow-snapped.ppm");
     let (_, _, right, _) = client(&picture, GREEN);
     for step in [1, 3, 8, 16] {
-        assert_eq!(picture.at(right + step, 360), desktop(), "{step} past it");
+        // The frame has a one pixel border.
+        assert_eq!(
+            picture.at(right + 1 + step, 360),
+            desktop(),
+            "{step} past it (client right edge {right})"
+        );
     }
 }
 

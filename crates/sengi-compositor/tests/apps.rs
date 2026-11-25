@@ -305,10 +305,10 @@ fn a_lock_ends_when_the_keyboard_goes_to_another_program() {
 
 #[test]
 fn a_lock_with_a_region_waits_for_the_pointer_to_be_in_it() {
-    // The window's top left corner is at 490,260. The first movement
+    // The window's top left corner is at 490,275, below its title bar. The first movement
     // takes the pointer into the corner the lock names, the second would
     // take it out again.
-    let script = "1500 move 640 360\n2600 nudge -140 -90\n3400 nudge 30 0\n";
+    let script = "1500 move 640 360\n2600 nudge -140 -75\n3400 nudge 30 0\n";
     let compositor = Compositor::start_with(None, None, Some(script));
     let mut app = compositor.connect();
     let pointer = app.pointer().unwrap();
@@ -324,7 +324,7 @@ fn a_lock_with_a_region_waits_for_the_pointer_to_be_in_it() {
     assert!(app.wait(SOON, |seen| seen.more.relative.len() == 2));
     assert_eq!(app.seen.more.pointer_locked, 1);
     let said = compositor.status_line("pointer at");
-    assert!(said.contains("pointer at 500,270"), "{said}");
+    assert!(said.contains("pointer at 500,285"), "{said}");
 }
 
 #[test]

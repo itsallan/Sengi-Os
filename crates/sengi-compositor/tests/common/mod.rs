@@ -269,20 +269,37 @@ impl Client {
         self.window_as(argb, true)
     }
 
+    /// A window that insists on drawing its own decorations, as Chromium
+    /// and GTK4 do.
+    pub fn client_side_window(&mut self, argb: u32) -> Result<(WlSurface, XdgToplevel), Failure> {
+        self.window_with(argb, Some(zxdg_toplevel_decoration_v1::Mode::ClientSide))
+    }
+
     fn window_as(
         &mut self,
         argb: u32,
         decorated: bool,
+    ) -> Result<(WlSurface, XdgToplevel), Failure> {
+        self.window_with(
+            argb,
+            decorated.then_some(zxdg_toplevel_decoration_v1::Mode::ServerSide),
+        )
+    }
+
+    fn window_with(
+        &mut self,
+        argb: u32,
+        mode: Option<zxdg_toplevel_decoration_v1::Mode>,
     ) -> Result<(WlSurface, XdgToplevel), Failure> {
         let wm_base: XdgWmBase = self.globals.bind(&self.handle, 1..=2, ())?;
         let surface = self.compositor.create_surface(&self.handle, ());
         let xdg_surface = wm_base.get_xdg_surface(&surface, &self.handle, ());
         let toplevel = xdg_surface.get_toplevel(&self.handle, ());
         toplevel.set_title("test window".into());
-        if decorated {
+        if let Some(mode) = mode {
             let manager: ZxdgDecorationManagerV1 = self.globals.bind(&self.handle, 1..=1, ())?;
             let decoration = manager.get_toplevel_decoration(&toplevel, &self.handle, ());
-            decoration.set_mode(zxdg_toplevel_decoration_v1::Mode::ServerSide);
+            decoration.set_mode(mode);
         }
         surface.commit();
         if !self.wait(Duration::from_secs(5), |seen| seen.window_configures > 0) {
@@ -373,13 +390,19 @@ impl Dispatch<ZxdgDecorationManagerV1, ()> for Seen {
 
 impl Dispatch<ZxdgToplevelDecorationV1, ()> for Seen {
     fn event(
-        _: &mut Self,
+        seen: &mut Self,
         _: &ZxdgToplevelDecorationV1,
-        _: zxdg_toplevel_decoration_v1::Event,
+        event: zxdg_toplevel_decoration_v1::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        if let zxdg_toplevel_decoration_v1::Event::Configure { mode } = event {
+            seen.more.decoration_mode = match mode {
+                wayland_client::WEnum::Value(mode) => Some(mode as u32),
+                _ => None,
+            };
+        }
     }
 }
 

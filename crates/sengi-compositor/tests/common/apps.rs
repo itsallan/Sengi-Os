@@ -104,6 +104,11 @@ pub struct More {
     pub layer_configure: Option<(u32, u32, u32)>,
     /// How many times a layer surface was told to close.
     pub layer_closed: u32,
+    /// How many times a toplevel was told to close.
+    pub toplevel_closed: u32,
+    /// The latest decoration mode the compositor set, as the protocol number
+    /// (1 client side, 2 server side).
+    pub decoration_mode: Option<u32>,
 }
 
 /// A picture of the screen as the compositor copied it.
@@ -563,6 +568,8 @@ impl Dispatch<XdgToplevel, ()> for Seen {
                     u32::from_ne_bytes(*state) == xdg_toplevel::State::Fullscreen as u32
                 });
             seen.more.toplevel = Some((width, height, fullscreen));
+        } else if let xdg_toplevel::Event::Close = event {
+            seen.more.toplevel_closed += 1;
         }
     }
 }

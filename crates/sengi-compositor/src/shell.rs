@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
-    delegate_compositor, delegate_xdg_decoration, delegate_xdg_shell,
+    delegate_compositor, delegate_kde_decoration, delegate_xdg_decoration, delegate_xdg_shell,
     desktop::{
         find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output,
         PopupKeyboardGrab, PopupKind, PopupPointerGrab, PopupUngrabStrategy, Window,
@@ -12,12 +12,15 @@ use smithay::{
     },
     input::pointer::{Focus, GrabStartData},
     reexports::calloop::timer::{TimeoutAction, Timer},
+    reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration::{
+        Mode as KdeDecorationMode, OrgKdeKwinServerDecoration,
+    },
     reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
     reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as ToplevelState,
     reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::{ResizeEdge, WmCapabilities},
     reexports::wayland_server::{
         protocol::{wl_seat::WlSeat, wl_surface::WlSurface},
-        Client, Resource,
+        Client, Resource, WEnum,
     },
     utils::{Point, Rectangle, Serial},
     wayland::{
@@ -27,6 +30,7 @@ use smithay::{
         },
         seat::WaylandFocus,
         shell::wlr_layer::LAYER_SURFACE_ROLE,
+        shell::kde::decoration::{KdeDecorationHandler, KdeDecorationState},
         shell::xdg::{
             decoration::XdgDecorationHandler, PopupSurface, PositionerState, ToplevelSurface,
             XdgShellHandler, XdgShellState, XDG_POPUP_ROLE, XDG_TOPLEVEL_ROLE,
@@ -170,9 +174,7 @@ impl XdgShellHandler for State {
             // or a new one if that has gone out, carry the state and size.
             Some(window) => {
                 window::data(&window).start_maximised.set(true);
-                let decorated = surface
-                    .with_pending_state(|state| state.decoration_mode == Some(Mode::ServerSide));
-                window::data(&window).decorated.set(decorated);
+                window::data(&window).decorated.set(true);
                 let target = self.maximised_rect(&window);
                 surface.with_pending_state(|state| {
                     state.states.set(ToplevelState::Maximized);
@@ -602,8 +604,10 @@ impl XdgDecorationHandler for State {
         set_decoration_mode(&toplevel, Mode::ServerSide);
     }
 
-    fn request_mode(&mut self, toplevel: ToplevelSurface, mode: Mode) {
-        set_decoration_mode(&toplevel, mode);
+    fn request_mode(&mut self, toplevel: ToplevelSurface, _mode: Mode) {
+        // Always ours: the frame is drawn either way, and a client that
+        // keeps its own bar would show two.
+        set_decoration_mode(&toplevel, Mode::ServerSide);
     }
 
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
@@ -622,3 +626,20 @@ fn set_decoration_mode(toplevel: &ToplevelSurface, mode: Mode) {
 delegate_xdg_decoration!(State);
 delegate_compositor!(State);
 delegate_xdg_shell!(State);
+
+impl KdeDecorationHandler for State {
+    fn kde_decoration_state(&self) -> &KdeDecorationState {
+        &self.kde_decoration_state
+    }
+
+    fn request_mode(
+        &mut self,
+        _surface: &WlSurface,
+        decoration: &OrgKdeKwinServerDecoration,
+        _mode: WEnum<KdeDecorationMode>,
+    ) {
+        decoration.mode(KdeDecorationMode::Server);
+    }
+}
+
+delegate_kde_decoration!(State);

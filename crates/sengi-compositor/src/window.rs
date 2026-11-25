@@ -14,10 +14,7 @@ use smithay::{
     },
     desktop::Window,
     output::Output,
-    reexports::wayland_protocols::xdg::{
-        decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
-        shell::server::xdg_toplevel::State as ToplevelState,
-    },
+    reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as ToplevelState,
     utils::{Logical, Rectangle, Size, Transform},
     wayland::{
         compositor::with_states,
@@ -226,16 +223,18 @@ pub fn finish_resize(window: &Window) {
     }
 }
 
-/// Whether the client agreed to let the compositor draw its frame. An X11
+/// Whether the compositor draws the window's frame. An X11
 /// window gets one unless its Motif hints ask for none; Smithay's
 /// `is_decorated` is true exactly when they do.
 pub fn wants_server_decoration(window: &Window) -> bool {
     if let Some(x11) = x11(window) {
         return !x11.is_decorated();
     }
-    window
-        .toplevel()
-        .is_some_and(|t| t.current_state().decoration_mode == Some(Mode::ServerSide))
+    // An xdg toplevel always gets our frame, whatever it said to
+    // xdg-decoration or whether it said anything. Chromium, Firefox and GTK4
+    // draw their own bar; it stays inside our frame so the user always has
+    // close, minimise and maximise.
+    true
 }
 
 /// Whether a window that is on screen gets a frame now: it does unless it
