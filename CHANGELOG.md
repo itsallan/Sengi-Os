@@ -12,6 +12,10 @@ and the measured idle RAM and boot time.
 - Right-click a dock tile to keep the app in the dock or remove it, open it
   or quit it. Pins are saved to ~/.config/sengi-os/dock.toml and survive a
   restart; running apps that are not pinned still follow the pinned ones.
+- sengi-desktop: the folders and files of ~/Desktop show as icons under the
+  windows. Right-click for New Folder (which starts in rename), Open Terminal
+  Here and Settings; select, rename, open and move to the Trash. The image has
+  no file manager yet, so opening a folder says so.
 - A level indicator: the volume, mute, screen brightness and keyboard light
   keys show a rounded panel with an icon and a bar near the bottom of the
   screen for about a second (sengi-osd). It runs only then.

@@ -1,0 +1,341 @@
+// The Sengi OS desktop: the folders and files of ~/Desktop as icons on the
+// wallpaper, and the menus that go with them. The window is see-through, so
+// whatever is behind it shows. The program keeps the list and the selection;
+// this only draws them and says what was asked for.
+
+import { Tokens, SengiText, SengiIcon, SengiSurface } from "components.slint";
+
+export struct DesktopItem {
+    name: string,
+    folder: bool,
+    selected: bool,
+    // The name is being edited in place.
+    renaming: bool,
+}
+
+component MenuRow inherits Rectangle {
+    in property <string> label;
+    callback chosen();
+
+    height: Tokens.menu-row;
+    border-radius: Tokens.radius;
+    background: touch.has-hover ? Tokens.color-accent : transparent;
+
+    SengiText {
+        x: Tokens.space-md;
+        width: parent.width - Tokens.space-md * 2;
+        text: root.label;
+        color: touch.has-hover ? Tokens.color-accent-text : Tokens.color-text;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    touch := TouchArea {
+        clicked => { root.chosen(); }
+    }
+}
+
+component MenuSeparator inherits Rectangle {
+    height: Tokens.space-sm + Tokens.border-width;
+
+    Rectangle {
+        x: Tokens.menu-separator-inset;
+        y: (parent.height - self.height) / 2;
+        width: parent.width - Tokens.menu-separator-inset * 2;
+        height: Tokens.border-width;
+        background: Tokens.color-border;
+    }
+}
+
+// One folder or file: its icon above its name. A selected one has a plate
+// behind the icon and the name on the accent colour.
+component DesktopIcon inherits Rectangle {
+    in property <DesktopItem> item;
+    // A button went down on the icon, where in the window.
+    callback pressed(PointerEventButton, length, length);
+    callback opened();
+    // The name was edited and the field lost the keyboard, or Return was
+    // pressed in it.
+    callback renamed(string);
+    callback rename-accepted();
+    callback rename-cancelled();
+
+    width: Tokens.desktop-cell-width;
+    height: Tokens.desktop-cell-height;
+
+    plate := Rectangle {
+        y: Tokens.space-xs;
+        width: Tokens.desktop-icon + Tokens.space-md * 2;
+        height: Tokens.desktop-icon + Tokens.space-md;
+        x: (parent.width - self.width) / 2;
+        border-radius: Tokens.radius;
+        background: root.item.selected ? Tokens.color-surface-raised : transparent;
+        border-width: Tokens.border-width;
+        border-color: root.item.selected ? Tokens.color-border : transparent;
+
+        SengiIcon {
+            name: root.item.folder ? "folder" : "file";
+            ink: root.item.folder ? Tokens.color-accent : Tokens.color-text;
+            width: Tokens.desktop-icon;
+            height: Tokens.desktop-icon;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+        }
+    }
+
+    touch := TouchArea {
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                root.pressed(event.button, self.absolute-position.x + self.mouse-x,
+                    self.absolute-position.y + self.mouse-y);
+            }
+        }
+        double-clicked => { root.opened(); }
+    }
+
+    if !root.item.renaming: Rectangle {
+        y: plate.y + plate.height + Tokens.space-xs;
+        width: parent.width - Tokens.space-xs * 2;
+        height: Tokens.desktop-label-height;
+        x: Tokens.space-xs;
+        border-radius: Tokens.radius;
+        background: root.item.selected ? Tokens.color-accent : transparent;
+
+        label := SengiText {
+            width: parent.width - Tokens.space-xs * 2;
+            height: parent.height;
+            x: Tokens.space-xs;
+            text: root.item.name;
+            color: root.item.selected ? Tokens.color-accent-text : Tokens.color-text;
+            font-size: Tokens.font-size-sm;
+            horizontal-alignment: center;
+            vertical-alignment: top;
+            wrap: word-wrap;
+            overflow: elide;
+        }
+    }
+
+    if root.item.renaming: Rectangle {
+        y: plate.y + plate.height + Tokens.space-xs;
+        width: parent.width - Tokens.space-xs * 2;
+        height: Tokens.button;
+        x: Tokens.space-xs;
+        border-radius: Tokens.radius;
+        background: Tokens.color-bg;
+        border-width: Tokens.focus-ring-width;
+        border-color: Tokens.color-focus-ring;
+
+        field := TextInput {
+            x: Tokens.space-xs;
+            width: parent.width - Tokens.space-xs * 2;
+            height: parent.height;
+            single-line: true;
+            text: root.item.name;
+            color: Tokens.color-text;
+            font-family: Tokens.font-family;
+            font-size: Tokens.font-size-sm;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            selection-background-color: Tokens.color-accent;
+            selection-foreground-color: Tokens.color-accent-text;
+
+            init => {
+                self.focus();
+                self.select-all();
+            }
+            accepted => { root.rename-accepted(); }
+            changed has-focus => {
+                if !self.has-focus {
+                    root.renamed(self.text);
+                }
+            }
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    root.rename-cancelled();
+                    return accept;
+                }
+                reject
+            }
+        }
+    }
+}
+
+export component Desktop inherits Window {
+    in property <[DesktopItem]> items;
+    // The index in `items` of the selected one, or -1.
+    in property <int> selected: -1;
+    // A line of text that says why something did not happen, or nothing.
+    in property <string> notice;
+
+    callback new-folder();
+    callback open-terminal();
+    callback open-settings();
+    callback select(int);
+    callback open-item(int);
+    callback begin-rename(int);
+    callback commit-rename(int, string);
+    callback cancel-rename();
+    callback trash-item(int);
+
+    // Where the menu was asked for and what it is for: an item, or -1 for the
+    // desktop itself.
+    private property <bool> menu-open: false;
+    private property <length> menu-x;
+    private property <length> menu-y;
+    private property <int> menu-item: -1;
+    // Icons fill a column from the top, then the next column to the right.
+    private property <float> rows: Math.max(1,
+        Math.floor((root.height - Tokens.space-lg * 2) / Tokens.desktop-cell-height));
+
+    background: transparent;
+    default-font-family: Tokens.font-family;
+
+    main := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                if root.menu-open {
+                    root.menu-open = false;
+                } else {
+                    root.select(-1);
+                }
+                return accept;
+            }
+            if root.selected >= 0 {
+                if event.text == Key.Return {
+                    root.open-item(root.selected);
+                    return accept;
+                }
+                if event.text == Key.F2 {
+                    root.begin-rename(root.selected);
+                    return accept;
+                }
+                if event.text == Key.Delete {
+                    root.trash-item(root.selected);
+                    return accept;
+                }
+            }
+            reject
+        }
+
+        // Under everything: what is left when no icon is hit.
+        TouchArea {
+            pointer-event(event) => {
+                if event.kind != PointerEventKind.down {
+                    return;
+                }
+                main.focus();
+                root.menu-open = false;
+                root.select(-1);
+                if event.button == PointerEventButton.right {
+                    root.menu-item = -1;
+                    root.menu-x = self.mouse-x;
+                    root.menu-y = self.mouse-y;
+                    root.menu-open = true;
+                }
+            }
+        }
+
+        for item[index] in root.items: DesktopIcon {
+            x: Tokens.space-lg + Math.floor(index / root.rows) * Tokens.desktop-cell-width;
+            y: Tokens.space-lg + Math.mod(index, root.rows) * Tokens.desktop-cell-height;
+            item: item;
+
+            pressed(button, at-x, at-y) => {
+                main.focus();
+                root.menu-open = false;
+                root.select(index);
+                if button == PointerEventButton.right {
+                    root.menu-item = index;
+                    root.menu-x = at-x;
+                    root.menu-y = at-y;
+                    root.menu-open = true;
+                }
+            }
+            opened => { root.open-item(index); }
+            renamed(text) => { root.commit-rename(index, text); }
+            rename-accepted => { main.focus(); }
+            rename-cancelled => {
+                root.cancel-rename();
+                main.focus();
+            }
+        }
+
+        if root.notice != "": SengiSurface {
+            raised: true;
+            y: Tokens.space-lg;
+            width: min(note.preferred-width + Tokens.space-lg * 2, root.width - Tokens.space-lg * 2);
+            height: Tokens.button + Tokens.space-sm;
+            x: (root.width - self.width) / 2;
+
+            note := SengiText {
+                x: Tokens.space-lg;
+                width: parent.width - Tokens.space-lg * 2;
+                text: root.notice;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        if root.menu-open: SengiSurface {
+            raised: true;
+            width: Math.clamp(list.preferred-width, Tokens.menu-width / 2, Tokens.menu-width);
+            height: list.preferred-height;
+            x: Math.max(Tokens.space-xs, Math.min(root.menu-x, root.width - self.width - Tokens.space-xs));
+            y: Math.max(Tokens.space-xs, Math.min(root.menu-y, root.height - self.height - Tokens.space-xs));
+
+            // Clicks between the rows are not clicks on the desktop.
+            TouchArea { }
+
+            list := VerticalLayout {
+                padding: Tokens.menu-padding;
+
+                if root.menu-item < 0: MenuRow {
+                    label: "New Folder";
+                    chosen => {
+                        root.menu-open = false;
+                        root.new-folder();
+                    }
+                }
+                if root.menu-item < 0: MenuRow {
+                    label: "Open Terminal Here";
+                    chosen => {
+                        root.menu-open = false;
+                        root.open-terminal();
+                    }
+                }
+                if root.menu-item < 0: MenuSeparator { }
+                if root.menu-item < 0: MenuRow {
+                    label: "Settings...";
+                    chosen => {
+                        root.menu-open = false;
+                        root.open-settings();
+                    }
+                }
+
+                if root.menu-item >= 0: MenuRow {
+                    label: "Open";
+                    chosen => {
+                        root.menu-open = false;
+                        root.open-item(root.menu-item);
+                    }
+                }
+                if root.menu-item >= 0: MenuRow {
+                    label: "Rename";
+                    chosen => {
+                        root.menu-open = false;
+                        root.begin-rename(root.menu-item);
+                    }
+                }
+                if root.menu-item >= 0: MenuSeparator { }
+                if root.menu-item >= 0: MenuRow {
+                    label: "Move to Trash";
+                    chosen => {
+                        root.menu-open = false;
+                        root.trash-item(root.menu-item);
+                    }
+                }
+            }
+        }
+    }
+}

@@ -24,7 +24,8 @@ not ship.
 - Our own programs are written in Rust with Slint for the UI.
 
 The shell is our own: sengi-bar (top bar with a system tray), sengi-dock,
-sengi-launcher, sengi-notify (notifications) and sengi-quick (quick
+sengi-desktop (the folders and files of ~/Desktop as icons, with a right-click
+menu), sengi-launcher, sengi-notify (notifications) and sengi-quick (quick
 settings), all drawn through a shared library, sengi-layer. sengi-focus gives
 the focused app priority. sengi-settings is the settings application: network,
 Bluetooth, sound, display, power, date and time, keyboard, mouse and touchpad,

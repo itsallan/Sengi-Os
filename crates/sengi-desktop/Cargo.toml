@@ -1,0 +1,26 @@
+[package]
+name = "sengi-desktop"
+description = "The Sengi OS desktop: the folders and files of ~/Desktop and its menu"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+# Only for starting programs and finding them on PATH: no icon feature, so
+# no image decoder.
+sengi-apps = { path = "../sengi-apps" }
+sengi-layer = { path = "../sengi-layer" }
+# inotify, and the local time for the Trash's records.
+libc = "0.2"
+# Not the workspace entry: that one pulls in the winit backend. sengi-layer
+# is the backend here and turns on the software renderer.
+slint = { version = "1.18", default-features = false, features = ["compat-1-2", "std"] }
+
+[dev-dependencies]
+# The render test writes a picture of the desktop.
+png = "0.18"
+
+[build-dependencies]
+slint-build.workspace = true
