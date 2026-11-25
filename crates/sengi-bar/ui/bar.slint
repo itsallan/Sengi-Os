@@ -201,6 +201,7 @@ export component Bar inherits Window {
     callback show-notifications();
     callback dismiss-notifications();
     callback open-session();
+    callback open-calendar();
     // A tray icon was clicked: its id, the button (0 left, 1 middle,
     // 2 right) and where its left edge is, for the menu to open under.
     callback tray-pressed(int, int, length);
@@ -350,7 +351,7 @@ export component Bar inherits Window {
                 alignment: center;
                 BarItem {
                     text: root.clock;
-                    interactive: false;
+                    clicked => { root.open-calendar(); }
                 }
             }
 

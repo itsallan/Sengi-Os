@@ -1,0 +1,145 @@
+// The calendar popup under the clock: a month of days, arrows for the month
+// before and after, and a button back to today. The window covers the
+// whole output and is see-through around the popup, so a click anywhere
+// else lands here and closes it, as the quick settings panel does.
+
+import { Tokens, SengiText, SengiLabel, SengiSurface, SengiButton } from "components.slint";
+export { ThemeSwitch } from "components.slint";
+
+export struct DayCell {
+    label: string,
+    // In the month shown, not one of the days around it.
+    inside: bool,
+    today: bool,
+}
+
+export global Cal {
+    in property <string> title;
+    in property <[string]> weekdays;
+    in property <[DayCell]> days;
+    // Whether today is in the month shown.
+    in property <bool> on-today;
+
+    callback previous();
+    callback next();
+    callback go-today();
+    callback dismiss();
+}
+
+export component CalendarWindow inherits Window {
+    title: "Sengi OS calendar";
+    no-frame: true;
+    background: transparent;
+    default-font-family: Tokens.font-family;
+    forward-focus: keys;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                Cal.dismiss();
+            } else if event.text == Key.LeftArrow || event.text == Key.PageUp {
+                Cal.previous();
+            } else if event.text == Key.RightArrow || event.text == Key.PageDown {
+                Cal.next();
+            } else if event.text == Key.Home || event.text == "t" || event.text == "T" {
+                Cal.go-today();
+            } else {
+                return EventResult.reject;
+            }
+            return EventResult.accept;
+        }
+
+        TouchArea {
+            clicked => { Cal.dismiss(); }
+        }
+
+        // Top right, under the bar, the same distance from both.
+        SengiSurface {
+            x: root.width - self.width - Tokens.space-sm;
+            y: Tokens.bar-height + Tokens.space-sm;
+            width: Tokens.calendar-cell * 7 + Tokens.space-md * 2;
+            height: content.preferred-height;
+
+            // Clicks between the controls stay in the popup.
+            TouchArea { }
+
+            content := VerticalLayout {
+                padding: Tokens.space-md;
+                spacing: Tokens.space-sm;
+
+                HorizontalLayout {
+                    spacing: Tokens.space-sm;
+
+                    SengiButton {
+                        width: Tokens.button;
+                        text: "\u{2039}";
+                        focusable: false;
+                        clicked => { Cal.previous(); }
+                    }
+
+                    SengiText {
+                        horizontal-stretch: 1;
+                        text: Cal.title;
+                        font-weight: Tokens.font-weight-medium;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    SengiButton {
+                        width: Tokens.button;
+                        text: "\u{203a}";
+                        focusable: false;
+                        clicked => { Cal.next(); }
+                    }
+                }
+
+                HorizontalLayout {
+                    for name in Cal.weekdays: SengiLabel {
+                        width: Tokens.calendar-cell;
+                        text: name;
+                        horizontal-alignment: center;
+                    }
+                }
+
+                Rectangle {
+                    height: Tokens.calendar-cell-height * 6;
+
+                    for day[index] in Cal.days: Rectangle {
+                        x: Math.mod(index, 7) * Tokens.calendar-cell;
+                        y: Math.floor(index / 7) * Tokens.calendar-cell-height;
+                        width: Tokens.calendar-cell;
+                        height: Tokens.calendar-cell-height;
+
+                        Rectangle {
+                            width: Tokens.calendar-cell-height;
+                            height: Tokens.calendar-cell-height;
+                            border-radius: Tokens.radius;
+                            background: day.today ? Tokens.color-accent : transparent;
+
+                            SengiText {
+                                text: day.label;
+                                color: day.today ? Tokens.color-accent-text
+                                    : day.inside ? Tokens.color-text : Tokens.color-text-disabled;
+                                font-weight: day.today ? Tokens.font-weight-bold : Tokens.font-weight-regular;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: end;
+
+                    SengiButton {
+                        width: Tokens.calendar-cell * 2;
+                        text: "Today";
+                        focusable: false;
+                        enabled: !Cal.on-today;
+                        clicked => { Cal.go-today(); }
+                    }
+                }
+            }
+        }
+    }
+}
