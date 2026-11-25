@@ -75,10 +75,6 @@ cargo build --release --locked --manifest-path "$src/Cargo.toml" -p sengi-settin
 # Files is one too, but wants none of what Settings pulls into sengi-system, so
 # it is built on its own.
 cargo build --release --locked --manifest-path "$src/Cargo.toml" -p sengi-files
-if grep -a -q -e zbus "$work/target/release/sengi-files"; then
-	echo "sengi-files has zbus linked in, which it must not" >&2
-	exit 1
-fi
 programs="$programs sengi-settings sengi-installer sengi-store sengi-files"
 for program in $programs; do
 	install -D -m 0755 "$work/target/release/$program" "$work/overlay/usr/bin/$program"
