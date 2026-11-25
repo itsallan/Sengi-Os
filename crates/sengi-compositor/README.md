@@ -179,8 +179,14 @@ sengi-notify and sengi-lock included):
 
 - xdg-shell toplevels over `wl_shm`. A new window is centred in the free
   area; later ones cascade by the title bar height.
-- Server-side decorations through xdg-decoration, for clients that accept
-  them (foot does): title bar with close, minimise and maximise on the left,
+- Every xdg toplevel gets our frame. xdg-decoration and the KDE
+  server-decoration protocol are offered and always answered server side,
+  whatever the client asks; a client that asks for client side, or never
+  negotiates (Chromium, Firefox and GTK4 may do either), is framed anyway so
+  close, minimise and maximise are always there. Fullscreen windows have no
+  frame, X11 windows follow their Motif hints, popups and menus have none.
+  The frame:
+  title bar with close, minimise and maximise on the left,
   centred title in Inter, rounded top corners, 1 px border, separate looks
   for the focused and unfocused window, hover highlight on buttons. All
   sizes and colours are read from `tokens/sengi.toml`.
@@ -401,7 +407,10 @@ Known gaps, as of today.
   labwc; polkit or seatd would lift it.
 - Windows have no shadows. A fullscreen window has no key binding of ours
   to leave it by; labwc has none by default either.
-- Clients that do not speak xdg-decoration (GTK) keep their own title bars.
+- A client that draws its own title bar (Chromium, Firefox, GTK4) shows it
+  inside our frame, so such a window has two bars. The alternative, trusting
+  the client to go without, leaves it with no buttons if it does not.
+  Not tried on real Chromium or Firefox, only on test clients.
 - Windows are not re-placed when the usable area changes; they are only
   pulled out from under a bar. A maximised window cannot be dragged off its
   place; restore it first. Maximising moves the window at once but the

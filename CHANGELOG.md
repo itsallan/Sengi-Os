@@ -19,6 +19,9 @@ and the measured idle RAM and boot time.
   windows. Right-click for New Folder (which starts in rename), Open Terminal
   Here and Settings; select, rename, open and move to the Trash. The image has
   no file manager yet, so opening a folder says so.
+- Every window gets the Sengi OS title bar with close, minimise and maximise,
+  also Chromium, Firefox and other apps that ask to draw their own (they show
+  their bar inside ours).
 - A level indicator: the volume, mute, screen brightness and keyboard light
   keys show a rounded panel with an icon and a bar near the bottom of the
   screen for about a second (sengi-osd). It runs only then.
