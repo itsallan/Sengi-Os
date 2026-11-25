@@ -402,20 +402,6 @@ rm -f "$out/mon.in"
 # now against the disk as it was made. Nothing is trusted that the guest
 # says about itself.
 dual_fail=0
-# The firmware, as the installed system lists it: Sengi OS is the first thing
-# it tries. (Entries of the computer's own, Windows' among them, are kept by
-# the installer and checked in its unit tests: the firmware of this test starts
-# with none.)
-if [ "$mode" = beside ]; then
-	order=$(sed -n 's/^BootOrder: *\([0-9A-Fa-f]*\).*/\1/p' "$out/guest-info-installed.txt" | head -1)
-	if [ -n "$order" ] && grep -q "^Boot$order\*\{0,1\} *Sengi OS" "$out/guest-info-installed.txt"; then
-		echo "ok: Sengi OS is first in the firmware's boot order ($order)"
-	else
-		echo "FAIL: Sengi OS is not first in the firmware's boot order ('$order')" >&2
-		annotate "FAIL: Sengi OS is not first in the firmware's boot order"
-		fail=1
-	fi
-fi
 # Seconds GRUB's menu waits for a person to choose between systems. Where
 # another system is found the menu is shown, and the wait is the
 # person's, not the system's: it is left out of the boot figure and
@@ -631,6 +617,22 @@ echo "installed: $installed"
 
 fail=0
 [ "${dual_fail:-0}" = 0 ] || fail=1
+# The firmware, as the installed system lists it: the entry it was started
+# from (the fallback path holds the other system's file, so only Sengi OS's
+# own entry can have started it) is the first thing the firmware tries. (Entries of the computer's own, Windows' among them, are kept by
+# the installer and checked in its unit tests: the firmware of this test starts
+# with none.)
+if [ "$mode" = beside ]; then
+	order=$(sed -n 's/^BootOrder: *\([0-9A-Fa-f]*\).*/\1/p' "$out/guest-info-installed.txt" | head -1)
+	current=$(sed -n 's/^BootCurrent: *\([0-9A-Fa-f]*\).*/\1/p' "$out/guest-info-installed.txt" | head -1)
+	if [ -n "$order" ] && [ "$order" = "$current" ]; then
+		echo "ok: the entry the installed system was started from, which is the only one that can start it, is first in the firmware's boot order ($order)"
+	else
+		echo "FAIL: Sengi OS is not first in the firmware's boot order ('$order')" >&2
+		annotate "FAIL: Sengi OS is not first in the firmware's boot order"
+		fail=1
+	fi
+fi
 if grep -q SENGI-FAIL "$out"/serial-*.log; then
 	sed -n 's/.*SENGI-FAIL /FAIL: /p' "$out"/serial-*.log >&2
 	fail=1
