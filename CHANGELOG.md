@@ -21,6 +21,20 @@ and the measured idle RAM and boot time.
   swipes. Left and right swipes switch windows, up shows the switcher, down
   picks the selected window. Pinching is ignored. None of this has been tried
   on a real touchpad yet.
+- Screenshots: Quick settings has Screen, Area and In 5 s. `sengi-shot --select`
+  dims the screen and you drag a rectangle (live size label, Enter or letting
+  go takes it, Escape cancels); `--delay N` counts down in a corner before the
+  shot; `--clipboard` copies the picture with wl-copy when it is installed and
+  says so in the notification when it is not. The two screens are the new
+  sengi-snip, so a plain screenshot still links no toolkit.
+- Calculator (sengi-calc): decimal arithmetic by hand with the usual
+  precedence, brackets and percent, so 0.1 + 0.2 is 0.3; keyboard or keys,
+  the last five sums, Ctrl+C copies the answer, division by zero says so.
+- Click the clock in the bar and a calendar opens (sengi-calendar): a month grid
+  with today marked, previous and next month, Today, Escape or a click outside
+  closes it. `appearance.week-start` in settings.toml (monday, sunday or
+  saturday) sets the first column.
+
 - The screen dims after 2 minutes without input and goes off after 5, and
   any key, click or movement brings it back. Dimming, switching off and an
   optional lock are timed by sengi-compositor itself, with no polling and

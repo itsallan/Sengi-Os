@@ -3550,6 +3550,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "sengi-calc"
+version = "0.8.0"
+dependencies = [
+ "sengi-config",
+ "sengi-shots",
+ "slint",
+ "slint-build",
+]
+
+[[package]]
+name = "sengi-calendar"
+version = "0.8.0"
+dependencies = [
+ "chrono",
+ "sengi-clock",
+ "sengi-config",
+ "sengi-layer",
+ "sengi-shots",
+ "slint",
+ "slint-build",
+]
+
+[[package]]
 name = "sengi-clock"
 version = "0.8.0"
 dependencies = [
@@ -3780,6 +3803,17 @@ name = "sengi-shots"
 version = "0.8.0"
 dependencies = [
  "png",
+ "slint",
+ "slint-build",
+]
+
+[[package]]
+name = "sengi-snip"
+version = "0.8.0"
+dependencies = [
+ "sengi-config",
+ "sengi-layer",
+ "sengi-shots",
  "slint",
  "slint-build",
 ]
