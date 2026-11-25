@@ -69,7 +69,7 @@ jobs:
       # asking for it still compiles there. On its own it does not.
       - name: Each program on its own
         run: |
-          for program in sengi-bar sengi-clock sengi-config sengi-desktop sengi-dock sengi-focus sengi-greeter sengi-install sengi-installer sengi-launcher sengi-lock sengi-notify sengi-quick sengi-settings sengi-store; do
+          for program in sengi-bar sengi-clock sengi-config sengi-desktop sengi-dock sengi-focus sengi-greeter sengi-install sengi-installer sengi-launcher sengi-lock sengi-notify sengi-quick sengi-settings sengi-store sengi-files; do
             cargo check --locked -p "$program"
           done
 

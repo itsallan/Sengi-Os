@@ -11,6 +11,13 @@ and the measured idle RAM and boot time.
   Sengi OS colours, or a PNG or JPEG of your own, by path or from ~/Pictures.
   It shows at once and is remembered; a missing or broken file falls back to
   the desktop colour with a note.
+- Files (sengi-files), a small file manager: places on the left, the folder
+  in the middle, a path bar with Back and Up. Open folders and files, rename
+  (F2), make folders (Ctrl+Shift+N), copy, cut and paste (never over an
+  existing name: the copy becomes "name 2"), move to the Trash with Delete,
+  and a Trash view with Restore and Empty Trash. It only changes things inside
+  your home folder. The desktop opens folders in it, and it is at the end of
+  the default dock.
 - The Store shows real install progress read from Flatpak: a bar with the
   percentage, the step and the speed when Flatpak gives them, and an
   honest moving bar when it does not.
