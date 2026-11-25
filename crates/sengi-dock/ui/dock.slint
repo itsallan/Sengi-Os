@@ -1,6 +1,7 @@
 // The Sengi OS dock: a centred panel of app icons at the bottom of the screen.
 
 import { Tokens, SengiText, SengiIcon } from "components.slint";
+import { DockMenu } from "menu.slint";
 
 export enum DockIcon {
     // The search button, drawn here.
@@ -96,6 +97,8 @@ component Slot inherits Rectangle {
     out property <bool> hovered: touch.has-hover;
     callback clicked();
     callback middle-clicked();
+    // A right click.
+    callback context();
 
     // A click with Ctrl or Shift held counts as a middle click.
     property <bool> modified: false;
@@ -192,6 +195,9 @@ component Slot inherits Rectangle {
             if event.kind == PointerEventKind.down {
                 root.modified = event.modifiers.control || event.modifiers.shift;
             }
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                root.context();
+            }
             if event.kind == PointerEventKind.up && event.button == PointerEventButton.middle
                 && self.has-hover {
                 root.middle-clicked();
@@ -225,8 +231,10 @@ component NameLabel inherits Rectangle {
 export component Dock inherits Window {
     // The rows, in dock order. Row indexes are what the callbacks report.
     in property <[DockItem]> items;
-    // Whether to show the app's name above the hovered icon. The room for
-    // it is part of dock-height all the time, not only while hovering: a
+    // Whether to show the app's name above the hovered icon, and to have
+    // room above the panel for the right-click menu. The room is part of
+    // dock-height all the time, not only while hovering or while a menu is
+    // open: a
     // surface that grows under the pointer shifts its own coordinates and
     // loses the hover. So with labels on, limit the surface's input region
     // to the panel, or it takes the clicks in a strip above it as well.
@@ -236,7 +244,8 @@ export component Dock inherits Window {
     // including rows still sliding out, so resize when it changes.
     out property <length> dock-width:
         root.items.length * root.slot-width + root.side-padding * 2;
-    out property <length> dock-height: root.panel-height + (root.show-labels ? root.label-space : 0);
+    out property <length> dock-height: root.panel-height
+        + (root.show-labels ? Math.max(root.label-space, root.menu-space) : 0);
     // The panel alone: what to reserve as the exclusive zone, plus the margin.
     // The icons have their padding above and below, and the running dot sits
     // in the room under them.
@@ -259,12 +268,37 @@ export component Dock inherits Window {
     callback clicked(int);
     // Also sent for a click with Ctrl or Shift held.
     callback middle-clicked(int);
+    // A right click on a tile; the program fills `menu-rows` and sets
+    // `menu-index` to open the menu.
+    callback context-clicked(int);
+    // A row of the menu was chosen. The program closes the menu.
+    callback menu-chosen(int);
+    // The menu closed itself because the pointer left it.
+    callback menu-closed();
+
+    // The rows of the menu, and the tile it belongs to, or -1 for no menu.
+    in property <[string]> menu-rows;
+    in-out property <int> menu-index: -1;
+    // Where the menu is, for the program to open the surface to it.
+    out property <length> menu-x: menu.x;
+    out property <length> menu-y: menu.y;
+    out property <length> menu-width: menu.width;
+    out property <length> menu-height: menu.height;
+    // The gap between the menu and the panel, which is part of the menu's
+    // reach.
+    out property <length> menu-gap: Tokens.space-xs;
 
     // The width one item takes, and the padding at each end of the panel:
     // what decides how many items fit across a screen.
     out property <length> slot-width: Tokens.dock-item + Tokens.dock-gap;
     out property <length> side-padding: Tokens.dock-end-padding - Tokens.dock-gap / 2;
     property <length> label-space: Tokens.font-size-sm + Tokens.space-sm * 2 + Tokens.space-xs;
+    // The most rows a menu has: open or start, keep or remove, quit, of
+    // which at most two are there at once.
+    property <length> menu-space: Tokens.menu-row * 2 + Tokens.menu-padding * 2 + Tokens.space-xs;
+    property <length> menu-centre;
+    property <bool> menu-near: menu.hovered || bridge.has-hover
+        || (root.hovered >= 0 && root.hovered == root.menu-index);
     property <int> hovered: -1;
     property <string> hovered-name;
     property <length> hovered-centre;
@@ -298,6 +332,10 @@ export component Dock inherits Window {
                 item: item;
                 clicked => { root.clicked(index); }
                 middle-clicked => { root.middle-clicked(index); }
+                context => {
+                    root.menu-centre = panel.x + self.x + self.width / 2;
+                    root.context-clicked(index);
+                }
                 changed hovered => {
                     if self.hovered {
                         root.hovered = index;
@@ -311,12 +349,50 @@ export component Dock inherits Window {
         }
     }
 
+    menu := DockMenu {
+        visible: root.menu-index >= 0;
+        rows: root.menu-rows;
+        x: clamp(root.menu-centre - self.width / 2, 0, root.width - self.width);
+        y: root.height - root.panel-height - Tokens.space-xs - self.height;
+        chosen(row) => { root.menu-chosen(row); }
+    }
+
+    // The gap between the menu and the panel: crossing it is not leaving.
+    bridge := TouchArea {
+        x: menu.x;
+        y: menu.y + menu.height;
+        width: menu.width;
+        height: Tokens.space-xs;
+        enabled: root.menu-index >= 0;
+    }
+
+    // The menu goes when the pointer has been away from it and its tile for
+    // a moment.
+    close-timer := Timer {
+        interval: Tokens.motion-base;
+        running: false;
+        triggered => {
+            self.running = false;
+            if root.menu-index >= 0 && !root.menu-near {
+                root.menu-index = -1;
+                root.menu-closed();
+            }
+        }
+    }
+
+    changed menu-near => {
+        close-timer.running = root.menu-index >= 0 && !root.menu-near;
+    }
+    changed menu-index => {
+        close-timer.running = root.menu-index >= 0 && !root.menu-near;
+    }
+
     if root.show-labels: NameLabel {
         text: root.hovered-name;
         limit: root.width;
         x: clamp(root.hovered-centre - self.width / 2, 0, root.width - self.width);
         y: 0;
-        opacity: root.hovered >= 0 ? 1 : 0;
+        opacity: root.hovered >= 0 && root.menu-index < 0 ? 1 : 0;
         animate opacity {
             duration: Tokens.motion-fast;
             easing: Tokens.motion-easing;

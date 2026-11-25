@@ -12,8 +12,11 @@ use slint::{ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffe
 
 use sengi_apps::icons::{self, Contexts, Decoder, IconDirs, DECODE_TIMEOUT};
 use sengi_apps::Env;
+use sengi_layer::Rect;
 
-use crate::model::{self, Action, Button, Dock, Icon, Item, Launches, LAUNCHER_KEY, LAUNCH_WAIT};
+use crate::model::{
+    self, Action, Button, Dock, Icon, Item, Launches, MenuAction, LAUNCHER_KEY, LAUNCH_WAIT,
+};
 use crate::windows::{self, Controller, Source, Window};
 use crate::{config, launch, ui};
 
@@ -79,6 +82,10 @@ struct State {
     /// The dock's generation the icons were looked up in.
     generation: u64,
     controller: Option<Controller>,
+    /// The open right-click menu: the item's key and its rows.
+    menu: Option<(String, Vec<MenuAction>)>,
+    /// Where the pinned list is saved. None when there is no home.
+    save_to: Option<std::path::PathBuf>,
     size: (u32, u32),
     /// How many times the rows have been brought up to date.
     updates: u64,
@@ -90,6 +97,8 @@ struct Inner {
     state: RefCell<State>,
     deliver: Deliver,
     on_resize: Box<dyn Fn(u32, u32)>,
+    /// Told which parts of the surface take the pointer.
+    on_input: RefCell<Option<Box<dyn Fn(&[Rect])>>>,
 }
 
 /// The running dock. Cloning gives another handle to the same dock.
@@ -191,11 +200,14 @@ impl App {
                     launches: Launches::default(),
                     generation: 0,
                     controller: None,
+                    menu: None,
+                    save_to: None,
                     size: (0, 0),
                     updates: 0,
                 }),
                 deliver,
                 on_resize: Box::new(on_resize),
+                on_input: RefCell::new(None),
             }),
         };
 
@@ -209,6 +221,25 @@ impl App {
         app.inner.ui.on_middle_clicked(move |index| {
             if let Some(inner) = weak.upgrade() {
                 App { inner }.click(index, Button::Secondary);
+            }
+        });
+
+        let weak = Rc::downgrade(&app.inner);
+        app.inner.ui.on_context_clicked(move |index| {
+            if let Some(inner) = weak.upgrade() {
+                App { inner }.context(index);
+            }
+        });
+        let weak = Rc::downgrade(&app.inner);
+        app.inner.ui.on_menu_chosen(move |row| {
+            if let Some(inner) = weak.upgrade() {
+                App { inner }.choose(row);
+            }
+        });
+        let weak = Rc::downgrade(&app.inner);
+        app.inner.ui.on_menu_closed(move || {
+            if let Some(inner) = weak.upgrade() {
+                App { inner }.close_menu();
             }
         });
 
@@ -238,6 +269,7 @@ impl App {
         let icon_dirs = IconDirs::for_env(&env);
         let dock = Dock::load(config::pinned(&config::paths()), data_dirs, env);
         let app = Self::new(ui, dock, icon_dirs, deliver.clone(), on_resize);
+        app.set_save_path(config::user_path());
 
         // Drop updates that change nothing the dock shows, so a terminal
         // retitling itself does not wake the UI thread.
@@ -256,6 +288,40 @@ impl App {
             Err(error) => eprintln!("sengi-dock: windows are not tracked: {error}"),
         }
         app
+    }
+
+    /// Where pin and unpin save the list. Without one they last until the
+    /// dock exits.
+    pub fn set_save_path(&self, path: Option<std::path::PathBuf>) {
+        self.inner.state.borrow_mut().save_to = path;
+    }
+
+    /// Sets who is told where the surface takes the pointer: the panel,
+    /// and the menu while one is open. `f` is called now and again each
+    /// time that changes or the surface is resized.
+    pub fn on_input_region(&self, f: impl Fn(&[Rect]) + 'static) {
+        *self.inner.on_input.borrow_mut() = Some(Box::new(f));
+        self.apply_input();
+    }
+
+    fn apply_input(&self) {
+        let guard = self.inner.on_input.borrow();
+        let Some(f) = guard.as_ref() else { return };
+        let ui = &self.inner.ui;
+        let state = self.inner.state.borrow();
+        let (width, height) = (state.size.0 as i32, state.size.1 as i32);
+        let panel_height = ui.get_panel_height().round() as i32;
+        let mut rects = vec![Rect::new(0, height - panel_height, width, panel_height)];
+        if state.menu.is_some() {
+            let gap = ui.get_menu_gap().round() as i32;
+            let (w, h) = (
+                ui.get_menu_width().round() as i32,
+                ui.get_menu_height().round() as i32,
+            );
+            let x = (ui.get_menu_x().round() as i32).clamp(0, (width - w).max(0));
+            rects.push(Rect::new(x, height - panel_height - gap - h, w, h + gap));
+        }
+        f(&rects);
     }
 
     pub fn ui(&self) -> &ui::Dock {
@@ -448,6 +514,7 @@ impl App {
 
         state.items = items;
         drop(state);
+        self.follow_menu();
 
         self.start_decoding();
         self.update_size();
@@ -519,9 +586,167 @@ impl App {
         if changed {
             (self.inner.on_resize)(size.0, size.1);
         }
+        self.apply_input();
+    }
+
+    /// A right click on the tile at `index`.
+    fn context(&self, index: i32) {
+        let opened = {
+            let mut state = self.inner.state.borrow_mut();
+            let key = usize::try_from(index)
+                .ok()
+                .and_then(|at| state.rows.get(at))
+                .map(|row| row.key.clone());
+            let menu = key.and_then(|key| {
+                let item = state.items.iter().find(|item| item.key == key)?;
+                let rows = model::menu_for(item, state.dock.is_pinned(&item.key));
+                Some((key, rows))
+            });
+            match menu {
+                // A second right click on the same tile closes its menu.
+                Some((key, rows))
+                    if !rows.is_empty() && state.menu.as_ref().map(|m| &m.0) != Some(&key) =>
+                {
+                    state.menu = Some((key, rows.clone()));
+                    Some(rows)
+                }
+                _ => None,
+            }
+        };
+        match opened {
+            Some(rows) => {
+                self.show_rows(&rows);
+                self.inner.ui.set_menu_index(index);
+                self.apply_input();
+            }
+            None => self.close_menu(),
+        }
+    }
+
+    fn show_rows(&self, rows: &[MenuAction]) {
+        let labels: Vec<slint::SharedString> = rows.iter().map(|r| r.label().into()).collect();
+        self.inner
+            .ui
+            .set_menu_rows(ModelRc::from(Rc::new(VecModel::from(labels))));
+    }
+
+    fn close_menu(&self) {
+        self.inner.state.borrow_mut().menu = None;
+        self.inner.ui.set_menu_index(-1);
+        self.apply_input();
+    }
+
+    /// Keeps the menu on its tile when the rows move, and drops it when
+    /// the tile is gone or has nothing to offer any more.
+    fn follow_menu(&self) {
+        enum Next {
+            Keep,
+            Move(i32, Vec<MenuAction>),
+            Close,
+        }
+        let next = {
+            let mut state = self.inner.state.borrow_mut();
+            let Some((key, shown)) = state.menu.clone() else {
+                return;
+            };
+            let at = state.rows.iter().position(|row| row.key == key);
+            let item = state.items.iter().find(|item| item.key == key);
+            match (at, item) {
+                (Some(at), Some(item)) => {
+                    let rows = model::menu_for(item, state.dock.is_pinned(&key));
+                    if rows.is_empty() {
+                        Next::Close
+                    } else if rows != shown {
+                        state.menu = Some((key, rows.clone()));
+                        Next::Move(at as i32, rows)
+                    } else if self.inner.ui.get_menu_index() != at as i32 {
+                        Next::Move(at as i32, rows)
+                    } else {
+                        Next::Keep
+                    }
+                }
+                _ => Next::Close,
+            }
+        };
+        match next {
+            Next::Keep => {}
+            Next::Move(at, rows) => {
+                self.show_rows(&rows);
+                self.inner.ui.set_menu_index(at);
+                self.apply_input();
+            }
+            Next::Close => self.close_menu(),
+        }
+    }
+
+    /// A row of the menu was chosen.
+    fn choose(&self, row: i32) {
+        let chosen = {
+            let state = self.inner.state.borrow();
+            state.menu.as_ref().and_then(|(key, rows)| {
+                let action = *usize::try_from(row).ok().and_then(|at| rows.get(at))?;
+                Some((key.clone(), action))
+            })
+        };
+        self.close_menu();
+        let Some((key, action)) = chosen else { return };
+        match action {
+            MenuAction::Keep | MenuAction::Remove => {
+                self.set_pinned(&key, action == MenuAction::Keep)
+            }
+            MenuAction::Open => {
+                let started = self
+                    .inner
+                    .state
+                    .borrow_mut()
+                    .launches
+                    .begin(&key, Instant::now());
+                if started && !self.perform(Action::Launch(key.clone())) {
+                    self.inner.state.borrow_mut().launches.cancel(&key);
+                }
+                self.refresh();
+            }
+            MenuAction::Quit => {
+                let state = self.inner.state.borrow();
+                let ids: Vec<u32> = state
+                    .items
+                    .iter()
+                    .filter(|item| item.key == key)
+                    .flat_map(|item| item.windows.iter().map(|w| w.id))
+                    .collect();
+                if let Some(controller) = &state.controller {
+                    for id in ids {
+                        controller.close(id);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Pins or unpins an app at once and saves the list.
+    fn set_pinned(&self, key: &str, pin: bool) {
+        let windows = {
+            let mut state = self.inner.state.borrow_mut();
+            let changed = if pin {
+                state.dock.pin(key)
+            } else {
+                state.dock.unpin(key)
+            };
+            if !changed {
+                return;
+            }
+            if let Some(path) = &state.save_to {
+                if let Err(error) = config::save(path, state.dock.pinned()) {
+                    eprintln!("sengi-dock: cannot save {}: {error}", path.display());
+                }
+            }
+            state.windows.clone()
+        };
+        self.set_windows(&windows);
     }
 
     fn click(&self, index: i32, button: Button) {
+        self.close_menu();
         let action = {
             let state = self.inner.state.borrow();
             let Some(row) = usize::try_from(index)

@@ -13,7 +13,7 @@ use sengi_dock::app::{App, Deliver, Message};
 use sengi_dock::model::Dock;
 use sengi_dock::windows::{self, Source, Window};
 use sengi_dock::{config, ui};
-use sengi_layer::{Anchor, Config, KeyboardMode, Layer, Margins, Output, Outputs, Rect};
+use sengi_layer::{Anchor, Config, KeyboardMode, Layer, Margins, Output, Outputs};
 use slint::ComponentHandle;
 
 const USAGE: &str = "usage: sengi-dock [--dump]
@@ -66,7 +66,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // keeps windows as far from the dock as the dock is from the edge.
         handle.set_exclusive_zone(ui.get_panel_height().round() as i32 + margin);
 
-        let panel_height = ui.get_panel_height().round() as i32;
         let resize = surface.clone();
         let app = App::start(
             ui.clone_strong(),
@@ -76,15 +75,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if let Err(error) = resize.set_size(width, height) {
                     eprintln!("sengi-dock: {error}");
                 }
-                // The surface is taller than the panel, to have room for
-                // the label. Only the panel takes the pointer, or the strip
-                // above it would swallow clicks meant for the window there.
-                // The region does not follow a resize, so it is set each time.
-                let (width, height) = (width as i32, height as i32);
-                let panel = Rect::new(0, height - panel_height, width, panel_height);
-                resize.set_input_region(Some(&[panel]));
             },
         );
+        // The surface is taller than the panel, to have room for the label
+        // and the menu. Only the panel (and the menu while it is open)
+        // takes the pointer, or the strip above would swallow clicks meant
+        // for the window there. The region does not follow a resize, so the
+        // app hands it over again after each one.
+        let region = surface.clone();
+        app.on_input_region(move |rects| region.set_input_region(Some(rects)));
 
         // The dock may be as wide as its output, less the gap it keeps from
         // the bottom edge on either side. The output is often not known

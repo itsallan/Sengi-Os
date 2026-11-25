@@ -1,0 +1,48 @@
+// The menu a right click on a dock tile opens. It is drawn inside the dock's
+// own surface, in the room above the panel that the name label uses.
+
+import { Tokens, SengiText, SengiSurface } from "components.slint";
+
+component MenuRow inherits Rectangle {
+    in property <string> label;
+    callback chosen();
+
+    height: Tokens.menu-row;
+    border-radius: Tokens.radius;
+    background: touch.has-hover ? Tokens.color-accent : transparent;
+
+    SengiText {
+        x: Tokens.space-md;
+        width: parent.width - Tokens.space-md * 2;
+        text: root.label;
+        color: touch.has-hover ? Tokens.color-accent-text : Tokens.color-text;
+        font-size: Tokens.font-size-md;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    touch := TouchArea {
+        clicked => { root.chosen(); }
+    }
+}
+
+export component DockMenu inherits SengiSurface {
+    in property <[string]> rows;
+    // The pointer is on the menu.
+    out property <bool> hovered: area.has-hover;
+    callback chosen(int);
+
+    width: Tokens.menu-width / 2;
+    height: root.rows.length * Tokens.menu-row + Tokens.menu-padding * 2;
+
+    // Clicks between rows are not clicks on the dock behind.
+    area := TouchArea { }
+
+    VerticalLayout {
+        padding: Tokens.menu-padding;
+        for label[index] in root.rows: MenuRow {
+            label: label;
+            chosen => { root.chosen(index); }
+        }
+    }
+}
