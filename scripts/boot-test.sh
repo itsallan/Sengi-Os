@@ -212,6 +212,36 @@ key esc 1
 # Park the pointer on empty desktop so the hover does not follow us around.
 pointer $((screen_w / 8)) $((screen_h / 2))
 
+# The desktop's own menu: a right click on bare desktop, clear of the bar and
+# the dock, opens New Folder, Open Terminal Here and Settings, and a left
+# click somewhere else closes it again. Only the screen can say, so raw dumps
+# are compared: the menu is a few thousand pixels, the bar's clock a few
+# hundred at most. mouse_button 4 is the right button.
+desktop_fail=
+echo "screendump $out/before.ppm" >&3
+sleep 1
+pointer $((screen_w / 2)) $((screen_h / 3))
+echo "mouse_button 4" >&3
+sleep 0.2
+echo "mouse_button 0" >&3
+sleep 2
+shot desktop-menu
+echo "screendump $out/with.ppm" >&3
+sleep 1
+changed=$(cmp -l "$out/before.ppm" "$out/with.ppm" 2>/dev/null | wc -l)
+if [ "$changed" -lt 5000 ]; then
+	desktop_fail="a right click on the desktop opened no menu ($changed bytes of the screen changed)"
+fi
+pointer $((screen_w * 3 / 4)) $((screen_h * 2 / 3))
+click
+echo "screendump $out/after.ppm" >&3
+sleep 1
+if [ -z "$desktop_fail" ] && [ "$(cmp -l "$out/before.ppm" "$out/after.ppm" 2>/dev/null | wc -l)" -ge 3000 ]; then
+	desktop_fail="the desktop menu did not close on a left click"
+fi
+rm -f "$out/before.ppm" "$out/with.ppm" "$out/after.ppm"
+pointer $((screen_w / 8)) $((screen_h / 2))
+
 # Settings, found and started the way a person would, through the launcher,
 # then closed again. The guest says when the process is there and when it
 # has gone (see sengi-boot-report). A process is not a window, so the screen
@@ -708,6 +738,10 @@ if [ -n "$size_fail" ]; then
 fi
 if [ -n "$settings_fail" ]; then
 	echo "FAIL: $settings_fail" >&2
+	fail=1
+fi
+if [ -n "$desktop_fail" ]; then
+	echo "FAIL: $desktop_fail" >&2
 	fail=1
 fi
 if [ -n "$dock_fail" ]; then
