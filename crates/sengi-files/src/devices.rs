@@ -416,6 +416,12 @@ pub mod tests {
         pub t: Temp,
     }
 
+    impl Default for Fake {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl Fake {
         pub fn new() -> Fake {
             let t = Temp::new();
