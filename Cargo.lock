@@ -3589,6 +3589,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sengi-files"
+version = "0.8.0"
+dependencies = [
+ "libc",
+ "sengi-apps",
+ "sengi-shots",
+ "sengi-system",
+ "slint",
+ "slint-build",
+]
+
+[[package]]
 name = "sengi-focus"
 version = "0.8.0"
 dependencies = [

@@ -1,0 +1,561 @@
+// The Files window: places on the left, the path and the buttons on top,
+// the folder under them, one line of status at the bottom. Built from the
+// shared components and Settings' kit; nothing here has a colour or a size
+// of its own.
+//
+// Only the rows that can be seen are given to this file: Rust keeps the
+// whole folder and sends the slice that is on screen, so a folder of ten
+// thousand files costs no more to draw than one of thirty.
+
+import { Tokens, SengiText, SengiLabel, SengiButton, SengiToggle, SengiIcon } from "components.slint";
+import { Scroll, TextField, DialogLayer, DialogSpec } from "kit.slint";
+import { NamedIcon } from "icons.slint";
+
+export { DialogSpec }
+
+export struct FileRow {
+    // Where it is in the whole folder.
+    index: int,
+    name: string,
+    folder: bool,
+    selected: bool,
+    // Cut, and waiting to be pasted.
+    cut: bool,
+    // A size, or in the Trash where it was.
+    size: string,
+    // A time, or in the Trash when it was deleted.
+    detail: string,
+}
+
+export struct Crumb {
+    label: string,
+}
+
+// What the window shows and what it reports. Rust fills the one and hears
+// the other.
+export global Files {
+    in property <[FileRow]> rows;
+    // The folder index of rows[0], and how many there are in all.
+    in property <int> first: 0;
+    in property <int> total: 0;
+    in property <int> cursor: 0;
+    in property <[string]> places;
+    // Which of the places is open, or -1 for none of them.
+    in property <int> place: -1;
+    in property <[Crumb]> crumbs;
+    in property <bool> in-trash: false;
+    in property <bool> can-back: false;
+    in property <bool> can-up: false;
+    in property <bool> can-paste: false;
+    in property <bool> has-selection: false;
+    in property <bool> busy: false;
+    in-out property <bool> show-hidden: false;
+    // The line at the bottom, and a note that replaces it for a while.
+    in property <string> status;
+    in property <string> notice;
+    in property <bool> notice-is-error: false;
+    // Said in place of the list when it has nothing to show.
+    in property <string> hint;
+    // The row being renamed, as a folder index, or -1.
+    in property <int> renaming: -1;
+    in property <string> rename-text;
+    in property <bool> dialog-open: false;
+    in property <DialogSpec> dialog;
+    // Each count asks the list to do something.
+    in property <int> scroll-top: 0;
+    in property <int> reveal-tick: 0;
+    in property <int> reveal-index: 0;
+
+    // What the list is showing: from `first`, this many.
+    callback viewport(int, int);
+    callback click(int, bool, bool);
+    callback click-empty();
+    callback open(int);
+    callback open-selected();
+    callback step(int, bool);
+    callback go-place(int);
+    callback go-crumb(int);
+    callback back();
+    callback up();
+    callback refresh();
+    callback new-folder();
+    callback toggle-hidden(bool);
+    callback start-rename();
+    // True when the name was taken; false leaves the field open.
+    callback rename-accepted(string) -> bool;
+    callback rename-cancelled();
+    callback trash-selected();
+    callback copy();
+    callback cut();
+    callback paste();
+    callback select-all();
+    callback restore();
+    callback empty-trash();
+    callback dialog-confirmed();
+    callback dialog-cancelled();
+}
+
+component Sidebar inherits Rectangle {
+    background: Tokens.color-surface;
+
+    for name[index] in Files.places: Rectangle {
+        private property <bool> chosen: index == Files.place;
+
+        x: Tokens.space-sm;
+        y: Tokens.space-sm + index * (Tokens.button + Tokens.space-sm + Tokens.space-xxs);
+        width: parent.width - Tokens.space-sm * 2;
+        height: Tokens.button + Tokens.space-sm;
+        border-radius: Tokens.radius;
+        background: self.chosen ? Tokens.color-surface-hover
+            : touch.has-hover ? Tokens.color-surface-raised : transparent;
+        animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+
+        SengiText {
+            x: Tokens.space-md;
+            width: parent.width - self.x - Tokens.space-sm;
+            height: parent.height;
+            text: name;
+            font-weight: parent.chosen ? Tokens.font-weight-medium : Tokens.font-weight-regular;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        touch := TouchArea {
+            clicked => { Files.go-place(index); }
+        }
+    }
+
+    // The edge against the folder.
+    Rectangle {
+        x: parent.width - self.width;
+        width: Tokens.border-width;
+        background: Tokens.color-border;
+    }
+}
+
+component PathBar inherits Rectangle {
+    clip: true;
+
+    HorizontalLayout {
+        alignment: start;
+        spacing: Tokens.space-xs;
+
+        for crumb[index] in Files.crumbs: HorizontalLayout {
+            spacing: Tokens.space-xs;
+
+            if index > 0: VerticalLayout {
+                alignment: center;
+                SengiIcon {
+                    name: "caret-right";
+                    ink: Tokens.color-text-disabled;
+                    width: Tokens.space-md;
+                    height: Tokens.space-md;
+                }
+            }
+
+            Rectangle {
+                private property <bool> last: index == Files.crumbs.length - 1;
+
+                min-width: label.preferred-width + Tokens.space-md;
+                height: Tokens.button;
+                border-radius: Tokens.radius;
+                background: touch.has-hover ? Tokens.color-surface-raised : transparent;
+                animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+
+                label := SengiText {
+                    x: Tokens.space-sm;
+                    height: parent.height;
+                    text: crumb.label;
+                    color: parent.last ? Tokens.color-text : Tokens.color-text-muted;
+                    font-weight: parent.last ? Tokens.font-weight-medium : Tokens.font-weight-regular;
+                    vertical-alignment: center;
+                }
+
+                touch := TouchArea {
+                    clicked => { Files.go-crumb(index); }
+                }
+            }
+        }
+    }
+}
+
+export component FilesWindow inherits Window {
+    title: "Files";
+    preferred-width: Tokens.settings-window-width;
+    preferred-height: Tokens.settings-window-height;
+    min-width: Tokens.settings-window-min-width;
+    min-height: Tokens.settings-window-min-height;
+    background: Tokens.color-bg;
+    default-font-family: Tokens.font-family;
+    default-font-size: Tokens.font-size-md;
+
+    private property <length> line: Tokens.button + Tokens.space-sm;
+    // The size and time columns need room; a narrow window keeps the name.
+    private property <bool> roomy: list.width > Tokens.chooser-width;
+    private property <bool> roomier: list.width > Tokens.chooser-width + Tokens.settings-control-width;
+    private property <length> size-width: Files.in-trash ? Tokens.settings-control-width : Tokens.value-column-lg;
+    private property <length> time-width: Files.in-trash ? Tokens.settings-control-width : Tokens.value-column-lg + Tokens.space-xxl;
+    private property <int> hovered: -1;
+    // The program asks the list to move by raising a count.
+    private property <int> top-tick: Files.scroll-top;
+    private property <int> reveal-tick: Files.reveal-tick;
+
+    // The renderer keeps two buffers and only one of them knows after a
+    // change of size or scale that it is new, so for a few frames the
+    // whole window is drawn, as Settings does.
+    private property <float> pixel: 1phx / 1px;
+    private property <int> sheet: 0;
+    private property <int> sheets-owed: 0;
+
+    function draw-everything() {
+        root.sheet += 1;
+        root.sheets-owed = 3;
+    }
+
+    function report-view() {
+        Files.viewport(
+            Math.max(Math.floor(list.offset / root.line), 0),
+            Math.ceil(list.height / root.line) + 2);
+    }
+
+    // The keyboard goes back to the list, from a button or a field.
+    public function take-focus() {
+        scope.focus();
+    }
+
+    changed top-tick => { list.reveal(0px, root.line); }
+    changed reveal-tick => { list.reveal(Files.reveal-index * root.line, root.line); }
+    changed pixel => { root.draw-everything(); }
+    changed width => { root.draw-everything(); }
+    changed height => { root.draw-everything(); }
+    init => { scope.focus(); }
+
+    Timer {
+        interval: Tokens.motion-fast;
+        running: root.sheets-owed > 0;
+        triggered => {
+            root.sheet += 1;
+            root.sheets-owed -= 1;
+        }
+    }
+
+    Rectangle {
+        background: Math.mod(root.sheet, 2) == 0 ? transparent : Tokens.color-bg.transparentize(1);
+    }
+
+    scope := FocusScope {
+        key-pressed(event) => {
+            if Files.dialog-open {
+                return EventResult.reject;
+            }
+            if event.modifiers.alt {
+                if event.text == Key.LeftArrow {
+                    Files.back();
+                    return EventResult.accept;
+                }
+                if event.text == Key.UpArrow {
+                    Files.up();
+                    return EventResult.accept;
+                }
+                return EventResult.reject;
+            }
+            if event.modifiers.control {
+                if event.text == "a" {
+                    Files.select-all();
+                } else if event.text == "c" {
+                    Files.copy();
+                } else if event.text == "x" {
+                    Files.cut();
+                } else if event.text == "v" {
+                    Files.paste();
+                } else if event.text == "h" {
+                    Files.toggle-hidden(!Files.show-hidden);
+                } else if event.text == "r" {
+                    Files.refresh();
+                } else if (event.text == "n" || event.text == "N") && event.modifiers.shift {
+                    Files.new-folder();
+                } else {
+                    return EventResult.reject;
+                }
+                return EventResult.accept;
+            }
+            if event.text == Key.UpArrow {
+                Files.step(-1, event.modifiers.shift);
+                list.reveal(Files.cursor * root.line, root.line);
+            } else if event.text == Key.DownArrow {
+                Files.step(1, event.modifiers.shift);
+                list.reveal(Files.cursor * root.line, root.line);
+            } else if event.text == Key.Home {
+                Files.step(-1000000, event.modifiers.shift);
+                list.reveal(Files.cursor * root.line, root.line);
+            } else if event.text == Key.End {
+                Files.step(1000000, event.modifiers.shift);
+                list.reveal(Files.cursor * root.line, root.line);
+            } else if event.text == Key.PageUp {
+                Files.step(-Math.max(Math.floor(list.height / root.line) - 1, 1), event.modifiers.shift);
+                list.reveal(Files.cursor * root.line, root.line);
+            } else if event.text == Key.PageDown {
+                Files.step(Math.max(Math.floor(list.height / root.line) - 1, 1), event.modifiers.shift);
+                list.reveal(Files.cursor * root.line, root.line);
+            } else if event.text == Key.Return {
+                Files.open-selected();
+            } else if event.text == Key.Delete {
+                Files.trash-selected();
+            } else if event.text == Key.F2 {
+                Files.start-rename();
+            } else if event.text == Key.F5 {
+                Files.refresh();
+            } else if event.text == Key.Backspace {
+                Files.up();
+            } else if event.text == Key.Escape {
+                Files.click-empty();
+            } else {
+                return EventResult.reject;
+            }
+            return EventResult.accept;
+        }
+
+        Sidebar {
+            x: 0;
+            y: 0;
+            width: Tokens.settings-sidebar-width;
+            height: parent.height;
+        }
+
+        Rectangle {
+            x: Tokens.settings-sidebar-width;
+            width: parent.width - Tokens.settings-sidebar-width;
+            height: parent.height;
+
+            VerticalLayout {
+                // The bar of buttons.
+                HorizontalLayout {
+                    padding: Tokens.space-md;
+                    spacing: Tokens.space-sm;
+
+                    SengiButton {
+                        text: "Back";
+                        enabled: Files.can-back;
+                        focusable: false;
+                        clicked => { Files.back(); }
+                    }
+
+                    SengiButton {
+                        text: "Up";
+                        enabled: Files.can-up;
+                        focusable: false;
+                        clicked => { Files.up(); }
+                    }
+
+                    PathBar {
+                        horizontal-stretch: 1;
+                        height: Tokens.button;
+                    }
+
+                    if Files.in-trash: SengiButton {
+                        text: "Restore";
+                        enabled: Files.has-selection && !Files.busy;
+                        focusable: false;
+                        clicked => { Files.restore(); }
+                    }
+
+                    if Files.in-trash: SengiButton {
+                        text: "Empty Trash";
+                        enabled: Files.total > 0 && !Files.busy;
+                        danger: true;
+                        focusable: false;
+                        clicked => { Files.empty-trash(); }
+                    }
+
+                    if !Files.in-trash: SengiButton {
+                        text: "New Folder";
+                        focusable: false;
+                        clicked => { Files.new-folder(); }
+                    }
+                }
+
+                Rectangle {
+                    height: Tokens.border-width;
+                    background: Tokens.color-border;
+                }
+
+                Rectangle {
+                    vertical-stretch: 1;
+
+                    list := Scroll {
+                        content-height: Files.total * root.line;
+                        changed offset => { root.report-view(); }
+                        changed height => { root.report-view(); }
+                        init => { root.report-view(); }
+
+                        // Under the rows: a click where there is no row.
+                        TouchArea {
+                            width: parent.width;
+                            height: Math.max(parent.height, Files.total * root.line);
+                            clicked => {
+                                Files.click-empty();
+                                scope.focus();
+                            }
+                        }
+
+                        for row[slot] in Files.rows: Rectangle {
+                            private property <bool> lit: root.hovered == row.index;
+
+                            x: Tokens.space-sm;
+                            y: row.index * root.line;
+                            width: parent.width - Tokens.space-sm * 2 - Tokens.space-xs;
+                            height: root.line;
+                            border-radius: Tokens.radius;
+                            background: row.selected ? Tokens.color-surface-hover
+                                : self.lit ? Tokens.color-surface-raised : transparent;
+                            animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+
+                            TouchArea {
+                                changed has-hover => {
+                                    if self.has-hover {
+                                        root.hovered = row.index;
+                                    } else if root.hovered == row.index {
+                                        root.hovered = -1;
+                                    }
+                                }
+                                pointer-event(event) => {
+                                    if event.kind == PointerEventKind.up
+                                        && event.button == PointerEventButton.left {
+                                        Files.click(row.index, event.modifiers.control, event.modifiers.shift);
+                                        scope.focus();
+                                    }
+                                }
+                                double-clicked => { Files.open(row.index); }
+                            }
+
+                            HorizontalLayout {
+                                padding-left: Tokens.space-md;
+                                padding-right: Tokens.space-md;
+                                spacing: Tokens.space-md;
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    NamedIcon {
+                                        name: row.folder ? "folder" : "file";
+                                        ink: row.cut ? Tokens.color-text-disabled
+                                            : row.folder ? Tokens.color-accent : Tokens.color-text-muted;
+                                    }
+                                }
+
+                                if Files.renaming != row.index: SengiText {
+                                    horizontal-stretch: 1;
+                                    text: row.name;
+                                    color: row.cut ? Tokens.color-text-disabled : Tokens.color-text;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+
+                                if Files.renaming == row.index: VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    alignment: center;
+                                    TextField {
+                                        init => {
+                                            self.text = Files.rename-text;
+                                            self.take-focus();
+                                            self.select-all();
+                                        }
+                                        accepted(text) => {
+                                            if Files.rename-accepted(text) {
+                                                scope.focus();
+                                            }
+                                        }
+                                        cancelled => {
+                                            Files.rename-cancelled();
+                                            scope.focus();
+                                        }
+                                    }
+                                }
+
+                                if root.roomy && Files.renaming != row.index: SengiText {
+                                    width: root.size-width;
+                                    text: row.size;
+                                    color: Tokens.color-text-muted;
+                                    horizontal-alignment: Files.in-trash ? TextHorizontalAlignment.left : TextHorizontalAlignment.right;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+
+                                if root.roomier && Files.renaming != row.index: SengiText {
+                                    width: root.time-width;
+                                    text: row.detail;
+                                    color: Tokens.color-text-muted;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+                    }
+
+                    if Files.total == 0: SengiText {
+                        width: parent.width;
+                        height: parent.height;
+                        text: Files.hint;
+                        color: Tokens.color-text-muted;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                    }
+                }
+
+                Rectangle {
+                    height: Tokens.border-width;
+                    background: Tokens.color-border;
+                }
+
+                // The line at the bottom: what is here, or what just happened.
+                HorizontalLayout {
+                    padding-left: Tokens.space-md;
+                    padding-right: Tokens.space-md;
+                    padding-top: Tokens.space-sm;
+                    padding-bottom: Tokens.space-sm;
+                    spacing: Tokens.space-md;
+
+                    SengiText {
+                        horizontal-stretch: 1;
+                        min-width: 0;
+                        text: Files.notice != "" ? Files.notice : Files.status;
+                        color: Files.notice == "" ? Tokens.color-text-muted
+                            : Files.notice-is-error ? Tokens.color-danger : Tokens.color-text;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    SengiLabel {
+                        text: "Show hidden";
+                        font-size: Tokens.font-size-md;
+                        font-weight: Tokens.font-weight-regular;
+                        vertical-alignment: center;
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+                        SengiToggle {
+                            checked: Files.show-hidden;
+                            toggled(on) => {
+                                Files.toggle-hidden(on);
+                                scope.focus();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if Files.dialog-open: DialogLayer {
+        spec: Files.dialog;
+        confirmed(text) => {
+            Files.dialog-confirmed();
+            scope.focus();
+        }
+        cancelled => {
+            Files.dialog-cancelled();
+            scope.focus();
+        }
+    }
+}

@@ -241,8 +241,7 @@ pub fn list(trash: &Path) -> io::Result<Vec<Item>> {
 
 /// A name that is a single plain component of `files/`.
 fn plain_name(name: &str) -> io::Result<()> {
-    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\0')
-    {
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\0') {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a name"));
     }
     Ok(())

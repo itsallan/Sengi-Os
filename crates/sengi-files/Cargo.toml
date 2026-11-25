@@ -1,0 +1,29 @@
+[package]
+name = "sengi-files"
+description = "The Sengi OS file manager: browse folders, open, rename, copy, move and trash files"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+# An ordinary window, as Settings and the Store are: the workspace entry with
+# what the software renderer needs to find Inter and to draw the icons.
+slint = { workspace = true, features = ["software-renderer-systemfonts", "software-renderer-path"] }
+
+# Where the user's folders are, finding programs on PATH and starting them.
+# No icon feature, so no image decoder.
+sengi-apps = { path = "../sengi-apps" }
+# The Trash, shared with the desktop. No features, so no bus.
+sengi-system = { path = "../sengi-system" }
+
+# Free space on the disk, and the local time of a file.
+libc = "0.2"
+
+[build-dependencies]
+slint-build.workspace = true
+
+[dev-dependencies]
+# The window with no display, to drive it with keys and draw it.
+sengi-shots = { path = "../sengi-shots" }

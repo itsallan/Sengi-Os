@@ -60,9 +60,9 @@ pub mod pairing;
 #[cfg(feature = "services")]
 pub mod programs;
 pub mod secret;
-pub mod trash;
 #[cfg(feature = "services")]
 pub mod services;
+pub mod trash;
 pub mod volume;
 #[cfg(feature = "services")]
 pub mod wifi;

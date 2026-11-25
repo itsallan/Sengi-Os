@@ -232,6 +232,10 @@ export component TextField inherits Rectangle {
         input.text = "";
     }
 
+    public function select-all() {
+        input.select-all();
+    }
+
     forward-focus: input;
     height: Tokens.button;
     border-radius: Tokens.radius;

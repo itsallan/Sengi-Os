@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Files
+GenericName=File Manager
+Comment=Browse, copy, move and trash your files
+Exec=sengi-files %U
+Icon=sengi-files
+Terminal=false
+StartupWMClass=sengi-files
+Categories=System;FileTools;FileManager;
+MimeType=inode/directory;
+Keywords=files;folders;file manager;browse;trash;
