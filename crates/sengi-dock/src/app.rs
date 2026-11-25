@@ -52,6 +52,8 @@ enum IconState {
     Ready(Option<Image>),
 }
 
+type InputCallback = Box<dyn Fn(&[Rect])>;
+
 /// One row of the Slint model. Rows outlive their item for a moment while
 /// they slide out.
 struct Row {
@@ -98,7 +100,7 @@ struct Inner {
     deliver: Deliver,
     on_resize: Box<dyn Fn(u32, u32)>,
     /// Told which parts of the surface take the pointer.
-    on_input: RefCell<Option<Box<dyn Fn(&[Rect])>>>,
+    on_input: RefCell<Option<InputCallback>>,
 }
 
 /// The running dock. Cloning gives another handle to the same dock.

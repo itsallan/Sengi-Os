@@ -244,7 +244,8 @@ fn dock_menu() {
     let inside = harness::draw(&win, BACKDROP);
     inside.save("dock-menu-1366.png");
     // The menu sits above the panel, over the tile that was clicked.
-    let menu_y = (height - w.get_panel_height() - w.get_menu_gap() - w.get_menu_height() / 2.0) as usize;
+    let menu_y =
+        (height - w.get_panel_height() - w.get_menu_gap() - w.get_menu_height() / 2.0) as usize;
     let menu_x = (w.get_menu_x() + w.get_menu_width() / 2.0) as usize;
     assert_ne!(inside.at(menu_x, menu_y), BACKDROP, "the menu is drawn");
 
@@ -252,7 +253,11 @@ fn dock_menu() {
     let away = LogicalPosition::new(2.0, 2.0);
     win.dispatch_event(WindowEvent::PointerMoved { position: away });
     harness::advance(600);
-    assert_eq!(w.get_menu_index(), -1, "the menu closes when the pointer leaves");
+    assert_eq!(
+        w.get_menu_index(),
+        -1,
+        "the menu closes when the pointer leaves"
+    );
     w.hide().unwrap();
 }
 

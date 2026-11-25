@@ -416,9 +416,9 @@ mod tests {
         let dir = temp_dir("save");
         let path = dir.join("sengi-os/dock.toml");
         save(&path, &ids(&["web", "foot", "mail"])).unwrap();
-        assert_eq!(pinned(&[path.clone()]), ["web", "foot", "mail"]);
+        assert_eq!(pinned(std::slice::from_ref(&path)), ["web", "foot", "mail"]);
         save(&path, &[]).unwrap();
-        assert_eq!(pinned(&[path.clone()]), Vec::<String>::new());
+        assert_eq!(pinned(std::slice::from_ref(&path)), Vec::<String>::new());
         save(&path, &ids(&["foot"])).unwrap();
         assert_eq!(pinned(&[path]), ["foot"]);
     }
@@ -442,7 +442,7 @@ mod tests {
         let path = dir.join("dock.toml");
         write(&path, "pinned = oops\n");
         save(&path, &ids(&["foot"])).unwrap();
-        assert_eq!(pinned(&[path.clone()]), ["foot"]);
+        assert_eq!(pinned(std::slice::from_ref(&path)), ["foot"]);
         let backup = std::fs::read_to_string(dir.join("dock.toml.bak")).unwrap();
         assert_eq!(backup, "pinned = oops\n");
     }
