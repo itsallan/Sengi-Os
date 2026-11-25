@@ -3782,6 +3782,7 @@ dependencies = [
  "sengi-config",
  "sengi-system",
  "sengi-text",
+ "sengi-update",
  "slint",
  "slint-build",
  "wayland-client",
@@ -3853,6 +3854,14 @@ version = "0.8.0"
 dependencies = [
  "slint",
  "slint-build",
+]
+
+[[package]]
+name = "sengi-update"
+version = "0.8.0"
+dependencies = [
+ "libc",
+ "sengi-text",
 ]
 
 [[package]]

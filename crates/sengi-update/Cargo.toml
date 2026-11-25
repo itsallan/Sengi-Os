@@ -1,0 +1,22 @@
+[package]
+name = "sengi-update"
+description = "System and app updates for Sengi OS: the helper that runs as root, and what Settings uses to drive it"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[lib]
+name = "sengi_update"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sengi-update"
+path = "src/main.rs"
+
+[dependencies]
+# Process groups, signals, locks, and the pseudo-terminal for pkexec's
+# password prompt. Nothing else: the helper runs as root and stays small.
+libc = "0.2"
+# Names of packages and apps come from outside and are shown in a window.
+sengi-text = { path = "../sengi-text" }
