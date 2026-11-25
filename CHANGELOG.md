@@ -52,6 +52,12 @@ and the measured idle RAM and boot time.
   the licences of the Rust crates the programs are built from in
   /usr/share/doc/sengi-os.
 
+### Changed
+
+- The accent colour is green (#2f9e6b), not orange.
+- The Installer and Settings app icons are Phosphor Bold glyphs, like the
+  Store's.
+
 ### Fixed
 
 - Settings > About: rows of facts are placed by hand so a value cannot land
