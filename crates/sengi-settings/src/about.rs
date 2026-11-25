@@ -199,6 +199,26 @@ fn disk(path: &str) -> String {
     )
 }
 
+/// Whether the root file system is held in memory: the live system, an
+/// overlay or tmpfs on top of the read-only image. Its free space is
+/// memory, not a disk.
+pub fn root_in_memory(mounts: &str) -> bool {
+    mounts.lines().any(|line| {
+        let mut fields = line.split_whitespace().skip(1);
+        fields.next() == Some("/") && matches!(fields.next(), Some("overlay" | "tmpfs" | "ramfs"))
+    })
+}
+
+/// The disk row: a live system says its root is held in memory.
+fn disk_line(mounts: &str) -> String {
+    let words = disk("/");
+    if root_in_memory(mounts) && words != "Unknown" {
+        format!("Live system, held in memory: {words}")
+    } else {
+        words
+    }
+}
+
 pub fn disk_words(total: u64, free: u64) -> String {
     if total == 0 {
         return "Unknown".to_string();
@@ -233,7 +253,7 @@ impl AboutPage {
                     row("Processor", processor(&read(Path::new("/proc/cpuinfo")))),
                     row("Memory", installed),
                     row("Graphics", graphics(Path::new("/sys/class/drm"))),
-                    row("Disk", disk("/")),
+                    row("Disk", disk_line(&read(Path::new("/proc/mounts")))),
                 ];
                 app::post(move |app| {
                     let data = app.window.global::<AboutData>();
@@ -343,6 +363,16 @@ HOME_URL='https://example.org/'
         assert_eq!(disk_words(0, 0), "Unknown");
         // More free than there is: held to what there is.
         assert_eq!(disk_words(10 << 30, 99 << 30), "10 GB free of 10 GB");
+    }
+
+    #[test]
+    fn a_live_root_is_said_to_be_memory() {
+        let live = "overlay / overlay rw,relatime,lowerdir=/ro 0 0\nproc /proc proc rw 0 0\n";
+        assert!(root_in_memory(live));
+        assert!(root_in_memory("tmpfs / tmpfs rw 0 0\n"));
+        let installed = "/dev/sda2 / ext4 rw,relatime 0 0\ntmpfs /tmp tmpfs rw 0 0\n";
+        assert!(!root_in_memory(installed));
+        assert!(!root_in_memory(""));
     }
 
     #[test]

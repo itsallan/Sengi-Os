@@ -15,6 +15,8 @@ and the measured idle RAM and boot time.
 - Print saves a PNG of the screen to ~/Pictures (Screenshot-DATE-TIME.png) and
   Alt+Print or Shift+Print the window in front, with a notification that says
   where it went (sengi-shot).
+- A Screenshot button in quick settings: the panel closes and the whole screen
+  is saved to ~/Pictures, like the Print key does.
 - Laptop keys: the screen brightness keys step the backlight by 5 percent and
   never go below 5 percent, and the keyboard light keys (up, down, on/off)
   work too, also on the lock screen. They run sengi-brightness, which asks
@@ -49,6 +51,9 @@ and the measured idle RAM and boot time.
 
 ### Fixed
 
+- Settings > About: rows of facts are placed by hand so a value cannot land
+  beside the wrong label, the live system's disk line says it is held in
+  memory, and a test guards the layout.
 - Windows never appeared on small screens such as 800x600: a window asked to
   shrink never got the frame callback it waits for.
 - App icons that draw nothing, such as xterm's small icon, no longer leave a

@@ -293,16 +293,15 @@ fn pointer(w: &SettingsWindow) {
 fn about(w: &SettingsWindow) {
     let d = w.global::<AboutData>();
     d.set_version("0.8.0".into());
-    d.set_system(list(vec![
-        info("Version", "0.8.0"),
-        info("Kernel", "6.12.57+deb13-amd64"),
-        info("Disk", "62 GB free of 238 GB"),
-    ]));
+    d.set_system(list(vec![info("Kernel", "6.12.113")]));
     d.set_hardware(list(vec![
-        info("Computer", "ASUSTeK COMPUTER INC. UX410UQK"),
-        info("Processor", "Intel Core i5-7200U (2 cores)"),
-        info("Memory", "15.5 GB"),
-        info("Graphics", "NVIDIA GeForce 940MX"),
+        info(
+            "Processor",
+            "Intel(R) Core(TM) i5-7200U CPU @ 2.50GHz (4 threads)",
+        ),
+        info("Memory", "16 GB"),
+        info("Graphics", "Intel (i915), NVIDIA (nouveau)"),
+        info("Disk", "Live system, held in memory: 5.1 GB free of 7.8 GB"),
     ]));
     d.set_memory_used("312 MB in use".into());
 }
@@ -489,4 +488,131 @@ fn focus_hover_dialog_chooser() {
     harness::advance(300);
     harness::draw(&win, BACKDROP).save("settings-chooser-888x600.png");
     w.hide().unwrap();
+}
+
+/// The runs of rows, top to bottom, that are not page background just
+/// inside the left edge of the column: one per card.
+fn cards(picture: &harness::Picture, width: usize) -> Vec<(usize, usize)> {
+    let area = width - SIDEBAR;
+    let column = (area - MARGIN * 2).min(COLUMN);
+    let x = SIDEBAR + (area - column) / 2 + 3;
+    let mut runs = Vec::new();
+    let mut start = None;
+    for y in 0..picture.height {
+        match (picture.at(x, y) != PAGE, start) {
+            (true, None) => start = Some(y),
+            (false, Some(from)) => {
+                runs.push((from, y));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    // The title's first letter is not a card.
+    runs.retain(|(top, bottom)| bottom - top >= 30);
+    runs
+}
+
+/// The About page has four cards (name, kernel, hardware, memory). The
+/// kernel card holds one row, with its value in it, and is not taller than
+/// a row; the hardware card holds four.
+fn about_is_laid_out(picture: &harness::Picture, width: usize, what: &str) {
+    let runs = cards(picture, width);
+    assert!(runs.len() >= 3, "{what}: found {} cards", runs.len());
+    let (top, bottom) = runs[1];
+    assert!(
+        bottom - top <= 56,
+        "{what}: the kernel card is {} px tall",
+        bottom - top
+    );
+    let area = width - SIDEBAR;
+    let column = (area - MARGIN * 2).min(COLUMN);
+    let right = SIDEBAR + (area - column) / 2 + column;
+    let card = picture.at(right - 4, top + 3);
+    assert!(
+        picture
+            .first_other(right - 160, right - 14, top + 8, bottom - 8, card)
+            .is_some(),
+        "{what}: the kernel value is not in the kernel row"
+    );
+    let (top, bottom) = runs[2];
+    assert!(
+        bottom - top >= 4 * 40,
+        "{what}: the hardware card is {} px tall",
+        bottom - top
+    );
+}
+
+/// The About page is opened empty and filled a moment later, when the
+/// worker thread has read the system, and again when Measure again is
+/// pressed. However it got there, every row is where it should be.
+#[test]
+fn about_rows_stay_with_their_values() {
+    harness::install();
+    if !harness::has_inter() {
+        return;
+    }
+    for (width, height) in SIZES {
+        let name = |how: &str| format!("about {how} at {width}");
+        let open = || {
+            let w = SettingsWindow::new().unwrap();
+            w.set_pages(pages());
+            w.set_page("about".into());
+            w
+        };
+
+        let w = open();
+        w.show().unwrap();
+        let win = harness::window();
+        harness::resize(&win, width, height);
+        harness::advance(300);
+        harness::draw(&win, BACKDROP);
+        about(&w);
+        harness::advance(300);
+        let late = harness::draw(&win, BACKDROP);
+        late.save(&format!("settings-about-late-{width}x{height}.png"));
+        about_is_laid_out(&late, width as usize, &name("filled late"));
+        w.hide().unwrap();
+
+        // Short values first, long ones after.
+        let w = open();
+        let d = w.global::<AboutData>();
+        d.set_system(list(vec![info("Kernel", "")]));
+        d.set_hardware(list(vec![
+            info("Processor", "Unknown"),
+            info("Memory", "Unknown"),
+            info("Graphics", "Unknown"),
+            info("Disk", "Unknown"),
+        ]));
+        w.show().unwrap();
+        let win = harness::window();
+        harness::resize(&win, width, height);
+        harness::advance(300);
+        harness::draw(&win, BACKDROP);
+        about(&w);
+        harness::advance(300);
+        about_is_laid_out(
+            &harness::draw(&win, BACKDROP),
+            width as usize,
+            &name("again"),
+        );
+        w.hide().unwrap();
+
+        // Filled while the window is still tiny, then grown.
+        let w = open();
+        w.show().unwrap();
+        let win = harness::window();
+        harness::resize(&win, 120, 80);
+        harness::advance(300);
+        about(&w);
+        harness::advance(300);
+        harness::resize(&win, width, height);
+        harness::advance(300);
+        about_is_laid_out(
+            &harness::draw(&win, BACKDROP),
+            width as usize,
+            &name("grown"),
+        );
+        w.hide().unwrap();
+    }
 }

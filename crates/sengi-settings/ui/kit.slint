@@ -460,25 +460,58 @@ export struct InfoRow {
     value: string,
 }
 
+// One fact. Everything in it is placed by hand: the title in the left
+// share of the row, the value in the right share, wrapping there, and the
+// row is as tall as the value needs. No layout inside decides anything, and
+// the line above the row is always there and only shown after the first,
+// so a row never depends on how its neighbours came and went.
+component InfoLine inherits Rectangle {
+    in property <string> title;
+    in property <string> value;
+    in property <bool> first;
+
+    private property <length> pad: Tokens.space-md;
+    private property <length> split: self.width * 0.38;
+
+    height: max(Metrics.row, val.height + Tokens.space-xs * 2);
+
+    Rectangle {
+        y: 0;
+        width: parent.width;
+        height: Tokens.border-width;
+        background: Tokens.color-border;
+        visible: !root.first;
+    }
+
+    SengiText {
+        x: root.pad;
+        y: (parent.height - self.height) / 2;
+        width: root.split - root.pad - Tokens.space-sm;
+        height: self.preferred-height;
+        text: root.title;
+        overflow: elide;
+    }
+
+    val := RowValue {
+        x: root.split;
+        y: (parent.height - self.height) / 2;
+        width: parent.width - root.split - root.pad;
+        // Read off the text at the width it really has.
+        height: self.preferred-height;
+        text: root.value;
+        wrap: word-wrap;
+        overflow: clip;
+    }
+}
+
 // A card of facts, one to a row.
 export component InfoCard inherits Card {
     in property <[InfoRow]> rows;
 
-    for fact[index] in root.rows: VerticalLayout {
-        if index > 0: Divider { }
-
-        SettingRow {
-            title: fact.title;
-            RowValue {
-                horizontal-stretch: 2;
-                // A long value wraps in its own share of the row and does
-                // not push the title down to a letter and three dots.
-                max-width: root.width * 0.62;
-                text: fact.value;
-                wrap: word-wrap;
-                overflow: clip;
-            }
-        }
+    for fact[index] in root.rows: InfoLine {
+        title: fact.title;
+        value: fact.value;
+        first: index == 0;
     }
 }
 
