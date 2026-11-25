@@ -18,6 +18,7 @@ use sengi_system::trash::numbered_name;
 
 /// The name a new folder starts with.
 pub const NEW_FOLDER: &str = "untitled folder";
+pub const NEW_FILE: &str = "untitled file";
 
 /// The longest name a file system takes, in bytes.
 const MAX_NAME: usize = 255;
@@ -113,13 +114,29 @@ fn exists(path: &Path) -> bool {
 /// Makes a folder with the first free "untitled folder" name and returns it.
 /// Creating is what claims the name, so two makers cannot get the same one.
 pub fn create_folder(dir: &Path) -> io::Result<String> {
+    claim(dir, NEW_FOLDER, |path| fs::create_dir(path))
+}
+
+/// Makes an empty file with the first free "untitled file" name. Only a new
+/// name is ever made, so nothing that is there is touched.
+pub fn create_file(dir: &Path) -> io::Result<String> {
+    claim(dir, NEW_FILE, |path| {
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map(drop)
+    })
+}
+
+fn claim(dir: &Path, base: &str, make: impl Fn(&Path) -> io::Result<()>) -> io::Result<String> {
     for n in 1u32.. {
         let name = if n == 1 {
-            NEW_FOLDER.to_string()
+            base.to_string()
         } else {
-            format!("{NEW_FOLDER} {n}")
+            format!("{base} {n}")
         };
-        match fs::create_dir(dir.join(&name)) {
+        match make(&dir.join(&name)) {
             Ok(()) => return Ok(name),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
@@ -547,6 +564,23 @@ pub mod tests {
         assert_eq!(create_folder(t.path()).unwrap(), "untitled folder 2");
         fs::remove_dir(t.path().join("untitled folder")).unwrap();
         assert_eq!(create_folder(t.path()).unwrap(), "untitled folder");
+    }
+
+    #[test]
+    fn new_files_get_free_names_and_never_replace() {
+        let t = Temp::new();
+        assert_eq!(create_file(t.path()).unwrap(), "untitled file");
+        assert_eq!(create_file(t.path()).unwrap(), "untitled file 2");
+        t.file("untitled file 3", "keep");
+        assert_eq!(create_file(t.path()).unwrap(), "untitled file 4");
+        assert_eq!(
+            fs::read_to_string(t.path().join("untitled file 3")).unwrap(),
+            "keep"
+        );
+        assert_eq!(
+            fs::metadata(t.path().join("untitled file")).unwrap().len(),
+            0
+        );
     }
 
     #[test]

@@ -478,14 +478,21 @@ fn open_at(app: &Rc<App>, at: usize) {
 }
 
 fn new_folder(app: &Rc<App>) {
+    new_item(app, "a folder", fsops::create_folder);
+}
+
+fn new_file(app: &Rc<App>) {
+    new_item(app, "a file", fsops::create_file);
+}
+
+fn new_item(app: &Rc<App>, what: &str, create: fn(&std::path::Path) -> std::io::Result<String>) {
     if !app.idle() {
         return;
     }
     let made = {
         let s = app.state.borrow();
         s.session.can_change_here().and_then(|dir| {
-            fsops::create_folder(&dir)
-                .map_err(|e| format!("Cannot make a folder: {}.", trash::plain(&e)))
+            create(&dir).map_err(|e| format!("Cannot make {what}: {}.", trash::plain(&e)))
         })
     };
     match made {
@@ -952,6 +959,7 @@ fn wire(window: &FilesWindow, app: &Rc<App>) {
     });
     on!(on_refresh, |app| refresh(&app));
     on!(on_new_folder, |app| new_folder(&app));
+    on!(on_new_file, |app| new_file(&app));
     on!(on_toggle_hidden, |app, on| {
         app.state.borrow_mut().session.show_hidden = on;
         refresh(&app);

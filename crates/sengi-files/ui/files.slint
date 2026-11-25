@@ -79,6 +79,7 @@ export global Files {
     callback up();
     callback refresh();
     callback new-folder();
+    callback new-file();
     callback toggle-hidden(bool);
     callback start-rename();
     // True when the name was taken; false leaves the field open.
@@ -274,6 +275,8 @@ export component FilesWindow inherits Window {
                     Files.refresh();
                 } else if (event.text == "n" || event.text == "N") && event.modifiers.shift {
                     Files.new-folder();
+                } else if (event.text == "f" || event.text == "F") && event.modifiers.shift {
+                    Files.new-file();
                 } else {
                     return EventResult.reject;
                 }
@@ -371,6 +374,12 @@ export component FilesWindow inherits Window {
                         text: "New Folder";
                         focusable: false;
                         clicked => { Files.new-folder(); }
+                    }
+
+                    if !Files.in-trash: SengiButton {
+                        text: "New File";
+                        focusable: false;
+                        clicked => { Files.new-file(); }
                     }
                 }
 
