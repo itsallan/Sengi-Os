@@ -14,6 +14,11 @@ use crate::store::{self, Dirs, Document, Value};
 pub const MAX_IDLE_SECONDS: i64 = 4 * 60 * 60;
 pub const MAX_LAYOUTS: usize = 4;
 
+/// The value of `appearance.wallpaper` that means the plain desktop colour.
+pub const WALLPAPER_SOLID: &str = "solid";
+/// Longest wallpaper path kept.
+pub const MAX_WALLPAPER_PATH: usize = 1024;
+
 /// Every key this version knows, with its default. The README lists the
 /// same table for people.
 pub const KEYS: &[(&str, &str, Default)] = &[
@@ -34,6 +39,7 @@ pub const KEYS: &[(&str, &str, Default)] = &[
     ("touchpad", "tap-to-click", Default::Flag(true)),
     ("touchpad", "disable-while-typing", Default::Flag(true)),
     ("appearance", "window-shadows", Default::Flag(true)),
+    ("appearance", "wallpaper", Default::Text(WALLPAPER_SOLID)),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +88,10 @@ pub fn check(section: &str, key: &str, value: &Value) -> Result<Value, String> {
             Value::Text(zone) if zone.is_empty() || zone_is_plain(zone) => Ok(value.clone()),
             _ => Err("must be a zone name such as \"Europe/Paris\", or empty".to_string()),
         },
+        ("appearance", "wallpaper") => match value {
+            Value::Text(path) if wallpaper_is_plain(path) => Ok(value.clone()),
+            _ => Err("must be \"solid\" or the full path of a picture".to_string()),
+        },
         ("keyboard", "switch") => match value {
             Value::Text(option) if option.is_empty() || xkb_word(option) => Ok(value.clone()),
             _ => Err("must be an XKB option such as \"grp:alt_shift_toggle\"".to_string()),
@@ -104,6 +114,15 @@ pub fn check(section: &str, key: &str, value: &Value) -> Result<Value, String> {
             _ => Err("has the wrong kind of value".to_string()),
         },
     }
+}
+
+/// A wallpaper is `solid` or an absolute path without control characters:
+/// it is handed to a program on a command line.
+pub fn wallpaper_is_plain(value: &str) -> bool {
+    value == WALLPAPER_SOLID
+        || (value.starts_with('/')
+            && value.len() <= MAX_WALLPAPER_PATH
+            && !value.chars().any(char::is_control))
 }
 
 /// A zone name is a path under the zone directory and goes into `TZ`, so
@@ -391,6 +410,20 @@ mod tests {
         assert!(!bad("power", "lock-after", Value::Number(0)));
         assert!(bad("keyboard", "repeat-rate", Value::Number(0)));
         assert!(bad("mouse", "speed", Value::Number(101)));
+        assert!(!bad("appearance", "wallpaper", Value::text("solid")));
+        assert!(!bad(
+            "appearance",
+            "wallpaper",
+            Value::text("/home/a b/Pictures/x.png")
+        ));
+        assert!(bad(
+            "appearance",
+            "wallpaper",
+            Value::text("Pictures/x.png")
+        ));
+        assert!(bad("appearance", "wallpaper", Value::text("")));
+        assert!(bad("appearance", "wallpaper", Value::text("/x\ny")));
+        assert!(bad("appearance", "wallpaper", Value::Flag(true)));
         assert!(bad("mouse", "left-handed", Value::Number(1)));
         assert!(bad("clock", "time-zone", Value::text("../../etc/passwd")));
         assert!(bad("clock", "time-zone", Value::text("/etc/localtime")));
