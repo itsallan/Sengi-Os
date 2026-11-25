@@ -16,7 +16,9 @@ mkdir "$tmp/bin" "$tmp/run"
 : >"$tmp/started"
 
 sh "$root/scripts/render-tokens.sh" "$root/image/rootfs/usr/lib/sengi-os/wallpaper.sh.in" >"$tmp/wallpaper.sh"
-desktop=$(sh "$root/scripts/render-tokens.sh" "$root/image/rootfs/usr/lib/sengi-os/wallpaper.sh.in" | sed -n "s/.*-m fill -c '\\(#[0-9a-f]*\\)'.*/\\1/p")
+# The plain colour of each theme, as the script prints it.
+desktop=$(sh "$root/scripts/render-tokens.sh" "$root/image/rootfs/usr/lib/sengi-os/wallpaper.sh.in" | sed -n "s/^[[:space:]]*echo .\\(#[0-9a-f]*\\).\$/\\1/p" | sed -n 2p)
+desktop_light=$(sh "$root/scripts/render-tokens.sh" "$root/image/rootfs/usr/lib/sengi-os/wallpaper.sh.in" | sed -n "s/^[[:space:]]*echo .\\(#[0-9a-f]*\\).\$/\\1/p" | sed -n 1p)
 
 # A swaybg that writes its arguments to a file named for its own process
 # number, then lives until killed, or ends at once when FAKE_DIE is set and
@@ -37,6 +39,10 @@ FAKE
 # is what the real script looks at.
 cat >"$tmp/bin/sengi-settings" <<'FAKE'
 #!/bin/sh
+if [ "$1 $2" = "--get appearance.theme" ]; then
+	echo "${FAKE_THEME:-dark}"
+	exit 0
+fi
 [ "$1" = --wallpaper ] || exit 2
 [ -z "${FAKE_PICTURE:-}" ] || echo "$FAKE_PICTURE"
 FAKE
@@ -131,6 +137,17 @@ before=$(wc -l <"$tmp/started")
 )
 sleep 1
 check "sourcing starts nothing" "$(wc -l <"$tmp/started")" "$before"
+
+# 9. The light theme has its own plain colour, and a picture keeps it as the
+# colour behind it.
+unset FAKE_PICTURE FAKE_DIE || true
+FAKE_THEME=light
+export FAKE_THEME
+run_apply
+light=$(pid_of_file)
+check "the light theme has the light desktop colour" "$(args_of "$light")" "-c $desktop_light"
+check "and it is not the dark one" "$([ "$desktop_light" != "$desktop" ] && echo yes || echo no)" yes
+unset FAKE_THEME
 
 if [ "$failures" -gt 0 ]; then
 	echo "$failures failed" >&2
