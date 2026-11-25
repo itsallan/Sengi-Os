@@ -12,10 +12,6 @@ one asks to be kept. The licence text sits next to the files it covers.
   by `scripts/render-icons.sh`.
 - Licence: MIT. The full text is in `ui/icons/phosphor/LICENSE`.
 - Copyright: Copyright (c) 2023 Phosphor Icons
-- Exception: `folder-bold.svg` and `file-bold.svg` are our own drawings in
-  the same style (GPL-3.0-or-later like the rest of the repository), made
-  for the desktop because the Phosphor files were not at hand. Replace them
-  with the files of the same name from the Phosphor set.
 
 ## Slint
 
