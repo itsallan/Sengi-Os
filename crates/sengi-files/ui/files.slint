@@ -317,7 +317,7 @@ component Sidebar inherits Rectangle {
         SengiIcon {
             x: Tokens.space-md;
             y: (parent.height - self.height) / 2;
-            name: "folder";
+            name: "hard-drives";
             ink: parent.chosen ? Tokens.color-text : Tokens.color-text-muted;
         }
 
@@ -351,7 +351,7 @@ component Sidebar inherits Rectangle {
             visible: device.mounted;
             x: parent.width - self.width - Tokens.space-sm;
             y: (parent.height - self.height) / 2;
-            width: eject-label.preferred-width + Tokens.space-md;
+            width: Tokens.button - Tokens.space-sm;
             height: Tokens.button - Tokens.space-sm;
             border-radius: Tokens.radius;
             background: eject-touch.has-hover ? Tokens.color-surface-hover : transparent;
@@ -360,13 +360,11 @@ component Sidebar inherits Rectangle {
             accessible-role: button;
             accessible-label: "Eject " + device.name;
 
-            eject-label := SengiText {
-                width: parent.width;
-                height: parent.height;
-                text: "Eject";
-                font-size: Tokens.font-size-sm;
-                horizontal-alignment: center;
-                vertical-alignment: center;
+            SengiIcon {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                name: "eject";
+                ink: Tokens.color-text-muted;
             }
 
             eject-touch := TouchArea {

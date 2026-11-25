@@ -131,9 +131,8 @@ home or on a stick that points at `/etc` does not make `/etc` changeable.
 Not in this version: thumbnails, tabs, searching, formatting or partitioning a
 drive, unlocking encrypted drives, optical discs, a plugged-in notification
 (Files has to be open to hear of a drive), dragging to another window, and a
-Forward button (the keys work). The sidebar uses the folder glyph for drives;
-Phosphor's `hard-drives`, `usb` and `eject-simple` are not in
-`ui/icons/phosphor/bold` yet and would suit the drive rows and the Eject button.
+Forward button (the keys work). The drive rows and the Eject button use the
+Phosphor Bold `hard-drives` and `eject` glyphs.
 
 ## Speed
 

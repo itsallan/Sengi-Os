@@ -661,6 +661,8 @@ fn polish(home: &Home) {
         "arrow-up",
         "folder-plus",
         "arrow-counter-clockwise",
+        "hard-drives",
+        "eject",
     ] {
         assert!(icons.join(format!("{glyph}-bold.svg")).exists(), "{glyph}");
     }
