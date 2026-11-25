@@ -166,6 +166,16 @@ dot = 4
 dot-gap = 3
 bounce = 8
 
+[osd]
+# The indicator that shows a level after a volume or brightness key: its
+# size, the icon in it, the thickness of the bar, and how far it floats above
+# the bottom edge of the screen (clear of the dock).
+width = 240
+height = 56
+icon = 24
+bar = 6
+margin = 96
+
 [motion]
 fast = 120
 base = 200
@@ -177,6 +187,8 @@ bounce-easing = "ease-out"
 
 [timing]
 notification-timeout = 5000
+# How long the level indicator stays after the last key.
+osd-timeout = 1200
 # How long a card that just appeared, changed or moved ignores clicks, so
 # it cannot be slipped under a click that was meant for something else.
 click-guard = 400

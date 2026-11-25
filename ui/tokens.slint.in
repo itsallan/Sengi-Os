@@ -64,6 +64,10 @@ export global Tokens {
     out property <length> titlebar-height: @{size.titlebar-height}px;
     out property <length> launcher-width: @{size.launcher-width}px;
     out property <length> menu-width: @{size.menu-width}px;
+    out property <length> osd-width: @{osd.width}px;
+    out property <length> osd-height: @{osd.height}px;
+    out property <length> osd-icon: @{osd.icon}px;
+    out property <length> osd-bar: @{osd.bar}px;
     out property <int> launcher-lines: @{size.launcher-lines};
     out property <int> launcher-grid-columns: @{size.launcher-grid-columns};
     out property <int> launcher-grid-rows: @{size.launcher-grid-rows};
@@ -104,6 +108,7 @@ export global Tokens {
     out property <duration> click-guard: @{timing.click-guard}ms;
     out property <duration> input-settle: @{timing.input-settle}ms;
     out property <duration> notification-timeout: @{timing.notification-timeout}ms;
+    out property <duration> osd-timeout: @{timing.osd-timeout}ms;
     out property <duration> lock-prompt-hide: @{timing.lock-prompt-hide}ms;
     out property <duration> power-confirm: @{timing.power-confirm}ms;
 }
