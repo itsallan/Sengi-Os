@@ -1,14 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="@{size.dock-icon}" height="@{size.dock-icon}" viewBox="0 0 40 40">
-  <!-- Settings: three sliders on the same tile the dock draws its own
-       icons on. The glyph is on a 20 unit grid at twice the size, so the
-       line is twice the bar's icon line, as the dock's is. -->
+  <!-- Settings: Phosphor's sliders-horizontal on the same tile the dock
+       draws its own icons on. The glyph is on a 256 unit grid, drawn 24
+       units wide and centred. -->
   <rect x="0.5" y="0.5" width="39" height="39" rx="@{radius.base}" fill="@{color.bg}" stroke="@{color.border}" stroke-width="@{border.width}"/>
-  <g transform="scale(2)" fill="@{color.bg}" stroke-width="@{border.icon-stroke}" stroke-linecap="round">
-    <path d="M5 6h10M5 10h10M5 14h10" stroke="@{color.text}"/>
-    <g stroke="@{color.accent}">
-      <circle cx="12" cy="6" r="1.75"/>
-      <circle cx="7.5" cy="10" r="1.75"/>
-      <circle cx="13" cy="14" r="1.75"/>
-    </g>
-  </g>
+  <path transform="translate(8 8) scale(0.09375)" fill="@{color.accent}" d="M40,92H70.06a36,36,0,0,0,67.88,0H216a12,12,0,0,0,0-24H137.94a36,36,0,0,0-67.88,0H40a12,12,0,0,0,0,24Zm64-24A12,12,0,1,1,92,80,12,12,0,0,1,104,68Zm112,96H201.94a36,36,0,0,0-67.88,0H40a12,12,0,0,0,0,24h94.06a36,36,0,0,0,67.88,0H216a12,12,0,0,0,0-24Zm-48,24a12,12,0,1,1,12-12A12,12,0,0,1,168,188Z"/>
 </svg>

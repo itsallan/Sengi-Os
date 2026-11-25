@@ -1,11 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="@{size.dock-icon}" height="@{size.dock-icon}" viewBox="0 0 40 40">
-  <!-- The installer: an arrow coming down onto a disk, on the same tile
-       the dock draws its own icons on. The glyph is on a 20 unit grid at
-       twice the size, so the line is twice the bar's icon line, as the
-       dock's is. -->
+  <!-- The installer: Phosphor's download-simple on the same tile the dock
+       draws its own icons on. The glyph is on a 256 unit grid, drawn 24
+       units wide and centred. -->
   <rect x="0.5" y="0.5" width="39" height="39" rx="@{radius.base}" fill="@{color.bg}" stroke="@{color.border}" stroke-width="@{border.width}"/>
-  <g transform="scale(2)" fill="none" stroke-width="@{border.icon-stroke}" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M10 4.5v6.5M7 8.25l3 3 3-3" stroke="@{color.accent}"/>
-    <path d="M4.5 12.5v3h11v-3" stroke="@{color.text}"/>
-  </g>
+  <path transform="translate(8 8) scale(0.09375)" fill="@{color.accent}" d="M228,144v64a12,12,0,0,1-12,12H40a12,12,0,0,1-12-12V144a12,12,0,0,1,24,0v52H204V144a12,12,0,0,1,24,0Zm-108.49,8.49a12,12,0,0,0,17,0l40-40a12,12,0,0,0-17-17L140,115V32a12,12,0,0,0-24,0v83L96.49,95.51a12,12,0,0,0-17,17Z"/>
 </svg>
