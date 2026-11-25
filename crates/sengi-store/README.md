@@ -11,8 +11,11 @@ the field. Only the app's name is searched, without regard to case; every
 word typed has to be in it, and a name that starts with what was typed
 comes first. The line about an app is shown but not searched. A row says
 Installing while it is being installed, with a bar that moves to and fro
-because Flatpak does not say how far it has got, and Installed afterwards;
-an app that is installed already says so from the start. One app is
+because Flatpak does not say how far it has got, and an Open button
+afterwards; an app that is installed already has Open from the start. Open
+(or Return on the row) runs `flatpak run <id>` for the user, detached: the
+Store does not wait for the app, keeps none of its pipes, and does not stop
+it when the Store is closed. One app is
 installed at a time. What went wrong is said in the line under the list,
 and the button then reads "Try again".
 

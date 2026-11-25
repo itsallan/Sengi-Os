@@ -5,7 +5,6 @@
 
 import { Tokens, SengiText, SengiLabel, SengiButton } from "components.slint";
 import { Scroll, TextField } from "kit.slint";
-import { NamedIcon } from "icons.slint";
 
 // What an app in the list is doing.
 export enum RowState { available, installing, installed, failed }
@@ -33,6 +32,7 @@ export global Store {
     in-out property <int> current: 0;
     callback search(string);
     callback install(string);
+    callback open(string);
 }
 
 // Work that cannot say how far it has got: a short bar going to and fro.
@@ -123,7 +123,11 @@ export component StoreWindow inherits Window {
 
     function use-current() {
         if Store.current >= 0 && Store.current < Store.rows.length {
-            Store.install(Store.rows[Store.current].id);
+            if Store.rows[Store.current].state == RowState.installed {
+                Store.open(Store.rows[Store.current].id);
+            } else {
+                Store.install(Store.rows[Store.current].id);
+            }
         }
     }
 
@@ -242,20 +246,17 @@ export component StoreWindow inherits Window {
                                     }
                                 }
 
-                                if app.state == RowState.installed: HorizontalLayout {
-                                    spacing: Tokens.space-sm;
-                                    alignment: end;
-                                    VerticalLayout {
-                                        alignment: center;
-                                        NamedIcon {
-                                            name: "check";
-                                            ink: Tokens.color-accent;
+                                if app.state == RowState.installed: VerticalLayout {
+                                    alignment: center;
+                                    SengiButton {
+                                        text: "Open";
+                                        primary: Store.current == index;
+                                        focusable: false;
+                                        clicked => {
+                                            Store.current = index;
+                                            Store.open(app.id);
+                                            field.take-focus();
                                         }
-                                    }
-                                    SengiText {
-                                        text: "Installed";
-                                        color: Tokens.color-text-muted;
-                                        vertical-alignment: center;
                                     }
                                 }
 

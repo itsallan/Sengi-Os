@@ -342,6 +342,39 @@ impl Flatpak {
         )
         .map(|_| ())
     }
+
+    /// The command that starts an installed app, for the user's own
+    /// installation, with nothing connected to the Store.
+    fn open_command(&self, id: &str) -> Command {
+        let mut command = Command::new(&self.program);
+        command
+            .args(["run", id])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            // Its own group, so that closing the Store does not take it along.
+            .process_group(0);
+        command
+    }
+
+    /// Starts an installed app and returns at once. The app is not
+    /// waited for, and is not among the calls `stop_all` kills.
+    pub fn open(&self, id: &str) -> Result<(), Error> {
+        if !catalog::valid_id(id) {
+            return Err(Error::Failed("That is not an app ID".to_string()));
+        }
+        let mut child = self
+            .open_command(id)
+            .spawn()
+            .map_err(|e| Error::Failed(format!("could not start it: {e}")))?;
+        // Reaped on a thread of its own, so it does not stay a zombie.
+        let _ = std::thread::Builder::new()
+            .name("store-open".into())
+            .spawn(move || {
+                let _ = child.wait();
+            });
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -433,6 +466,38 @@ mod tests {
             fake.calls(),
             ["--user install -y --noninteractive flathub app/org.gimp.GIMP"]
         );
+    }
+
+    #[test]
+    fn open_runs_the_app_by_its_id_with_nothing_attached() {
+        let flatpak = Flatpak::new("flatpak", quick());
+        let command = flatpak.open_command("org.gimp.GIMP");
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args, ["run", "org.gimp.GIMP"]);
+        assert_eq!(command.get_program(), "flatpak");
+    }
+
+    #[test]
+    fn open_does_not_wait_for_the_app() {
+        let fake = Fake::new("open-detached", "sleep 3");
+        let flatpak = fake.flatpak(quick());
+        let started = std::time::Instant::now();
+        flatpak.open("org.gimp.GIMP").unwrap();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        for _ in 0..100 {
+            if fake.calls().iter().any(|c| c == "run org.gimp.GIMP") {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        panic!("flatpak run was not called");
+    }
+
+    #[test]
+    fn open_refuses_what_is_not_an_app_id() {
+        let flatpak = Flatpak::new("flatpak", quick());
+        assert!(flatpak.open("-x").is_err());
+        assert!(flatpak.open("../x").is_err());
     }
 
     #[test]

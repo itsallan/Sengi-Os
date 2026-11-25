@@ -7,6 +7,8 @@ and the measured idle RAM and boot time.
 
 ### Added
 
+- The Store shows an Open button for installed apps, also right after an
+  install, and it starts the app.
 - A level indicator: the volume, mute, screen brightness and keyboard light
   keys show a rounded panel with an icon and a bar near the bottom of the
   screen for about a second (sengi-osd). It runs only then.

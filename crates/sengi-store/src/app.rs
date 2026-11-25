@@ -455,6 +455,35 @@ fn install(shared: &Shared, id: &str) {
     }
 }
 
+/// Starts an installed app. The Store does not wait for it.
+fn open(shared: &Shared, id: &str) {
+    let (known, name) = {
+        let data = shared.lock();
+        let name = data
+            .catalog
+            .iter()
+            .find(|app| app.id == id)
+            .map_or_else(|| id.to_string(), |app| app.name.clone());
+        (data.rows.may_open(id), name)
+    };
+    if !known {
+        return;
+    }
+    match shared.flatpak.open(id) {
+        Ok(()) => {
+            let mut data = shared.lock();
+            data.sticky = false;
+            data.message = Message::info(format!("Opening {name}"));
+        }
+        Err(error) => {
+            let mut data = shared.lock();
+            data.sticky = true;
+            data.message = Message::error(format!("Could not open {name}: {error}"));
+        }
+    }
+    render(shared, false);
+}
+
 /// The install itself, on its own thread.
 fn run_install(shared: &Shared, id: &str, name: &str) {
     // The list of what is installed may have failed to load, or the app
@@ -507,6 +536,10 @@ pub fn run(
     store.on_install({
         let shared = shared.clone();
         move |id| install(&shared, &id)
+    });
+    store.on_open({
+        let shared = shared.clone();
+        move |id| open(&shared, &id)
     });
     render(&shared, true);
     start_load(&shared);
@@ -600,6 +633,25 @@ mod tests {
             d.rows.state("org.gimp.GIMP") == State::Installed
         });
         assert!(!shared.lock().message.error);
+    }
+
+    #[test]
+    fn open_runs_only_an_installed_app() {
+        let fake = fake("app-open", 0, "");
+        let shared = context(&fake);
+        load(shared.clone());
+        open(&shared, "org.gimp.GIMP");
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!fake.calls().iter().any(|c| c.starts_with("run ")));
+        install(&shared, "org.gimp.GIMP");
+        wait_until(&shared, |d| {
+            d.rows.state("org.gimp.GIMP") == State::Installed
+        });
+        open(&shared, "org.gimp.GIMP");
+        wait_until(&shared, |_| {
+            fake.calls().iter().any(|c| c == "run org.gimp.GIMP")
+        });
+        assert!(shared.lock().message.text.contains("Opening GIMP"));
     }
 
     #[test]

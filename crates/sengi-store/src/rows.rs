@@ -43,6 +43,11 @@ impl Rows {
         }
     }
 
+    /// Whether the app is there to be run, which is when Open is shown.
+    pub fn may_open(&self, id: &str) -> bool {
+        self.state(id) == State::Installed
+    }
+
     pub fn busy(&self) -> bool {
         self.marks.values().any(|s| *s == State::Installing)
     }
@@ -116,6 +121,18 @@ mod tests {
         rows.set_installed(["a.b".to_string()].into());
         assert_eq!(rows.state("a.b"), State::Installed);
         assert_eq!(rows.begin("a.b"), Err(Refused::Done));
+    }
+
+    #[test]
+    fn only_an_installed_app_may_be_opened() {
+        let mut rows = Rows::default();
+        rows.set_installed(["a.b".to_string()].into());
+        assert!(rows.may_open("a.b"));
+        assert!(!rows.may_open("c.d"));
+        rows.begin("c.d").unwrap();
+        assert!(!rows.may_open("c.d"));
+        rows.finish("c.d", true);
+        assert!(rows.may_open("c.d"));
     }
 
     #[test]
