@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="@{size.dock-icon}" height="@{size.dock-icon}" viewBox="0 0 40 40">
+  <!-- The welcome: Phosphor's house on the same tile the dock draws its
+       own icons on. The glyph is on a 256 unit grid, drawn 24 units wide and
+       centred. -->
+  <rect x="0.5" y="0.5" width="39" height="39" rx="@{radius.base}" fill="@{color.bg}" stroke="@{color.border}" stroke-width="@{border.width}"/>
+  <path transform="translate(8 8) scale(0.09375)" fill="@{color.accent}" d="M222.14,105.85l-80-80a20,20,0,0,0-28.28,0l-80,80A19.86,19.86,0,0,0,28,120v96a12,12,0,0,0,12,12h64a12,12,0,0,0,12-12V164h24v52a12,12,0,0,0,12,12h64a12,12,0,0,0,12-12V120A19.86,19.86,0,0,0,222.14,105.85ZM204,204H164V152a12,12,0,0,0-12-12H104a12,12,0,0,0-12,12v52H52V121.65l76-76,76,76Z"/>
+</svg>

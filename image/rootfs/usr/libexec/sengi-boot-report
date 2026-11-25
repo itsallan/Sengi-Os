@@ -257,6 +257,10 @@ fi
 sleep 6
 as_live foot --fullscreen --app-id sengi-fullscreen-test sleep 600 >/dev/null 2>&1 &
 sleep 3
+# The welcome is for the first login of an installed system, never this one.
+if pidof sengi-welcome >/dev/null; then
+	echo "SENGI-FAIL the first-run welcome started on the live image" >$port
+fi
 if pgrep -u live -f 'app-id sengi-fullscreen-test' >/dev/null; then
 	echo "SENGI-FULLSCREEN up" >$port
 else

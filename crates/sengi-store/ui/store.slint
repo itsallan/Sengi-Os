@@ -32,6 +32,8 @@ export global Store {
     in property <[Row]> rows;
     // Said in place of the list when it has nothing to show.
     in property <string> hint;
+    // What the search field holds when the window opens (--search).
+    in property <string> start-query;
     // The line under the list.
     in property <string> message;
     in property <bool> message-is-error: false;
@@ -141,6 +143,11 @@ export component StoreWindow inherits Window {
     changed width => { root.draw-everything(); }
     changed height => { root.draw-everything(); }
     init => { field.take-focus(); }
+
+    // Set by the program after the window is made, when it was started with
+    // --search.
+    private property <string> start-query: Store.start-query;
+    changed start-query => { field.text = root.start-query; }
 
     Timer {
         interval: Tokens.motion-fast;

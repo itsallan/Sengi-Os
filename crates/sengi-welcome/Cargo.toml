@@ -1,0 +1,25 @@
+[package]
+name = "sengi-welcome"
+description = "The Sengi OS first-run welcome: a few steps to make a new installation yours"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+# An ordinary window, as Settings and Files are: the workspace entry with
+# what the software renderer needs to find Inter and to draw the icons.
+slint = { workspace = true, features = ["software-renderer-systemfonts", "software-renderer-path"] }
+
+# The state directory, from the environment. No icon feature, so no image decoder.
+sengi-apps = { path = "../sengi-apps" }
+# The saved settings and the layout names, and the saved theme.
+sengi-config = { path = "../sengi-config" }
+
+[build-dependencies]
+slint-build.workspace = true
+
+[dev-dependencies]
+# The window with no display, to drive it with keys and draw it.
+sengi-shots = { path = "../sengi-shots" }

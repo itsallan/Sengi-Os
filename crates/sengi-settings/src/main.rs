@@ -199,6 +199,7 @@ fn main() -> ExitCode {
             // then what the session reads, then the session is told.
             let mut settings = load_settings(&dirs);
             let wallpaper = section == "appearance" && key == "wallpaper";
+            let theme = section == "appearance" && key == "theme";
             let changed = sengi_settings::settings::value_from_text(&section, &key, &value)
                 .and_then(|value| settings.change(&[(section, key, value)]));
             if let Err(problem) = changed {
@@ -207,7 +208,11 @@ fn main() -> ExitCode {
             }
             settings.catch_up();
             let applied = derive::apply(&dirs, &settings);
-            if applied.changed() {
+            if theme {
+                // As in the window: the bar, dock and desktop restart in the
+                // new colours.
+                sengi_settings::theme::apply_to_session();
+            } else if applied.changed() {
                 derive::reconfigure();
             }
             if wallpaper {

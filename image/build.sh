@@ -85,8 +85,8 @@ cargo build --release --locked --manifest-path "$src/Cargo.toml" -p sengi-settin
 cargo build --release --locked --manifest-path "$src/Cargo.toml" -p sengi-files
 # The text editor, the image viewer and the calculator are windows too. They link no D-Bus
 # and no Settings code, so they too are built apart from the others.
-cargo build --release --locked --manifest-path "$src/Cargo.toml" -p sengi-edit -p sengi-view -p sengi-calc
-programs="$programs sengi-settings sengi-installer sengi-store sengi-files sengi-edit sengi-view sengi-calc"
+cargo build --release --locked --manifest-path "$src/Cargo.toml" -p sengi-edit -p sengi-view -p sengi-calc -p sengi-welcome
+programs="$programs sengi-settings sengi-installer sengi-store sengi-files sengi-edit sengi-view sengi-calc sengi-welcome"
 for program in $programs; do
 	install -D -m 0755 "$work/target/release/$program" "$work/overlay/usr/bin/$program"
 done
@@ -104,6 +104,8 @@ install -D -m 0644 "$src/crates/sengi-view/sengi-view.desktop" \
 	"$work/overlay/usr/share/applications/sengi-view.desktop"
 install -D -m 0644 "$src/crates/sengi-calc/sengi-calc.desktop" \
 	"$work/overlay/usr/share/applications/sengi-calc.desktop"
+install -D -m 0644 "$src/crates/sengi-welcome/sengi-welcome.desktop" \
+	"$work/overlay/usr/share/applications/sengi-welcome.desktop"
 
 # The compositor preview is a workspace of its own, so Smithay stays out of
 # everyone else's build. No window backend and no test switches in the image.

@@ -5,6 +5,7 @@ under it, the apps of Flathub whose names match what was typed. Each has its
 icon, its name and a line about it, and an Install button.
 
     sengi-store               open the Store
+    sengi-store --search TEXT open it with TEXT already searched for
 
 Type a name. Up and Down choose a row, Return installs it, Escape clears
 the field. Only the app's name is searched, without regard to case; every

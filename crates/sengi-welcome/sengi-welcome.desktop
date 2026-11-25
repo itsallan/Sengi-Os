@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Welcome
+GenericName=Welcome to Sengi OS
+Comment=A few steps to make Sengi OS yours
+Exec=sengi-welcome
+Icon=sengi-welcome
+Terminal=false
+StartupWMClass=sengi-welcome
+Categories=Utility;
+Keywords=welcome;setup;first;start;intro;

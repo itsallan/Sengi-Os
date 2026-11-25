@@ -11,7 +11,7 @@ use sengi_store::ui::StoreWindow;
 /// file has the same name.
 const APP_ID: &str = "sengi-store";
 
-const USAGE: &str = "usage: sengi-store\n\nOpens the Sengi OS store.\n";
+const USAGE: &str = "usage: sengi-store [--search TEXT]\n\nOpens the Sengi OS store, with TEXT already in the search field if given.\n";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -20,8 +20,16 @@ fn main() -> ExitCode {
     if let Some(code) = sengi_apps::icons::run_decoder(&args) {
         return code;
     }
+    let mut query = String::new();
     match args.first().map(String::as_str) {
         None => {}
+        Some("--search") => match (args.get(1), args.len()) {
+            (Some(text), 2) => query = text.clone(),
+            _ => {
+                eprintln!("sengi-store: --search needs one text\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+        },
         Some("-h" | "--help") => {
             print!("{USAGE}");
             return ExitCode::SUCCESS;
@@ -51,7 +59,7 @@ fn main() -> ExitCode {
         eprintln!("sengi-store: could not set the application id: {error}");
     }
     let data_home = Env::from_process().data_home;
-    match app_run(window, data_home) {
+    match app_run(window, data_home, &query) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("sengi-store: {error}");
@@ -60,6 +68,10 @@ fn main() -> ExitCode {
     }
 }
 
-fn app_run(window: StoreWindow, data_home: std::path::PathBuf) -> Result<(), slint::PlatformError> {
-    sengi_store::app::run(window, Flatpak::default(), data_home)
+fn app_run(
+    window: StoreWindow,
+    data_home: std::path::PathBuf,
+    query: &str,
+) -> Result<(), slint::PlatformError> {
+    sengi_store::app::run_with_query(window, Flatpak::default(), data_home, query)
 }

@@ -557,8 +557,20 @@ pub fn run(
     flatpak: Flatpak,
     data_home: PathBuf,
 ) -> Result<(), slint::PlatformError> {
+    run_with_query(window, flatpak, data_home, "")
+}
+
+/// As [`run`], with the search field already holding `query` (`--search`).
+pub fn run_with_query(
+    window: StoreWindow,
+    flatpak: Flatpak,
+    data_home: PathBuf,
+    query: &str,
+) -> Result<(), slint::PlatformError> {
+    let query = sengi_text::line(query, MAX_QUERY);
     let shared: Shared = Arc::new(Context::new(flatpak, data_home, Some(window.as_weak())));
     let store = window.global::<Store>();
+    store.set_start_query(query.as_str().into());
     store.on_search({
         let shared = shared.clone();
         move |text| search(&shared, &text)
@@ -573,6 +585,9 @@ pub fn run(
     });
     render(&shared, true);
     start_load(&shared);
+    if !query.is_empty() {
+        search(&shared, &query);
+    }
     let result = window.run();
     shared.flatpak.stop_all();
     result

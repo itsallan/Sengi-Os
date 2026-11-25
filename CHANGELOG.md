@@ -93,6 +93,13 @@ and the measured idle RAM and boot time.
 - Image Viewer (sengi-view) for PNG and JPEG: fit to the window, + - 0 to zoom,
   drag to move, Left and Right through the folder, the size in pixels and the
   size of the file in the status line. Pictures over 100 megapixels are refused.
+- Welcome (sengi-welcome): on the first login of an installed system a small
+  window offers Dark or Light and a wallpaper, the network, the keyboard layout,
+  a few apps to find in the Store and the keys worth knowing (Super+/, Print).
+  Back, Next and Skip; shown once, never on the live image, and it can be
+  opened again from the launcher. `sengi-store --search TEXT` opens the Store
+  with a search already typed, and `sengi-settings --set appearance.theme`
+  now applies the theme to the running session as the window does.
 - The Store shows real install progress read from Flatpak: a bar with the
   percentage, the step and the speed when Flatpak gives them, and an
   honest moving bar when it does not.

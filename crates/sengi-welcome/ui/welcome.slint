@@ -1,0 +1,569 @@
+// The first-run welcome: a few steps, one at a time, with Back, Next and
+// Skip under them. Built from the shared components and Settings' kit;
+// nothing here has a colour or a size of its own.
+
+import { Tokens, ThemeSwitch, SengiText, SengiLabel, SengiSurface, SengiButton, SengiIcon } from "components.slint";
+import { TextField, ItemList, Item, Card, Divider, SettingRow, Metrics } from "kit.slint";
+
+export { ThemeSwitch } from "components.slint";
+export { Item }
+
+// What the window shows and what it reports. Rust fills the one and hears
+// the other.
+export global Welcome {
+    // 0 Welcome, 1 Look, 2 Network, 3 Keyboard, 4 Apps, 5 Done.
+    in property <int> step: 0;
+    // "Step 2 of 6".
+    in property <string> counter;
+    in property <bool> can-back: false;
+    in property <bool> last: false;
+
+    // Look: the wallpapers by name, the plain colour first.
+    in property <[string]> wallpapers;
+    in property <int> wallpaper: 0;
+
+    // Network: "connected" is 1 for Wi-Fi, 2 for a cable, 0 for neither.
+    in property <int> net: 0;
+    in property <string> net-title;
+    in property <string> net-detail;
+
+    // Keyboard: the layouts that match the filter, and the one in use.
+    in property <[Item]> layouts;
+    in-out property <int> layout-current: 0;
+    in-out property <string> layout-filter;
+    in property <string> layout-now;
+
+    // Apps: what is suggested.
+    in property <[string]> suggestions;
+
+    callback next();
+    callback back();
+    callback skip();
+    callback choose-theme(bool);
+    callback choose-wallpaper(int);
+    callback filter-layouts(string);
+    callback choose-layout(string);
+    callback open-network();
+    callback open-store(int);
+    callback open-files();
+    callback open-settings();
+}
+
+// One of the two themes, with a small picture of it. Return and Space
+// choose it.
+component ThemeCard inherits Rectangle {
+    in property <string> text;
+    in property <bool> dark;
+    in property <bool> selected;
+    callback clicked();
+
+    forward-focus: scope;
+    border-radius: Tokens.radius;
+    border-width: scope.has-focus || root.selected ? Tokens.focus-ring-width : Tokens.border-width;
+    border-color: scope.has-focus ? Tokens.color-focus-ring
+        : root.selected ? Tokens.color-accent : Tokens.color-border;
+    background: touch.has-hover ? Tokens.color-surface-hover : Tokens.color-surface;
+    animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+
+    VerticalLayout {
+        padding: Tokens.space-md;
+        spacing: Tokens.space-sm;
+
+        // The window of a desktop in that theme.
+        Rectangle {
+            height: Tokens.list-row-height * 2;
+            border-radius: Tokens.radius;
+            border-width: Tokens.border-width;
+            border-color: root.dark ? Tokens.dark-border : Tokens.light-border;
+            background: root.dark ? Tokens.dark-bg : Tokens.light-bg;
+
+            Rectangle {
+                x: Tokens.space-md;
+                y: Tokens.space-md;
+                width: parent.width * 55%;
+                height: parent.height - Tokens.space-md * 2;
+                border-radius: Tokens.radius;
+                background: root.dark ? Tokens.dark-surface : Tokens.light-surface;
+                border-width: Tokens.border-width;
+                border-color: root.dark ? Tokens.dark-border : Tokens.light-border;
+
+                Rectangle {
+                    x: Tokens.space-sm;
+                    y: Tokens.space-sm;
+                    width: parent.width * 50%;
+                    height: Tokens.space-xs;
+                    border-radius: Tokens.space-xxs;
+                    background: root.dark ? Tokens.dark-text : Tokens.light-text;
+                }
+
+                Rectangle {
+                    x: Tokens.space-sm;
+                    y: Tokens.space-sm + Tokens.space-md;
+                    width: parent.width * 75%;
+                    height: Tokens.space-xs;
+                    border-radius: Tokens.space-xxs;
+                    background: root.dark ? Tokens.dark-text-muted : Tokens.light-text-muted;
+                }
+
+                Rectangle {
+                    x: Tokens.space-sm;
+                    y: parent.height - self.height - Tokens.space-sm;
+                    width: Tokens.space-xl;
+                    height: Tokens.space-md;
+                    border-radius: Tokens.space-xs;
+                    background: root.dark ? Tokens.dark-accent : Tokens.light-accent;
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: Tokens.space-sm;
+
+            SengiText {
+                horizontal-stretch: 1;
+                text: root.text;
+                font-weight: root.selected ? Tokens.font-weight-medium : Tokens.font-weight-regular;
+                vertical-alignment: center;
+            }
+
+            if root.selected: VerticalLayout {
+                alignment: center;
+                SengiIcon {
+                    name: "check";
+                    ink: Tokens.color-accent;
+                }
+            }
+        }
+    }
+
+    scope := FocusScope {
+        focus-on-click: false;
+
+        key-pressed(event) => {
+            if event.text == " " || event.text == Key.Return {
+                root.clicked();
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+
+        touch := TouchArea {
+            clicked => { root.clicked(); }
+        }
+    }
+}
+
+// A key as it is printed on the keyboard.
+component KeyCap inherits Rectangle {
+    in property <string> text;
+
+    min-width: Tokens.button;
+    height: Tokens.button;
+    border-radius: Tokens.radius;
+    border-width: Tokens.border-width;
+    border-color: Tokens.color-border;
+    background: Tokens.color-surface-raised;
+
+    HorizontalLayout {
+        padding-left: Tokens.space-md;
+        padding-right: Tokens.space-md;
+        SengiText {
+            text: root.text;
+            font-weight: Tokens.font-weight-medium;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// The keys of a shortcut, at the right of a row.
+component Keys inherits VerticalLayout {
+    alignment: center;
+
+    HorizontalLayout {
+        spacing: Tokens.space-xs;
+        @children
+    }
+}
+
+component Heading inherits VerticalLayout {
+    in property <string> title;
+    in property <string> lead;
+
+    spacing: Tokens.space-xs;
+
+    SengiText {
+        text: root.title;
+        font-size: Tokens.font-size-xl;
+        font-weight: Tokens.font-weight-bold;
+        wrap: word-wrap;
+    }
+
+    SengiText {
+        text: root.lead;
+        color: Tokens.color-text-muted;
+        wrap: word-wrap;
+    }
+}
+
+export component WelcomeWindow inherits Window {
+    title: "Welcome";
+    preferred-width: Tokens.settings-window-width;
+    preferred-height: Tokens.settings-window-height;
+    min-width: Tokens.settings-window-min-width;
+    min-height: Tokens.settings-window-min-height;
+    background: Tokens.color-bg;
+    default-font-family: Tokens.font-family;
+    default-font-size: Tokens.font-size-md;
+
+    // The renderer keeps two buffers and only one of them knows after a
+    // change of size or scale that it is new, so for a few frames the
+    // whole window is drawn, as Settings does.
+    private property <float> pixel: 1phx / 1px;
+    private property <int> sheet: 0;
+    private property <int> sheets-owed: 0;
+
+    function draw-everything() {
+        root.sheet += 1;
+        root.sheets-owed = 3;
+    }
+
+    changed pixel => { root.draw-everything(); }
+    changed width => { root.draw-everything(); }
+    changed height => { root.draw-everything(); }
+
+    Timer {
+        interval: Tokens.motion-fast;
+        running: root.sheets-owed > 0;
+        triggered => {
+            root.sheet += 1;
+            root.sheets-owed -= 1;
+        }
+    }
+
+    Rectangle {
+        background: Math.mod(root.sheet, 2) == 0 ? transparent : Tokens.color-bg.transparentize(1);
+    }
+
+    // Return goes on and Escape goes back, wherever the focus is, unless
+    // the control that has it wants the key.
+    scope := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Return {
+                Welcome.next();
+                return EventResult.accept;
+            }
+            if event.text == Key.Escape && Welcome.can-back {
+                Welcome.back();
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+        init => { self.focus(); }
+
+        VerticalLayout {
+            // The step.
+            HorizontalLayout {
+                vertical-stretch: 1;
+                alignment: center;
+
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    max-width: Metrics.page;
+                    padding: Tokens.space-xl;
+                    spacing: Tokens.space-lg;
+                    alignment: start;
+
+                    if Welcome.step == 0: VerticalLayout {
+                        spacing: Tokens.space-lg;
+                        alignment: center;
+                        padding-top: Tokens.space-xl;
+
+                        SengiIcon {
+                            name: "house";
+                            ink: Tokens.color-accent;
+                            width: Tokens.desktop-icon;
+                            height: Tokens.desktop-icon;
+                        }
+
+                        Heading {
+                            title: "Welcome to Sengi OS";
+                            lead: "A few quick steps will make this computer yours: how it looks, the network, your keyboard and some apps. It takes about a minute, and you can skip any of it.";
+                        }
+
+                        SengiText {
+                            text: "Everything here can be changed later in Settings.";
+                            color: Tokens.color-text-muted;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    if Welcome.step == 1: VerticalLayout {
+                        spacing: Tokens.space-lg;
+
+                        Heading {
+                            title: "Choose how it looks";
+                            lead: "Dark or light, and the picture behind your windows.";
+                        }
+
+                        HorizontalLayout {
+                            spacing: Tokens.space-md;
+
+                            ThemeCard {
+                                horizontal-stretch: 1;
+                                text: "Dark";
+                                dark: true;
+                                selected: !ThemeSwitch.light;
+                                clicked => { Welcome.choose-theme(false); }
+                            }
+
+                            ThemeCard {
+                                horizontal-stretch: 1;
+                                text: "Light";
+                                dark: false;
+                                selected: ThemeSwitch.light;
+                                clicked => { Welcome.choose-theme(true); }
+                            }
+                        }
+
+                        SengiLabel {
+                            text: "Wallpaper";
+                        }
+
+                        Rectangle {
+                            private property <int> columns: 4;
+                            private property <int> rows: Math.ceil(Welcome.wallpapers.length / self.columns);
+                            private property <length> chip: (self.width - Tokens.space-sm * (self.columns - 1)) / self.columns;
+
+                            height: self.rows * Tokens.button + Math.max(self.rows - 1, 0) * Tokens.space-sm;
+
+                            for name[index] in Welcome.wallpapers: SengiButton {
+                                x: Math.mod(index, parent.columns) * (parent.chip + Tokens.space-sm);
+                                y: Math.floor(index / parent.columns) * (Tokens.button + Tokens.space-sm);
+                                width: parent.chip;
+                                text: name;
+                                primary: index == Welcome.wallpaper;
+                                outlined: index != Welcome.wallpaper;
+                                clicked => { Welcome.choose-wallpaper(index); }
+                            }
+                        }
+                    }
+
+                    if Welcome.step == 2: VerticalLayout {
+                        spacing: Tokens.space-lg;
+
+                        Heading {
+                            title: "Connect to the internet";
+                            lead: "Apps and updates come from the internet. Wi-Fi is set up in Settings.";
+                        }
+
+                        SengiSurface {
+                            height: Tokens.list-row-height * 2;
+
+                            HorizontalLayout {
+                                padding: Tokens.space-lg;
+                                spacing: Tokens.space-md;
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    SengiIcon {
+                                        name: Welcome.net == 1 ? "wifi-high" : Welcome.net == 2 ? "network" : "wifi-none";
+                                        ink: Welcome.net == 0 ? Tokens.color-warning : Tokens.color-success;
+                                        width: Tokens.osd-icon;
+                                        height: Tokens.osd-icon;
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    alignment: center;
+                                    spacing: Tokens.space-xxs;
+
+                                    SengiText {
+                                        text: Welcome.net-title;
+                                        font-size: Tokens.font-size-lg;
+                                        font-weight: Tokens.font-weight-medium;
+                                        overflow: elide;
+                                    }
+
+                                    SengiText {
+                                        text: Welcome.net-detail;
+                                        color: Tokens.color-text-muted;
+                                        overflow: elide;
+                                    }
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            alignment: start;
+
+                            SengiButton {
+                                text: Welcome.net == 0 ? "Open Network settings" : "Network settings";
+                                primary: Welcome.net == 0;
+                                clicked => { Welcome.open-network(); }
+                            }
+                        }
+                    }
+
+                    if Welcome.step == 3: VerticalLayout {
+                        spacing: Tokens.space-md;
+
+                        Heading {
+                            title: "Pick your keyboard layout";
+                            lead: "Type to search, then choose the layout of your keys.";
+                        }
+
+                        SengiLabel {
+                            text: "In use: " + Welcome.layout-now;
+                        }
+
+                        field := TextField {
+                            placeholder: "Search layouts";
+                            text <=> Welcome.layout-filter;
+                            edited(text) => {
+                                Welcome.layout-current = 0;
+                                Welcome.filter-layouts(text);
+                            }
+                            stepped(by) => {
+                                Welcome.layout-current = Math.clamp(Welcome.layout-current + by, 0, Math.max(Welcome.layouts.length - 1, 0));
+                            }
+                            accepted(text) => {
+                                if Welcome.layout-current < Welcome.layouts.length {
+                                    Welcome.choose-layout(Welcome.layouts[Welcome.layout-current].id);
+                                }
+                            }
+                            cancelled => { Welcome.back(); }
+                            init => { self.take-focus(); }
+                        }
+
+                        Card {
+                            ItemList {
+                                items: Welcome.layouts;
+                                current <=> Welcome.layout-current;
+                                show-current: field.has-focus;
+                                activated(id) => { Welcome.choose-layout(id); }
+                            }
+                        }
+                    }
+
+                    if Welcome.step == 4: VerticalLayout {
+                        spacing: Tokens.space-lg;
+
+                        Heading {
+                            title: "Get some apps";
+                            lead: "The Store has thousands of free apps from Flathub. Here are a few places to start.";
+                        }
+
+                        Card {
+                            for label[index] in Welcome.suggestions: VerticalLayout {
+                                if index > 0: Divider { }
+
+                                SettingRow {
+                                    title: label;
+
+                                    VerticalLayout {
+                                        alignment: center;
+                                        SengiButton {
+                                            text: "Find in the Store";
+                                            clicked => { Welcome.open-store(index); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            alignment: start;
+
+                            SengiButton {
+                                text: "Open the Store";
+                                clicked => { Welcome.open-store(-1); }
+                            }
+                        }
+                    }
+
+                    if Welcome.step == 5: VerticalLayout {
+                        spacing: Tokens.space-lg;
+
+                        Heading {
+                            title: "You are all set";
+                            lead: "Two keys worth knowing. You can open this welcome again from the launcher.";
+                        }
+
+                        Card {
+                            SettingRow {
+                                title: "See every keyboard shortcut";
+                                detail: "Press Super and / together";
+
+                                Keys {
+                                    KeyCap { text: "Super"; }
+                                    KeyCap { text: "/"; }
+                                }
+                            }
+
+                            Divider { }
+
+                            SettingRow {
+                                title: "Take a screenshot";
+                                detail: "It is saved in your Pictures folder";
+
+                                Keys {
+                                    KeyCap { text: "Print"; }
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            alignment: start;
+                            spacing: Tokens.space-sm;
+
+                            SengiButton {
+                                text: "Open Files";
+                                clicked => { Welcome.open-files(); }
+                            }
+
+                            SengiButton {
+                                text: "Open Settings";
+                                clicked => { Welcome.open-settings(); }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                height: Tokens.border-width;
+                background: Tokens.color-border;
+            }
+
+            HorizontalLayout {
+                padding: Tokens.space-md;
+                spacing: Tokens.space-sm;
+
+                SengiLabel {
+                    horizontal-stretch: 1;
+                    text: Welcome.counter;
+                    vertical-alignment: center;
+                }
+
+                if !Welcome.last: SengiButton {
+                    text: "Skip setup";
+                    clicked => { Welcome.skip(); }
+                }
+
+                SengiButton {
+                    text: "Back";
+                    enabled: Welcome.can-back;
+                    clicked => { Welcome.back(); }
+                }
+
+                SengiButton {
+                    text: Welcome.last ? "Finish" : Welcome.step == 0 ? "Get started" : "Next";
+                    primary: true;
+                    clicked => { Welcome.next(); }
+                }
+            }
+        }
+    }
+}

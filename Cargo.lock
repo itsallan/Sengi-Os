@@ -3887,6 +3887,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sengi-welcome"
+version = "0.8.0"
+dependencies = [
+ "sengi-apps",
+ "sengi-config",
+ "sengi-shots",
+ "slint",
+ "slint-build",
+]
+
+[[package]]
 name = "serde"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
