@@ -22,7 +22,7 @@ mkdir -p "$work/iso/live" "$work/iso/boot/grub" "$out"
 # Our own programs, built against the same Debian the image is made of.
 export CARGO_HOME="$work/cargo" CARGO_TARGET_DIR="$work/target"
 export RUSTFLAGS="--remap-path-prefix=$src=. --remap-path-prefix=$work=/build"
-programs="sengi-bar sengi-brightness sengi-dock sengi-focus sengi-greeter sengi-install sengi-launcher sengi-lock sengi-notify sengi-osd sengi-quick sengi-shot"
+programs="sengi-bar sengi-brightness sengi-desktop sengi-dock sengi-focus sengi-greeter sengi-install sengi-launcher sengi-lock sengi-notify sengi-osd sengi-quick sengi-shot"
 set --
 for program in $programs; do
 	set -- "$@" -p "$program"
@@ -34,8 +34,10 @@ cargo build --release --locked --manifest-path "$src/Cargo.toml" "$@"
 # check finds a crate by the source paths of its panic locations, which
 # survive in the binary: it would find nothing in a build that dropped
 # those. A bare "png" would not do: the font code has a png.rs of its own.
-# The level indicator after a volume key is the same kind of program.
-for program in sengi-launcher sengi-osd; do
+# The level indicator after a volume key is the same kind of program, and so
+# is the desktop: it sits in memory for the whole session, with no use for
+# a D-Bus stack or an image decoder.
+for program in sengi-launcher sengi-osd sengi-desktop; do
 	for marker in zbus resvg '/png-[0-9]'; do
 		if grep -a -q -e "$marker" "$work/target/release/$program"; then
 			echo "$program has $marker linked in, which it must not" >&2
