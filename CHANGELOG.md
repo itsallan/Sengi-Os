@@ -25,6 +25,12 @@ and the measured idle RAM and boot time.
   the same table the compositor binds the keys with. Settings, Keyboard has
   a Keyboard shortcuts button for it.
 
+- A light theme next to the dark one. Settings, Appearance has Dark and Light
+  with a preview of each, and it applies at once: the bar, dock and desktop
+  restart in the new colours, window frames and menus are repainted, and
+  anything opened later starts in it. Saved as `appearance.theme`. The
+  palettes are in `tokens/sengi.toml` with their WCAG contrast numbers, which
+  the tests check (4.5 for text, 3 for parts of controls).
 - Settings has a Wallpaper page: the plain colour, six flat wallpapers in the
   Sengi OS colours, or a PNG or JPEG of your own, by path or from ~/Pictures.
   It shows at once and is remembered; a missing or broken file falls back to

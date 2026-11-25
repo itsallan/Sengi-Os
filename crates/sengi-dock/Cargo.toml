@@ -14,6 +14,7 @@ default = ["svg"]
 svg = ["sengi-apps/svg"]
 
 [dependencies]
+sengi-config = { path = "../sengi-config" }
 # Not the workspace entry: that one pulls in the winit backend, and the dock
 # is drawn into a layer surface instead. sengi-layer turns on the renderer.
 sengi-apps = { path = "../sengi-apps", features = ["icons"] }

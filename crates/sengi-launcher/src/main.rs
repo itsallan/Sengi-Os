@@ -150,6 +150,8 @@ fn open(
             let (session, check, to_ui, requests, pins) =
                 parts.take().ok_or("the launcher has a single surface")?;
             let window = LauncherWindow::new()?;
+            slint::ComponentHandle::global::<ui::ThemeSwitch>(&window)
+                .set_light(sengi_config::theme_is_light());
             let handle = context.handle();
             let icon_sink = ui::attach_with_pins(
                 &window,

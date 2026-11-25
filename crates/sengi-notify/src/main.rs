@@ -119,6 +119,8 @@ fn serve() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let running = ui.clone();
     app.run(config, move |context| {
         let window = ui::NotifyWindow::new()?;
+        slint::ComponentHandle::global::<ui::ThemeSwitch>(&window)
+            .set_light(sengi_config::theme_is_light());
         let attached = ui::Ui::attach(&window, context.handle(), signals.clone());
         let surface = context.surface();
         // The centre holds the keyboard while it is open. If something

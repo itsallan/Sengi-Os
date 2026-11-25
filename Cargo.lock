@@ -3533,6 +3533,7 @@ dependencies = [
  "libc",
  "sengi-apps",
  "sengi-clock",
+ "sengi-config",
  "sengi-layer",
  "sengi-system",
  "sengi-text",
@@ -3569,6 +3570,7 @@ dependencies = [
  "libc",
  "png",
  "sengi-apps",
+ "sengi-config",
  "sengi-layer",
  "sengi-system",
  "slint",
@@ -3581,6 +3583,7 @@ version = "0.8.0"
 dependencies = [
  "png",
  "sengi-apps",
+ "sengi-config",
  "sengi-layer",
  "sengi-text",
  "slint",
@@ -3594,6 +3597,7 @@ version = "0.8.0"
 dependencies = [
  "libc",
  "sengi-apps",
+ "sengi-config",
  "sengi-shots",
  "sengi-system",
  "slint",
@@ -3653,6 +3657,7 @@ version = "0.8.0"
 dependencies = [
  "png",
  "sengi-apps",
+ "sengi-config",
  "sengi-layer",
  "sengi-system",
  "sengi-text",
@@ -3689,6 +3694,7 @@ name = "sengi-notify"
 version = "0.8.0"
 dependencies = [
  "chrono",
+ "sengi-config",
  "sengi-layer",
  "sengi-system",
  "sengi-text",
@@ -3704,6 +3710,7 @@ name = "sengi-osd"
 version = "0.8.0"
 dependencies = [
  "png",
+ "sengi-config",
  "sengi-layer",
  "sengi-system",
  "sengi-tokens",
@@ -3715,6 +3722,7 @@ dependencies = [
 name = "sengi-quick"
 version = "0.8.0"
 dependencies = [
+ "sengi-config",
  "sengi-layer",
  "sengi-system",
  "sengi-text",
@@ -3762,6 +3770,7 @@ version = "0.8.0"
 dependencies = [
  "libc",
  "sengi-apps",
+ "sengi-config",
  "sengi-text",
  "slint",
  "slint-build",

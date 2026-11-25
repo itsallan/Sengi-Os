@@ -14,6 +14,7 @@ default = ["svg"]
 svg = ["sengi-apps/svg"]
 
 [dependencies]
+sengi-config = { path = "../sengi-config" }
 # Tray icons named by file are found and decoded by this, in a child
 # process, straight to the size they are drawn at.
 sengi-apps = { path = "../sengi-apps", features = ["icons"] }

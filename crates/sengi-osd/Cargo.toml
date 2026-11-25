@@ -8,6 +8,7 @@ license.workspace = true
 build = "build.rs"
 
 [dependencies]
+sengi-config = { path = "../sengi-config" }
 sengi-layer = { path = "../sengi-layer" }
 # No features: only what `wpctl get-volume` prints, which is plain std.
 sengi-system = { path = "../sengi-system" }

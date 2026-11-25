@@ -8,6 +8,7 @@ license.workspace = true
 build = "build.rs"
 
 [dependencies]
+sengi-config = { path = "../sengi-config" }
 sengi-apps = { path = "../sengi-apps" }
 sengi-layer = { path = "../sengi-layer" }
 sengi-text = { path = "../sengi-text" }

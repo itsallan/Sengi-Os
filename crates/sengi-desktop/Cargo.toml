@@ -8,6 +8,7 @@ license.workspace = true
 build = "build.rs"
 
 [dependencies]
+sengi-config = { path = "../sengi-config" }
 # Only for starting programs and finding them on PATH: no icon feature, so
 # no image decoder.
 sengi-apps = { path = "../sengi-apps" }

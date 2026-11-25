@@ -196,6 +196,8 @@ fn run() -> Result<(), sengi_layer::Error> {
 
     app.run(config, move |context| {
         let bar = Bar::new()?;
+        slint::ComponentHandle::global::<ThemeSwitch>(&bar)
+            .set_light(sengi_config::theme_is_light());
 
         // The height comes from the design tokens, by way of the component.
         let height = (bar.get_bar_height().round() as u32).max(1);

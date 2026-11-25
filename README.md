@@ -11,7 +11,10 @@ Sengi OS is in early development. There is no stable release yet.
 - Under 10 seconds from power-on to desktop.
 - A familiar layout: top bar, centred dock, window buttons on the left,
   centred search launcher, quick settings and notifications at the top right.
-- Its own look, driven by one design tokens file.
+- Its own look, driven by one design tokens file, in a dark and a light
+  theme (Settings, Appearance). The palettes and their measured contrast
+  ratios are in `tokens/sengi.toml`; the login screen follows the system-wide
+  default, `appearance.theme` in `/etc/xdg/sengi-os/settings.toml`.
 
 Both budgets are measured on every release. A release that misses them does
 not ship.

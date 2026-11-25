@@ -47,6 +47,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     layer.run(config, move |_context| {
         let window = ui::Desktop::new()?;
+        slint::ComponentHandle::global::<ui::ThemeSwitch>(&window)
+            .set_light(sengi_config::theme_is_light());
         shell.attach(&window);
         Ok(window)
     })?;
