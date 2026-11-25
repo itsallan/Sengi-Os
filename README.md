@@ -32,6 +32,9 @@ notifications, and a page about the machine. It is an ordinary window that
 runs only while it is open. sengi-lock is the lock screen: the time, the
 date and a password field on every output, started when the screen locks
 and gone when it unlocks. It is unlocked with the user's password.
+The laptop keys are handled by the compositor: volume and brightness (also
+the keyboard light) show a level for a moment through sengi-osd, and Print saves
+a PNG of the screen to ~/Pictures through sengi-shot (Alt+Print: the window).
 sengi-greeter is the login screen, shown whenever nobody is logged in. It
 looks like the lock screen: the time, the date, who is logging in and a
 password field. With several accounts the arrow keys or the buttons beside

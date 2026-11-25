@@ -22,7 +22,7 @@ mkdir -p "$work/iso/live" "$work/iso/boot/grub" "$out"
 # Our own programs, built against the same Debian the image is made of.
 export CARGO_HOME="$work/cargo" CARGO_TARGET_DIR="$work/target"
 export RUSTFLAGS="--remap-path-prefix=$src=. --remap-path-prefix=$work=/build"
-programs="sengi-bar sengi-brightness sengi-dock sengi-focus sengi-greeter sengi-install sengi-launcher sengi-lock sengi-notify sengi-quick"
+programs="sengi-bar sengi-brightness sengi-dock sengi-focus sengi-greeter sengi-install sengi-launcher sengi-lock sengi-notify sengi-osd sengi-quick sengi-shot"
 set --
 for program in $programs; do
 	set -- "$@" -p "$program"
@@ -34,11 +34,14 @@ cargo build --release --locked --manifest-path "$src/Cargo.toml" "$@"
 # check finds a crate by the source paths of its panic locations, which
 # survive in the binary: it would find nothing in a build that dropped
 # those. A bare "png" would not do: the font code has a png.rs of its own.
-for marker in zbus resvg '/png-[0-9]'; do
-	if grep -a -q -e "$marker" "$work/target/release/sengi-launcher"; then
-		echo "sengi-launcher has $marker linked in, which it must not" >&2
-		exit 1
-	fi
+# The level indicator after a volume key is the same kind of program.
+for program in sengi-launcher sengi-osd; do
+	for marker in zbus resvg '/png-[0-9]'; do
+		if grep -a -q -e "$marker" "$work/target/release/$program"; then
+			echo "$program has $marker linked in, which it must not" >&2
+			exit 1
+		fi
+	done
 done
 # The lock screen holds a password and talks to PAM and to nothing else.
 # A D-Bus stack in it would be code it has no use for, next to a secret.

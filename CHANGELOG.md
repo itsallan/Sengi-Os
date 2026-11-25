@@ -7,6 +7,12 @@ and the measured idle RAM and boot time.
 
 ### Added
 
+- A level indicator: the volume, mute, screen brightness and keyboard light
+  keys show a rounded panel with an icon and a bar near the bottom of the
+  screen for about a second (sengi-osd). It runs only then.
+- Print saves a PNG of the screen to ~/Pictures (Screenshot-DATE-TIME.png) and
+  Alt+Print or Shift+Print the window in front, with a notification that says
+  where it went (sengi-shot).
 - Laptop keys: the screen brightness keys step the backlight by 5 percent and
   never go below 5 percent, and the keyboard light keys (up, down, on/off)
   work too, also on the lock screen. They run sengi-brightness, which asks
