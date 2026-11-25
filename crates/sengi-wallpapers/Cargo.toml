@@ -1,0 +1,14 @@
+[package]
+name = "sengi-wallpapers"
+description = "Draws the wallpapers Sengi OS ships, from the design tokens"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+# A build-time tool: it is not part of the image. The PNG crate is here and
+# in the programs that already decode icons, never in the desktop shell.
+[dependencies]
+sengi-tokens = { path = "../sengi-tokens" }
+png = "0.18"
