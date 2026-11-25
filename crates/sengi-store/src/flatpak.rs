@@ -541,7 +541,11 @@ mod tests {
             .run_with(&["x"], Duration::from_secs(5), Some(&report))
             .unwrap();
         let seen = seen.into_inner().unwrap();
-        assert!(!seen.is_empty() && seen.len() <= 5, "{} reports", seen.len());
+        assert!(
+            !seen.is_empty() && seen.len() <= 5,
+            "{} reports",
+            seen.len()
+        );
         let last = seen.last().unwrap();
         assert_eq!(last.percent, Some(30));
         assert_eq!(last.step, Some((2, 4)));

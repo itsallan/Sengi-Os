@@ -187,7 +187,10 @@ mod tests {
         assert_eq!(p.verb.as_deref(), Some("Installing"));
         assert_eq!(p.size.as_deref(), Some("12.3 MB"));
         assert_eq!(p.speed.as_deref(), Some("4.1 MB/s"));
-        assert_eq!(p.detail(), "Installing 2 of 4 \u{b7} 12.3 MB \u{b7} 4.1 MB/s");
+        assert_eq!(
+            p.detail(),
+            "Installing 2 of 4 \u{b7} 12.3 MB \u{b7} 4.1 MB/s"
+        );
     }
 
     #[test]
@@ -201,7 +204,8 @@ mod tests {
 
     #[test]
     fn a_step_line_alone_has_no_percentage() {
-        let p = Progress::from_tail(b"Looking for matches\xe2\x80\xa6\nInstalling 3/5\xe2\x80\xa6\n");
+        let p =
+            Progress::from_tail(b"Looking for matches\xe2\x80\xa6\nInstalling 3/5\xe2\x80\xa6\n");
         assert_eq!(p.percent, None);
         assert_eq!(p.step, Some((3, 5)));
         assert_eq!(p.detail(), "Installing 3 of 5");
@@ -219,7 +223,10 @@ mod tests {
 
     #[test]
     fn the_other_stream_fills_what_the_first_lacks() {
-        let p = Progress::from_tails(&[b"Installing 1/2\xe2\x80\xa6\n", b"Installing\xe2\x80\xa6 30%\r"]);
+        let p = Progress::from_tails(&[
+            b"Installing 1/2\xe2\x80\xa6\n",
+            b"Installing\xe2\x80\xa6 30%\r",
+        ]);
         assert_eq!(p.step, Some((1, 2)));
         assert_eq!(p.percent, Some(30));
     }
