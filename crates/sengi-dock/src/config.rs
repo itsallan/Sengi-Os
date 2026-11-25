@@ -122,6 +122,112 @@ pub fn paths_from(
     paths
 }
 
+/// The user's own file, the only one the dock writes.
+pub fn user_path_from(home: Option<&str>, config_home: Option<&str>) -> Option<PathBuf> {
+    match (config_home.filter(|s| s.starts_with('/')), home) {
+        (Some(dir), _) => Some(Path::new(dir).join(FILE)),
+        (None, Some(home)) if home.starts_with('/') => {
+            Some(Path::new(home).join(".config").join(FILE))
+        }
+        _ => None,
+    }
+}
+
+pub fn user_path() -> Option<PathBuf> {
+    let var = |name| std::env::var(name).ok();
+    user_path_from(var("HOME").as_deref(), var("XDG_CONFIG_HOME").as_deref())
+}
+
+/// The text of the file with `pinned` set to `ids`. Everything else in
+/// `existing` (comments, keys for a newer dock) is kept as it was; only
+/// the `pinned` list is replaced.
+pub fn render(existing: Option<&str>, ids: &[String]) -> String {
+    let list = if ids.is_empty() {
+        "pinned = []".to_string()
+    } else {
+        let items: Vec<String> = ids
+            .iter()
+            .filter(|id| !id.contains(['"', '\n', '\r']))
+            .map(|id| format!("    \"{id}\","))
+            .collect();
+        format!("pinned = [\n{}\n]", items.join("\n"))
+    };
+    let Some(text) = existing else {
+        return format!("# Apps pinned to the dock, in order. Written by sengi-dock.\n{list}\n");
+    };
+    match pinned_span(text) {
+        Some((start, end)) => format!("{}{list}{}", &text[..start], &text[end..]),
+        None => {
+            let sep = if text.is_empty() || text.ends_with('\n') {
+                ""
+            } else {
+                "\n"
+            };
+            format!("{text}{sep}{list}\n")
+        }
+    }
+}
+
+/// Where the `pinned = [...]` entry starts and ends in the text.
+fn pinned_span(text: &str) -> Option<(usize, usize)> {
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        let start = offset;
+        offset += line.len();
+        let code = strip_comment(line);
+        let Some(rest) = code.trim_start().strip_prefix("pinned") else {
+            continue;
+        };
+        if !rest.trim_start().starts_with('=') {
+            continue;
+        }
+        let from = start + line.len() - line.trim_start().len();
+        // The list may run over several lines. Look for its closing
+        // bracket outside strings and comments.
+        let mut in_string = false;
+        let mut in_comment = false;
+        for (index, c) in text[from..].char_indices() {
+            match c {
+                '\n' => in_comment = false,
+                '#' if !in_string => in_comment = true,
+                '"' if !in_comment => in_string = !in_string,
+                ']' if !in_string && !in_comment => return Some((from, from + index + 1)),
+                _ => {}
+            }
+        }
+        return None;
+    }
+    None
+}
+
+/// Saves the pinned list to `path`, creating the directory if need be. The
+/// file is written whole under another name and moved into place, so a
+/// crash cannot leave half a list. A file that cannot be read as a dock
+/// config is kept as `dock.toml.bak` first.
+pub fn save(path: &Path, ids: &[String]) -> std::io::Result<()> {
+    let existing = match fs::read_to_string(path) {
+        Ok(text) => Some(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let mut text = render(existing.as_deref(), ids);
+    if let (Some(old), true) = (&existing, parse(&text).is_err()) {
+        // The old file has a mistake the edit cannot get around.
+        let mut backup = path.as_os_str().to_owned();
+        backup.push(".bak");
+        fs::write(&backup, old)?;
+        text = render(None, ids);
+    }
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let mut temp = path.as_os_str().to_owned();
+    temp.push(".new");
+    let temp = PathBuf::from(temp);
+    fs::write(&temp, text)?;
+    fs::rename(&temp, path)
+}
+
 pub fn paths() -> Vec<PathBuf> {
     let var = |name| std::env::var(name).ok();
     paths_from(
@@ -299,6 +405,59 @@ mod tests {
             pinned(&[PathBuf::from("/nonexistent/dock.toml")]),
             DEFAULT_PINNED
         );
+    }
+
+    fn ids(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_saved_list_reads_back_in_order() {
+        let dir = temp_dir("save");
+        let path = dir.join("sengi-os/dock.toml");
+        save(&path, &ids(&["web", "foot", "mail"])).unwrap();
+        assert_eq!(pinned(&[path.clone()]), ["web", "foot", "mail"]);
+        save(&path, &[]).unwrap();
+        assert_eq!(pinned(&[path.clone()]), Vec::<String>::new());
+        save(&path, &ids(&["foot"])).unwrap();
+        assert_eq!(pinned(&[path]), ["foot"]);
+    }
+
+    #[test]
+    fn saving_keeps_comments_and_other_keys() {
+        let text = "# mine\nsize = 48\npinned = [\n  \"a\", # first\n  \"b\"\n]\nlater = true\n";
+        let out = render(Some(text), &ids(&["b", "c"]));
+        assert!(out.starts_with("# mine\nsize = 48\n"));
+        assert!(out.ends_with("]\nlater = true\n"));
+        assert_eq!(parse(&out).unwrap(), ["b", "c"]);
+        // A key that only starts with the same letters is not the list.
+        let out = render(Some("pinned-extra = 1\n"), &ids(&["a"]));
+        assert_eq!(parse(&out).unwrap(), ["a"]);
+        assert!(out.starts_with("pinned-extra = 1\n"));
+    }
+
+    #[test]
+    fn saving_over_a_broken_file_keeps_a_copy() {
+        let dir = temp_dir("broken");
+        let path = dir.join("dock.toml");
+        write(&path, "pinned = oops\n");
+        save(&path, &ids(&["foot"])).unwrap();
+        assert_eq!(pinned(&[path.clone()]), ["foot"]);
+        let backup = std::fs::read_to_string(dir.join("dock.toml.bak")).unwrap();
+        assert_eq!(backup, "pinned = oops\n");
+    }
+
+    #[test]
+    fn the_user_file_is_where_xdg_says() {
+        assert_eq!(
+            user_path_from(Some("/home/a"), None),
+            Some(PathBuf::from("/home/a/.config/sengi-os/dock.toml"))
+        );
+        assert_eq!(
+            user_path_from(Some("/home/a"), Some("/cfg")),
+            Some(PathBuf::from("/cfg/sengi-os/dock.toml"))
+        );
+        assert_eq!(user_path_from(None, None), None);
     }
 
     #[test]

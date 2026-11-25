@@ -139,6 +139,48 @@ pub fn on_click(item: &Item, button: Button) -> Action {
     }
 }
 
+/// A row of the menu a right click opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuAction {
+    /// Start an app that is not running.
+    Open,
+    Keep,
+    Remove,
+    /// Close the app's windows, so it can ask to save.
+    Quit,
+}
+
+impl MenuAction {
+    pub fn label(self) -> &'static str {
+        match self {
+            MenuAction::Open => "Open",
+            MenuAction::Keep => "Keep in Dock",
+            MenuAction::Remove => "Remove from Dock",
+            MenuAction::Quit => "Quit",
+        }
+    }
+}
+
+/// The rows of an item's menu. The search button has none.
+pub fn menu_for(item: &Item, pinned: bool) -> Vec<MenuAction> {
+    if item.kind == Kind::Launcher {
+        return Vec::new();
+    }
+    let mut rows = Vec::new();
+    if !item.running() && item.launchable {
+        rows.push(MenuAction::Open);
+    }
+    if pinned {
+        rows.push(MenuAction::Remove);
+    } else if item.launchable {
+        rows.push(MenuAction::Keep);
+    }
+    if item.running() {
+        rows.push(MenuAction::Quit);
+    }
+    rows
+}
+
 /// How long a started app is given to show a window before another click
 /// may start it again.
 pub const LAUNCH_WAIT: Duration = Duration::from_secs(5);
@@ -328,6 +370,52 @@ impl Dock {
     /// The desktop entry behind an item key.
     pub fn entry(&self, key: &str) -> Option<&DesktopEntry> {
         self.apps.get(key)
+    }
+
+    /// The pinned apps as stored, in dock order.
+    pub fn pinned(&self) -> &[String] {
+        &self.pinned
+    }
+
+    /// What a pin entry stands for: the app's key if it is installed.
+    fn resolve(&self, id: &str) -> String {
+        match self.apps.get(id) {
+            Some(entry) => entry.app_id().to_lowercase(),
+            None => id.trim().to_lowercase(),
+        }
+    }
+
+    pub fn is_pinned(&self, key: &str) -> bool {
+        let key = self.resolve(key);
+        self.pinned.iter().any(|id| self.resolve(id) == key)
+    }
+
+    /// Pins an installed app after the others. False if it is already
+    /// pinned or has no desktop entry to start it from.
+    pub fn pin(&mut self, key: &str) -> bool {
+        let Some(entry) = self.apps.get(key) else {
+            return false;
+        };
+        let id = entry.app_id().to_lowercase();
+        if self.is_pinned(&id) {
+            return false;
+        }
+        self.pinned.push(id);
+        true
+    }
+
+    /// Takes an app off the dock. False if it was not pinned.
+    pub fn unpin(&mut self, key: &str) -> bool {
+        let key = self.resolve(key);
+        let before = self.pinned.len();
+        let keep: Vec<String> = self
+            .pinned
+            .iter()
+            .filter(|id| self.resolve(id) != key)
+            .cloned()
+            .collect();
+        self.pinned = keep;
+        self.pinned.len() != before
     }
 
     fn key_for(&mut self, app_id: &str) -> String {
@@ -983,5 +1071,82 @@ mod tests {
         unknown.launchable = false;
         assert_eq!(on_click(&unknown, Button::Secondary), Action::Nothing);
         assert_eq!(on_click(&unknown, Button::Primary), Action::Activate(1));
+    }
+
+    #[test]
+    fn a_pinned_app_keeps_its_place_in_the_order_pinned() {
+        let mut dock = dock(&["foot", "vim"]);
+        assert!(dock.pin("firefox-esr"));
+        assert_eq!(dock.pinned(), ["foot", "vim", "firefox-esr"]);
+        assert_eq!(keys(&dock.items(&[])), ["", "foot", "vim", "firefox-esr"]);
+    }
+
+    #[test]
+    fn pinning_is_refused_twice_and_for_apps_that_are_not_installed() {
+        let mut dock = dock(&["foot"]);
+        assert!(!dock.pin("foot"));
+        assert!(!dock.pin("Foot.desktop"));
+        assert!(!dock.pin("no-such-app"));
+        assert_eq!(dock.pinned(), ["foot"]);
+    }
+
+    #[test]
+    fn unpinning_removes_the_tile_unless_the_app_runs() {
+        let mut idle = dock(&["foot", "vim"]);
+        assert!(idle.unpin("foot"));
+        assert!(!idle.unpin("foot"));
+        assert_eq!(keys(&idle.items(&[])), ["", "vim"]);
+
+        let mut busy = dock(&["foot", "vim"]);
+        assert!(busy.unpin("foot"));
+        // Still running: it stays, after the pins.
+        let items = busy.items(&[window(1, "foot"), window(2, "vim")]);
+        assert_eq!(keys(&items), ["", "vim", "foot"]);
+        assert_eq!(items[2].kind, Kind::Running);
+    }
+
+    #[test]
+    fn pinning_a_running_app_moves_it_in_among_the_pins() {
+        let mut dock = dock(&["foot"]);
+        let windows = [window(1, "foot"), window(2, "vim")];
+        assert_eq!(keys(&dock.items(&windows)), ["", "foot", "vim"]);
+        assert!(dock.pin("vim"));
+        let items = dock.items(&windows);
+        assert_eq!(keys(&items), ["", "foot", "vim"]);
+        assert_eq!(items[2].kind, Kind::Pinned);
+        assert!(items[2].running());
+    }
+
+    #[test]
+    fn a_pin_written_with_a_suffix_is_found() {
+        let mut dock = dock(&["Foot.desktop"]);
+        assert!(dock.is_pinned("foot"));
+        assert!(dock.unpin("foot"));
+        assert!(dock.pinned().is_empty());
+    }
+
+    #[test]
+    fn the_menu_depends_on_whether_the_app_runs_and_is_pinned() {
+        let mut dock = dock(&["foot"]);
+        let items = dock.items(&[window(2, "vim")]);
+        let menu = |item: &Item, dock: &Dock| menu_for(item, dock.is_pinned(&item.key));
+        assert_eq!(menu(&items[0], &dock), []);
+        assert_eq!(
+            menu(&items[1], &dock),
+            [MenuAction::Open, MenuAction::Remove]
+        );
+        assert_eq!(menu(&items[2], &dock), [MenuAction::Keep, MenuAction::Quit]);
+        let items = dock.items(&[window(1, "foot")]);
+        assert_eq!(
+            menu(&items[1], &dock),
+            [MenuAction::Remove, MenuAction::Quit]
+        );
+    }
+
+    #[test]
+    fn a_window_that_matches_no_app_can_only_be_quit() {
+        let mut dock = dock(&[]);
+        let items = dock.items(&[window(1, "mystery")]);
+        assert_eq!(menu_for(&items[1], false), [MenuAction::Quit]);
     }
 }
