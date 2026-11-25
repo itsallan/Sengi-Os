@@ -33,10 +33,10 @@ It makes `~/Desktop` on the first run.
 
 ## Opening
 
-The image has no file manager and no `xdg-open`. Opening an icon runs
-`xdg-open` if it is installed, and for a folder otherwise the first of
-thunar, pcmanfm, pcmanfm-qt, nautilus, nemo, caja or dolphin that is on
-`PATH`. If there is none, a notice says "No file manager installed" (for a
+The image has no `xdg-open`, but it has Files (`sengi-files`). Opening an
+icon runs `xdg-open` if it is installed, and for a folder otherwise the first
+of sengi-files, thunar, pcmanfm, pcmanfm-qt, nautilus, nemo, caja or dolphin
+that is on `PATH`. If there is none, a notice says "No file manager installed" (for a
 file: "Nothing installed can open this file").
 
 ## Keyboard

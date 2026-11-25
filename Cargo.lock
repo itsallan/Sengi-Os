@@ -3570,6 +3570,7 @@ dependencies = [
  "png",
  "sengi-apps",
  "sengi-layer",
+ "sengi-system",
  "slint",
  "slint-build",
 ]

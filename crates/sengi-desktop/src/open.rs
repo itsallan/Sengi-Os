@@ -13,6 +13,7 @@ pub const NO_OPENER: &str = "Nothing installed can open this file";
 
 /// Tried in this order to open a folder when `xdg-open` is not there.
 const FILE_MANAGERS: &[&str] = &[
+    "sengi-files",
     "thunar",
     "pcmanfm",
     "pcmanfm-qt",
@@ -110,6 +111,15 @@ mod tests {
         assert_eq!(
             open_command(&env, Path::new("/h/Desktop/a.txt"), false),
             Err(NO_OPENER)
+        );
+    }
+
+    #[test]
+    fn files_is_the_first_file_manager_tried() {
+        let env = env_with("open-files", &["thunar", "sengi-files"]);
+        assert_eq!(
+            open_command(&env, Path::new("/h/Desktop/a"), true),
+            Ok(vec!["sengi-files".to_string(), "/h/Desktop/a".to_string()])
         );
     }
 

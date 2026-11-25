@@ -12,7 +12,9 @@ build = "build.rs"
 # no image decoder.
 sengi-apps = { path = "../sengi-apps" }
 sengi-layer = { path = "../sengi-layer" }
-# inotify, and the local time for the Trash's records.
+# The Trash, shared with Files; no features, so no bus.
+sengi-system = { path = "../sengi-system" }
+# inotify.
 libc = "0.2"
 # Not the workspace entry: that one pulls in the winit backend. sengi-layer
 # is the backend here and turns on the software renderer.
