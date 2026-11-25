@@ -181,6 +181,81 @@ fn docks() {
     }
 }
 
+/// A right click on a tile opens the menu above it, and it goes when the
+/// pointer has left it.
+fn dock_menu() {
+    use slint::platform::{PointerEventButton, WindowEvent};
+    use slint::LogicalPosition;
+
+    let w = dock::Dock::new().unwrap();
+    let tile = |name: &str, k: usize| dock::DockItem {
+        name: name.into(),
+        icon: dock::DockIcon::Image,
+        image: swatch(40, [[200, 80, 60], [60, 160, 90], [70, 100, 200]][k % 3]),
+        present: true,
+        running: k == 1,
+        ..Default::default()
+    };
+    w.set_items(list(vec![
+        dock::DockItem {
+            name: "Search".into(),
+            icon: dock::DockIcon::Search,
+            present: true,
+            ..Default::default()
+        },
+        tile("Files", 0),
+        tile("Notes", 1),
+        tile("Mail", 2),
+    ]));
+    w.on_context_clicked({
+        let weak = w.as_weak();
+        move |index| {
+            let w = weak.upgrade().unwrap();
+            let rows: Vec<slint::SharedString> = ["Open", "Remove from Dock"]
+                .into_iter()
+                .map(Into::into)
+                .collect();
+            w.set_menu_rows(list(rows));
+            w.set_menu_index(index);
+        }
+    });
+    let (width, height) = (w.get_dock_width(), w.get_dock_height());
+    w.show().unwrap();
+    let win = harness::window();
+    harness::resize(&win, width.ceil() as u32, height.ceil() as u32);
+    harness::advance(400);
+
+    let slot = w.get_slot_width();
+    let x = w.get_side_padding() + slot * 2.5;
+    let y = height - w.get_panel_height() / 2.0;
+    let at = LogicalPosition::new(x, y);
+    win.dispatch_event(WindowEvent::PointerMoved { position: at });
+    win.dispatch_event(WindowEvent::PointerPressed {
+        position: at,
+        button: PointerEventButton::Right,
+    });
+    win.dispatch_event(WindowEvent::PointerReleased {
+        position: at,
+        button: PointerEventButton::Right,
+    });
+    harness::advance(400);
+    assert_eq!(w.get_menu_index(), 2, "the menu opens on the tile");
+    assert!(w.get_menu_height() > 0.0);
+    let inside = harness::draw(&win, BACKDROP);
+    inside.save("dock-menu-1366.png");
+    // The menu sits above the panel, over the tile that was clicked.
+    let menu_y = (height - w.get_panel_height() - w.get_menu_gap() - w.get_menu_height() / 2.0) as usize;
+    let menu_x = (w.get_menu_x() + w.get_menu_width() / 2.0) as usize;
+    assert_ne!(inside.at(menu_x, menu_y), BACKDROP, "the menu is drawn");
+
+    // Away from the menu and its tile it closes by itself.
+    let away = LogicalPosition::new(2.0, 2.0);
+    win.dispatch_event(WindowEvent::PointerMoved { position: away });
+    harness::advance(600);
+    assert_eq!(w.get_menu_index(), -1, "the menu closes when the pointer leaves");
+    w.hide().unwrap();
+}
+
 fn card(
     serial: i32,
     app: &str,
@@ -519,6 +594,7 @@ fn desktop() {
     bars();
     tray_menu();
     docks();
+    dock_menu();
     notifications();
     quicks();
     stores();
