@@ -82,6 +82,18 @@ fn private_dir(path: &Path) -> io::Result<()> {
 /// Returns the name it has in the Trash. Nothing is replaced or deleted: a
 /// move that fails leaves the item where it was.
 pub fn trash(trash: &Path, path: &Path, date: &str) -> io::Result<String> {
+    trash_in(trash, path, date, None)
+}
+
+/// As [`trash`], for a trash folder at the top of another volume (a USB
+/// stick, say): the record's `Path=` is then relative to `topdir`, the top
+/// of that volume, as the specification asks, so the item can be found again
+/// wherever the volume is mounted next time.
+pub fn trash_on_volume(trash: &Path, path: &Path, date: &str, topdir: &Path) -> io::Result<String> {
+    trash_in(trash, path, date, Some(topdir))
+}
+
+fn trash_in(trash: &Path, path: &Path, date: &str, topdir: Option<&Path>) -> io::Result<String> {
     let path = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -97,9 +109,12 @@ pub fn trash(trash: &Path, path: &Path, date: &str) -> io::Result<String> {
     private_dir(&files)?;
     private_dir(&info)?;
 
+    let recorded = topdir
+        .and_then(|top| path.strip_prefix(top).ok())
+        .unwrap_or(&path);
     let record = format!(
         "[Trash Info]\nPath={}\nDeletionDate={date}\n",
-        encode(&path)
+        encode(recorded)
     );
     // Writing the record with create_new is what claims the name, so two
     // trashers cannot pick the same one.
@@ -152,6 +167,18 @@ pub fn explain(error: &io::Error) -> String {
 /// The text of an error without the " (os error N)" Rust appends, which is
 /// no use to the reader.
 pub fn plain(error: &io::Error) -> String {
+    // The ones a person meets with a USB stick or a full disk, said so that
+    // they know what to do.
+    match error.raw_os_error() {
+        Some(libc::ENOSPC) => return "There is no space left on the disk".to_string(),
+        Some(libc::EDQUOT) => return "The space allowed on the disk is used up".to_string(),
+        Some(libc::EROFS) => return "The disk is read-only".to_string(),
+        Some(libc::EIO) => return "The disk gave an error, it may have been unplugged".to_string(),
+        Some(libc::ENODEV | libc::ENXIO) => {
+            return "The disk is not there any more, it may have been unplugged".to_string()
+        }
+        _ => {}
+    }
     let text = error.to_string();
     text.split(" (os error").next().unwrap_or(&text).to_string()
 }
@@ -195,7 +222,10 @@ pub struct Item {
     pub folder: bool,
 }
 
-fn read_record(info: &Path, name: &str) -> (Option<PathBuf>, String) {
+/// `topdir` is the top of the volume a per-volume trash belongs to: a
+/// relative `Path=` is taken from there. Without it only an absolute one is
+/// believed.
+fn read_record(info: &Path, name: &str, topdir: Option<&Path>) -> (Option<PathBuf>, String) {
     let Ok(text) = fs::read_to_string(info.join(format!("{name}.trashinfo"))) else {
         return (None, String::new());
     };
@@ -204,7 +234,11 @@ fn read_record(info: &Path, name: &str) -> (Option<PathBuf>, String) {
     for line in text.lines() {
         if let Some(value) = line.strip_prefix("Path=") {
             let path = decode(value.trim());
-            original = path.is_absolute().then_some(path);
+            original = if path.is_absolute() {
+                Some(path)
+            } else {
+                topdir.map(|top| top.join(path))
+            };
         } else if let Some(value) = line.strip_prefix("DeletionDate=") {
             date = value.trim().to_string();
         }
@@ -214,6 +248,15 @@ fn read_record(info: &Path, name: &str) -> (Option<PathBuf>, String) {
 
 /// What is in the Trash. A Trash that does not exist yet is an empty one.
 pub fn list(trash: &Path) -> io::Result<Vec<Item>> {
+    list_in(trash, None)
+}
+
+/// As [`list`] for the trash of a volume whose top is `topdir`.
+pub fn list_on_volume(trash: &Path, topdir: &Path) -> io::Result<Vec<Item>> {
+    list_in(trash, Some(topdir))
+}
+
+fn list_in(trash: &Path, topdir: Option<&Path>) -> io::Result<Vec<Item>> {
     let entries = match fs::read_dir(trash.join("files")) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -225,7 +268,7 @@ pub fn list(trash: &Path) -> io::Result<Vec<Item>> {
         let Ok(name) = entry.file_name().into_string() else {
             continue;
         };
-        let (original, date) = read_record(&info, &name);
+        let (original, date) = read_record(&info, &name, topdir);
         // A link to a folder is not a folder here: it is the link that is in
         // the Trash.
         let folder = entry.file_type().is_ok_and(|kind| kind.is_dir());
@@ -251,10 +294,19 @@ fn plain_name(name: &str) -> io::Result<()> {
 /// that are gone are made again. If something is there now, the item gets a
 /// numbered name next to it; nothing is replaced.
 pub fn restore(trash: &Path, name: &str) -> io::Result<PathBuf> {
+    restore_in(trash, name, None)
+}
+
+/// As [`restore`] for the trash of a volume whose top is `topdir`.
+pub fn restore_on_volume(trash: &Path, name: &str, topdir: &Path) -> io::Result<PathBuf> {
+    restore_in(trash, name, Some(topdir))
+}
+
+fn restore_in(trash: &Path, name: &str, topdir: Option<&Path>) -> io::Result<PathBuf> {
     plain_name(name)?;
     let source = trash.join("files").join(name);
     fs::symlink_metadata(&source)?;
-    let (original, _) = read_record(&trash.join("info"), name);
+    let (original, _) = read_record(&trash.join("info"), name, topdir);
     let original = original.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -377,6 +429,36 @@ mod tests {
         let error = trash(&bin, &root.path().join("missing"), "d").unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
         assert_eq!(fs::read_dir(bin.join("info")).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_volume_trash_records_a_path_from_the_top_of_the_volume() {
+        let root = TempDir::new();
+        let top = root.path().join("stick");
+        fs::create_dir_all(&top).unwrap();
+        fs::write(top.join("a b.txt"), "x").unwrap();
+        let bin = top.join(".Trash-1000");
+        trash_on_volume(&bin, &top.join("a b.txt"), "d", &top).unwrap();
+        let record = fs::read_to_string(bin.join("info/a b.txt.trashinfo")).unwrap();
+        assert!(record.contains("Path=a%20b.txt\n"), "{record}");
+        let items = list_on_volume(&bin, &top).unwrap();
+        assert_eq!(
+            items[0].original.as_deref(),
+            Some(top.join("a b.txt").as_path())
+        );
+        // Without the top of the volume a relative record is not believed.
+        assert_eq!(list(&bin).unwrap()[0].original, None);
+        let back = restore_on_volume(&bin, "a b.txt", &top).unwrap();
+        assert_eq!(back, top.join("a b.txt"));
+        assert!(back.exists());
+    }
+
+    #[test]
+    fn a_full_or_read_only_disk_is_said_plainly() {
+        let full = io::Error::from_raw_os_error(libc::ENOSPC);
+        assert_eq!(plain(&full), "There is no space left on the disk");
+        let locked = io::Error::from_raw_os_error(libc::EROFS);
+        assert_eq!(plain(&locked), "The disk is read-only");
     }
 
     #[test]
