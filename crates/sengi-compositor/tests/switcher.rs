@@ -19,7 +19,7 @@ const RED: u32 = 0xffb0_2020;
 const DESKTOP: u32 = 0x0012_1316;
 /// The accent, the raised surface, the card's surface and its edge, as the
 /// tokens give them.
-const ACCENT: u32 = 0x00d9_773a;
+const ACCENT: u32 = 0x002f_9e6b;
 const RAISED: u32 = 0x002a_2d33;
 const CARD: u32 = 0x001f_2126;
 const EDGE: u32 = 0x003a_3d44;

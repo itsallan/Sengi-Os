@@ -63,7 +63,7 @@ fn save(name: &str, rows: usize, picture: &[[u8; 3]]) {
 
 /// How many pixels of the accent colour a picture has: the filled bar.
 fn accent(picture: &[[u8; 3]]) -> usize {
-    picture.iter().filter(|p| **p == [0xd9, 0x77, 0x3a]).count()
+    picture.iter().filter(|p| **p == [0x2f, 0x9e, 0x6b]).count()
 }
 
 #[test]
