@@ -1,27 +1,49 @@
 // Generated from tokens/sengi.toml by scripts/render-tokens.sh.
 // Edit ui/tokens.slint.in or the tokens file, never ui/tokens.slint.
 
+// Which palette is in use. A program sets `light` once at start from the
+// theme setting, see sengi-config; every colour of Tokens follows it. It is
+// a global of its own so that this is all a program exports.
+export global ThemeSwitch {
+    in property <bool> light: false;
+}
+
 export global Tokens {
-    out property <color> color-desktop: #121316;
-    out property <color> color-bg: #16171b;
-    out property <color> color-surface: #1f2126;
-    out property <color> color-surface-raised: #2a2d33;
-    out property <color> color-surface-hover: #33363d;
-    out property <color> color-border: #3a3d44;
-    out property <color> color-text: #eceef2;
-    out property <color> color-text-muted: #9a9fa8;
-    out property <color> color-text-disabled: #5f636b;
-    out property <color> color-accent: #2f9e6b;
-    out property <color> color-accent-hover: #3fb27d;
-    out property <color> color-accent-text: #16171b;
-    out property <color> color-danger: #e5534b;
-    out property <color> color-warning: #e0a23b;
-    out property <color> color-success: #4cae6b;
-    out property <color> color-bar: #16171be6;
-    out property <color> color-dock: #1f2126e6;
-    out property <color> color-scrim: #00000080;
-    out property <color> color-focus-ring: #2f9e6b;
-    out property <color> color-outline-disabled: #4a4e56;
+    out property <color> color-desktop: ThemeSwitch.light ? #dcdfe4 : #121316;
+    out property <color> color-bg: ThemeSwitch.light ? #f3f4f6 : #16171b;
+    out property <color> color-surface: ThemeSwitch.light ? #ffffff : #1f2126;
+    out property <color> color-surface-raised: ThemeSwitch.light ? #e8eaee : #2a2d33;
+    out property <color> color-surface-hover: ThemeSwitch.light ? #dcdfe5 : #33363d;
+    out property <color> color-border: ThemeSwitch.light ? #c4c8d0 : #3a3d44;
+    out property <color> color-text: ThemeSwitch.light ? #1b1d21 : #eceef2;
+    out property <color> color-text-muted: ThemeSwitch.light ? #555b66 : #9a9fa8;
+    out property <color> color-text-disabled: ThemeSwitch.light ? #9aa0aa : #5f636b;
+    out property <color> color-accent: ThemeSwitch.light ? #2f9e6b : #2f9e6b;
+    out property <color> color-accent-strong: ThemeSwitch.light ? #1a744a : #3fb27d;
+    out property <color> color-accent-hover: ThemeSwitch.light ? #38ad78 : #3fb27d;
+    out property <color> color-accent-text: ThemeSwitch.light ? #16171b : #16171b;
+    out property <color> color-danger: ThemeSwitch.light ? #c42b24 : #ea5a52;
+    out property <color> color-warning: ThemeSwitch.light ? #8f5f00 : #e0a23b;
+    out property <color> color-success: ThemeSwitch.light ? #1e7a45 : #4cae6b;
+    out property <color> color-bar: ThemeSwitch.light ? #f3f4f6e6 : #16171be6;
+    out property <color> color-dock: ThemeSwitch.light ? #ffffffe6 : #1f2126e6;
+    out property <color> color-scrim: ThemeSwitch.light ? #00000066 : #00000080;
+    out property <color> color-focus-ring: ThemeSwitch.light ? #1a744a : #2f9e6b;
+    out property <color> color-outline-disabled: ThemeSwitch.light ? #b4b9c2 : #4a4e56;
+
+    // Both palettes side by side, for the theme preview in Settings.
+    out property <color> dark-bg: #16171b;
+    out property <color> dark-surface: #1f2126;
+    out property <color> dark-text: #eceef2;
+    out property <color> dark-text-muted: #9a9fa8;
+    out property <color> dark-accent: #2f9e6b;
+    out property <color> dark-border: #3a3d44;
+    out property <color> light-bg: #f3f4f6;
+    out property <color> light-surface: #ffffff;
+    out property <color> light-text: #1b1d21;
+    out property <color> light-text-muted: #555b66;
+    out property <color> light-accent: #2f9e6b;
+    out property <color> light-border: #c4c8d0;
 
     out property <length> radius: 6px;
     out property <length> border-width: 1px;

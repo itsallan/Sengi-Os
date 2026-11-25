@@ -4,6 +4,19 @@
 #
 # Colours are #rrggbb or #rrggbbaa. Sizes are in px, durations in ms.
 
+# Two palettes with the same names: [color] is the dark theme and
+# [color-light] the light one. Programs pick one at start from the
+# setting appearance.theme; a name has to be in both. Contrast ratios
+# (WCAG 2.x, text over every surface it sits on) are checked by the
+# tests of crates/sengi-tokens: 4.5 for text, 3 for parts of controls.
+# Measured ratios, dark / light:
+#   text on surface 13.9 / 16.9, muted text on surface 6.1 / 6.8,
+#   muted text on surface-hover 4.6 / 5.1,
+#   accent-strong on surface 6.0 / 5.8 (text in the accent, 4.5 needed),
+#   accent on surface 4.8 / 3.4 (fills and icons, 3 needed),
+#   accent-text on accent 5.3 / 5.3, danger on surface 4.7 / 5.7,
+#   warning on surface 7.2 / 5.5, success on surface 5.8 / 5.4.
+#
 [color]
 desktop = "#121316"
 bg = "#16171b"
@@ -15,9 +28,11 @@ text = "#eceef2"
 text-muted = "#9a9fa8"
 text-disabled = "#5f636b"
 accent = "#2f9e6b"
+# The accent as text on a surface; the plain accent is for fills and icons.
+accent-strong = "#3fb27d"
 accent-hover = "#3fb27d"
 accent-text = "#16171b"
-danger = "#e5534b"
+danger = "#ea5a52"
 warning = "#e0a23b"
 success = "#4cae6b"
 bar = "#16171be6"
@@ -40,6 +55,43 @@ window-maximise = "#28c840"
 window-maximise-ring = "#1aab29"
 window-maximise-glyph = "#006500"
 window-inactive = "#4d4d4d"
+
+[color-light]
+# The light theme. Same names as [color]. Surfaces step from the window
+# background (bg) up to white cards (surface); raised and hover are the
+# darker steps of controls. The accent stays the Sengi green and keeps the
+# dark label on it; text in the accent uses accent-strong, which is deeper.
+desktop = "#dcdfe4"
+bg = "#f3f4f6"
+surface = "#ffffff"
+surface-raised = "#e8eaee"
+surface-hover = "#dcdfe5"
+border = "#c4c8d0"
+text = "#1b1d21"
+text-muted = "#555b66"
+text-disabled = "#9aa0aa"
+accent = "#2f9e6b"
+accent-strong = "#1a744a"
+accent-hover = "#38ad78"
+accent-text = "#16171b"
+danger = "#c42b24"
+warning = "#8f5f00"
+success = "#1e7a45"
+bar = "#f3f4f6e6"
+dock = "#ffffffe6"
+scrim = "#00000066"
+focus-ring = "#1a744a"
+outline-disabled = "#b4b9c2"
+window-close = "#ff5f57"
+window-close-ring = "#e0443e"
+window-close-glyph = "#4d0000"
+window-minimise = "#febc2e"
+window-minimise-ring = "#dea123"
+window-minimise-glyph = "#995700"
+window-maximise = "#28c840"
+window-maximise-ring = "#1aab29"
+window-maximise-glyph = "#006500"
+window-inactive = "#c9ccd2"
 
 [radius]
 base = 6

@@ -1,27 +1,49 @@
 // Generated from tokens/sengi.toml by scripts/render-tokens.sh.
 // Edit ui/tokens.slint.in or the tokens file, never ui/tokens.slint.
 
+// Which palette is in use. A program sets `light` once at start from the
+// theme setting, see sengi-config; every colour of Tokens follows it. It is
+// a global of its own so that this is all a program exports.
+export global ThemeSwitch {
+    in property <bool> light: false;
+}
+
 export global Tokens {
-    out property <color> color-desktop: @{color.desktop};
-    out property <color> color-bg: @{color.bg};
-    out property <color> color-surface: @{color.surface};
-    out property <color> color-surface-raised: @{color.surface-raised};
-    out property <color> color-surface-hover: @{color.surface-hover};
-    out property <color> color-border: @{color.border};
-    out property <color> color-text: @{color.text};
-    out property <color> color-text-muted: @{color.text-muted};
-    out property <color> color-text-disabled: @{color.text-disabled};
-    out property <color> color-accent: @{color.accent};
-    out property <color> color-accent-hover: @{color.accent-hover};
-    out property <color> color-accent-text: @{color.accent-text};
-    out property <color> color-danger: @{color.danger};
-    out property <color> color-warning: @{color.warning};
-    out property <color> color-success: @{color.success};
-    out property <color> color-bar: @{color.bar};
-    out property <color> color-dock: @{color.dock};
-    out property <color> color-scrim: @{color.scrim};
-    out property <color> color-focus-ring: @{color.focus-ring};
-    out property <color> color-outline-disabled: @{color.outline-disabled};
+    out property <color> color-desktop: ThemeSwitch.light ? @{color-light.desktop} : @{color.desktop};
+    out property <color> color-bg: ThemeSwitch.light ? @{color-light.bg} : @{color.bg};
+    out property <color> color-surface: ThemeSwitch.light ? @{color-light.surface} : @{color.surface};
+    out property <color> color-surface-raised: ThemeSwitch.light ? @{color-light.surface-raised} : @{color.surface-raised};
+    out property <color> color-surface-hover: ThemeSwitch.light ? @{color-light.surface-hover} : @{color.surface-hover};
+    out property <color> color-border: ThemeSwitch.light ? @{color-light.border} : @{color.border};
+    out property <color> color-text: ThemeSwitch.light ? @{color-light.text} : @{color.text};
+    out property <color> color-text-muted: ThemeSwitch.light ? @{color-light.text-muted} : @{color.text-muted};
+    out property <color> color-text-disabled: ThemeSwitch.light ? @{color-light.text-disabled} : @{color.text-disabled};
+    out property <color> color-accent: ThemeSwitch.light ? @{color-light.accent} : @{color.accent};
+    out property <color> color-accent-strong: ThemeSwitch.light ? @{color-light.accent-strong} : @{color.accent-strong};
+    out property <color> color-accent-hover: ThemeSwitch.light ? @{color-light.accent-hover} : @{color.accent-hover};
+    out property <color> color-accent-text: ThemeSwitch.light ? @{color-light.accent-text} : @{color.accent-text};
+    out property <color> color-danger: ThemeSwitch.light ? @{color-light.danger} : @{color.danger};
+    out property <color> color-warning: ThemeSwitch.light ? @{color-light.warning} : @{color.warning};
+    out property <color> color-success: ThemeSwitch.light ? @{color-light.success} : @{color.success};
+    out property <color> color-bar: ThemeSwitch.light ? @{color-light.bar} : @{color.bar};
+    out property <color> color-dock: ThemeSwitch.light ? @{color-light.dock} : @{color.dock};
+    out property <color> color-scrim: ThemeSwitch.light ? @{color-light.scrim} : @{color.scrim};
+    out property <color> color-focus-ring: ThemeSwitch.light ? @{color-light.focus-ring} : @{color.focus-ring};
+    out property <color> color-outline-disabled: ThemeSwitch.light ? @{color-light.outline-disabled} : @{color.outline-disabled};
+
+    // Both palettes side by side, for the theme preview in Settings.
+    out property <color> dark-bg: @{color.bg};
+    out property <color> dark-surface: @{color.surface};
+    out property <color> dark-text: @{color.text};
+    out property <color> dark-text-muted: @{color.text-muted};
+    out property <color> dark-accent: @{color.accent};
+    out property <color> dark-border: @{color.border};
+    out property <color> light-bg: @{color-light.bg};
+    out property <color> light-surface: @{color-light.surface};
+    out property <color> light-text: @{color-light.text};
+    out property <color> light-text-muted: @{color-light.text-muted};
+    out property <color> light-accent: @{color-light.accent};
+    out property <color> light-border: @{color-light.border};
 
     out property <length> radius: @{radius.base}px;
     out property <length> border-width: @{border.width}px;

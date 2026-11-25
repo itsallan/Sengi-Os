@@ -2,10 +2,10 @@
 // Generated from ui/components.slint.in so the motion easing comes from the
 // tokens; edit the .in file.
 
-import { Tokens } from "tokens.slint";
+import { Tokens, ThemeSwitch } from "tokens.slint";
 import { IconPaths } from "icon-paths.slint";
 
-export { Tokens }
+export { Tokens, ThemeSwitch }
 
 // One of the Phosphor Bold icons in ui/icons/phosphor/bold, by its name without
 // the "-bold" ending, filled in `ink`. It is the size of a bar icon unless
