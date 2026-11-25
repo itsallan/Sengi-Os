@@ -432,6 +432,60 @@ impl Client {
         Ok((surface, desktop))
     }
 
+    /// A wallpaper, as swaybg shows one: a surface over the whole output on
+    /// the background layer, whose buffer is the output's size and has
+    /// `pixel(x, y)` (0xAARRGGBB) at each place.
+    pub fn wallpaper(
+        &mut self,
+        pixel: impl Fn(u32, u32) -> u32,
+    ) -> Result<(WlSurface, ZwlrLayerSurfaceV1), Failure> {
+        let shell: ZwlrLayerShellV1 = self.globals.bind(&self.handle, 1..=4, ())?;
+        let surface = self.compositor.create_surface(&self.handle, ());
+        let layer = shell.get_layer_surface(
+            &surface,
+            None,
+            Layer::Background,
+            "wallpaper".into(),
+            &self.handle,
+            (),
+        );
+        layer.set_size(0, 0);
+        layer.set_anchor(Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right);
+        layer.set_exclusive_zone(-1);
+        surface.commit();
+        if !self.wait(SOON, |seen| seen.more.layer_configure.is_some()) {
+            return Err("the wallpaper was never configured".into());
+        }
+        let (serial, width, height) = self.seen.more.layer_configure.take().unwrap_or_default();
+        layer.ack_configure(serial);
+        let mut bytes = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                bytes.extend(pixel(x, y).to_le_bytes());
+            }
+        }
+        let file = scratch_file(bytes.len())?;
+        file.write_all_at(&bytes, 0)?;
+        let pool = self
+            .shm
+            .create_pool(file.as_fd(), bytes.len() as i32, &self.handle, ());
+        let buffer = pool.create_buffer(
+            0,
+            width as i32,
+            height as i32,
+            width as i32 * 4,
+            wl_shm::Format::Argb8888,
+            &self.handle,
+            (),
+        );
+        pool.destroy();
+        surface.attach(Some(&buffer), 0, 0);
+        surface.damage(0, 0, width as i32, height as i32);
+        surface.commit();
+        self.roundtrip()?;
+        Ok((surface, layer))
+    }
+
     /// A dock along the bottom edge that keeps `height` rows for itself.
     pub fn dock(
         &mut self,

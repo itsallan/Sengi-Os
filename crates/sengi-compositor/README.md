@@ -559,8 +559,12 @@ script against a fake compositor.
 `/usr/lib/sengi-os/session-start` is the one start-up script of the
 session; labwc's `autostart` runs the same file. Its restart loops watch
 the compositor by the process number each one gives its children. It
-picks the wallpaper by `WLR_RENDERER`, which nothing sets here, so swaybg
-gets its one-colour buffer, which both of our renderers draw correctly.
+starts swaybg through `/usr/lib/sengi-os/wallpaper.sh`: with the picture
+chosen in Settings (`appearance.wallpaper`) if there is a usable one, else
+the desktop colour, picked by `WLR_RENDERER` (which nothing sets here, so
+the one-colour buffer, which both of our renderers draw correctly).
+The compositor itself draws no wallpaper and decodes no image; swaybg keeps
+the picture decoded while it runs.
 The session menu's "Log out" runs `sengi-compositor --exit`.
 
 Locking goes through the compositor. Super+L, or anything that runs
