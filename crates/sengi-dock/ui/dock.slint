@@ -27,6 +27,10 @@ export struct DockItem {
     // False while the item slides in or out. The program adds a row with
     // this off and turns it on, and turns it off before removing the row.
     present: bool,
+    // Kept in the dock: it can be dragged to another place, or out of the
+    // dock to remove it. The search button and apps that are only running
+    // cannot.
+    pinned: bool,
 }
 
 component Tile inherits Rectangle {
@@ -92,16 +96,52 @@ component Indicator inherits Rectangle {
     }
 }
 
+// The picture of an app, as the tile and the dragged copy of it show it.
+component TileIcon inherits Rectangle {
+    in property <DockItem> item;
+
+    width: Tokens.dock-item;
+    height: Tokens.dock-item;
+
+    if root.item.icon == DockIcon.search: SearchIcon { }
+    if root.item.icon == DockIcon.terminal: TerminalIcon { }
+    if root.item.icon == DockIcon.letter: LetterIcon {
+        letter: root.item.letter;
+    }
+    if root.item.icon == DockIcon.image: Image {
+        width: Tokens.dock-item;
+        height: Tokens.dock-item;
+        source: root.item.image;
+    }
+}
+
 component Slot inherits Rectangle {
     in property <DockItem> item;
+    // This tile is being dragged: its place stays, empty, while a copy
+    // follows the pointer.
+    in property <bool> lifted-away: false;
+    // A tile is being dragged and the pointer is over this one.
+    in property <bool> under: false;
+    // Where a tile being dragged would land next to this one: -1 on its
+    // left, 1 on its right, 0 not here.
+    in property <int> marker: 0;
     out property <bool> hovered: touch.has-hover;
     callback clicked();
     callback middle-clicked();
     // A right click.
     callback context();
+    // The pointer went far enough with the button down to drag the tile.
+    callback drag-begun();
+    // Where the pointer is, in the window, while dragging.
+    callback drag-moved(length, length);
+    callback drag-ended();
+    callback drag-cancelled();
 
     // A click with Ctrl or Shift held counts as a middle click.
     property <bool> modified: false;
+    // The left button is down, and the press has become a drag.
+    property <bool> left: false;
+    property <bool> dragged: false;
     // Room above the panel for the icon to jump into while it launches.
     property <length> top: Tokens.dock-bounce;
     property <bool> launching: root.item.launching;
@@ -160,16 +200,20 @@ component Slot inherits Rectangle {
             easing: Tokens.motion-bounce-easing;
         }
 
-        if root.item.icon == DockIcon.search: SearchIcon { }
-        if root.item.icon == DockIcon.terminal: TerminalIcon { }
-        if root.item.icon == DockIcon.letter: LetterIcon {
-            letter: root.item.letter;
+        TileIcon {
+            item: root.item;
+            visible: !root.lifted-away;
         }
-        if root.item.icon == DockIcon.image: Image {
-            width: Tokens.dock-item;
-            height: Tokens.dock-item;
-            source: root.item.image;
-        }
+    }
+
+    // Where the dragged tile would be put.
+    if root.marker != 0: Rectangle {
+        x: root.marker < 0 ? 0 : parent.width - self.width;
+        y: root.top + Tokens.dock-padding;
+        width: Tokens.space-xxs;
+        height: Tokens.dock-item;
+        border-radius: self.width / 2;
+        background: Tokens.color-accent;
     }
 
     Indicator {
@@ -185,15 +229,46 @@ component Slot inherits Rectangle {
         height: parent.height - root.top;
         enabled: root.item.present;
         clicked => {
+            // Letting go of a dragged tile is not a click on it.
+            if root.dragged {
+                return;
+            }
             if root.modified {
                 root.middle-clicked();
             } else {
                 root.clicked();
             }
         }
+        moved => {
+            if !root.left || !root.item.pinned {
+                return;
+            }
+            if !root.dragged {
+                if Math.abs(self.mouse-x - self.pressed-x) < Tokens.space-md
+                    && Math.abs(self.mouse-y - self.pressed-y) < Tokens.space-md {
+                    return;
+                }
+                root.dragged = true;
+                root.drag-begun();
+            }
+            root.drag-moved(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+        }
         pointer-event(event) => {
             if event.kind == PointerEventKind.down {
                 root.modified = event.modifiers.control || event.modifiers.shift;
+                root.left = event.button == PointerEventButton.left;
+                root.dragged = false;
+            }
+            if event.kind == PointerEventKind.up && root.dragged {
+                root.drag-ended();
+            }
+            // The pointer was taken away mid-drag, by another surface, say.
+            if event.kind == PointerEventKind.cancel && root.dragged {
+                root.dragged = false;
+                root.drag-cancelled();
+            }
+            if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel {
+                root.left = false;
             }
             if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
                 root.context();
@@ -210,17 +285,20 @@ component Slot inherits Rectangle {
 component NameLabel inherits Rectangle {
     in property <string> text;
     in property <length> limit;
+    // The label warns instead of naming: the danger colour.
+    in property <bool> danger: false;
 
     width: min(label.preferred-width + Tokens.space-sm * 2, root.limit);
     height: Tokens.font-size-sm + Tokens.space-sm * 2;
     border-radius: Tokens.radius;
     border-width: Tokens.border-width;
-    border-color: Tokens.color-border;
+    border-color: root.danger ? Tokens.color-danger : Tokens.color-border;
     background: Tokens.color-surface;
 
     label := SengiText {
         width: parent.width - Tokens.space-sm * 2;
         text: root.text;
+        color: root.danger ? Tokens.color-danger : Tokens.color-text;
         font-size: Tokens.font-size-sm;
         horizontal-alignment: center;
         vertical-alignment: center;
@@ -275,6 +353,39 @@ export component Dock inherits Window {
     callback menu-chosen(int);
     // The menu closed itself because the pointer left it.
     callback menu-closed();
+    // A pinned tile was dragged onto the place of another and let go: the
+    // rows it left and arrived at.
+    callback reordered(int, int);
+    // A pinned tile was dragged up out of the dock and let go.
+    callback removed(int);
+    // A drag began or ended. While one is on, the program lets the surface
+    // take the pointer everywhere, so that the drag is followed all the way.
+    callback drag-changed(bool);
+
+    // The row being dragged, or -1.
+    in-out property <int> drag-from: -1;
+    out property <bool> dragging: root.drag-from >= 0;
+    // The row whose place the tile would take if let go now.
+    property <int> drop-index: -1;
+    // The pointer, in the window, while dragging.
+    property <length> drag-x;
+    property <length> drag-y;
+    // Far enough above the panel that letting go removes the app.
+    property <bool> drag-out: root.dragging
+        && root.drag-y < root.height - root.panel-height - Tokens.dock-item / 2;
+
+    function end-drag(drop: bool) {
+        if drop && root.drag-from >= 0 && root.drag-from < root.items.length {
+            if root.drag-out {
+                root.removed(root.drag-from);
+            } else if root.drop-index >= 0 && root.drop-index != root.drag-from {
+                root.reordered(root.drag-from, root.drop-index);
+            }
+        }
+        root.drag-from = -1;
+        root.drop-index = -1;
+        root.drag-changed(false);
+    }
 
     // The rows of the menu, and the tile it belongs to, or -1 for no menu.
     in property <[string]> menu-rows;
@@ -330,6 +441,35 @@ export component Dock inherits Window {
 
             for item[index] in root.items: slot := Slot {
                 item: item;
+                lifted-away: root.drag-from == index;
+                marker: root.dragging && !root.drag-out && index == root.drop-index
+                    && index != root.drag-from ? (index < root.drag-from ? -1 : 1) : 0;
+                // Whether the dragged tile is over this one. Only pinned
+                // tiles are places to drop on, so the tile cannot be put
+                // among the apps that are only running, or in front of the
+                // search button.
+                under: root.dragging && item.pinned
+                    && root.drag-x - panel.x >= self.x && root.drag-x - panel.x < self.x + self.width;
+                changed under => {
+                    if self.under {
+                        root.drop-index = index;
+                    }
+                }
+                drag-begun => {
+                    if root.menu-index >= 0 {
+                        root.menu-index = -1;
+                        root.menu-closed();
+                    }
+                    root.drag-from = index;
+                    root.drop-index = index;
+                    root.drag-changed(true);
+                }
+                drag-moved(x, y) => {
+                    root.drag-x = x;
+                    root.drag-y = y;
+                }
+                drag-ended => { root.end-drag(true); }
+                drag-cancelled => { root.end-drag(false); }
                 clicked => { root.clicked(index); }
                 middle-clicked => { root.middle-clicked(index); }
                 context => {
@@ -392,10 +532,26 @@ export component Dock inherits Window {
         limit: root.width;
         x: clamp(root.hovered-centre - self.width / 2, 0, root.width - self.width);
         y: 0;
-        opacity: root.hovered >= 0 && root.menu-index < 0 ? 1 : 0;
+        opacity: root.hovered >= 0 && root.menu-index < 0 && !root.dragging ? 1 : 0;
         animate opacity {
             duration: Tokens.motion-fast;
             easing: Tokens.motion-easing;
         }
+    }
+
+    // The tile being dragged, following the pointer.
+    if root.dragging && root.drag-from < root.items.length: TileIcon {
+        item: root.items[root.drag-from];
+        x: clamp(root.drag-x - self.width / 2, 0, root.width - self.width);
+        y: clamp(root.drag-y - self.height / 2, 0, root.height - self.height);
+    }
+
+    // What letting go would do, once the tile is out of the dock.
+    if root.show-labels && root.drag-out: NameLabel {
+        text: "Remove";
+        danger: true;
+        limit: root.width;
+        x: clamp(root.drag-x - self.width / 2, 0, root.width - self.width);
+        y: max(0px, root.drag-y - Tokens.dock-item / 2 - self.height - Tokens.space-xs);
     }
 }

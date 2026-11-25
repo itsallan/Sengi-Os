@@ -15,7 +15,7 @@ use sengi_apps::Env;
 use sengi_layer::Rect;
 
 use crate::model::{
-    self, Action, Button, Dock, Icon, Item, Launches, MenuAction, LAUNCHER_KEY, LAUNCH_WAIT,
+    self, Action, Button, Dock, Icon, Item, Kind, Launches, MenuAction, LAUNCHER_KEY, LAUNCH_WAIT,
 };
 use crate::windows::{self, Controller, Source, Window};
 use crate::{config, launch, ui};
@@ -54,6 +54,18 @@ enum IconState {
 
 type InputCallback = Box<dyn Fn(&[Rect])>;
 
+/// How often the pinned list's file is looked at for changes made by
+/// another program. One stat call.
+const WATCH_EVERY: Duration = Duration::from_secs(2);
+
+/// When a file was last changed, and how long it is.
+type FileStamp = (std::time::SystemTime, u64);
+
+fn stamp(path: &std::path::Path) -> Option<FileStamp> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
 /// One row of the Slint model. Rows outlive their item for a moment while
 /// they slide out.
 struct Row {
@@ -88,6 +100,11 @@ struct State {
     menu: Option<(String, Vec<MenuAction>)>,
     /// Where the pinned list is saved. None when there is no home.
     save_to: Option<std::path::PathBuf>,
+    /// What the saved file looked like when the dock last wrote or read it,
+    /// to tell when another program (the launcher) has changed it.
+    saved_stamp: Option<FileStamp>,
+    /// Looks at that file now and then.
+    watch: slint::Timer,
     size: (u32, u32),
     /// How many times the rows have been brought up to date.
     updates: u64,
@@ -122,6 +139,18 @@ impl State {
     /// letter tile.
     fn icon_pixels(&self, icon_size: f32) -> u32 {
         (icon_size * self.scale).round().max(1.0) as u32
+    }
+
+    /// Writes the pinned list to the user's file, if there is one.
+    fn save(&mut self) {
+        let Some(path) = &self.save_to else {
+            return;
+        };
+        if let Err(error) = config::save(path, self.dock.pinned()) {
+            eprintln!("sengi-dock: cannot save {}: {error}", path.display());
+        }
+        // Our own write is not news.
+        self.saved_stamp = stamp(path);
     }
 
     fn row_for(&mut self, item: &Item, present: bool, icon_size: f32) -> ui::DockItem {
@@ -165,6 +194,7 @@ impl State {
             windows: item.window_count() as i32,
             launching: !item.running() && self.launches.pending(&item.key, Instant::now()),
             present,
+            pinned: item.kind == Kind::Pinned,
         }
     }
 }
@@ -204,6 +234,8 @@ impl App {
                     controller: None,
                     menu: None,
                     save_to: None,
+                    saved_stamp: None,
+                    watch: slint::Timer::default(),
                     size: (0, 0),
                     updates: 0,
                 }),
@@ -246,6 +278,33 @@ impl App {
         });
 
         let weak = Rc::downgrade(&app.inner);
+        // Both are carried out once the tile's own pointer handler has
+        // returned: they replace or remove the row that is running it.
+        app.inner.ui.on_reordered(move |from, to| {
+            let weak = weak.clone();
+            slint::Timer::single_shot(Duration::ZERO, move || {
+                if let Some(inner) = weak.upgrade() {
+                    App { inner }.reorder(from, to);
+                }
+            });
+        });
+        let weak = Rc::downgrade(&app.inner);
+        app.inner.ui.on_removed(move |row| {
+            let weak = weak.clone();
+            slint::Timer::single_shot(Duration::ZERO, move || {
+                if let Some(inner) = weak.upgrade() {
+                    App { inner }.remove_by_drag(row);
+                }
+            });
+        });
+        let weak = Rc::downgrade(&app.inner);
+        app.inner.ui.on_drag_changed(move |_| {
+            if let Some(inner) = weak.upgrade() {
+                App { inner }.apply_input();
+            }
+        });
+
+        let weak = Rc::downgrade(&app.inner);
         app.inner.ui.on_rescaled(move || {
             if let Some(inner) = weak.upgrade() {
                 let scale = inner.ui.window().scale_factor();
@@ -272,6 +331,7 @@ impl App {
         let dock = Dock::load(config::pinned(&config::paths()), data_dirs, env);
         let app = Self::new(ui, dock, icon_dirs, deliver.clone(), on_resize);
         app.set_save_path(config::user_path());
+        app.watch_config();
 
         // Drop updates that change nothing the dock shows, so a terminal
         // retitling itself does not wake the UI thread.
@@ -295,7 +355,45 @@ impl App {
     /// Where pin and unpin save the list. Without one they last until the
     /// dock exits.
     pub fn set_save_path(&self, path: Option<std::path::PathBuf>) {
-        self.inner.state.borrow_mut().save_to = path;
+        let mut state = self.inner.state.borrow_mut();
+        state.saved_stamp = path.as_deref().and_then(stamp);
+        state.save_to = path;
+    }
+
+    /// Starts looking at the pinned list's file for changes made by another
+    /// program, such as "Keep in Dock" in the launcher.
+    pub fn watch_config(&self) {
+        let weak = Rc::downgrade(&self.inner);
+        let state = self.inner.state.borrow();
+        state
+            .watch
+            .start(slint::TimerMode::Repeated, WATCH_EVERY, move || {
+                if let Some(inner) = weak.upgrade() {
+                    App { inner }.reload_pins();
+                }
+            });
+    }
+
+    /// Takes in the pinned list again if the file changed since the dock
+    /// last wrote or read it.
+    pub fn reload_pins(&self) {
+        let windows = {
+            let mut state = self.inner.state.borrow_mut();
+            let Some(path) = state.save_to.clone() else {
+                return;
+            };
+            let now = stamp(&path);
+            if now == state.saved_stamp {
+                return;
+            }
+            state.saved_stamp = now;
+            let list = config::pinned(&config::paths());
+            if !state.dock.set_pinned(list) {
+                return;
+            }
+            state.windows.clone()
+        };
+        self.set_windows(&windows);
     }
 
     /// Sets who is told where the surface takes the pointer: the panel,
@@ -312,6 +410,12 @@ impl App {
         let ui = &self.inner.ui;
         let state = self.inner.state.borrow();
         let (width, height) = (state.size.0 as i32, state.size.1 as i32);
+        // A drag is followed over the whole surface, so that it keeps going
+        // when the pointer rises above the panel to take the tile out.
+        if ui.get_dragging() {
+            f(&[Rect::new(0, 0, width, height)]);
+            return;
+        }
         let panel_height = ui.get_panel_height().round() as i32;
         let mut rects = vec![Rect::new(0, height - panel_height, width, panel_height)];
         if state.menu.is_some() {
@@ -737,14 +841,56 @@ impl App {
             if !changed {
                 return;
             }
-            if let Some(path) = &state.save_to {
-                if let Err(error) = config::save(path, state.dock.pinned()) {
-                    eprintln!("sengi-dock: cannot save {}: {error}", path.display());
-                }
-            }
+            state.save();
             state.windows.clone()
         };
         self.set_windows(&windows);
+    }
+
+    /// A pinned tile was dragged onto the place of another tile.
+    fn reorder(&self, from: i32, to: i32) {
+        let windows = {
+            let mut state = self.inner.state.borrow_mut();
+            let key_at = |state: &State, row: i32| {
+                usize::try_from(row)
+                    .ok()
+                    .and_then(|at| state.rows.get(at))
+                    // A row on its way out has no tile to move or to move onto.
+                    .filter(|row| row.leaving.is_none())
+                    .map(|row| row.key.clone())
+            };
+            let (Some(key), Some(onto)) = (key_at(&state, from), key_at(&state, to)) else {
+                return;
+            };
+            if !state.dock.move_pin(&key, &onto) {
+                return;
+            }
+            state.save();
+            // The tile is already on screen: put its row where it now
+            // belongs, so that it does not slide in again.
+            let (from, to) = (from as usize, to as usize);
+            let row = state.rows.remove(from);
+            let data = self.inner.rows.remove(from);
+            state.rows.insert(to, row);
+            self.inner.rows.insert(to, data);
+            state.windows.clone()
+        };
+        self.set_windows(&windows);
+    }
+
+    /// A pinned tile was dragged out of the dock and let go.
+    fn remove_by_drag(&self, row: i32) {
+        let key = {
+            let state = self.inner.state.borrow();
+            usize::try_from(row)
+                .ok()
+                .and_then(|at| state.rows.get(at))
+                .filter(|row| row.leaving.is_none())
+                .map(|row| row.key.clone())
+        };
+        if let Some(key) = key {
+            self.set_pinned(&key, false);
+        }
     }
 
     fn click(&self, index: i32, button: Button) {

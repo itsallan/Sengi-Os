@@ -12,6 +12,7 @@ pub mod icons;
 pub mod instance;
 pub mod matcher;
 pub mod menu;
+pub mod pinned;
 pub mod run;
 pub mod session;
 pub mod ui;

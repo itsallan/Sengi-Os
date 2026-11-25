@@ -38,6 +38,24 @@ in the name, then the generic name, keywords and comment, then names that only
 contain the typed letters in order. Ties go to the applications launched most
 and most recently (`$XDG_STATE_HOME/sengi-launcher/usage`), then the alphabet.
 
+## Right-click menu
+
+In the application search (not in a menu), right-click an app in the grid or
+the list, or press the Menu key on the highlighted one, for a small menu:
+
+- Open: starts the app, as Return does.
+- Keep in Dock / Remove from Dock: puts the app in the dock's list or takes
+  it out. It reads and writes the same `~/.config/sengi-os/dock.toml` as the
+  dock, through `sengi_apps::pins`, and keeps the file's comments and other
+  keys. The dock notices the change within a couple of seconds. An app that
+  cannot be in the dock (no desktop entry) only offers Open.
+
+Escape closes the menu before it closes the panel, and so does a click
+anywhere else. The panel stays open after Keep in Dock or Remove from Dock.
+There is no "Show in Files": a desktop entry's path is a file in
+`/usr/share/applications` that means nothing to the person using the
+launcher.
+
 ## Known limits
 
 - No application icons.

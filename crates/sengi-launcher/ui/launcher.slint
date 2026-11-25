@@ -55,12 +55,57 @@ component AppIcon inherits Rectangle {
     }
 }
 
+// One row of the menu a right click on an app opens.
+component MenuRow inherits Rectangle {
+    in property <string> label;
+    callback chosen();
+
+    height: Tokens.menu-row;
+    border-radius: Tokens.radius;
+    background: touch.has-hover ? Tokens.color-accent : transparent;
+
+    SengiText {
+        x: Tokens.space-md;
+        width: parent.width - Tokens.space-md * 2;
+        text: root.label;
+        color: touch.has-hover ? Tokens.color-accent-text : Tokens.color-text;
+        font-size: Tokens.font-size-md;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    touch := TouchArea {
+        clicked => { root.chosen(); }
+    }
+}
+
+component AppMenu inherits SengiSurface {
+    in property <[string]> rows;
+    callback chosen(int);
+
+    width: Tokens.menu-width / 2;
+    height: root.rows.length * Tokens.menu-row + Tokens.menu-padding * 2;
+
+    // Clicks between rows are not clicks on whatever is behind the menu.
+    TouchArea { }
+
+    VerticalLayout {
+        padding: Tokens.menu-padding;
+        for label[index] in root.rows: MenuRow {
+            label: label;
+            chosen => { root.chosen(index); }
+        }
+    }
+}
+
 // One app in the grid: its icon with its name under it.
 component GridCell inherits Rectangle {
     in property <Row> data;
     in property <bool> selected: false;
     callback clicked();
     callback scrolled(length);
+    // A right click, with the pointer's place in the window.
+    callback context(length, length);
 
     border-radius: Tokens.radius;
     background: root.selected ? Tokens.color-surface-hover : transparent;
@@ -88,6 +133,11 @@ component GridCell inherits Rectangle {
 
     TouchArea {
         clicked => { root.clicked(); }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                root.context(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
         scroll-event(event) => {
             root.scrolled(event.delta-y);
             return EventResult.accept;
@@ -102,6 +152,8 @@ component ResultRow inherits Rectangle {
     in property <bool> show-icon: false;
     callback clicked();
     callback scrolled(length);
+    // A right click, with the pointer's place in the window.
+    callback context(length, length);
 
     border-radius: Tokens.radius;
     background: root.selected ? Tokens.color-surface-hover : transparent;
@@ -172,6 +224,11 @@ component ResultRow inherits Rectangle {
 
     TouchArea {
         clicked => { root.clicked(); }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                root.context(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
         scroll-event(event) => {
             root.scrolled(event.delta-y);
             return EventResult.accept;
@@ -225,6 +282,16 @@ export component LauncherWindow inherits Window {
         ? root.grid-height-for(root.grid-lines)
         : root.height-for(root.shown-lines)) + (root.error != "" ? root.row-height : 0);
 
+    // The menu a right click on an app opens: its rows, and the row of the
+    // list or grid it is on, or -1 for none.
+    in property <[string]> menu-rows;
+    in-out property <int> menu-row: -1;
+    // A row of the menu was chosen, by index into menu-rows.
+    callback menu-chosen(int);
+    // The app on this row of the list or grid was right-clicked, or the
+    // menu key was pressed on it. The program fills in menu-rows.
+    callback context-requested(int);
+
     callback query-edited(string);
     // Move the highlight by this many rows; negative is up.
     callback move-selection(int);
@@ -265,6 +332,33 @@ export component LauncherWindow inherits Window {
                 root.move-selection(root.scroll-rest < 0 ? root.step : -root.step);
                 root.scroll-rest = 0;
             }
+        }
+    }
+
+    private property <length> menu-x;
+    private property <length> menu-y;
+    private property <length> panel-x: (root.width - root.panel-width) / 2;
+    private property <length> panel-y: (root.height - root.full-height) / 2;
+
+    function open-context(row: int, x: length, y: length) {
+        root.menu-x = x;
+        root.menu-y = y;
+        root.context-requested(row);
+    }
+
+    // The menu key: the menu goes by the highlighted app.
+    function open-context-on-selected() {
+        if root.selected < 0 {
+            return;
+        }
+        if root.grid {
+            root.open-context(root.selected,
+                root.panel-x + Tokens.space-sm + (Math.mod(root.selected, root.columns) + 0.5) * Tokens.launcher-cell-width,
+                root.panel-y + root.list-top + (Math.floor(root.selected / root.columns) + 0.5) * Tokens.launcher-cell-height);
+        } else {
+            root.open-context(root.selected,
+                root.panel-x + Tokens.space-sm + Tokens.space-md,
+                root.panel-y + root.list-top + (root.selected + 0.5) * root.row-height);
         }
     }
 
@@ -343,7 +437,14 @@ export component LauncherWindow inherits Window {
 
                 key-pressed(event) => {
                     if event.text == Key.Escape {
-                        root.dismiss();
+                        // The menu first, then the panel.
+                        if root.menu-row >= 0 {
+                            root.menu-row = -1;
+                        } else {
+                            root.dismiss();
+                        }
+                    } else if event.text == Key.Menu {
+                        root.open-context-on-selected();
                     } else if event.text == Key.Return {
                         root.accept();
                     } else if root.grid && event.text == Key.LeftArrow {
@@ -407,6 +508,7 @@ export component LauncherWindow inherits Window {
                 data: row;
                 selected: index == root.selected;
                 clicked => { root.row-clicked(index); }
+                context(x, y) => { root.open-context(index, x, y); }
                 scrolled(delta) => { root.wheel(delta); }
             }
         }
@@ -427,6 +529,7 @@ export component LauncherWindow inherits Window {
                 show-icon: root.icons;
                 selected: index == root.selected;
                 clicked => { root.row-clicked(index); }
+                context(x, y) => { root.open-context(index, x, y); }
                 scrolled(delta) => { root.wheel(delta); }
             }
 
@@ -453,5 +556,22 @@ export component LauncherWindow inherits Window {
             vertical-alignment: center;
             overflow: elide;
         }
+    }
+
+    // A click anywhere else closes the menu and nothing more.
+    if root.menu-row >= 0 && root.menu-rows.length > 0: TouchArea {
+        clicked => { root.menu-row = -1; }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                root.menu-row = -1;
+            }
+        }
+    }
+
+    if root.menu-row >= 0 && root.menu-rows.length > 0: AppMenu {
+        x: clamp(root.menu-x, 0, root.width - self.width);
+        y: clamp(root.menu-y, 0, root.height - self.height);
+        rows: root.menu-rows;
+        chosen(row) => { root.menu-chosen(row); }
     }
 }

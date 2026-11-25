@@ -26,6 +26,45 @@ pub enum Outcome {
     Dismissed,
 }
 
+/// What the launcher can do to the dock's list of kept apps. Without one
+/// the right-click menu is not offered.
+pub trait Pins {
+    /// Whether the app with this candidate index is in the dock, or None if
+    /// it cannot be.
+    fn is_pinned(&self, index: usize) -> Option<bool>;
+    /// Puts the app in the dock or takes it out. The message is for the
+    /// panel to show.
+    fn set(&self, index: usize, pinned: bool) -> Result<(), String>;
+}
+
+/// A row of the right-click menu on an app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuChoice {
+    Open,
+    KeepInDock,
+    RemoveFromDock,
+}
+
+impl MenuChoice {
+    pub fn label(self) -> &'static str {
+        match self {
+            MenuChoice::Open => "Open",
+            MenuChoice::KeepInDock => "Keep in Dock",
+            MenuChoice::RemoveFromDock => "Remove from Dock",
+        }
+    }
+}
+
+/// The rows of the menu for an app that is in the dock, is not, or cannot
+/// be (`None`).
+pub fn menu_choices(pinned: Option<bool>) -> Vec<MenuChoice> {
+    match pinned {
+        None => vec![MenuChoice::Open],
+        Some(false) => vec![MenuChoice::Open, MenuChoice::KeepInDock],
+        Some(true) => vec![MenuChoice::Open, MenuChoice::RemoveFromDock],
+    }
+}
+
 /// Cut `name` into runs of matched and unmatched text.
 pub fn segments(name: &str, ranges: &[Range<usize>]) -> Vec<(String, bool)> {
     let mut out = Vec::new();
@@ -128,6 +167,8 @@ fn show(
     window.set_rows(ModelRc::new(VecModel::from(rows(session, icons))));
     // Whatever went wrong belonged to the previous choice.
     window.set_error(SharedString::new());
+    // And a menu on a row that has moved is on the wrong app.
+    window.set_menu_row(-1);
     window.set_total_rows(session.hits().len() as i32);
     window.set_first_row(session.first_visible() as i32);
     window.set_selected(session.selected_row().map_or(-1, |row| row as i32));
@@ -163,10 +204,24 @@ pub fn icon_pixels(window: &LauncherWindow) -> u32 {
 /// Returns where decoded icons are to be delivered, from the UI thread.
 pub fn attach(
     window: &LauncherWindow,
+    session: Session,
+    invocation: &Invocation,
+    check: impl Fn(usize) -> Result<(), String> + 'static,
+    finish: impl Fn(Outcome) + 'static,
+) -> IconSink {
+    attach_with_pins(window, session, invocation, check, finish, None)
+}
+
+/// As [`attach`], with a way to change the dock's apps. In the application
+/// search a right click on an app then opens a menu: Open, and Keep in Dock
+/// or Remove from Dock.
+pub fn attach_with_pins(
+    window: &LauncherWindow,
     mut session: Session,
     invocation: &Invocation,
     check: impl Fn(usize) -> Result<(), String> + 'static,
     finish: impl Fn(Outcome) + 'static,
+    pins: Option<Rc<dyn Pins>>,
 ) -> IconSink {
     // The length of a full list is a design token, so it is settled here.
     let full = usize::try_from(window.get_full_lines()).unwrap_or(1);
@@ -242,7 +297,7 @@ pub fn attach(
         }
     });
     window.on_row_clicked({
-        let session = session.clone();
+        let (session, accept) = (session.clone(), accept.clone());
         move |row| {
             let chosen = usize::try_from(row)
                 .ok()
@@ -252,6 +307,70 @@ pub fn attach(
             }
         }
     });
+    // The menu on the app that was right-clicked: the candidate it is for
+    // and what its rows do.
+    type OpenMenu = Option<(usize, Vec<MenuChoice>)>;
+    let menu: Rc<RefCell<OpenMenu>> = Rc::default();
+    if let (true, Some(pins)) = (apps, pins) {
+        window.on_context_requested({
+            let (weak, session, icons, menu, pins) = (
+                window.as_weak(),
+                session.clone(),
+                icons.clone(),
+                menu.clone(),
+                pins.clone(),
+            );
+            move |row| {
+                let Some(window) = weak.upgrade() else { return };
+                let chosen = usize::try_from(row)
+                    .ok()
+                    .and_then(|row| session.borrow_mut().choose_row(row));
+                let Some(index) = chosen else { return };
+                // The row the menu is on is the one that is highlighted.
+                show(&window, &mut session.borrow_mut(), &icons.borrow(), layout);
+                let choices = menu_choices(pins.is_pinned(index));
+                let labels: Vec<SharedString> = choices
+                    .iter()
+                    .map(|c| SharedString::from(c.label()))
+                    .collect();
+                *menu.borrow_mut() = Some((index, choices));
+                window.set_menu_rows(ModelRc::new(VecModel::from(labels)));
+                window.set_menu_row(row);
+            }
+        });
+        window.on_menu_chosen({
+            let (weak, session, icons, menu, accept) = (
+                window.as_weak(),
+                session.clone(),
+                icons.clone(),
+                menu.clone(),
+                accept.clone(),
+            );
+            move |choice| {
+                let Some(window) = weak.upgrade() else { return };
+                window.set_menu_row(-1);
+                let Some((index, choices)) = menu.borrow_mut().take() else {
+                    return;
+                };
+                let Some(choice) = usize::try_from(choice)
+                    .ok()
+                    .and_then(|choice| choices.get(choice).copied())
+                else {
+                    return;
+                };
+                match choice {
+                    MenuChoice::Open => accept(index),
+                    MenuChoice::KeepInDock | MenuChoice::RemoveFromDock => {
+                        let result = pins.set(index, choice == MenuChoice::KeepInDock);
+                        show(&window, &mut session.borrow_mut(), &icons.borrow(), layout);
+                        if let Err(message) = result {
+                            window.set_error(message.into());
+                        }
+                    }
+                }
+            }
+        });
+    }
     window.on_dismiss(move || finish(Outcome::Dismissed));
 
     let weak = window.as_weak();
@@ -279,6 +398,20 @@ mod tests {
 
     fn seg(text: &str, matched: bool) -> (String, bool) {
         (text.to_string(), matched)
+    }
+
+    #[test]
+    fn the_menu_offers_keep_or_remove_by_whether_the_app_is_in_the_dock() {
+        let labels = |pinned| {
+            menu_choices(pinned)
+                .into_iter()
+                .map(MenuChoice::label)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(labels(Some(false)), ["Open", "Keep in Dock"]);
+        assert_eq!(labels(Some(true)), ["Open", "Remove from Dock"]);
+        // An app the dock cannot hold can still be opened.
+        assert_eq!(labels(None), ["Open"]);
     }
 
     #[test]

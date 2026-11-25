@@ -72,6 +72,13 @@ and the measured idle RAM and boot time.
 - The licence: LICENSE (GPL-3.0-or-later), licence fields on every crate, and
   the licences of the Rust crates the programs are built from in
   /usr/share/doc/sengi-os.
+- The notification centre groups the history by app, with a count and a Clear
+  button for each group, says "2 min ago" instead of a clock time, and keeps
+  the last 50 across a restart in a private file in ~/.local/state/sengi-os.
+- Drag a pinned tile in the dock left or right to reorder it, or up and out
+  of the dock to remove it. The order is saved to dock.toml.
+- Right-click an app in the launcher for Open, and Keep in Dock or Remove from
+  Dock. The dock picks up the change within a couple of seconds.
 
 ### Changed
 

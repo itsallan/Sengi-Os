@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
-use sengi_apps::{exec, matching, AppIndex, DesktopEntry, Env};
+use sengi_apps::{exec, matching, pins, AppIndex, DesktopEntry, Env};
 
 use crate::windows::Window;
 
@@ -377,45 +377,35 @@ impl Dock {
         &self.pinned
     }
 
-    /// What a pin entry stands for: the app's key if it is installed.
-    fn resolve(&self, id: &str) -> String {
-        match self.apps.get(id) {
-            Some(entry) => entry.app_id().to_lowercase(),
-            None => id.trim().to_lowercase(),
-        }
-    }
-
     pub fn is_pinned(&self, key: &str) -> bool {
-        let key = self.resolve(key);
-        self.pinned.iter().any(|id| self.resolve(id) == key)
+        pins::is_pinned(&self.pinned, &self.apps, key)
     }
 
     /// Pins an installed app after the others. False if it is already
     /// pinned or has no desktop entry to start it from.
     pub fn pin(&mut self, key: &str) -> bool {
-        let Some(entry) = self.apps.get(key) else {
-            return false;
-        };
-        let id = entry.app_id().to_lowercase();
-        if self.is_pinned(&id) {
-            return false;
-        }
-        self.pinned.push(id);
-        true
+        pins::pin(&mut self.pinned, &self.apps, key)
     }
 
     /// Takes an app off the dock. False if it was not pinned.
     pub fn unpin(&mut self, key: &str) -> bool {
-        let key = self.resolve(key);
-        let before = self.pinned.len();
-        let keep: Vec<String> = self
-            .pinned
-            .iter()
-            .filter(|id| self.resolve(id) != key)
-            .cloned()
-            .collect();
-        self.pinned = keep;
-        self.pinned.len() != before
+        pins::unpin(&mut self.pinned, &self.apps, key)
+    }
+
+    /// Moves a pinned app to where another pinned app is. Apps that are only
+    /// running are not in the list and cannot be moved or moved onto.
+    pub fn move_pin(&mut self, key: &str, onto: &str) -> bool {
+        pins::move_onto(&mut self.pinned, &self.apps, key, onto)
+    }
+
+    /// Replaces the pinned list, as when another program changed the file.
+    /// False if it was already this.
+    pub fn set_pinned(&mut self, pinned: Vec<String>) -> bool {
+        if self.pinned == pinned {
+            return false;
+        }
+        self.pinned = pinned;
+        true
     }
 
     fn key_for(&mut self, app_id: &str) -> String {
@@ -1079,6 +1069,58 @@ mod tests {
         assert!(dock.pin("firefox-esr"));
         assert_eq!(dock.pinned(), ["foot", "vim", "firefox-esr"]);
         assert_eq!(keys(&dock.items(&[])), ["", "foot", "vim", "firefox-esr"]);
+    }
+
+    #[test]
+    fn dragging_a_pin_puts_it_where_the_other_was() {
+        let mut dock = dock(&["foot", "vim", "firefox-esr"]);
+        assert!(dock.move_pin("foot", "firefox-esr"));
+        assert_eq!(keys(&dock.items(&[])), ["", "vim", "firefox-esr", "foot"]);
+        assert!(dock.move_pin("foot", "vim"));
+        assert_eq!(keys(&dock.items(&[])), ["", "foot", "vim", "firefox-esr"]);
+        assert_eq!(dock.pinned(), ["foot", "vim", "firefox-esr"]);
+        // Onto itself changes nothing.
+        assert!(!dock.move_pin("vim", "vim"));
+    }
+
+    #[test]
+    fn a_running_app_that_is_not_pinned_cannot_be_moved_among_the_pins() {
+        let mut dock = dock(&["foot", "vim"]);
+        let windows = [window(1, "org.gnome.Nautilus")];
+        assert_eq!(
+            keys(&dock.items(&windows)),
+            ["", "foot", "vim", "org.gnome.nautilus"]
+        );
+        // Neither as the one moved nor as the place to move to.
+        assert!(!dock.move_pin("org.gnome.Nautilus", "foot"));
+        assert!(!dock.move_pin("foot", "org.gnome.Nautilus"));
+        assert_eq!(
+            keys(&dock.items(&windows)),
+            ["", "foot", "vim", "org.gnome.nautilus"]
+        );
+        // The ones that are pinned still move, and the running one stays last.
+        assert!(dock.move_pin("vim", "foot"));
+        assert_eq!(
+            keys(&dock.items(&windows)),
+            ["", "vim", "foot", "org.gnome.nautilus"]
+        );
+    }
+
+    #[test]
+    fn an_uninstalled_pin_does_not_shift_a_drop() {
+        // "gone" is not installed, so it has no tile, but it keeps its place.
+        let mut dock = dock(&["foot", "gone", "vim"]);
+        assert_eq!(keys(&dock.items(&[])), ["", "foot", "vim"]);
+        assert!(dock.move_pin("vim", "foot"));
+        assert_eq!(keys(&dock.items(&[])), ["", "vim", "foot"]);
+    }
+
+    #[test]
+    fn another_program_changing_the_file_replaces_the_list() {
+        let mut dock = dock(&["foot"]);
+        assert!(!dock.set_pinned(vec!["foot".into()]));
+        assert!(dock.set_pinned(vec!["vim".into(), "foot".into()]));
+        assert_eq!(keys(&dock.items(&[])), ["", "vim", "foot"]);
     }
 
     #[test]

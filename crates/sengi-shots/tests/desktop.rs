@@ -307,6 +307,7 @@ fn history(n: usize) -> ModelRc<notify::HistoryItem> {
                     "".into()
                 },
                 critical: k == 2,
+                ..Default::default()
             })
             .collect(),
     )

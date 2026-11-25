@@ -19,6 +19,7 @@ pub mod files;
 pub mod icons;
 pub mod index;
 pub mod matching;
+pub mod pins;
 
 pub use desktop::DesktopEntry;
 pub use env::Env;

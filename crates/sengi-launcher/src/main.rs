@@ -14,9 +14,10 @@ use sengi_apps::env::Env;
 use sengi_launcher::cli::{self, Action, Invocation, Mode};
 use sengi_launcher::icons;
 use sengi_launcher::instance::{self, Claim, Instance};
+use sengi_launcher::pinned::DockPins;
 use sengi_launcher::run::{self, Source};
 use sengi_launcher::session::Session;
-use sengi_launcher::ui::{self, LauncherWindow, Outcome};
+use sengi_launcher::ui::{self, LauncherWindow, Outcome, Pins};
 use sengi_layer::{Anchor, App, Config, KeyboardMode, Layer};
 
 fn main() -> ExitCode {
@@ -83,7 +84,12 @@ fn show(invocation: &Invocation) -> u8 {
     }
 
     let check = run::checker(&source, &env);
-    match open(invocation, &instance, session, check) {
+    // Only the application search can change the dock.
+    let pins: Option<Rc<dyn Pins>> = match &source {
+        Source::Apps(apps) => Some(Rc::new(DockPins::from_process(apps.entries()))),
+        Source::Menu(_) => None,
+    };
+    match open(invocation, &instance, session, check, pins) {
         Ok(outcome) => run::complete(outcome, source, &env, std::io::stdout()),
         Err(error) => {
             eprintln!("sengi-launcher: {error}");
@@ -98,6 +104,7 @@ fn open(
     instance: &Instance,
     session: Session,
     check: Box<dyn Fn(usize) -> Result<(), String>>,
+    pins: Option<Rc<dyn Pins>>,
 ) -> Result<Outcome, sengi_layer::Error> {
     let app = App::new()?;
     let handle = app.handle();
@@ -136,21 +143,28 @@ fn open(
         }
     })?;
     let requests = ui::icon_requests(&session);
-    let mut parts = Some((session, check, to_ui, requests));
+    let mut parts = Some((session, check, to_ui, requests, pins));
     app.run(config, {
         let outcome = outcome.clone();
         move |context| {
-            let (session, check, to_ui, requests) =
+            let (session, check, to_ui, requests, pins) =
                 parts.take().ok_or("the launcher has a single surface")?;
             let window = LauncherWindow::new()?;
             let handle = context.handle();
-            let icon_sink = ui::attach(&window, session, &invocation, check, {
-                let (handle, outcome) = (handle.clone(), outcome.clone());
-                move |result| {
-                    outcome.set(result);
-                    handle.quit();
-                }
-            });
+            let icon_sink = ui::attach_with_pins(
+                &window,
+                session,
+                &invocation,
+                check,
+                {
+                    let (handle, outcome) = (handle.clone(), outcome.clone());
+                    move |result| {
+                        outcome.set(result);
+                        handle.quit();
+                    }
+                },
+                pins,
+            );
             *sink.borrow_mut() = Some(icon_sink);
             if !requests.is_empty() {
                 let to_ui = Mutex::new(to_ui);
