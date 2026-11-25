@@ -20,6 +20,10 @@ use crate::store::Value;
 use crate::text;
 use crate::ui::{Item, KeyboardData};
 
+/// Set in the session of sengi-compositor, which has the sheet of
+/// shortcuts to show.
+const SHORTCUTS_UNDER: &str = "SENGI_COMPOSITOR_PID";
+
 const DATABASE: &str = "/usr/share/X11/xkb/rules/evdev.lst";
 pub const MAX_ENTRIES: usize = 2048;
 
@@ -256,6 +260,17 @@ impl KeyboardPage {
             if let (Some(page), Some(app)) = (weak.upgrade(), weak_app.upgrade()) {
                 page.store(&app, &key, Value::Number(i64::from(value)));
             }
+        });
+        // The sheet is the compositor's own, and shown by asking it.
+        data.set_can_show_shortcuts(std::env::var_os(SHORTCUTS_UNDER).is_some());
+        data.on_show_shortcuts(|| {
+            let _ = std::process::Command::new("sengi-compositor")
+                .arg("--shortcuts")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .map(|mut child| std::thread::spawn(move || child.wait()));
         });
         page
     }

@@ -306,14 +306,15 @@ fn wallpaper(w: &SettingsWindow, variant: &str) {
 
 fn power(w: &SettingsWindow, variant: &str) {
     let d = w.global::<PowerData>();
+    d.set_dim("After 2 minutes".into());
     d.set_blank("After 5 minutes".into());
-    d.set_lock("After 10 minutes".into());
+    d.set_lock("Never".into());
     d.set_lock_on_sleep(true);
-    d.set_buttons(list(vec![
-        info("Power button", "Ask what to do"),
-        info("Closing the lid", "Suspend"),
-    ]));
+    d.set_buttons(list(vec![info("Power button", "Sleep")]));
     if variant == "battery" {
+        // A laptop has a lid.
+        d.set_has_lid(true);
+        d.set_lid("Sleep".into());
         d.set_has_battery(true);
         d.set_battery(list(vec![
             info("Charge", "64%"),
@@ -351,6 +352,8 @@ fn keyboard(w: &SettingsWindow, variant: &str) {
         layouts.push(item("de", "German", "de", "keyboard", 0));
         d.set_several(true);
         d.set_switch("Alt + Shift".into());
+        // Under sengi-compositor there is a sheet of shortcuts to show.
+        d.set_can_show_shortcuts(true);
     }
     for l in layouts.iter_mut() {
         l.remove = "Remove".into();

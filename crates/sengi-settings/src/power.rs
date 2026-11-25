@@ -1,16 +1,20 @@
 //! The Power page: what the kernel says about the battery, when the
-//! screen switches off and locks, and what the power button and the lid
-//! do.
+//! screen dims, switches off and locks, what closing the lid does, and
+//! what the power button does.
 //!
-//! The idle times are settings of ours (`power.*` in `settings.toml`).
-//! The session's `swayidle` is started with them by the autostart script,
-//! which asks `sengi-settings --get`; a running `swayidle` cannot be told
-//! new times, so after a change the one the session marked as restartable
-//! is ended and the session starts it again with the new ones.
+//! These are settings of ours (`power.*` in `settings.toml`). Under
+//! sengi-compositor they are read by the compositor, which is told to
+//! read them again (SIGHUP, the way the other settings reach it). Under
+//! labwc the session's `swayidle` is started with the times by the
+//! autostart script, which asks `sengi-settings --get`; a running
+//! `swayidle` cannot be told new times, so after a change the one the
+//! session marked as restartable is ended and the session starts it
+//! again with the new ones.
 //!
-//! The power button and the lid belong to logind and are the same for
-//! every user. Changing them means writing `/etc/systemd/logind.conf`,
-//! which takes root; they are shown, with where to change them.
+//! The lid is only shown on a machine that has one. The power button
+//! belongs to logind and is the same for every user. Changing it means
+//! writing a file in `/etc/systemd/logind.conf.d`, which takes root; it
+//! is shown, with where to change it.
 
 use std::fs;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -31,7 +35,17 @@ use crate::ui::{InfoRow, PowerData};
 const BATTERY_PERIOD: Duration = Duration::from_secs(30);
 
 /// The idle times offered, in seconds. Zero is never.
-pub const IDLE_CHOICES: [i64; 8] = [60, 120, 300, 600, 900, 1800, 3600, 0];
+pub const IDLE_CHOICES: [i64; 9] = [30, 60, 120, 300, 600, 900, 1800, 3600, 0];
+
+/// What closing the lid can do, as `power.lid` has it, and in words.
+pub const LID_CHOICES: [(&str, &str); 2] = [("sleep", "Sleep"), ("nothing", "Do nothing")];
+
+pub fn lid_words(lid: &str) -> &'static str {
+    LID_CHOICES
+        .iter()
+        .find(|(id, _)| *id == lid)
+        .map_or("Sleep", |(_, words)| words)
+}
 
 /// In the environment of a `swayidle` the session will start again if it
 /// exits. Only one that carries it is ever signalled.
@@ -189,6 +203,14 @@ struct Facts {
     actions: Option<(String, String)>,
 }
 
+/// What the page asks of the session once a change is on disk: the
+/// compositor reads the settings again, and under labwc the idle watcher
+/// that carries the times is started afresh.
+fn tell_session() -> bool {
+    let compositor = crate::derive::reconfigure();
+    restart_idler() || compositor
+}
+
 pub struct PowerPage {
     bus: std::sync::Arc<Bus>,
     class: std::path::PathBuf,
@@ -283,10 +305,10 @@ impl PowerPage {
                     current: *seconds == now,
                 })
                 .collect();
-            let title = if key == "blank-after" {
-                "Switch the screen off"
-            } else {
-                "Lock the screen"
+            let title = match key.as_str() {
+                "dim-after" => "Dim the screen",
+                "blank-after" => "Switch the screen off",
+                _ => "Lock the screen",
             };
             app.choose(title, false, choices, move |app, id| {
                 if let Ok(seconds) = id.parse() {
@@ -296,6 +318,28 @@ impl PowerPage {
                 }
             });
         });
+        let weak_app = Rc::downgrade(app);
+        data.on_choose_lid(move || {
+            let Some(app) = weak_app.upgrade() else {
+                return;
+            };
+            let now = app.settings.borrow().text("power", "lid");
+            let choices = LID_CHOICES
+                .iter()
+                .map(|(id, words)| Choice {
+                    id: id.to_string(),
+                    title: words.to_string(),
+                    detail: String::new(),
+                    current: *id == now,
+                })
+                .collect();
+            app.choose("When the lid is closed", false, choices, |app, id| {
+                if app.set("power", "lid", Value::Text(id)) {
+                    PowerPage::settings_changed(app);
+                }
+            });
+        });
+        data.set_has_lid(sengi_system::machine::has_lid(&page.class.join("input")));
         let weak_app = Rc::downgrade(app);
         data.on_set_lock_on_sleep(move |on| {
             if let Some(app) = weak_app.upgrade() {
@@ -310,11 +354,12 @@ impl PowerPage {
 
     fn settings_changed(app: &Rc<App>) {
         PowerPage::render_settings(app, None);
-        // The session's swayidle reads the settings file as it starts,
-        // so it is ended only after the file has been written.
+        // The compositor and the session's swayidle read the settings file
+        // when they are told to, so that is done only after the file has
+        // been written.
         app.after_saved(|| {
-            let restarted = restart_idler();
-            app::post(move |app| PowerPage::render_settings(app, Some(restarted)));
+            let applied = tell_session();
+            app::post(move |app| PowerPage::render_settings(app, Some(applied)));
         });
     }
 
@@ -323,12 +368,14 @@ impl PowerPage {
     fn render_settings(app: &Rc<App>, applied: Option<bool>) {
         let data = app.window.global::<PowerData>();
         let settings = app.settings.borrow();
+        data.set_dim(idle_words(settings.number("power", "dim-after")).into());
         data.set_blank(idle_words(settings.number("power", "blank-after")).into());
         data.set_lock(idle_words(settings.number("power", "lock-after")).into());
         data.set_lock_on_sleep(settings.flag("power", "lock-on-sleep"));
+        data.set_lid(lid_words(&settings.text("power", "lid")).into());
         data.set_idle_note(
             match applied {
-                Some(false) => "The new times take effect the next time you log in.",
+                Some(false) => "The new settings take effect the next time you log in.",
                 _ => "",
             }
             .into(),
@@ -348,14 +395,11 @@ impl PowerPage {
                     let data = app.window.global::<PowerData>();
                     data.set_has_battery(!facts.batteries.is_empty());
                     data.set_battery(app::model(battery_rows(&facts.batteries)));
-                    let (key, lid) = match &facts.actions {
-                        Some((key, lid)) => (action_words(key), action_words(lid)),
-                        None => ("Unknown", "Unknown"),
+                    let key = match &facts.actions {
+                        Some((key, _)) => action_words(key),
+                        None => "Unknown",
                     };
-                    data.set_buttons(app::model(vec![
-                        row("Power button", key),
-                        row("Closing the lid", lid),
-                    ]));
+                    data.set_buttons(app::model(vec![row("Power button", key)]));
                 });
             });
         if let Err(error) = spawned {
@@ -512,6 +556,17 @@ mod tests {
         let mut ended = sleeper();
         assert!(end_if(ended.id() as i32, || true));
         assert_eq!(ended.wait().unwrap().signal(), Some(libc::SIGTERM));
+    }
+
+    #[test]
+    fn the_lid_is_sleep_or_nothing_in_words() {
+        assert_eq!(lid_words("sleep"), "Sleep");
+        assert_eq!(lid_words("nothing"), "Do nothing");
+        // Anything else is what the system does: sleep.
+        assert_eq!(lid_words("whatever"), "Sleep");
+        for (id, _) in LID_CHOICES {
+            assert!(crate::settings::check("power", "lid", &Value::text(id)).is_ok());
+        }
     }
 
     #[test]

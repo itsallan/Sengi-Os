@@ -7,16 +7,21 @@ import { InfoRow, InfoCard, Page, PageColumn, Card, Divider, SettingRow, Section
 export global PowerData {
     in property <bool> has-battery: false;
     in property <[InfoRow]> battery;
+    in property <string> dim;
     in property <string> blank;
     in property <string> lock;
     in property <bool> lock-on-sleep: true;
+    // Only on a machine that has a lid.
+    in property <bool> has-lid: false;
+    in property <string> lid;
     // Said under the idle settings when a change could not reach the
     // running session.
     in property <string> idle-note;
     in property <[InfoRow]> buttons;
 
-    // "blank-after" or "lock-after".
+    // "dim-after", "blank-after" or "lock-after".
     callback choose(string);
+    callback choose-lid();
     callback set-lock-on-sleep(bool);
 }
 
@@ -47,6 +52,20 @@ export component PowerPage inherits Page {
         }
 
         Card {
+            SettingRow {
+                title: "Dim the screen";
+                VerticalLayout {
+                    alignment: center;
+                    ChoiceButton {
+                        width: Metrics.control;
+                        text: PowerData.dim;
+                        clicked => { PowerData.choose("dim-after"); }
+                    }
+                }
+            }
+
+            Divider { }
+
             SettingRow {
                 title: "Switch the screen off";
                 VerticalLayout {
@@ -85,6 +104,20 @@ export component PowerPage inherits Page {
                     }
                 }
             }
+
+            if PowerData.has-lid: Divider { }
+
+            if PowerData.has-lid: SettingRow {
+                title: "When the lid is closed";
+                VerticalLayout {
+                    alignment: center;
+                    ChoiceButton {
+                        width: Metrics.control;
+                        text: PowerData.lid;
+                        clicked => { PowerData.choose-lid(); }
+                    }
+                }
+            }
         }
 
         if PowerData.idle-note != "": Note {
@@ -102,7 +135,7 @@ export component PowerPage inherits Page {
         }
 
         Note {
-            text: "The power button and the lid are set for the whole computer, in /etc/systemd/logind.conf (HandlePowerKey, HandleLidSwitch). Changing them needs an administrator.";
+            text: "The power button is set for the whole computer, in /etc/systemd/logind.conf.d (HandlePowerKey). Changing it needs an administrator.";
         }
     }
 }

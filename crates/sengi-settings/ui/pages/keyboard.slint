@@ -13,6 +13,11 @@ export global KeyboardData {
     in-out property <int> delay: 600;
     in-out property <int> rate: 25;
 
+    // The desktop has a sheet of its shortcuts to show: only under
+    // sengi-compositor.
+    in property <bool> can-show-shortcuts: false;
+
+    callback show-shortcuts();
     callback add();
     callback remove(string);
     callback choose-switch();
@@ -112,6 +117,23 @@ export component KeyboardPage inherits Page {
                 RowValue {
                     width: Tokens.value-column-lg;
                     text: KeyboardData.rate + " per s";
+                }
+            }
+        }
+
+        if KeyboardData.can-show-shortcuts: Gap { }
+
+        if KeyboardData.can-show-shortcuts: Card {
+            SettingRow {
+                title: "Keyboard shortcuts";
+                detail: "Every key combination of the desktop. Super+/ shows it from anywhere.";
+
+                VerticalLayout {
+                    alignment: center;
+                    SengiButton {
+                        text: "Keyboard shortcuts…";
+                        clicked => { KeyboardData.show-shortcuts(); }
+                    }
                 }
             }
         }
