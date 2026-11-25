@@ -658,9 +658,18 @@ impl Progress {
             }
             None => {}
         }
-        if step_started("boot-loader") {
+        let loader_done = self
+            .steps
+            .iter()
+            .any(|step| step.id == "boot-loader" && step.state == StepState::Done);
+        if loader_done {
             said.push(
-                "A Sengi OS folder and a boot entry in the firmware may have been added to the EFI system partition; the installer took them out again as far as it could, as said above."
+                "The Sengi OS folder EFI/sengios on the EFI system partition and a Sengi OS entry in the firmware's boot list were made, and are still there."
+                    .to_string(),
+            );
+        } else if step_started("boot-loader") {
+            said.push(
+                "A Sengi OS folder and a boot entry in the firmware may have been added to the EFI system partition and the firmware. What the installer could take out again is said above; anything not said there is still there."
                     .to_string(),
             );
         }
@@ -1279,6 +1288,52 @@ mod tests {
         assert!(words.contains("were as they had been"), "{words}");
         // It does not claim the installer can simply be run again.
         assert!(!words.contains("can be run again"), "{words}");
+    }
+
+    #[test]
+    fn a_failure_after_the_boot_loader_step_says_that_what_it_made_is_still_there() {
+        let mut progress = Progress::default();
+        for line in [
+            "disk /dev/vdb",
+            "beside",
+            "begin check",
+            "end check",
+            "begin partition",
+            "made 3",
+            "end partition",
+            "begin format",
+            "end format",
+            "begin boot-loader",
+            "end boot-loader",
+            "begin finish",
+        ] {
+            progress.apply(Event::parse(line).unwrap());
+        }
+        progress.apply(Event::Failed(
+            "finish".to_string(),
+            "sync failed".to_string(),
+        ));
+        let words = progress.failure_words("");
+        assert!(words.contains("were made, and are still there"), "{words}");
+        assert!(!words.contains("took them out"), "{words}");
+        // Failing in the step itself, nothing is claimed removed.
+        let mut during = Progress::default();
+        for line in [
+            "beside",
+            "begin partition",
+            "made 3",
+            "end partition",
+            "begin boot-loader",
+        ] {
+            during.apply(Event::parse(line).unwrap());
+        }
+        during.apply(Event::Failed("boot-loader".to_string(), "x".to_string()));
+        let words = during.failure_words("");
+        assert!(
+            words.contains("anything not said there is still there"),
+            "{words}"
+        );
+        assert!(!words.contains("took them out again"), "{words}");
     }
 
     #[test]

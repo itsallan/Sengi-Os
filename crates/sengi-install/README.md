@@ -115,6 +115,7 @@ What is held to, in code (`beside.rs`), with the test that proves each:
 | Before the format: the disk is the one that was chosen (serial, WWN, size, model), the table is the one that was written, and the node holds the partition that was made, by the identifier chosen for it (`blkid PARTUUID`); the EFI system partition's identifier is the one it had. Else nothing is formatted. | `a_partition_that_is_not_the_one_made_is_not_formatted`, `a_disk_that_is_not_the_one_chosen_any_more_is_not_formatted`, `a_table_that_changed_after_it_was_written_is_not_formatted_on` |
 | Sector 0 is a plain protective MBR, and is the same after the write; names and attributes of the old partitions are the same after the write; `sfdisk -d` may say nothing besides the table. | `only_a_plain_protective_mbr_is_written_beside`, `a_hybrid_mbr_or_a_changed_sector_zero_stops_everything`, `names_and_attributes_are_read_and_a_change_in_them_is_seen`, `a_warning_from_sfdisk_about_the_table_stops_everything` |
 | Secure Boot on stops it; a whole-disk install only warns. | `secure_boot_stops_beside_and_only_warns_for_a_whole_disk` |
+| `sfdisk` runs in exactly two forms, `sfdisk -d DISK` and the one append argument list the installer uses (no `--wipe=always`, no `-w`, nothing added); `efibootmgr --create` must name this disk, the EFI system partition's number, the label Sengi OS and our loader; `--bootorder` must be a permutation of the entries the firmware has; `partx --nr` must be the new partition's number exactly. The new partition is formatted and mounted by `/dev/disk/by-partuuid/<the identifier chosen for it>`, which `blkid` has just confirmed. Secure Boot is taken as on unless the variable is readable and off (or absent among others). | `nothing_that_writes_may_name_anything_but_the_new_partition`, `the_boot_entry_that_is_made_is_ours_on_the_efi_system_partition`, `the_system_partition_is_formatted_and_mounted_by_the_identifier_that_was_checked`, `secure_boot_fails_closed` |
 | `blockdev` is not run at all; `partx` only as `--add --nr N DISK`; `efibootmgr` only to list, to make our entry, to put it first, or to delete an entry that starts our loader from this EFI system partition. | `nothing_that_writes_may_name_anything_but_the_new_partition`, `only_the_entry_of_ours_on_this_partition_is_replaced` |
 | A failure after the boot loader went on takes the firmware entry and the folder it made out again. | `a_failure_after_the_boot_loader_went_on_takes_it_out_again` |
 
@@ -298,10 +299,13 @@ against a file; the window never writes it.
   after the write.
 - os-prober runs once, at the install, and again at every kernel update (update-grub).
   It mounts other systems' partitions with GRUB's own read-only driver (`grub-mount`),
-  which replays no journal and writes nothing; the install test puts an ext4 volume that
+  which, as far as its code says, replays no journal and writes nothing. That is read from the code
+  and **not proven**: in particular nobody has shown that a hibernated NTFS volume (Windows fast
+  startup or hibernation) is left exactly as it was, and a person who cares about one should
+  disable fast startup or shut Windows down fully first; the install test puts an ext4 volume that
   needs recovery and an NTFS-like volume with a hibernation signature beside the new
-  partition and checks them byte for byte afterwards. Not tried with a real hibernated
-  Windows.
+  partition and checks them byte for byte afterwards. Not tried with a real
+  hibernated Windows, so for that case the claim stays unproven.
 - Debian's grub-efi and grub-pc packages, whose upgrades run grub-install themselves, are
   not in the image (the install test checks that none is installed), so an upgrade cannot
   write to EFI/BOOT or to another system's folder; only update-grub runs, which rewrites
