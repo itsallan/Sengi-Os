@@ -12,8 +12,8 @@ use sengi_files::app::{self, App, Start};
 use sengi_files::session::Place;
 use sengi_files::ui::{Files, FilesWindow};
 use sengi_shots::harness::{self, BACKDROP};
-use slint::platform::{Key, WindowEvent};
-use slint::{ComponentHandle, Model};
+use slint::platform::{Key, PointerEventButton, WindowEvent};
+use slint::{ComponentHandle, LogicalPosition, Model};
 
 struct Home {
     root: PathBuf,
@@ -113,6 +113,55 @@ fn chord(mods: &[Key], text: &str) {
         });
     }
     harness::advance(32);
+}
+
+/// A button went down at (x, y) and came up again at (x2, y2), with the
+/// pointer going through the points between when they differ.
+fn press_release(button: PointerEventButton, from: (f32, f32), to: (f32, f32)) {
+    let window = harness::window();
+    let at = |(x, y): (f32, f32)| LogicalPosition::new(x, y);
+    window.dispatch_event(WindowEvent::PointerMoved { position: at(from) });
+    harness::advance(16);
+    window.dispatch_event(WindowEvent::PointerPressed {
+        position: at(from),
+        button,
+    });
+    harness::advance(16);
+    for step in 1..=5 {
+        let t = step as f32 / 5.0;
+        let mid = (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
+        window.dispatch_event(WindowEvent::PointerMoved { position: at(mid) });
+        harness::advance(16);
+    }
+    window.dispatch_event(WindowEvent::PointerReleased {
+        position: at(to),
+        button,
+    });
+    harness::advance(32);
+}
+
+fn right_click(at: (f32, f32)) {
+    press_release(PointerEventButton::Right, at, at);
+}
+
+/// The middle of row `n` of the list in a window of the usual layout:
+/// 200 wide places, a bar of buttons 51 high, rows 34 high.
+fn row_at(n: usize) -> (f32, f32) {
+    (500.0, 51.0 + 34.0 * n as f32 + 17.0)
+}
+
+/// The middle of place `n` in the sidebar.
+fn place_at(n: usize) -> (f32, f32) {
+    (100.0, 8.0 + 36.0 * n as f32 + 17.0)
+}
+
+fn menu_ids(w: &FilesWindow) -> Vec<String> {
+    files(w)
+        .get_menu()
+        .iter()
+        .filter(|row| !row.separator)
+        .map(|row| row.id.to_string())
+        .collect()
 }
 
 fn picture(name: &str) {
@@ -351,4 +400,229 @@ fn files_window() {
     let (w, _app) = open_window(&home, &empty, (888, 600));
     assert_eq!(files(&w).get_hint().as_str(), "This folder is empty.");
     picture("files-empty-888x600.png");
+    drop(w);
+    drop(_app);
+
+    polish(&home);
+}
+
+fn row_of(app: &App, name: &str) -> usize {
+    names(app)
+        .iter()
+        .position(|n| n == name)
+        .unwrap_or_else(|| panic!("{name} is not listed: {:?}", names(app)))
+}
+
+/// The right-click menu, drag and drop, the folder changing under the
+/// window, natural order, the way forward, and the glyphs.
+fn polish(home: &Home) {
+    let play = home.home.join("play");
+    fs::create_dir_all(play.join("alpha")).unwrap();
+    fs::create_dir_all(play.join("Zed")).unwrap();
+    for name in ["file10.txt", "file2.txt", "File1.txt", "note.txt"] {
+        fs::write(play.join(name), name).unwrap();
+    }
+    let (w, app) = open_window(home, &play, (888, 600));
+
+    // Numbers sort as numbers, folders first, case ignored.
+    assert_eq!(
+        names(&app),
+        [
+            "alpha",
+            "Zed",
+            "File1.txt",
+            "file2.txt",
+            "file10.txt",
+            "note.txt"
+        ]
+    );
+
+    // The glyphs the places and buttons ask for are in the icon folder, and
+    // each place names one.
+    let icons = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/icons/phosphor/bold");
+    let places = files(&w).get_places();
+    assert_eq!(places.row_count(), 6);
+    for place in places.iter() {
+        let file = icons.join(format!("{}-bold.svg", place.icon));
+        assert!(file.exists(), "{} has no glyph: {file:?}", place.name);
+    }
+    for glyph in [
+        "arrow-left",
+        "arrow-up",
+        "folder-plus",
+        "arrow-counter-clockwise",
+    ] {
+        assert!(icons.join(format!("{glyph}-bold.svg")).exists(), "{glyph}");
+    }
+    picture("files-icons-888x600.png");
+
+    // Right-click on an item selects it and offers its menu.
+    right_click(row_at(3));
+    assert_eq!(app.selected_names(), ["file2.txt"]);
+    assert!(files(&w).get_menu_open());
+    assert_eq!(menu_ids(&w), ["open", "rename", "copy", "cut", "trash"]);
+    picture("files-menu-item-888x600.png");
+    // A click elsewhere only closes it.
+    press_release(PointerEventButton::Left, row_at(9), row_at(9));
+    assert!(!files(&w).get_menu_open());
+    assert_eq!(app.selected_names(), ["file2.txt"]);
+    // So does Escape.
+    right_click(row_at(3));
+    assert!(files(&w).get_menu_open());
+    press(Key::Escape);
+    assert!(!files(&w).get_menu_open());
+
+    // Copy from the menu, paste from the empty space's menu.
+    right_click(row_at(3));
+    files(&w).invoke_menu_chosen("copy".into());
+    assert!(files(&w).get_can_paste());
+    right_click(row_at(12));
+    assert!(app.selected_names().is_empty());
+    assert_eq!(menu_ids(&w), ["new-folder", "new-file", "paste", "hidden"]);
+    assert!(files(&w)
+        .get_menu()
+        .iter()
+        .all(|row| row.enabled || row.separator));
+    picture("files-menu-empty-888x600.png");
+    files(&w).invoke_menu_chosen("paste".into());
+    assert!(play.join("file2 2.txt").exists());
+    assert!(names(&app).contains(&"file2 2.txt".to_string()));
+
+    // The Show Hidden switch in the menu.
+    fs::write(play.join(".dot"), "").unwrap();
+    app::folder_changed(&app);
+    assert!(!names(&app).contains(&".dot".to_string()));
+    right_click(row_at(12));
+    files(&w).invoke_menu_chosen("hidden".into());
+    assert!(files(&w).get_show_hidden());
+    assert!(names(&app).contains(&".dot".to_string()));
+    right_click(row_at(12));
+    assert!(files(&w).get_menu().iter().any(|row| row.checked));
+    files(&w).invoke_menu_chosen("hidden".into());
+    assert!(!names(&app).contains(&".dot".to_string()));
+
+    // A real click on New Folder in the menu: the menu opens at the pointer.
+    let spot = row_at(12);
+    right_click(spot);
+    press_release(
+        PointerEventButton::Left,
+        (spot.0 + 20.0, spot.1 + 6.0 + 11.0),
+        (spot.0 + 20.0, spot.1 + 6.0 + 11.0),
+    );
+    assert!(play.join("untitled folder").is_dir());
+    assert!(files(&w).get_renaming() >= 0);
+    type_text("Made");
+    press(Key::Return);
+    assert!(play.join("Made").is_dir());
+
+    // Rename and trash from an item's menu.
+    right_click(row_at(row_of(&app, "note.txt")));
+    files(&w).invoke_menu_chosen("rename".into());
+    assert!(files(&w).get_renaming() >= 0);
+    press(Key::Escape);
+    right_click(row_at(row_of(&app, "note.txt")));
+    files(&w).invoke_menu_chosen("trash".into());
+    assert!(!play.join("note.txt").exists());
+    assert!(home.trash().join("files/note.txt").exists());
+
+    // The folder changes under the window: the list follows, the selection
+    // stays.
+    app.select_named("file10.txt");
+    fs::write(play.join("brand new.txt"), "").unwrap();
+    fs::remove_file(play.join("file2 2.txt")).unwrap();
+    app::folder_changed(&app);
+    assert!(names(&app).contains(&"brand new.txt".to_string()));
+    assert!(!names(&app).contains(&"file2 2.txt".to_string()));
+    assert_eq!(app.selected_names(), ["file10.txt"]);
+    // While a name is being typed the list is left alone until it is done.
+    app.select_named("brand new.txt");
+    press(Key::F2);
+    fs::write(play.join("while typing.txt"), "").unwrap();
+    app::folder_changed(&app);
+    assert!(!names(&app).contains(&"while typing.txt".to_string()));
+    assert!(files(&w).get_renaming() >= 0);
+    press(Key::Escape);
+    assert!(names(&app).contains(&"while typing.txt".to_string()));
+    assert_eq!(app.selected_names(), ["brand new.txt"]);
+
+    // Drag a file onto a folder row.
+    let from = row_of(&app, "file10.txt");
+    let onto = row_of(&app, "alpha");
+    press_release(PointerEventButton::Left, row_at(from), row_at(onto));
+    assert!(play.join("alpha/file10.txt").exists());
+    assert!(!play.join("file10.txt").exists());
+    assert!(!names(&app).contains(&"file10.txt".to_string()));
+    // A plain click on a row, with no drag, still selects it.
+    press_release(
+        PointerEventButton::Left,
+        row_at(row_of(&app, "Zed")),
+        row_at(row_of(&app, "Zed")),
+    );
+    assert_eq!(app.selected_names(), ["Zed"]);
+    // Dropping on a file does nothing.
+    let file = row_of(&app, "File1.txt");
+    press_release(PointerEventButton::Left, row_at(file), row_at(file + 1));
+    assert!(play.join("File1.txt").exists());
+
+    // Drag onto a place in the sidebar, with a look at it half way.
+    let window = harness::window();
+    let file = row_of(&app, "File1.txt");
+    let start = row_at(file);
+    let target = place_at(2);
+    window.dispatch_event(WindowEvent::PointerMoved {
+        position: LogicalPosition::new(start.0, start.1),
+    });
+    window.dispatch_event(WindowEvent::PointerPressed {
+        position: LogicalPosition::new(start.0, start.1),
+        button: PointerEventButton::Left,
+    });
+    for step in 1..=6 {
+        let t = step as f32 / 6.0;
+        window.dispatch_event(WindowEvent::PointerMoved {
+            position: LogicalPosition::new(
+                start.0 + (target.0 - start.0) * t,
+                start.1 + (target.1 - start.1) * t,
+            ),
+        });
+        harness::advance(16);
+    }
+    picture("files-dragging-888x600.png");
+    window.dispatch_event(WindowEvent::PointerReleased {
+        position: LogicalPosition::new(target.0, target.1),
+        button: PointerEventButton::Left,
+    });
+    harness::advance(32);
+    assert!(home.home.join("Documents/File1.txt").exists());
+    assert!(!play.join("File1.txt").exists());
+    assert!(app.status_text().contains("Moved"), "{}", app.status_text());
+
+    // Back, forward, and the keys for them.
+    files(&w).invoke_go_place(2);
+    assert_eq!(app.place(), Place::Folder(home.home.join("Documents")));
+    chord(&[Key::Alt], &String::from(char::from(Key::LeftArrow)));
+    assert_eq!(app.place(), Place::Folder(play.clone()));
+    chord(&[Key::Alt], &String::from(char::from(Key::RightArrow)));
+    assert_eq!(app.place(), Place::Folder(home.home.join("Documents")));
+    chord(&[Key::Alt], &String::from(char::from(Key::RightArrow)));
+    assert_eq!(app.place(), Place::Folder(home.home.join("Documents")));
+    picture("files-documents-888x600.png");
+    harness::resize(&harness::window(), 720, 480);
+    picture("files-documents-720x480.png");
+    drop(w);
+    drop(app);
+
+    // A folder that cannot be moved is not moved by dragging it either.
+    let (w, app) = open_window(home, &home.home, (888, 600));
+    let from = row_of(&app, "Documents");
+    let onto = row_of(&app, "Downloads");
+    press_release(PointerEventButton::Left, row_at(from), row_at(onto));
+    assert!(home.home.join("Documents").is_dir());
+    assert!(!home.home.join("Downloads/Documents").exists());
+    assert!(
+        app.status_text().contains("cannot be moved"),
+        "{}",
+        app.status_text()
+    );
+    assert!(files(&w).get_notice_is_error());
+    picture("files-drag-refused-888x600.png");
 }

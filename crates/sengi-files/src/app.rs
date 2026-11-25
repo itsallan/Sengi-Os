@@ -9,16 +9,18 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use slint::{ComponentHandle, ModelRc, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
 use sengi_apps::Env;
 use sengi_system::trash;
 
 use crate::fsops::{self, Entry};
 use crate::jobs::{self, Report};
+use crate::menu;
 use crate::open;
-use crate::session::{places, Place, Session};
-use crate::ui::{Crumb, DialogSpec, FileRow, Files, FilesWindow};
+use crate::session::{place_icon, places, Place, Session};
+use crate::ui::{Crumb, DialogSpec, FileRow, Files, FilesWindow, MenuEntry, PlaceRow};
+use crate::watch::Watcher;
 
 /// What to do when a load is done.
 #[derive(Default, Clone)]
@@ -29,6 +31,8 @@ struct Then {
     rename: bool,
     /// Scroll to the top: it is a new place.
     top: bool,
+    /// Leave the scroll position alone: the folder changed under the window.
+    keep_view: bool,
 }
 
 enum Asking {
@@ -53,6 +57,12 @@ struct State {
     reveal_tick: i32,
     /// Tests have no event loop: work is done at once, not on a thread.
     sync: bool,
+    /// The rows the list shows, changed in place so that a row held by the
+    /// pointer is not made again under it.
+    rows: Rc<VecModel<FileRow>>,
+    watcher: Option<Watcher>,
+    /// The folder changed while a name was being typed.
+    stale: bool,
 }
 
 pub struct App {
@@ -181,6 +191,19 @@ impl State {
         text
     }
 
+    /// What a drag carries: the name, or how many.
+    fn drag_label(&self) -> String {
+        match self.session.selected.len() {
+            0 => String::new(),
+            1 => self
+                .session
+                .selected_entries()
+                .first()
+                .map_or_else(String::new, |entry| entry.name.clone()),
+            count => plural(count),
+        }
+    }
+
     fn hint(&self) -> String {
         let session = &self.session;
         if let Some(problem) = &session.problem {
@@ -206,15 +229,27 @@ impl App {
         let first = s.view.0.min(total);
         let end = (first + s.view.1).min(total);
         let rows: Vec<FileRow> = (first..end).map(|at| s.row(at)).collect();
-        files.set_rows(ModelRc::new(VecModel::from(rows)));
+        if s.rows.row_count() == rows.len() {
+            for (at, row) in rows.into_iter().enumerate() {
+                if s.rows.row_data(at).as_ref() != Some(&row) {
+                    s.rows.set_row_data(at, row);
+                }
+            }
+        } else {
+            s.rows.set_vec(rows);
+        }
+        files.set_drag_label(s.drag_label().into());
         files.set_first(first as i32);
         files.set_total(total as i32);
         files.set_cursor(s.session.cursor as i32);
         files.set_places(ModelRc::new(VecModel::from(
             s.places
                 .iter()
-                .map(|(name, _)| name.as_str().into())
-                .collect::<Vec<slint::SharedString>>(),
+                .map(|(name, _)| PlaceRow {
+                    name: name.as_str().into(),
+                    icon: place_icon(name).into(),
+                })
+                .collect::<Vec<_>>(),
         )));
         files.set_place(
             s.places
@@ -290,11 +325,60 @@ fn load(app: &Rc<App>, then: Then) {
             s.session.trash.clone(),
         )
     };
+    set_watch(app);
     app.render();
     run_job(
         app,
         move || read_place(&place, hidden, &cancel, &trash_dir, generation),
         move |app, result| loaded(app, generation, result),
+    );
+}
+
+/// Points the watcher at the place being shown.
+fn set_watch(app: &Rc<App>) {
+    let mut s = app.state.borrow_mut();
+    s.stale = false;
+    let dir = match &s.session.place {
+        Place::Folder(dir) => Some(dir.clone()),
+        Place::Trash => Some(s.session.trash.join("files")),
+    };
+    if let Some(watcher) = &s.watcher {
+        // A folder that is not there, such as a Trash never used, is not
+        // watched.
+        let _ = watcher.watch(dir.as_deref());
+    }
+}
+
+/// The folder shown changed under the window, by another program or by
+/// this one: reads it again, keeping the selection and the scroll.
+pub fn folder_changed(app: &Rc<App>) {
+    {
+        let mut s = app.state.borrow_mut();
+        // A paste or a trashing reads the folder itself when it is done.
+        if s.busy {
+            return;
+        }
+        // The name being typed would be lost: wait for it.
+        if s.renaming.is_some() {
+            s.stale = true;
+            return;
+        }
+    }
+    let select = {
+        let s = app.state.borrow();
+        s.session
+            .selected_entries()
+            .iter()
+            .map(|entry| entry.name.clone())
+            .collect()
+    };
+    load(
+        app,
+        Then {
+            select,
+            keep_view: true,
+            ..Then::default()
+        },
     );
 }
 
@@ -371,7 +455,7 @@ fn loaded(app: &Rc<App>, generation: u64, result: Result<(Vec<Entry>, usize), St
         };
         if then.top {
             s.top_tick += 1;
-        } else if !then.select.is_empty() {
+        } else if !then.select.is_empty() && !then.keep_view {
             s.reveal_tick += 1;
         }
         if then.rename {
@@ -435,6 +519,7 @@ fn reload_selecting(app: &Rc<App>, names: Vec<String>, rename: bool) {
             select: names,
             rename,
             top: false,
+            keep_view: false,
         },
     );
 }
@@ -770,6 +855,143 @@ fn dialog_confirmed(app: &Rc<App>) {
     );
 }
 
+/// One step along the history: back, or forward again.
+fn walk(app: &Rc<App>, back: bool) {
+    let went = {
+        let mut s = app.state.borrow_mut();
+        if back {
+            s.session.go_back()
+        } else {
+            s.session.go_forward()
+        }
+    };
+    if went {
+        app.state.borrow_mut().renaming = None;
+        app.clear_notice();
+        load(
+            app,
+            Then {
+                top: true,
+                ..Then::default()
+            },
+        );
+    }
+}
+
+/// A right-click on row `at`, or on the empty space with -1: the item
+/// clicked is selected unless it is part of the selection already, and the
+/// menu is made from what that leaves.
+fn context_menu(app: &Rc<App>, at: i32) {
+    if app.state.borrow().renaming.is_some() {
+        return;
+    }
+    let rows = {
+        let mut s = app.state.borrow_mut();
+        if at >= 0 {
+            let at = at as usize;
+            if !s.session.selected.contains(&at) {
+                s.session.click(at, false, false);
+            }
+        } else {
+            s.session.select_none();
+        }
+        menu::rows(&s.session, at >= 0)
+    };
+    app.clear_notice();
+    app.render();
+    if let Some(window) = app.window.upgrade() {
+        let files = window.global::<Files>();
+        files.set_menu(ModelRc::new(VecModel::from(
+            rows.into_iter()
+                .map(|row| MenuEntry {
+                    id: row.id.into(),
+                    label: row.label.into(),
+                    enabled: row.enabled,
+                    separator: row.separator,
+                    checked: row.checked,
+                })
+                .collect::<Vec<_>>(),
+        )));
+        files.set_menu_open(true);
+    }
+}
+
+/// A row of the menu was chosen: does what the same key would.
+fn menu_chosen(app: &Rc<App>, id: &str) {
+    if let Some(window) = app.window.upgrade() {
+        window.global::<Files>().set_menu_open(false);
+    }
+    match id {
+        "open" => {
+            let at = app.state.borrow().session.only_selected();
+            if let Some(at) = at {
+                open_at(app, at);
+            }
+        }
+        "rename" => start_rename(app),
+        "copy" => copy_or_cut(app, false),
+        "cut" => copy_or_cut(app, true),
+        "trash" => trash_selected(app),
+        "restore" => restore(app),
+        "empty-trash" => ask_to_empty(app),
+        "new-folder" => new_folder(app),
+        "new-file" => new_file(app),
+        "paste" => paste(app),
+        "hidden" => {
+            let on = !app.state.borrow().session.show_hidden;
+            app.state.borrow_mut().session.show_hidden = on;
+            refresh(app);
+        }
+        _ => {}
+    }
+}
+
+/// The selection was dropped on a folder row (`kind` 0, `target` its index)
+/// or on a place (`kind` 1). It moves there, by the rules of a cut and paste;
+/// on the Trash it is trashed.
+fn drop_items(app: &Rc<App>, kind: i32, target: i32) {
+    if !app.idle() || app.state.borrow().renaming.is_some() {
+        return;
+    }
+    let target = target.max(0) as usize;
+    let dest = {
+        let s = app.state.borrow();
+        if kind == 0 {
+            match s.session.entries.get(target) {
+                Some(entry) if entry.folder && !s.session.selected.contains(&target) => {
+                    s.session.path_of(target).map(Place::Folder)
+                }
+                _ => None,
+            }
+        } else {
+            s.places.get(target).map(|place| place.1.clone())
+        }
+    };
+    let Some(dest) = dest else { return };
+    let Place::Folder(dest) = dest else {
+        // The Trash: the same as the Delete key.
+        trash_selected(app);
+        return;
+    };
+    let plan = app.state.borrow().session.drop_plan(&dest);
+    match plan {
+        Ok(items) => {
+            app.state.borrow_mut().busy = true;
+            app.clear_notice();
+            app.render();
+            run_job(
+                app,
+                move || jobs::paste(&items, true, &dest),
+                |app, report| job_done(app, &report, "Moved", false),
+            );
+        }
+        Err(error) => {
+            app.say(error, true);
+            app.render();
+        }
+    }
+}
+
 /// What the window is opened with.
 pub struct Start {
     pub env: Env,
@@ -779,7 +1001,14 @@ pub struct Start {
 }
 
 pub fn run(window: FilesWindow, start: Start) -> Result<(), slint::PlatformError> {
-    let _app = attach(&window, start, false);
+    let app = attach(&window, start, false);
+    match Watcher::spawn(|| post(folder_changed)) {
+        Ok(watcher) => {
+            app.state.borrow_mut().watcher = Some(watcher);
+            set_watch(&app);
+        }
+        Err(error) => eprintln!("sengi-files: not watching folders: {error}"),
+    }
     let result = window.run();
     APP.with(|slot| *slot.borrow_mut() = None);
     result
@@ -810,9 +1039,14 @@ pub fn attach(window: &FilesWindow, start: Start, sync: bool) -> Rc<App> {
             top_tick: 0,
             reveal_tick: 0,
             sync,
+            rows: Rc::new(VecModel::default()),
+            watcher: None,
+            stale: false,
         }),
     });
     APP.with(|slot| *slot.borrow_mut() = Some(app.clone()));
+    let rows = app.state.borrow().rows.clone();
+    window.global::<Files>().set_rows(ModelRc::from(rows));
     wire(window, &app);
     load(&app, Then::default());
     app
@@ -937,20 +1171,13 @@ fn wire(window: &FilesWindow, app: &Rc<App>) {
             navigate(&app, place);
         }
     });
-    on!(on_back, |app| {
-        let went = app.state.borrow_mut().session.go_back();
-        if went {
-            app.state.borrow_mut().renaming = None;
-            app.clear_notice();
-            load(
-                &app,
-                Then {
-                    top: true,
-                    ..Then::default()
-                },
-            );
-        }
-    });
+    on!(on_back, |app| walk(&app, true));
+    on!(on_forward, |app| walk(&app, false));
+    on!(on_context, |app, at| context_menu(&app, at));
+    on!(on_menu_chosen, |app, id| menu_chosen(&app, &id));
+    on!(on_drop_items, |app, kind, target| drop_items(
+        &app, kind, target
+    ));
     on!(on_up, |app| {
         let place = app.state.borrow().session.parent_place();
         if let Some(place) = place {
@@ -966,9 +1193,17 @@ fn wire(window: &FilesWindow, app: &Rc<App>) {
     });
     on!(on_start_rename, |app| start_rename(&app));
     on!(on_rename_cancelled, |app| {
-        app.state.borrow_mut().renaming = None;
+        let stale = {
+            let mut s = app.state.borrow_mut();
+            s.renaming = None;
+            s.stale
+        };
         app.clear_notice();
-        app.render();
+        if stale {
+            folder_changed(&app);
+        } else {
+            app.render();
+        }
     });
     on!(on_trash_selected, |app| trash_selected(&app));
     on!(on_copy, |app| copy_or_cut(&app, false));

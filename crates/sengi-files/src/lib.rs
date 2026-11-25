@@ -7,8 +7,10 @@ pub mod app;
 pub mod fsops;
 pub mod guard;
 pub mod jobs;
+pub mod menu;
 pub mod open;
 pub mod session;
+pub mod watch;
 
 pub mod ui {
     slint::include_modules!();

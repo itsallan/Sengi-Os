@@ -20,7 +20,7 @@ it. `sengi-desktop` opens folders in it.
 - Places: Home, and Desktop, Documents, Downloads and Pictures when they exist,
   and the Trash.
 - The list shows folders first, then files, each by name without regard to
-  case. Names that start with a dot are hidden until Ctrl+H or the switch at
+  case and with numbers in order ("file2" before "file10"). Names that start with a dot are hidden until Ctrl+H or the switch at
   the bottom. Sizes and times show when the window is wide enough.
 - Click selects; Ctrl-click adds or removes; Shift-click and Shift with the
   arrow keys extend; Ctrl+A takes all. Up, Down, Home, End, Page Up and Page
@@ -45,8 +45,26 @@ it. `sengi-desktop` opens folders in it.
   both use). In the Trash view, Restore puts items back (a new name if the old
   one is taken, the folder made again if it is gone) and Empty Trash asks first
   and then deletes for good.
-- Back and Up buttons, Alt+Left, Alt+Up, Backspace (up) and F5 or Ctrl+R to read
-  the folder again.
+- Back and Up buttons, Alt+Left (back), Alt+Right (forward again), Alt+Up and
+  Backspace (up) and F5 or Ctrl+R to read the folder again. Going somewhere
+  new forgets the way forward.
+- Right-click on an item selects it (unless it is in the selection already) and
+  offers Open, Rename, Copy, Cut and Move to Trash; in the Trash, Restore. On
+  the empty space it offers New Folder, New File, Paste and a Show Hidden
+  switch; in the Trash, Empty Trash. What cannot be done now is dimmed. Escape
+  or a click elsewhere closes the menu.
+- The list follows the folder: when something is made, removed or renamed in it
+  by another program, it is read again about 150 ms after the changes stop,
+  with the selection and the scroll kept. A name being typed is left alone
+  until it is done.
+- Drag items onto a folder row or a place in the sidebar to move them there (a
+  place that is the Trash trashes them). The same rules as Cut and Paste
+  apply: only inside home, protected folders cannot be dragged, a folder cannot
+  go into itself, and a name that is taken becomes "name 2". The place under
+  the pointer is outlined while dragging. Not in the Trash.
+- The places and the Back, Up, New Folder and Restore buttons carry Phosphor
+  Bold glyphs; a glyph that is missing from `ui/icons/phosphor/bold` is shown
+  as words instead.
 - The status line says how many items, how many are selected and how much
   space is free; a notice for what just happened replaces it until the next
   click or key.
@@ -61,9 +79,8 @@ Videos, `.config`, `.local` and `.local/share` cannot be moved, renamed or
 trashed. Paths are judged after links in their folder are resolved, so a link
 in home that points at `/etc` does not make `/etc` changeable.
 
-Not in this version: dragging and dropping, thumbnails, a right-click menu,
-tabs, searching, mounting disks or USB sticks, and watching the folder for
-changes made elsewhere (press F5).
+Not in this version: thumbnails, tabs, searching, mounting disks or USB sticks,
+dragging to another window, and a Forward button (the keys work).
 
 ## Speed
 
@@ -78,7 +95,9 @@ cannot be closed while one of them is working.
 - `fsops.rs`: reading, sorting, naming, copying and moving.
 - `guard.rs`: what may be changed.
 - `jobs.rs`: paste, trash, restore and empty, with what to say afterwards.
-- `session.rs`: the place, entries, selection, clipboard and path bar.
+- `session.rs`: the place, history, entries, selection, clipboard and path bar.
+- `menu.rs`: what the right-click menu offers.
+- `watch.rs`: the inotify watcher, one thread, with a 150 ms settle.
 - `open.rs`: `xdg-open` and the command line argument.
 - `app.rs`: the window, wired to all of that.
 - `ui/files.slint`: the window, from the shared components and Settings' kit.

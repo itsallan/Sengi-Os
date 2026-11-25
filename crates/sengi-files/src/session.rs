@@ -42,6 +42,7 @@ pub struct Session {
     pub guard: Option<Guard>,
     pub place: Place,
     back: Vec<Place>,
+    forward: Vec<Place>,
     pub entries: Vec<Entry>,
     pub selected: BTreeSet<usize>,
     /// The entry the keyboard is on, and where a range selection starts.
@@ -68,6 +69,7 @@ impl Session {
             guard,
             place,
             back: Vec::new(),
+            forward: Vec::new(),
             entries: Vec::new(),
             selected: BTreeSet::new(),
             cursor: 0,
@@ -104,6 +106,8 @@ impl Session {
             if self.back.len() > 100 {
                 self.back.remove(0);
             }
+            // A new way ahead forgets the old one.
+            self.forward.clear();
         }
         self.clear_view();
     }
@@ -112,13 +116,28 @@ impl Session {
         let Some(place) = self.back.pop() else {
             return false;
         };
-        self.place = place;
+        let here = std::mem::replace(&mut self.place, place);
+        self.forward.push(here);
+        self.clear_view();
+        true
+    }
+
+    pub fn go_forward(&mut self) -> bool {
+        let Some(place) = self.forward.pop() else {
+            return false;
+        };
+        let here = std::mem::replace(&mut self.place, place);
+        self.back.push(here);
         self.clear_view();
         true
     }
 
     pub fn can_back(&self) -> bool {
         !self.back.is_empty()
+    }
+
+    pub fn can_forward(&self) -> bool {
+        !self.forward.is_empty()
     }
 
     /// The place above this one: a folder's parent, and for the Trash, home.
@@ -353,6 +372,28 @@ impl Session {
         Ok((clipboard, dest))
     }
 
+    /// What dropping the selection on the folder `dest` would do: the items
+    /// to move. Same rules as cut and paste: only what may be changed, only
+    /// into a folder inside home, never into itself, never where it is.
+    pub fn drop_plan(&self, dest: &Path) -> Result<Vec<PathBuf>, String> {
+        if self.in_trash() {
+            return Err("Restore things from the Trash before moving them.".to_string());
+        }
+        let items = self.changeable_selection()?;
+        self.guard()?.may_write_in(dest)?;
+        let dest_real = std::fs::canonicalize(dest).unwrap_or_else(|_| dest.to_path_buf());
+        for item in &items {
+            let item_real = std::fs::canonicalize(item).unwrap_or_else(|_| item.clone());
+            if dest_real == item_real || dest_real.starts_with(&item_real) {
+                return Err("A folder cannot be moved into itself.".to_string());
+            }
+        }
+        if items.iter().all(|item| item.parent() == Some(dest)) {
+            return Err("It is already in that folder.".to_string());
+        }
+        Ok(items)
+    }
+
     pub fn guard_ref(&self) -> Option<&Guard> {
         self.guard.as_ref()
     }
@@ -414,6 +455,20 @@ impl Session {
             text.push_str(&format!(", {} selected", self.selected.len()));
         }
         text
+    }
+}
+
+/// The glyph of a place in the sidebar, by the name of its file in
+/// ui/icons/phosphor/bold. A place with none is shown as words only.
+pub fn place_icon(name: &str) -> &'static str {
+    match name {
+        "Home" => "house",
+        "Desktop" => "monitor",
+        "Documents" => "folder-open",
+        "Downloads" => "download-simple",
+        "Pictures" => "image",
+        "Trash" => "trash",
+        _ => "",
     }
 }
 
@@ -524,6 +579,27 @@ mod tests {
         assert_eq!(s.place, Place::Folder("/h".into()));
         s.go(Place::Folder("/".into()));
         assert!(!s.up());
+    }
+
+    #[test]
+    fn forward_undoes_back_until_a_new_place_is_chosen() {
+        let mut s = Session::new("/h".into(), "/h/t".into(), Place::Folder("/h".into()));
+        assert!(!s.can_forward() && !s.go_forward());
+        s.go(Place::Folder("/h/a".into()));
+        s.go(Place::Folder("/h/b".into()));
+        assert!(s.go_back() && s.go_back());
+        assert_eq!(s.place, Place::Folder("/h".into()));
+        assert!(s.can_forward());
+        assert!(s.go_forward());
+        assert_eq!(s.place, Place::Folder("/h/a".into()));
+        assert!(s.can_back());
+        // Somewhere new ends the way forward.
+        s.go(Place::Trash);
+        assert!(!s.can_forward());
+        assert!(s.go_back());
+        assert_eq!(s.place, Place::Folder("/h/a".into()));
+        assert!(s.go_forward());
+        assert_eq!(s.place, Place::Trash);
     }
 
     #[test]
@@ -667,6 +743,38 @@ mod tests {
         // Copying out of it is only reading.
         assert_eq!(s.copy(), Ok(1));
         assert!(s.paste_plan().is_err());
+    }
+
+    #[test]
+    fn a_drop_follows_the_rules_of_a_move() {
+        let t = Temp::new();
+        let home = t.path().join("home");
+        std::fs::create_dir_all(home.join("Documents/inner")).unwrap();
+        std::fs::create_dir_all(home.join("proj/sub")).unwrap();
+        std::fs::create_dir_all(t.path().join("outside")).unwrap();
+        t.file("home/proj/a.txt", "");
+        let mut s = Session::new(
+            home.clone(),
+            home.join(".local/share/Trash"),
+            Place::Folder(home.clone()),
+        );
+        s.entries = vec![entry("Documents", true), entry("proj", true)];
+        // A protected folder cannot be dragged anywhere.
+        s.click(0, false, false);
+        assert!(s.drop_plan(&home.join("proj")).is_err());
+        // A folder goes into another, not into itself or what it holds.
+        s.click(1, false, false);
+        assert_eq!(
+            s.drop_plan(&home.join("Documents")),
+            Ok(vec![home.join("proj")])
+        );
+        assert!(s.drop_plan(&home.join("proj")).is_err());
+        assert!(s.drop_plan(&home.join("proj/sub")).is_err());
+        // Where it already is, and out of home, are refused.
+        assert!(s.drop_plan(&home).is_err());
+        assert!(s.drop_plan(&t.path().join("outside")).is_err());
+        s.place = Place::Trash;
+        assert!(s.drop_plan(&home.join("Documents")).is_err());
     }
 
     #[test]

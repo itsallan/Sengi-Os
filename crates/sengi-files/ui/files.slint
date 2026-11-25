@@ -7,11 +7,28 @@
 // whole folder and sends the slice that is on screen, so a folder of ten
 // thousand files costs no more to draw than one of thirty.
 
-import { Tokens, SengiText, SengiLabel, SengiButton, SengiToggle, SengiIcon } from "components.slint";
+import { Tokens, SengiText, SengiLabel, SengiButton, SengiToggle, SengiIcon, SengiSurface } from "components.slint";
 import { Scroll, TextField, DialogLayer, DialogSpec } from "kit.slint";
 import { NamedIcon } from "icons.slint";
+import { IconPaths } from "icon-paths.slint";
 
 export { DialogSpec }
+
+// A place in the sidebar. The icon is the name of a glyph in
+// ui/icons/phosphor/bold; a name with no file there leaves the words alone.
+export struct PlaceRow {
+    name: string,
+    icon: string,
+}
+
+// One row of the right-click menu.
+export struct MenuEntry {
+    id: string,
+    label: string,
+    enabled: bool,
+    separator: bool,
+    checked: bool,
+}
 
 export struct FileRow {
     // Where it is in the whole folder.
@@ -39,7 +56,7 @@ export global Files {
     in property <int> first: 0;
     in property <int> total: 0;
     in property <int> cursor: 0;
-    in property <[string]> places;
+    in property <[PlaceRow]> places;
     // Which of the places is open, or -1 for none of them.
     in property <int> place: -1;
     in property <[Crumb]> crumbs;
@@ -65,6 +82,11 @@ export global Files {
     in property <int> scroll-top: 0;
     in property <int> reveal-tick: 0;
     in property <int> reveal-index: 0;
+    // The right-click menu: Rust fills it and opens it, either side closes it.
+    in property <[MenuEntry]> menu;
+    in-out property <bool> menu-open: false;
+    // What a drag in progress carries, as a name or a count.
+    in property <string> drag-label;
 
     // What the list is showing: from `first`, this many.
     callback viewport(int, int);
@@ -76,6 +98,7 @@ export global Files {
     callback go-place(int);
     callback go-crumb(int);
     callback back();
+    callback forward();
     callback up();
     callback refresh();
     callback new-folder();
@@ -94,28 +117,142 @@ export global Files {
     callback empty-trash();
     callback dialog-confirmed();
     callback dialog-cancelled();
+    // A right-click on a row, or -1 on the empty space.
+    callback context(int);
+    callback menu-chosen(string);
+    // The selection was dropped on a folder row (0) or a place (1).
+    callback drop-items(int, int);
+}
+
+// A button that is a glyph when the glyph file is there, and words when it
+// is not. With `show-text` the words stay next to the glyph.
+component IconButton inherits Rectangle {
+    in property <string> icon;
+    in property <string> text;
+    in property <bool> show-text: false;
+    in property <bool> enabled: true;
+    in property <bool> danger: false;
+    callback clicked();
+
+    private property <bool> glyph: IconPaths.path(root.icon) != "";
+    private property <brush> ink: !root.enabled ? Tokens.color-text-disabled
+        : root.danger ? Tokens.color-danger : Tokens.color-text;
+
+    min-height: Tokens.button;
+    horizontal-stretch: 0;
+    border-radius: Tokens.radius;
+    border-width: root.enabled ? 0 : Tokens.border-width;
+    border-color: Tokens.color-outline-disabled;
+    background: !root.enabled ? transparent
+        : touch.has-hover ? Tokens.color-surface-hover : Tokens.color-surface-raised;
+    animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+    accessible-role: button;
+    accessible-label: root.text;
+
+    HorizontalLayout {
+        padding-left: Tokens.space-md;
+        padding-right: Tokens.space-md;
+        spacing: Tokens.space-sm;
+
+        if root.glyph: VerticalLayout {
+            alignment: center;
+            SengiIcon {
+                name: root.icon;
+                ink: root.ink;
+            }
+        }
+
+        if !root.glyph || root.show-text: Text {
+            text: root.text;
+            color: root.ink;
+            font-family: Tokens.font-family;
+            font-size: Tokens.font-size-md;
+            font-weight: Tokens.font-weight-medium;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+component MenuItem inherits Rectangle {
+    in property <MenuEntry> entry;
+    callback chosen();
+
+    height: root.entry.separator ? Tokens.space-sm + Tokens.border-width : Tokens.menu-row;
+    border-radius: Tokens.radius;
+    background: root.entry.enabled && touch.has-hover ? Tokens.color-accent : transparent;
+
+    if root.entry.separator: Rectangle {
+        x: Tokens.menu-separator-inset;
+        y: (parent.height - self.height) / 2;
+        width: parent.width - Tokens.menu-separator-inset * 2;
+        height: Tokens.border-width;
+        background: Tokens.color-border;
+    }
+
+    if !root.entry.separator: SengiText {
+        x: Tokens.space-md;
+        width: parent.width - Tokens.space-md * 3 - Tokens.bar-icon;
+        text: root.entry.label;
+        color: !root.entry.enabled ? Tokens.color-text-disabled
+            : touch.has-hover ? Tokens.color-accent-text : Tokens.color-text;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    // A switch that is on has a tick at the end of its row.
+    if root.entry.checked: SengiIcon {
+        x: parent.width - self.width - Tokens.space-md;
+        y: (parent.height - self.height) / 2;
+        name: "check";
+        ink: touch.has-hover ? Tokens.color-accent-text : Tokens.color-text;
+    }
+
+    touch := TouchArea {
+        enabled: root.entry.enabled && !root.entry.separator;
+        clicked => { root.chosen(); }
+    }
 }
 
 component Sidebar inherits Rectangle {
+    // The place a drag is over, or -1.
+    in property <int> drop-place: -1;
+
     background: Tokens.color-surface;
 
-    for name[index] in Files.places: Rectangle {
+    for place[index] in Files.places: Rectangle {
         private property <bool> chosen: index == Files.place;
+        private property <bool> target: index == root.drop-place;
 
         x: Tokens.space-sm;
         y: Tokens.space-sm + index * (Tokens.button + Tokens.space-sm + Tokens.space-xxs);
         width: parent.width - Tokens.space-sm * 2;
         height: Tokens.button + Tokens.space-sm;
         border-radius: Tokens.radius;
-        background: self.chosen ? Tokens.color-surface-hover
+        border-width: self.target ? Tokens.focus-ring-width : 0;
+        border-color: Tokens.color-accent;
+        background: self.target ? Tokens.color-surface-raised
+            : self.chosen ? Tokens.color-surface-hover
             : touch.has-hover ? Tokens.color-surface-raised : transparent;
         animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
 
-        SengiText {
+        if IconPaths.path(place.icon) != "": SengiIcon {
             x: Tokens.space-md;
+            y: (parent.height - self.height) / 2;
+            name: place.icon;
+            ink: parent.chosen ? Tokens.color-text : Tokens.color-text-muted;
+        }
+
+        SengiText {
+            x: IconPaths.path(place.icon) != "" ? Tokens.space-md * 2 + Tokens.bar-icon : Tokens.space-md;
             width: parent.width - self.x - Tokens.space-sm;
             height: parent.height;
-            text: name;
+            text: place.name;
             font-weight: parent.chosen ? Tokens.font-weight-medium : Tokens.font-weight-regular;
             vertical-alignment: center;
             overflow: elide;
@@ -197,6 +334,21 @@ export component FilesWindow inherits Window {
     private property <length> size-width: Files.in-trash ? Tokens.settings-control-width : Tokens.value-column-lg;
     private property <length> time-width: Files.in-trash ? Tokens.settings-control-width : Tokens.value-column-lg + Tokens.space-xxl;
     private property <int> hovered: -1;
+    // The right-click menu opens where the pointer was.
+    private property <length> menu-x: 0;
+    private property <length> menu-y: 0;
+    // Dragging items: the row that was pressed and where, whether it has
+    // become a drag, where the pointer is, and what it is over.
+    private property <int> press-row: -1;
+    private property <bool> press-selected: false;
+    private property <length> press-x: 0;
+    private property <length> press-y: 0;
+    private property <bool> dragging: false;
+    private property <length> drag-x: 0;
+    private property <length> drag-y: 0;
+    private property <int> drop-row: -1;
+    private property <int> drop-place: -1;
+    private property <length> side-step: Tokens.button + Tokens.space-sm + Tokens.space-xxs;
     // The program asks the list to move by raising a count.
     private property <int> top-tick: Files.scroll-top;
     private property <int> reveal-tick: Files.reveal-tick;
@@ -224,6 +376,59 @@ export component FilesWindow inherits Window {
         scope.focus();
     }
 
+    function open-menu(index: int, x: length, y: length) {
+        root.menu-x = x;
+        root.menu-y = y;
+        Files.context(index);
+    }
+
+    function end-drag() {
+        root.press-row = -1;
+        root.dragging = false;
+        root.drop-row = -1;
+        root.drop-place = -1;
+    }
+
+    // The pointer is at (x, y) in the window with the button down on a row.
+    function drag-to(x: length, y: length) {
+        root.drag-x = x;
+        root.drag-y = y;
+        if !root.dragging {
+            if Math.abs(x - root.press-x) < Tokens.space-md && Math.abs(y - root.press-y) < Tokens.space-md {
+                return;
+            }
+            root.dragging = true;
+            // Dragging a row that is not selected takes it alone.
+            if !root.press-selected {
+                Files.click(root.press-row, false, false);
+            }
+        }
+        root.drop-row = -1;
+        root.drop-place = -1;
+        if x < Tokens.settings-sidebar-width {
+            let at = Math.floor((y - Tokens.space-sm) / root.side-step);
+            if at >= 0 && at < Files.places.length
+                && y - Tokens.space-sm - at * root.side-step < Tokens.button + Tokens.space-sm {
+                root.drop-place = at;
+            }
+        } else if y > list.absolute-position.y && y < list.absolute-position.y + list.height {
+            let at = Math.floor((y - list.absolute-position.y + list.offset) / root.line);
+            let slot = at - Files.first;
+            if slot >= 0 && slot < Files.rows.length && Files.rows[slot].folder && !Files.rows[slot].selected {
+                root.drop-row = at;
+            }
+        }
+    }
+
+    function finish-drag() {
+        if root.dragging && root.drop-row >= 0 {
+            Files.drop-items(0, root.drop-row);
+        } else if root.dragging && root.drop-place >= 0 {
+            Files.drop-items(1, root.drop-place);
+        }
+        root.end-drag();
+    }
+
     changed top-tick => { list.reveal(0px, root.line); }
     changed reveal-tick => { list.reveal(Files.reveal-index * root.line, root.line); }
     changed pixel => { root.draw-everything(); }
@@ -249,9 +454,19 @@ export component FilesWindow inherits Window {
             if Files.dialog-open {
                 return EventResult.reject;
             }
+            if Files.menu-open {
+                if event.text == Key.Escape {
+                    Files.menu-open = false;
+                }
+                return EventResult.accept;
+            }
             if event.modifiers.alt {
                 if event.text == Key.LeftArrow {
                     Files.back();
+                    return EventResult.accept;
+                }
+                if event.text == Key.RightArrow {
+                    Files.forward();
                     return EventResult.accept;
                 }
                 if event.text == Key.UpArrow {
@@ -319,6 +534,7 @@ export component FilesWindow inherits Window {
         }
 
         Sidebar {
+            drop-place: root.drop-place;
             x: 0;
             y: 0;
             width: Tokens.settings-sidebar-width;
@@ -336,17 +552,17 @@ export component FilesWindow inherits Window {
                     padding: Tokens.space-md;
                     spacing: Tokens.space-sm;
 
-                    SengiButton {
+                    IconButton {
+                        icon: "arrow-left";
                         text: "Back";
                         enabled: Files.can-back;
-                        focusable: false;
                         clicked => { Files.back(); }
                     }
 
-                    SengiButton {
+                    IconButton {
+                        icon: "arrow-up";
                         text: "Up";
                         enabled: Files.can-up;
-                        focusable: false;
                         clicked => { Files.up(); }
                     }
 
@@ -355,10 +571,11 @@ export component FilesWindow inherits Window {
                         height: Tokens.button;
                     }
 
-                    if Files.in-trash: SengiButton {
+                    if Files.in-trash: IconButton {
+                        icon: "arrow-counter-clockwise";
                         text: "Restore";
+                        show-text: true;
                         enabled: Files.has-selection && !Files.busy;
-                        focusable: false;
                         clicked => { Files.restore(); }
                     }
 
@@ -370,9 +587,10 @@ export component FilesWindow inherits Window {
                         clicked => { Files.empty-trash(); }
                     }
 
-                    if !Files.in-trash: SengiButton {
+                    if !Files.in-trash: IconButton {
+                        icon: "folder-plus";
                         text: "New Folder";
-                        focusable: false;
+                        show-text: true;
                         clicked => { Files.new-folder(); }
                     }
 
@@ -401,9 +619,17 @@ export component FilesWindow inherits Window {
                         TouchArea {
                             width: parent.width;
                             height: Math.max(parent.height, Files.total * root.line);
-                            clicked => {
-                                Files.click-empty();
+                            pointer-event(event) => {
+                                if event.kind != PointerEventKind.down {
+                                    return;
+                                }
                                 scope.focus();
+                                if event.button == PointerEventButton.right {
+                                    root.open-menu(-1, self.absolute-position.x + self.mouse-x,
+                                        self.absolute-position.y + self.mouse-y);
+                                } else if event.button == PointerEventButton.left {
+                                    Files.click-empty();
+                                }
                             }
                         }
 
@@ -415,8 +641,10 @@ export component FilesWindow inherits Window {
                             width: parent.width - Tokens.space-sm * 2 - Tokens.space-xs;
                             height: root.line;
                             border-radius: Tokens.radius;
+                            border-width: root.drop-row == row.index ? Tokens.focus-ring-width : 0;
+                            border-color: Tokens.color-accent;
                             background: row.selected ? Tokens.color-surface-hover
-                                : self.lit ? Tokens.color-surface-raised : transparent;
+                                : self.lit || root.drop-row == row.index ? Tokens.color-surface-raised : transparent;
                             animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
 
                             TouchArea {
@@ -428,10 +656,34 @@ export component FilesWindow inherits Window {
                                     }
                                 }
                                 pointer-event(event) => {
-                                    if event.kind == PointerEventKind.up
-                                        && event.button == PointerEventButton.left {
-                                        Files.click(row.index, event.modifiers.control, event.modifiers.shift);
+                                    if event.kind == PointerEventKind.down
+                                        && event.button == PointerEventButton.right {
                                         scope.focus();
+                                        root.open-menu(row.index, self.absolute-position.x + self.mouse-x,
+                                            self.absolute-position.y + self.mouse-y);
+                                    } else if event.kind == PointerEventKind.down
+                                        && event.button == PointerEventButton.left {
+                                        root.press-row = row.index;
+                                        root.press-selected = row.selected;
+                                        root.press-x = self.absolute-position.x + self.mouse-x;
+                                        root.press-y = self.absolute-position.y + self.mouse-y;
+                                    } else if event.kind == PointerEventKind.up
+                                        && event.button == PointerEventButton.left {
+                                        if root.dragging {
+                                            root.finish-drag();
+                                        } else {
+                                            root.end-drag();
+                                            Files.click(row.index, event.modifiers.control, event.modifiers.shift);
+                                        }
+                                        scope.focus();
+                                    } else if event.kind == PointerEventKind.cancel {
+                                        root.end-drag();
+                                    }
+                                }
+                                moved => {
+                                    if self.pressed && root.press-row == row.index && !Files.in-trash {
+                                        root.drag-to(self.absolute-position.x + self.mouse-x,
+                                            self.absolute-position.y + self.mouse-y);
                                     }
                                 }
                                 double-clicked => { Files.open(row.index); }
@@ -551,6 +803,57 @@ export component FilesWindow inherits Window {
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    // What is being dragged, beside the pointer.
+    if root.dragging: SengiSurface {
+        raised: true;
+        x: Math.min(root.drag-x + Tokens.space-md, root.width - self.width - Tokens.space-xs);
+        y: Math.min(root.drag-y + Tokens.space-md, root.height - self.height - Tokens.space-xs);
+        width: Math.min(ghost.preferred-width + Tokens.space-lg * 2, Tokens.menu-width);
+        height: Tokens.button;
+
+        ghost := SengiText {
+            x: Tokens.space-lg;
+            width: parent.width - Tokens.space-lg * 2;
+            text: Files.drag-label;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    if Files.menu-open: TouchArea {
+        // Any click outside the menu only closes it.
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                Files.menu-open = false;
+                scope.focus();
+            }
+        }
+    }
+
+    if Files.menu-open: SengiSurface {
+        raised: true;
+        width: Math.clamp(menu-list.preferred-width, Tokens.menu-width / 2, Tokens.menu-width);
+        height: menu-list.preferred-height;
+        x: Math.max(Tokens.space-xs, Math.min(root.menu-x, root.width - self.width - Tokens.space-xs));
+        y: Math.max(Tokens.space-xs, Math.min(root.menu-y, root.height - self.height - Tokens.space-xs));
+
+        // Clicks between the rows are not clicks on the list underneath.
+        TouchArea { }
+
+        menu-list := VerticalLayout {
+            padding: Tokens.menu-padding;
+
+            for entry in Files.menu: MenuItem {
+                entry: entry;
+                chosen => {
+                    Files.menu-open = false;
+                    Files.menu-chosen(entry.id);
+                    scope.focus();
                 }
             }
         }

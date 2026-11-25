@@ -18,6 +18,10 @@ and the measured idle RAM and boot time.
   and a Trash view with Restore and Empty Trash. It only changes things inside
   your home folder. The desktop opens folders in it, and it is at the end of
   the default dock.
+- Files polish: a right-click menu on items and on empty space, the list
+  follows the folder when other programs change it, natural order ("file2"
+  before "file10"), drag and drop of items onto folders and places, Alt+Right
+  for forward, and Phosphor Bold glyphs on the places and buttons.
 - The Store shows real install progress read from Flatpak: a bar with the
   percentage, the step and the speed when Flatpak gives them, and an
   honest moving bar when it does not.
