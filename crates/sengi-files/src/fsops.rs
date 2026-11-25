@@ -46,11 +46,59 @@ pub struct Listing {
     pub skipped: usize,
 }
 
-/// Folders first, then each group by name without regard to case, and by
-/// the exact name when those are the same.
+/// One piece of a name for sorting: a run of digits is a number, so that
+/// "file2" comes before "file10", and anything else is text.
+#[derive(Debug, PartialEq, Eq)]
+enum Chunk {
+    Text(String),
+    /// Digits without leading zeros.
+    Number(String),
+}
+
+impl Ord for Chunk {
+    fn cmp(&self, other: &Chunk) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        match (self, other) {
+            (Chunk::Text(a), Chunk::Text(b)) => a.cmp(b),
+            (Chunk::Number(a), Chunk::Number(b)) => a.len().cmp(&b.len()).then_with(|| a.cmp(b)),
+            // Numbers come before words.
+            (Chunk::Number(_), Chunk::Text(_)) => Ordering::Less,
+            (Chunk::Text(_), Chunk::Number(_)) => Ordering::Greater,
+        }
+    }
+}
+
+impl PartialOrd for Chunk {
+    fn partial_cmp(&self, other: &Chunk) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+fn chunks(name: &str) -> Vec<Chunk> {
+    let lower = name.to_lowercase();
+    let mut out = Vec::new();
+    let mut rest = lower.as_str();
+    while let Some(first) = rest.chars().next() {
+        let digits = first.is_ascii_digit();
+        let end = rest
+            .find(|c: char| c.is_ascii_digit() != digits)
+            .unwrap_or(rest.len());
+        let (piece, tail) = rest.split_at(end);
+        out.push(if digits {
+            Chunk::Number(piece.trim_start_matches('0').to_string())
+        } else {
+            Chunk::Text(piece.to_string())
+        });
+        rest = tail;
+    }
+    out
+}
+
+/// Folders first, then each group by name without regard to case and with
+/// numbers in order ("file2" before "file10"). Names that are the same by
+/// those rules are told apart by the exact name.
 pub fn sort(entries: &mut [Entry]) {
-    entries
-        .sort_by_cached_key(|entry| (!entry.folder, entry.name.to_lowercase(), entry.name.clone()));
+    entries.sort_by_cached_key(|entry| (!entry.folder, chunks(&entry.name), entry.name.clone()));
 }
 
 /// Reads `dir`. Names that start with a dot are left out unless `hidden`.
@@ -478,6 +526,40 @@ pub mod tests {
             ["alpha", "Zeta", "Apple.txt", "banana.txt", "cherry"]
         );
         assert!(listing.entries[0].folder && !listing.entries[2].folder);
+    }
+
+    #[test]
+    fn numbers_in_names_sort_as_numbers() {
+        let t = Temp::new();
+        for name in [
+            "file10.txt",
+            "file2.txt",
+            "File1.txt",
+            "file02.txt",
+            "img 9",
+            "img 100",
+            "7zip",
+            "zed",
+        ] {
+            t.file(name, "");
+        }
+        t.file("dir10/x", "");
+        t.file("Dir9/x", "");
+        assert_eq!(
+            names(&list(t.path(), false)),
+            [
+                "Dir9",
+                "dir10",
+                "7zip",
+                "File1.txt",
+                "file02.txt",
+                "file2.txt",
+                "file10.txt",
+                "img 9",
+                "img 100",
+                "zed"
+            ]
+        );
     }
 
     #[test]
