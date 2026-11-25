@@ -207,6 +207,8 @@ fn display(w: &SettingsWindow, variant: &str) {
         resolution: "1920x1080".into(),
         refresh: "60 Hz".into(),
         scale: "100%".into(),
+        position: "".into(),
+        can_position: false,
         can_resolution: true,
         can_refresh: true,
     }];
@@ -219,6 +221,8 @@ fn display(w: &SettingsWindow, variant: &str) {
             resolution: "3840x2160".into(),
             refresh: "30 Hz".into(),
             scale: "150%".into(),
+            position: "".into(),
+            can_position: false,
             can_resolution: true,
             can_refresh: false,
         });
