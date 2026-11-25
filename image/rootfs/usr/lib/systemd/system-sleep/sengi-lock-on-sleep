@@ -1,0 +1,24 @@
+#!/bin/sh
+# Locks every Sengi OS session just before the computer sleeps, so the lock
+# screen is what shows when it wakes. systemd runs this as root with "pre"
+# or "post" and waits for it to finish before it suspends; it runs for as
+# long as the screens take to be covered, a moment.
+#
+# Each running sengi-compositor has a control socket beside its Wayland
+# socket, in its user's runtime directory. The request goes to each as that
+# user. The compositor does nothing if Settings has "Lock when the computer
+# goes to sleep" off, and nothing on the login screen. Under another
+# compositor there is no socket and nothing happens here.
+[ "$1" = pre ] || exit 0
+for control in /run/user/*/wayland-*.control; do
+	[ -S "$control" ] || continue
+	dir=${control%/*}
+	uid=${dir##*/}
+	display=${control##*/}
+	display=${display%.control}
+	user=$(id -nu "$uid" 2>/dev/null) || continue
+	timeout 10 runuser -u "$user" -- \
+		env XDG_RUNTIME_DIR="$dir" WAYLAND_DISPLAY="$display" \
+		sengi-compositor --lock-for-sleep >/dev/null 2>&1 || true
+done
+exit 0

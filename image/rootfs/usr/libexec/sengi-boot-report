@@ -58,7 +58,11 @@ if [ -r "$debug" ]; then
 fi
 
 # A desktop that came up and then lost a piece is a failed boot.
-for prog in "$compositor" sengi-bar sengi-dock swayidle swaybg sengi-focus; do
+# sengi-compositor keeps the idle times itself; only labwc needs swayidle.
+idler=swayidle
+[ "$compositor" = sengi-compositor ] && idler=
+# shellcheck disable=SC2086
+for prog in "$compositor" sengi-bar sengi-dock $idler swaybg sengi-focus; do
 	pidof "$prog" >/dev/null || echo "SENGI-FAIL $prog is not running" >$port
 done
 # Settings is a program that is started and goes away again. One that is
@@ -87,6 +91,16 @@ lock_after=$(sengi-settings --get power.lock-after 2>/dev/null)
 case $lock_after in
 '' | *[!0-9]*) echo "SENGI-FAIL sengi-settings --get power.lock-after gave '$lock_after', not a number" >$port ;;
 esac
+
+# The lid and the power button are logind's, set by the image, and the
+# screen is locked before the computer sleeps by a hook systemd runs.
+for pair in HandleLidSwitch=suspend HandleLidSwitchExternalPower=suspend \
+	HandleLidSwitchDocked=ignore HandlePowerKey=suspend; do
+	got=$(loginctl show -p "${pair%%=*}" --value 2>/dev/null)
+	[ "$got" = "${pair#*=}" ] || echo "SENGI-FAIL logind has ${pair%%=*}=$got, not ${pair#*=}" >$port
+done
+[ -x /usr/lib/systemd/system-sleep/sengi-lock-on-sleep ] ||
+	echo "SENGI-FAIL the lock before sleep is not in the image" >$port
 
 # Restart and Shut down in the session menu go through logind.
 may_power_off live

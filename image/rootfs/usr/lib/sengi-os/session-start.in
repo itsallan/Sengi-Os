@@ -35,13 +35,17 @@ for program in sengi-bar sengi-dock sengi-desktop; do
 	) >/dev/null 2>&1 &
 done
 sengi-focus >/dev/null 2>&1 &
-# When the screen goes off and when it locks are the user's to set, in
-# Settings. "sengi-lock -f" returns once every output is covered, and
-# swayidle waits for that (-w) before it lets the machine go to sleep.
-# swayidle cannot be given new times while it runs, so Settings
-# ends the one that carries the mark below and this loop starts another
-# with the times as they are now. Anything that is not a number, such as
-# no answer at all, gets the default.
+# When the screen dims, goes off and locks are the user's to set, in
+# Settings. sengi-compositor keeps those times itself, with timers that
+# only wake it when something is due, and has the screen locked before
+# the computer sleeps through /usr/lib/systemd/system-sleep. Only labwc,
+# the fallback, needs swayidle: "sengi-lock -f" returns once every output
+# is covered, and swayidle waits for that (-w) before it lets the machine
+# go to sleep. swayidle cannot be given new times while it runs, so
+# Settings ends the one that carries the mark below and this loop starts
+# another with the times as they are now. Anything that is not a number,
+# such as no answer at all, gets the default.
+if [ -z "${SENGI_COMPOSITOR_PID:-}" ]; then
 (
 	wait=1
 	while kill -0 "$compositor" 2>/dev/null; do
@@ -74,3 +78,4 @@ sengi-focus >/dev/null 2>&1 &
 		fi
 	done
 ) >/dev/null 2>&1 &
+fi

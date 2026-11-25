@@ -29,6 +29,7 @@ jobs:
         run: |
           shellcheck -s sh -S warning scripts/*.sh image/*.sh \
             image/rootfs/usr/bin/* image/rootfs/usr/libexec/* image/rootfs/usr/lib/sengi-os/*.sh \
+            image/rootfs/usr/lib/systemd/system-sleep/* \
             image/rootfs/etc/initramfs-tools/hooks/* image/rootfs/etc/initramfs-tools/scripts/*
       - name: Compositor selection and fallback
         run: scripts/test-compositor-sh.sh
