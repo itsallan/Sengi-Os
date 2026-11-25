@@ -5,6 +5,7 @@ pub mod app;
 pub mod catalog;
 pub mod flatpak;
 pub mod icons;
+pub mod progress;
 pub mod rows;
 
 pub mod ui {

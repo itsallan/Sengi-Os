@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::catalog::{self, App};
+use crate::progress::Progress;
 
 /// The remote the image ships a description of.
 const REMOTE: &str = "flathub";
@@ -27,10 +28,16 @@ const HARD_LIMIT: Duration = Duration::from_secs(4 * 3600);
 
 /// How long the output of a call that has ended is waited for. A helper
 /// it left behind may hold the pipes open.
+/// How often progress is looked at, which is also how often it is shown.
+const PROGRESS_EVERY: Duration = Duration::from_millis(250);
+
 const DRAIN_WAIT: Duration = Duration::from_secs(2);
 
 /// The most output of one call that is kept. The whole of Flathub's
 /// listing is about 400 kB.
+/// How much of the end of the output is kept for reading progress.
+const TAIL: usize = 2048;
+
 const MAX_OUTPUT: u64 = 16 * 1024 * 1024;
 
 /// How long each kind of call may take.
@@ -132,6 +139,8 @@ fn last_line(stderr: &[u8], stdout: &[u8]) -> String {
 #[derive(Default)]
 struct Pipe {
     bytes: Mutex<Vec<u8>>,
+    /// The last of what came, kept even when `bytes` is full.
+    tail: Mutex<Vec<u8>>,
     done: AtomicBool,
 }
 
@@ -148,6 +157,14 @@ fn drain(
                 break;
             }
             *last_word.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+            {
+                let mut tail = mine.tail.lock().unwrap_or_else(|e| e.into_inner());
+                tail.extend_from_slice(&chunk[..n]);
+                if tail.len() > TAIL {
+                    let cut = tail.len() - TAIL;
+                    tail.drain(..cut);
+                }
+            }
             let mut bytes = mine.bytes.lock().unwrap_or_else(|e| e.into_inner());
             if (bytes.len() as u64) < MAX_OUTPUT {
                 bytes.extend_from_slice(&chunk[..n]);
@@ -156,6 +173,12 @@ fn drain(
         mine.done.store(true, Ordering::Release);
     });
     (pipe, handle)
+}
+
+fn tail_of(pipe: &Option<(Arc<Pipe>, std::thread::JoinHandle<()>)>) -> Vec<u8> {
+    pipe.as_ref()
+        .map(|(p, _)| p.tail.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        .unwrap_or_default()
 }
 
 fn text(pipe: &Option<(Arc<Pipe>, std::thread::JoinHandle<()>)>) -> Vec<u8> {
@@ -211,6 +234,17 @@ impl Flatpak {
     /// It is stopped, with anything it started, if it says nothing for
     /// `limit` (or has gone on for hours).
     pub fn run(&self, args: &[&str], limit: Duration) -> Result<String, Error> {
+        self.run_with(args, limit, None)
+    }
+
+    /// As `run`, and tells `on_progress` how far flatpak says it has got,
+    /// at most a few times a second and only when that has changed.
+    pub fn run_with(
+        &self,
+        args: &[&str],
+        limit: Duration,
+        on_progress: Option<&dyn Fn(Progress)>,
+    ) -> Result<String, Error> {
         let mut child = self.spawn(args).map_err(|error| match error.kind() {
             std::io::ErrorKind::NotFound => Error::Missing,
             _ => Error::Failed(sengi_text::line(&error.to_string(), 200)),
@@ -225,10 +259,25 @@ impl Flatpak {
         let out = child.stdout.take().map(|s| drain(s, last_word.clone()));
         let err = child.stderr.take().map(|s| drain(s, last_word.clone()));
 
+        let mut reported = Progress::default();
+        let mut last_look = Instant::now()
+            .checked_sub(PROGRESS_EVERY)
+            .unwrap_or_else(Instant::now);
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Some(status),
                 Ok(None) => {
+                    if let Some(report) = on_progress {
+                        if last_look.elapsed() >= PROGRESS_EVERY {
+                            last_look = Instant::now();
+                            let (o, e) = (tail_of(&out), tail_of(&err));
+                            let now = Progress::from_tails(&[&o, &e]);
+                            if !now.is_empty() && now != reported {
+                                reported = now.clone();
+                                report(now);
+                            }
+                        }
+                    }
                     let quiet = last_word
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
@@ -324,12 +373,21 @@ impl Flatpak {
     }
 
     pub fn install(&self, id: &str) -> Result<(), Error> {
+        self.install_with(id, None)
+    }
+
+    /// Installs, and reports progress while it goes.
+    pub fn install_with(
+        &self,
+        id: &str,
+        on_progress: Option<&dyn Fn(Progress)>,
+    ) -> Result<(), Error> {
         if !catalog::valid_id(id) {
             return Err(Error::Failed("That is not an app ID".to_string()));
         }
         // -y: no question is asked, and no permission list is shown.
         let target = format!("app/{id}");
-        self.run(
+        self.run_with(
             &[
                 "--user",
                 "install",
@@ -339,6 +397,7 @@ impl Flatpak {
                 &target,
             ],
             self.limits.install,
+            on_progress,
         )
         .map(|_| ())
     }
@@ -466,6 +525,26 @@ mod tests {
             fake.calls(),
             ["--user install -y --noninteractive flathub app/org.gimp.GIMP"]
         );
+    }
+
+    #[test]
+    fn progress_is_reported_but_not_at_every_line() {
+        let fake = Fake::new(
+            "progress-throttle",
+            "echo 'Installing 2/4…'\n\
+             i=1; while [ $i -le 30 ]; do printf 'Installing… %s%%  1.5 MB  2.0 MB/s\\r' $i; i=$((i+1)); done\n\
+             sleep 1",
+        );
+        let seen = std::sync::Mutex::new(Vec::new());
+        let report = |p: Progress| seen.lock().unwrap().push(p);
+        fake.flatpak(quick())
+            .run_with(&["x"], Duration::from_secs(5), Some(&report))
+            .unwrap();
+        let seen = seen.into_inner().unwrap();
+        assert!(!seen.is_empty() && seen.len() <= 5, "{} reports", seen.len());
+        let last = seen.last().unwrap();
+        assert_eq!(last.percent, Some(30));
+        assert_eq!(last.step, Some((2, 4)));
     }
 
     #[test]

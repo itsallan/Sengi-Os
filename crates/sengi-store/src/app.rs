@@ -16,6 +16,7 @@ use sengi_apps::icons::{Decoder, Pixels, DECODE_TIMEOUT};
 use crate::catalog::{self, App};
 use crate::flatpak::{Error, Flatpak};
 use crate::icons;
+use crate::progress::Progress;
 use crate::rows::{Refused, Rows, State};
 use crate::ui::{Row, RowState, Store, StoreWindow};
 
@@ -58,6 +59,8 @@ struct Data {
     rows: Rows,
     icons: HashMap<String, Option<Pixels>>,
     decoding: bool,
+    /// How far the install under way has got, as far as flatpak says.
+    progress: Option<Progress>,
     message: Message,
     /// The message is why an install failed, and stays until the user
     /// does something else.
@@ -90,6 +93,7 @@ struct RowData {
     letter: String,
     icon: Option<Pixels>,
     state: State,
+    progress: Option<Progress>,
 }
 
 struct View {
@@ -118,6 +122,17 @@ fn apply(window: &StoreWindow, view: View) {
             letter: row.letter.as_str().into(),
             icon: row.icon.as_ref().map(to_image).unwrap_or_default(),
             has_icon: row.icon.is_some(),
+            percent: row
+                .progress
+                .as_ref()
+                .and_then(|p| p.percent)
+                .map_or(-1, i32::from),
+            detail: row
+                .progress
+                .as_ref()
+                .map(Progress::detail)
+                .unwrap_or_default()
+                .into(),
             state: match row.state {
                 State::Available => RowState::Available,
                 State::Installing => RowState::Installing,
@@ -180,6 +195,11 @@ fn view(data: &Data, reset: bool) -> View {
                 letter: sengi_text::initial(&app.name),
                 icon: data.icons.get(&app.id).cloned().flatten(),
                 state: data.rows.state(&app.id),
+                progress: if data.rows.state(&app.id) == State::Installing {
+                    data.progress.clone()
+                } else {
+                    None
+                },
             }
         })
         .collect();
@@ -493,7 +513,16 @@ fn run_install(shared: &Shared, id: &str, name: &str) {
             shared.lock().rows.set_installed(installed);
             Ok(true)
         }
-        Ok(_) => shared.flatpak.install(id).map(|()| false),
+        Ok(_) => {
+            let report = |progress: Progress| {
+                shared.lock().progress = Some(progress);
+                render(shared, false);
+            };
+            shared
+                .flatpak
+                .install_with(id, Some(&report))
+                .map(|()| false)
+        }
         Err(error) => Err(Error::Failed(format!(
             "could not check whether it is installed already: {error}"
         ))),
@@ -501,6 +530,7 @@ fn run_install(shared: &Shared, id: &str, name: &str) {
     {
         let mut data = shared.lock();
         data.rows.finish(id, result.is_ok());
+        data.progress = None;
         match &result {
             Ok(true) => {
                 data.sticky = false;
@@ -633,6 +663,40 @@ mod tests {
             d.rows.state("org.gimp.GIMP") == State::Installed
         });
         assert!(!shared.lock().message.error);
+    }
+
+    #[test]
+    fn an_install_shows_its_progress_and_then_none() {
+        let fake = Fake::new(
+            "app-progress",
+            "case \"$*\" in\n\
+             *remotes*) printf 'flathub\\thttps://dl.flathub.org/repo/\\tuser\\n';;\n\
+             *remote-ls*) printf 'org.gimp.GIMP\\tGIMP\\tImages\\n';;\n\
+             *\" install \"*) printf 'Installing 2/4…\\n'; printf 'Installing… 45%%  12.3 MB  4.1 MB/s\\r'; sleep 1;;\n\
+             esac",
+        );
+        let shared = context(&fake);
+        load(shared.clone());
+        install(&shared, "org.gimp.GIMP");
+        wait_until(&shared, |d| {
+            d.progress.as_ref().is_some_and(|p| p.percent == Some(45))
+        });
+        search(&shared, "gimp");
+        {
+            let data = shared.lock();
+            let v = view(&data, false);
+            let row = v.rows.iter().find(|r| r.id == "org.gimp.GIMP").unwrap();
+            let p = row.progress.as_ref().unwrap();
+            assert_eq!(p.step, Some((2, 4)));
+            assert_eq!(
+                p.detail(),
+                "Installing 2 of 4 \u{b7} 12.3 MB \u{b7} 4.1 MB/s"
+            );
+        }
+        wait_until(&shared, |d| {
+            d.rows.state("org.gimp.GIMP") == State::Installed
+        });
+        assert!(shared.lock().progress.is_none());
     }
 
     #[test]

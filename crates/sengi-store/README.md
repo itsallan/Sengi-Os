@@ -10,8 +10,11 @@ Type a name. Up and Down choose a row, Return installs it, Escape clears
 the field. Only the app's name is searched, without regard to case; every
 word typed has to be in it, and a name that starts with what was typed
 comes first. The line about an app is shown but not searched. A row says
-Installing while it is being installed, with a bar that moves to and fro
-because Flatpak does not say how far it has got, and an Open button
+Installing while it is being installed. The end of what flatpak prints is
+read (about four times a second at most) for a percentage, a step such as
+"2/4", a size and a speed; what is found is shown as a bar with the
+percentage and "Installing 2 of 4", and what is not found is not shown or
+made up: with no percentage the bar moves to and fro instead. And an Open button
 afterwards; an app that is installed already has Open from the start. Open
 (or Return on the row) runs `flatpak run <id>` for the user, detached: the
 Store does not wait for the app, keeps none of its pipes, and does not stop

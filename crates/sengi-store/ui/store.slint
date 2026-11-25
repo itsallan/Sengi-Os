@@ -3,7 +3,7 @@
 // the shared components and Settings' kit; nothing here has a colour or a
 // size of its own.
 
-import { Tokens, SengiText, SengiLabel, SengiButton } from "components.slint";
+import { Tokens, SengiText, SengiLabel, SengiButton, SengiProgress } from "components.slint";
 import { Scroll, TextField } from "kit.slint";
 
 // What an app in the list is doing.
@@ -16,6 +16,11 @@ export struct Row {
     // The icon, if there is one; else a tile with the initial.
     icon: image,
     has-icon: bool,
+    // How far an install has got, 0 to 100, or less than 0 when flatpak
+    // has not said.
+    percent: int,
+    // What step it is on, and the size and speed, when flatpak says.
+    detail: string,
     letter: string,
     state: RowState,
 }
@@ -232,7 +237,33 @@ export component StoreWindow inherits Window {
                                     }
                                 }
 
-                                if app.state == RowState.installing: HorizontalLayout {
+                                if app.state == RowState.installing && app.percent >= 0: VerticalLayout {
+                                    width: Tokens.dialog-width * 2 / 3;
+                                    alignment: center;
+                                    spacing: Tokens.space-xs;
+                                    SengiLabel {
+                                        text: app.detail;
+                                        font-weight: Tokens.font-weight-regular;
+                                        horizontal-alignment: right;
+                                        overflow: elide;
+                                    }
+                                    HorizontalLayout {
+                                        spacing: Tokens.space-sm;
+                                        VerticalLayout {
+                                            alignment: center;
+                                            horizontal-stretch: 1;
+                                            SengiProgress { percent: app.percent; }
+                                        }
+                                        SengiText {
+                                            text: app.percent + "%";
+                                            color: Tokens.color-text-muted;
+                                            horizontal-alignment: right;
+                                            min-width: Tokens.space-xxl - Tokens.space-md;
+                                        }
+                                    }
+                                }
+
+                                if app.state == RowState.installing && app.percent < 0: HorizontalLayout {
                                     spacing: Tokens.space-sm;
                                     alignment: end;
                                     VerticalLayout {
@@ -240,7 +271,7 @@ export component StoreWindow inherits Window {
                                         Busy { }
                                     }
                                     SengiText {
-                                        text: "Installing";
+                                        text: app.detail != "" ? app.detail : "Installing";
                                         color: Tokens.color-text-muted;
                                         vertical-alignment: center;
                                     }

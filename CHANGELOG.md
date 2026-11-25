@@ -7,6 +7,9 @@ and the measured idle RAM and boot time.
 
 ### Added
 
+- The Store shows real install progress read from Flatpak: a bar with the
+  percentage, the step and the speed when Flatpak gives them, and an
+  honest moving bar when it does not.
 - The Store shows an Open button for installed apps, also right after an
   install, and it starts the app.
 - Right-click a dock tile to keep the app in the dock or remove it, open it

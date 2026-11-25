@@ -473,6 +473,8 @@ fn stores() {
             has_icon: rgb.is_some(),
             letter: name.chars().next().unwrap().to_string().into(),
             state,
+            percent: -1,
+            detail: "".into(),
         };
     use store::RowState::*;
     for variant in ["results", "empty", "error", "many"] {
@@ -488,6 +490,8 @@ fn stores() {
                         row("A rather long application name that will not fit on one row of the list", "Short", Failed, Some([70, 100, 200])),
                         row("VLC", "", Available, None),
                     ];
+                    rows[2].percent = 45;
+                    rows[2].detail = "Installing 2 of 4 \u{b7} 12.3 MB \u{b7} 4.1 MB/s".into();
                     if variant == "many" {
                         for n in 0..20 {
                             rows.push(row(
