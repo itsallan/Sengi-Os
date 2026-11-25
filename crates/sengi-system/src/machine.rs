@@ -145,6 +145,34 @@ pub fn block(rfkill: &Path, kind: &str) -> Block {
     found
 }
 
+/// Whether the machine has a lid whose closing the system can notice:
+/// an input device that reports the lid switch, under `input`, which is
+/// `/sys/class/input`. A desktop has none, and a laptop's lid is the
+/// ACPI "Lid Switch" device.
+pub fn has_lid(input: &Path) -> bool {
+    /// SW_LID, the first bit of what a device says its switches are.
+    const SW_LID: u32 = 1;
+    fs::read_dir(input)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .take(128)
+        .any(|entry| {
+            let path = entry.path();
+            let named = fs::read_to_string(path.join("name"))
+                .is_ok_and(|name| name.trim().ends_with("Lid Switch"));
+            // The capabilities are words of hexadecimal, the lowest last.
+            let switches = fs::read_to_string(path.join("capabilities/sw")).ok();
+            let lid = switches
+                .and_then(|text| {
+                    let last = text.split_whitespace().last()?.to_string();
+                    u32::from_str_radix(&last, 16).ok()
+                })
+                .is_some_and(|bits| bits & SW_LID != 0);
+            named || lid
+        })
+}
+
 /// Reads `class`, which is `/sys/class` on a real machine.
 pub fn read(class: &Path) -> Hardware {
     let Links {
@@ -214,6 +242,32 @@ impl Sysfs {
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+
+    #[test]
+    fn a_lid_is_an_input_device_with_the_lid_switch() {
+        let sys = TempDir::new();
+        assert!(!has_lid(sys.path()));
+        assert!(!has_lid(Path::new("/nonexistent/input")));
+        // A keyboard and a touchpad: no switches at all.
+        sys.write("input/input0/name", "AT Translated Set 2 keyboard\n");
+        sys.write("input/input0/capabilities/sw", "0\n");
+        sys.write("input/input1/name", "ELAN1200:00 04F3:3022 Touchpad\n");
+        assert!(!has_lid(sys.path().join("input").as_path()));
+        // Some other switch, the tablet mode one, is not a lid.
+        sys.write("input/input2/name", "Intel HID switches\n");
+        sys.write("input/input2/capabilities/sw", "2\n");
+        assert!(!has_lid(sys.path().join("input").as_path()));
+        // The lid, by its switch bit.
+        sys.write("input/input3/capabilities/sw", "1\n");
+        assert!(has_lid(sys.path().join("input").as_path()));
+    }
+
+    #[test]
+    fn a_lid_is_known_by_its_name_too() {
+        let sys = TempDir::new();
+        sys.write("input/input4/name", "Lid Switch\n");
+        assert!(has_lid(sys.path().join("input").as_path()));
+    }
 
     #[test]
     fn an_empty_machine() {
