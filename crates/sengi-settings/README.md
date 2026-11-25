@@ -39,9 +39,11 @@ ignored in favour of the system's value or the default.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
+| `power.dim-after` | `120` | Seconds without input before the screen is dimmed. `0` is never. Not used if it is not before `blank-after`. |
 | `power.blank-after` | `300` | Seconds without input before the screen is switched off. `0` is never. At most 14400. |
-| `power.lock-after` | `300` | Seconds without input before the screen is locked. `0` is never. |
+| `power.lock-after` | `0` | Seconds without input before the screen is locked. `0` is never. |
 | `power.lock-on-sleep` | `true` | Lock the screen when the machine is suspended. |
+| `power.lid` | `"sleep"` | What closing the lid does: `"sleep"` (what the system does) or `"nothing"`. Only offered on a machine with a lid. |
 | `clock.format` | `"24h"` | `"24h"` or `"12h"`, for the clock in the bar. |
 | `clock.time-zone` | `""` | A zone name such as `"Europe/Paris"` for this user's session. Empty uses the system's zone. |
 | `keyboard.layouts` | `["us"]` | One to four XKB layouts, each `layout` or `layout(variant)`. |
@@ -271,20 +273,24 @@ given only until it exits; a kept mode is not written to a file yet).
   panel shows the same charge. Read
   when the page opens and every 30 seconds while it is showing, not
   otherwise.
-- When to switch the screen off and when to lock it, and whether to lock
-  on sleep: `power.blank-after`, `power.lock-after`,
-  `power.lock-on-sleep`. The session's start-up script reads them with
-  `--get` and starts `swayidle` accordingly; `sengi-settings --screen
-  off|on` is the command that switches the displays, through
-  `wlr-output-power-management`. A running `swayidle` cannot be given new
-  times, so after a change Settings ends the session's one, which the
-  session starts again, but only one whose environment carries
-  `SENGI_IDLE_SUPERVISED=1`: ending one that nobody restarts would leave
-  the session never locking. Without the mark the page says the change
-  applies at the next login.
-- The power button and the lid are logind's (`HandlePowerKey`,
-  `HandleLidSwitch`), the same for every user and changed only as root.
-  They are shown, read from logind, with where to change them.
+- When to dim the screen, switch it off and lock it, whether to lock on
+  sleep, and what closing the lid does: `power.dim-after`,
+  `power.blank-after`, `power.lock-after`, `power.lock-on-sleep`,
+  `power.lid`. Under sengi-compositor the compositor reads them itself and
+  is told to read them again after each change (`sengi-compositor
+  --reload`), so they take effect at once; the lid choice is only shown on
+  a machine whose input devices include a lid switch. Under labwc the
+  session's start-up script reads them with `--get` and starts `swayidle`
+  accordingly; `sengi-settings --screen off|on` is the command that
+  switches the displays, through `wlr-output-power-management`. A running
+  `swayidle` cannot be given new times, so after a change Settings ends
+  the session's one, which the session starts again, but only one whose
+  environment carries `SENGI_IDLE_SUPERVISED=1`: ending one that nobody
+  restarts would leave the session never locking. Without the mark the
+  page says the change applies at the next login.
+- The power button is logind's (`HandlePowerKey`), the same for every user
+  and changed only as root (`/etc/systemd/logind.conf.d`). It is shown,
+  read from logind, with where to change it.
 
 ### Date & Time
 
@@ -310,6 +316,9 @@ given only until it exits; a kept mode is not written to a file yet).
   `grp:` options. A second layout added while none is chosen gets
   Alt + Shift, so it can be reached.
 - Repeat delay and rate.
+- Keyboard shortcuts…, under sengi-compositor only: runs
+  `sengi-compositor --shortcuts`, which shows the compositor's sheet of
+  its key bindings (also Super+/ anywhere).
 
 All of it is written for labwc as described under "Files written for
 other programs", and labwc is told to read its files again.

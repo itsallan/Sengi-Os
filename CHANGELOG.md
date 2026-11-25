@@ -7,6 +7,24 @@ and the measured idle RAM and boot time.
 
 ### Added
 
+- The screen dims after 2 minutes without input and goes off after 5, and
+  any key, click or movement brings it back. Dimming, switching off and an
+  optional lock are timed by sengi-compositor itself, with no polling and
+  without swayidle, which is now only started under labwc. The lock after
+  idling is off unless you set it; locking before sleep stays on.
+- Closing the lid puts the computer to sleep, on battery and on mains, and
+  the screen is locked before it does, so the lock screen is there on
+  waking. A short press of the power button sleeps and holding it switches
+  off. These are logind settings in the image.
+- Settings, Power: dim, switch off and lock times, and "When the lid is
+  closed" (sleep or do nothing), which only shows on a computer that has a
+  lid. They are kept in settings.toml and take effect at once.
+- While you drag a window to a screen edge, a flat see-through outline in
+  the accent colour shows where it will land, and goes when you let go.
+- Super+/ (or Super+F1) shows a sheet of every keyboard shortcut, made from
+  the same table the compositor binds the keys with. Settings, Keyboard has
+  a Keyboard shortcuts button for it.
+
 - Settings has a Wallpaper page: the plain colour, six flat wallpapers in the
   Sengi OS colours, or a PNG or JPEG of your own, by path or from ~/Pictures.
   It shows at once and is remembered; a missing or broken file falls back to

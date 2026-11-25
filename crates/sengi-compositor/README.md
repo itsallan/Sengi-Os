@@ -223,7 +223,8 @@ sengi-notify and sengi-lock included):
   sengi-launcher (fuzzel where that is not installed),
   Super+Return a terminal (`sengi-run foot`, or `foot`), Super+L
   the locker, Super+Q and Alt+F4 close the window that has the keyboard,
-  Alt+Tab and Alt+Shift+Tab step through windows by recent use.
+  Alt+Tab and Alt+Shift+Tab step through windows by recent use. Super+/
+  shows them all.
 - With Super held, the left button moves a window from anywhere on it and
   the right button resizes it by the nearest corner. A double click on the
   title bar maximises and restores.
@@ -618,9 +619,11 @@ tells the compositor it is running under: `labwc --reconfigure` there,
   `disable-while-typing`, for those that can.
 - `[appearance]`: `window-shadows`, whether framed windows have a shadow
   (on unless set).
+- `[power]`: `dim-after`, `blank-after` and `lock-after`, in seconds (zero
+  is never), `lock-on-sleep` and `lid`. See "Idle, sleep and the lid".
 
-`sengi-settings --screen off`, which swayidle runs after the time set in
-`[power]`, switches the outputs off through wlr-output-power-management.
+`sengi-settings --screen off`, which swayidle runs under labwc, switches
+the outputs off through wlr-output-power-management.
 The compositor lights them again at the first key, click, scroll or
 pointer movement, whether or not anybody asks it to. That first one only
 lights the screen: it was made without seeing anything and reaches no
@@ -652,6 +655,86 @@ seconds and flipped no page. It is 11 MB Pss against labwc's 25.
 
 Not seen: anything on real hardware, the lock after the idle timeout in
 this image, and logging out through the session menu.
+
+### Idle, sleep and the lid
+
+Under this compositor nothing outside it watches for idleness. After the
+times in `[power]` without a key, click or movement it
+
+1. dims the screen after `dim-after` (120 s unless set): it runs
+   `sengi-brightness dim`, which remembers the brightness in the runtime
+   directory and turns the panel down to 30 percent of it, never below the
+   floor of the brightness keys;
+2. switches every output off after `blank-after` (300 s), the same
+   switching-off wlr-output-power-management does, and any input lights
+   it again (that first input is not passed on);
+3. locks after `lock-after` (0, never, unless set), by starting the
+   locker like Super+L does.
+
+Input brings the brightness back (`sengi-brightness restore`) and starts
+the count again. A dimming time that is not before the time for switching
+off is not used. A surface holding idleness off with idle-inhibit stops the
+count while it shows, and the count starts again when it stops.
+
+It takes no wake-ups for this. `src/power.rs` keeps the time of the last
+input and one calloop timer set for the next step that is due; input only
+writes the time down. The timer fires when a step is due, or earlier if
+settings changed, finds nothing due and sets itself again. With nothing
+left to do, such as the screen off and no lock set, there is no timer.
+`IdleClock` takes the time as an argument, so the unit tests in
+`src/power.rs` run it on a clock they move by hand. The settings are read
+again on SIGHUP, and the timer is set again for the new times at once.
+
+SIGUSR1 reports it:
+
+    idle: awake, dim 120s, off 300s, lock never; lid: left to the system
+
+Locking before the computer sleeps is not done by a program that waits for
+it. The image has `/usr/lib/systemd/system-sleep/sengi-lock-on-sleep`,
+which systemd runs, as root and before it suspends, for every sleep (the
+lid, the power button, a menu). For each running compositor's control
+socket in `/run/user/*` it runs `sengi-compositor --lock-for-sleep` as that
+user. The compositor locks and answers once every screen is covered, so
+the hook holds the suspend until then; the lock screen is what shows on
+waking. It does nothing when `lock-on-sleep` is off, on the login screen,
+or when the session is already locked. Under labwc the swayidle
+`before-sleep` does it.
+
+The lid and the power button are logind's, set in the image by
+`/etc/systemd/logind.conf.d/10-sengi.conf`: closing the lid sleeps, on
+battery or on mains, and does nothing when docked; a short press of the
+power button sleeps and a long one switches off. `lid = "nothing"`, set on
+Settings' Power page for a machine that has a lid, has the compositor ask
+logind to leave the lid alone: it starts `systemd-inhibit
+--what=handle-lid-switch ... cat` and keeps the pipe to `cat` open. The
+inhibitor lasts as long as the pipe, so it goes when the setting does and
+when the compositor dies, which a lid left ignored by mistake would not.
+
+Not seen, because none of it can be here: a suspend and a resume, the hook
+running under systemd-sleep, the lock screen on waking, the lid switch,
+logind honouring the inhibitor, a panel dimmed through logind, and a real
+screen going dark and coming back.
+
+### Snap hints and the shortcut sheet
+
+Dragging a window by its title bar to the top of a screen maximises it on
+release, and to the left, right or bottom edge fills that half. While the
+pointer is within a pixel of such an edge an outline shows the place: the
+accent, flat and see-through (`snap.hint-fill-alpha` and `hint-edge-alpha`
+in the tokens), with the theme's corner radius, drawn above the windows
+and gone when the button is let go or the pointer leaves the edge. The
+place is worked out by the same code that places the window on release
+(`snap_at` and `half_frame`), so the two cannot differ. At a top corner the
+top wins, as it does on release; there are no quarter snaps. The picture is
+made once for a place and a scale, not on every movement.
+
+Super+/ (and Super+F1, for layouts where / needs Shift) shows a sheet of
+the shortcuts in the middle of the screen, Escape, the same keys again or a
+click close it, and `sengi-compositor --shortcuts`, which Settings'
+Keyboard page runs, opens it. It is made from `keys::BINDINGS`, the table
+the keys are looked up in, so it lists exactly what is bound; a test tries
+every key with every combination of modifiers and fails for an action the
+sheet does not list. Its two columns fit a 1280-pixel screen.
 
 ### The boot test
 
@@ -737,7 +820,8 @@ untrusted programs in a sandbox is what protects against them.
 - `src/decoration.rs`: theme from the tokens and the title bar painter. Pure,
   unit-tested.
 - `src/text.rs`: finding the typeface and rasterising a line of text.
-- `src/keys.rs`: the key binding table. Pure, unit-tested.
+- `src/keys.rs`: the key binding table, and the shortcut sheet made from
+  it. Pure, unit-tested.
 - `src/cli.rs`, `src/script.rs`: arguments and input scripts, unit-tested.
 - `src/state.rs`: state shared by all backends, outputs, focus.
 - `src/window.rs`: per-window state, frame textures, move, resize, maximise.
@@ -747,6 +831,9 @@ untrusted programs in a sandbox is what protects against them.
 - `src/config.rs`: what is taken from the settings file. Pure,
   unit-tested.
 - `src/output_power.rs`: switching outputs off and on for clients.
+- `src/power.rs`: the idle clock, dimming, switching off, the idle lock and
+  the lid hold. The clock is pure and unit-tested.
+- `src/snap.rs`: where a dragged window will snap, and the outline.
 - `src/idle.rs`: idle-inhibit.
 - `src/lock.rs`: session lock and who may use it.
 - `src/security.rs`: security contexts and what sandboxed clients are
