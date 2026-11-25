@@ -28,12 +28,12 @@ use smithay::{
 
 use crate::{
     decoration::{self, TextBitmap, Theme, Titlebar},
-    shadow::{self, Falloff},
     frame::{self, Edges},
     input::Drag,
     keys::Edge,
     layout::Rect,
     outputs::scale_key,
+    shadow::{self, Falloff},
     state::{set_activated, State},
     text::Font,
 };

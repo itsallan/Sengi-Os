@@ -410,6 +410,11 @@ fn adaptive_sync_is_not_there_to_turn_on() {
 const RED: u32 = 0xffb0_2020;
 const BLUE: u32 = 0xff20_20b0;
 const DESKTOP: u32 = 0x0012_1316;
+
+/// The desktop, or the desktop under a window's shadow, which is darker.
+fn backdrop(pixel: u32) -> bool {
+    (0..3).all(|c| (pixel >> (8 * c)) & 0xff <= (DESKTOP >> (8 * c)) & 0xff)
+}
 const CARD: u32 = 0x001f_2126;
 
 fn rgb(argb: u32) -> u32 {
@@ -496,7 +501,7 @@ fn a_window_over_two_outputs_is_drawn_on_each_at_its_scale() {
     // The title bar is above the client area; find where it is.
     let top = (0..360u32)
         .rev()
-        .find(|y| before.at(left + 150, *y) == rgb(DESKTOP))
+        .find(|y| backdrop(before.at(left + 150, *y)))
         .unwrap()
         + 1;
     let client_top = (0..360u32)
@@ -560,7 +565,7 @@ fn bar_height(picture: &common::apps::Picture, x: u32, row: u32) -> u32 {
         .expect("the client area");
     let above = (0..client)
         .rev()
-        .find(|y| picture.at(x, *y) == rgb(DESKTOP))
+        .find(|y| backdrop(picture.at(x, *y)))
         .map_or(0, |y| y + 1);
     client - above
 }

@@ -7,9 +7,9 @@ mod common;
 mod harness;
 
 use common::{apps::Picture, Client};
+use std::time::Duration;
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel;
-use std::time::Duration;
 
 use harness::{Compositor, SOON};
 
@@ -156,7 +156,10 @@ fn the_shadow_follows_the_window_when_it_is_moved() {
     let (nx0, ny0, nx1, ny1) = client(&after, GREEN);
     assert!(nx0 < x0 && ny0 > y0, "the window did not move");
     assert_eq!((nx1 - nx0, ny1 - ny0), (x1 - x0, y1 - y0));
-    assert!(under(&after, 4) < light(desktop()), "no shadow at the new place");
+    assert!(
+        under(&after, 4) < light(desktop()),
+        "no shadow at the new place"
+    );
     // Where the window was, the desktop is back, shadow and all.
     let old = (x0 + x1) / 2;
     assert_eq!(after.at(old, y1 + 4), desktop());

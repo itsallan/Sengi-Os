@@ -240,16 +240,18 @@ impl ShadowSet {
     }
 
     pub fn buffers(&self, active: bool) -> Buffers {
-        self.pictures[usize::from(active)].each_ref().map(|(w, h, pixels)| {
-            MemoryRenderBuffer::from_slice(
-                pixels,
-                Fourcc::Argb8888,
-                (*w, *h),
-                self.buffer_scale,
-                Transform::Normal,
-                None,
-            )
-        })
+        self.pictures[usize::from(active)]
+            .each_ref()
+            .map(|(w, h, pixels)| {
+                MemoryRenderBuffer::from_slice(
+                    pixels,
+                    Fourcc::Argb8888,
+                    (*w, *h),
+                    self.buffer_scale,
+                    Transform::Normal,
+                    None,
+                )
+            })
     }
 
     /// The size of a part in logical pixels, which is how much of its
