@@ -42,6 +42,7 @@ fn pages() -> ModelRc<PageEntry> {
         ("keyboard", "Keyboard", "keyboard"),
         ("mouse", "Mouse & Touchpad", "mouse"),
         ("notifications", "Notifications", "bell"),
+        ("updates", "Updates", "arrows-clockwise"),
         ("about", "About", "info"),
     ];
     list(
@@ -383,6 +384,90 @@ fn pointer(w: &SettingsWindow) {
     d.set_touchpad_speed(30);
 }
 
+fn updates(w: &SettingsWindow, variant: &str) {
+    let d = w.global::<UpdatesData>();
+    let row = |title: &str, detail: &str, tag: &str| UpdateRow {
+        title: title.into(),
+        detail: detail.into(),
+        tag: tag.into(),
+    };
+    let lists = || {
+        d.set_system_title("System packages (3)".into());
+        d.set_system(list(vec![
+            row(
+                "openssl",
+                "3.0.15-1~deb13u1 to 3.0.16-1~deb13u1",
+                "Security",
+            ),
+            row(
+                "libssl3t64",
+                "3.0.15-1~deb13u1 to 3.0.16-1~deb13u1",
+                "Security",
+            ),
+            row("tzdata", "2024a-4 to 2025b-1", ""),
+        ]));
+        d.set_apps_title("Apps (2)".into());
+        d.set_apps(list(vec![
+            row("GIMP", "2.10.38 \u{b7} 112.4 MB", ""),
+            row("Firefox", "128.0 \u{b7} 60.1 MB", ""),
+        ]));
+        d.set_can_update(true);
+        d.set_badge(5);
+    };
+    match variant {
+        "idle" => {
+            d.set_headline("Check for updates".into());
+            d.set_subline("Not checked yet".into());
+        }
+        "checking" => {
+            d.set_checking(true);
+            d.set_headline("Looking for updates".into());
+            d.set_subline("Step 1 of 2 \u{b7} 50% \u{b7} Retrieving file 1 of 2".into());
+        }
+        "list" => {
+            lists();
+            d.set_headline("5 updates available".into());
+            d.set_subline(
+                "3 system packages (2 security), 2 apps \u{b7} 36 MB to download \u{b7} Checked 5 minutes ago"
+                    .into(),
+            );
+        }
+        "progress" => {
+            lists();
+            d.set_working(true);
+            d.set_headline("5 updates available".into());
+            d.set_subline(
+                "3 system packages (2 security), 2 apps \u{b7} Checked 5 minutes ago".into(),
+            );
+            d.set_phase("Downloading system updates".into());
+            d.set_percent(45);
+            d.set_progress_line(
+                "Step 2 of 6 \u{b7} 45% \u{b7} 16 MB of 36 MB \u{b7} Retrieving file 2 of 6".into(),
+            );
+            d.set_can_cancel(true);
+        }
+        "restart" => {
+            d.set_headline("Up to date".into());
+            d.set_subline("Checked just now".into());
+            d.set_restart_needed(true);
+        }
+        "failed" => {
+            d.set_headline("Check for updates".into());
+            d.set_subline("Not checked yet".into());
+            d.set_note(
+                "System updates could not be checked. E: Could not resolve 'deb.debian.org'".into(),
+            );
+        }
+        _ => {
+            d.set_live(true);
+            d.set_headline("Updates are available after Sengi OS is installed".into());
+            d.set_subline(
+                "This live system runs from memory and has nothing on a disk to update".into(),
+            );
+        }
+    }
+}
+
 fn about(w: &SettingsWindow) {
     let d = w.global::<AboutData>();
     d.set_version("0.8.0".into());
@@ -449,6 +534,13 @@ fn every_page() {
                 d.set_note("The notification service is not running.".into());
             }),
         ),
+        ("updates", "idle", Box::new(|w| updates(w, "idle"))),
+        ("updates", "checking", Box::new(|w| updates(w, "checking"))),
+        ("updates", "list", Box::new(|w| updates(w, "list"))),
+        ("updates", "progress", Box::new(|w| updates(w, "progress"))),
+        ("updates", "restart", Box::new(|w| updates(w, "restart"))),
+        ("updates", "failed", Box::new(|w| updates(w, "failed"))),
+        ("updates", "live", Box::new(|w| updates(w, "live"))),
         ("about", "on", Box::new(about)),
     ];
     for (page, variant, fill) in &scenes {

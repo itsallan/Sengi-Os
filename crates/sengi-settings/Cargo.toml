@@ -18,6 +18,8 @@ slint = { workspace = true, features = ["software-renderer-systemfonts", "softwa
 # of names that strangers chose.
 sengi-system = { path = "../sengi-system", features = ["services", "settings"] }
 sengi-text = { path = "../sengi-text" }
+# What there is to update, and the helper that does it.
+sengi-update = { path = "../sengi-update" }
 # The settings file: its parser, its keys and which file wins. The bar
 # reads the same file through the same crate.
 sengi-config = { path = "../sengi-config" }

@@ -31,6 +31,7 @@ use sengi_settings::settings::Settings;
 use sengi_settings::sound::page::SoundPage;
 use sengi_settings::store::Dirs;
 use sengi_settings::ui::SettingsWindow;
+use sengi_settings::updates::UpdatesPage;
 use sengi_settings::wallpaper::WallpaperPage;
 use sengi_settings::{derive, secret};
 
@@ -360,5 +361,6 @@ fn register_pages(app: &std::rc::Rc<App>, services: Services) {
     app.register(Page::Keyboard, KeyboardPage::attach(app));
     app.register(Page::Mouse, PointerPage::attach(app));
     app.register(Page::Notifications, NotificationsPage::attach(app));
+    app.register(Page::Updates, UpdatesPage::attach(app));
     app.register(Page::About, AboutPage::attach(app));
 }

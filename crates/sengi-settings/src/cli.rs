@@ -13,7 +13,7 @@ Open Sengi OS Settings, at PAGE if one is named. If Settings is already
 open, that window is brought to the page instead.
 
 Pages: network, bluetooth, sound, display, wallpaper, power, date-time,
-       keyboard, mouse, notifications, about
+       keyboard, mouse, notifications, updates, about
 
   --get SECTION.KEY  print the setting in effect, for scripts
   --set SECTION.KEY VALUE
@@ -42,11 +42,12 @@ pub enum Page {
     Keyboard,
     Mouse,
     Notifications,
+    Updates,
     About,
 }
 
 impl Page {
-    pub const ALL: [Page; 11] = [
+    pub const ALL: [Page; 12] = [
         Page::Network,
         Page::Bluetooth,
         Page::Sound,
@@ -57,6 +58,7 @@ impl Page {
         Page::Keyboard,
         Page::Mouse,
         Page::Notifications,
+        Page::Updates,
         Page::About,
     ];
 
@@ -73,6 +75,7 @@ impl Page {
             Page::Mouse => "mouse",
             Page::Notifications => "notifications",
             Page::Wallpaper => "wallpaper",
+            Page::Updates => "updates",
             Page::About => "about",
         }
     }
@@ -89,6 +92,7 @@ impl Page {
             Page::Mouse => "Mouse & Touchpad",
             Page::Notifications => "Notifications",
             Page::Wallpaper => "Appearance",
+            Page::Updates => "Updates",
             Page::About => "About",
         }
     }
@@ -107,6 +111,7 @@ impl Page {
                 "datetime" | "date" | "time" | "clock" => Some(Page::DateTime),
                 "touchpad" | "pointer" => Some(Page::Mouse),
                 "notification" => Some(Page::Notifications),
+                "update" | "software-update" | "upgrade" => Some(Page::Updates),
                 "background" | "desktop-background" | "appearance" | "theme" => {
                     Some(Page::Wallpaper)
                 }

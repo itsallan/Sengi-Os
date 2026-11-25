@@ -16,9 +16,10 @@ import { KeyboardData, KeyboardPage } from "pages/keyboard.slint";
 import { AboutData, AboutPage } from "pages/about.slint";
 import { NotificationsData, NotificationsPage } from "pages/notifications.slint";
 import { PointerData, PointerSide, PointerPage } from "pages/pointer.slint";
+import { UpdateRow, UpdatesData, UpdatesPage } from "pages/updates.slint";
 import { WallpaperData, WallpaperTile, PictureRow, WallpaperPage } from "pages/wallpaper.slint";
 
-export { Item, InfoRow, DialogSpec, WallpaperData, WallpaperTile, PictureRow, AboutData, NotificationsData, PointerData, PointerSide, KeyboardData, PowerData, DateTimeData, NetworkData, BluetoothData, SoundData, SoundSide, DisplayData, DisplayOutput }
+export { UpdateRow, UpdatesData, Item, InfoRow, DialogSpec, WallpaperData, WallpaperTile, PictureRow, AboutData, NotificationsData, PointerData, PointerSide, KeyboardData, PowerData, DateTimeData, NetworkData, BluetoothData, SoundData, SoundSide, DisplayData, DisplayOutput }
 
 export struct PageEntry {
     name: string,
@@ -128,6 +129,25 @@ component Sidebar inherits Rectangle {
             ink: parent.chosen ? Tokens.color-accent : Tokens.color-text-muted;
         }
 
+        // How many updates are waiting.
+        if page.name == "updates" && UpdatesData.badge > 0: Rectangle {
+            x: parent.width - self.width - Tokens.space-md;
+            y: (parent.height - self.height) / 2;
+            width: Math.max(self.height, count.preferred-width + Tokens.space-sm * 2);
+            height: Tokens.space-lg + Tokens.space-xs;
+            border-radius: Tokens.radius;
+            background: Tokens.color-accent;
+
+            count := SengiText {
+                text: UpdatesData.badge > 99 ? "99+" : "" + UpdatesData.badge;
+                color: Tokens.color-accent-text;
+                font-size: Tokens.font-size-sm;
+                font-weight: Tokens.font-weight-medium;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
         SengiText {
             x: Tokens.space-md * 2 + Tokens.bar-icon;
             width: parent.width - self.x - Tokens.space-sm;
@@ -233,6 +253,7 @@ export component SettingsWindow inherits Window {
         if root.page == "keyboard": KeyboardPage { }
         if root.page == "mouse": PointerPage { }
         if root.page == "notifications": NotificationsPage { }
+        if root.page == "updates": UpdatesPage { }
         if root.page == "about": AboutPage { }
     }
 

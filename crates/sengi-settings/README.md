@@ -7,8 +7,8 @@ down the left and the chosen one's page at the right.
     sengi-settings sound      open it at a page
 
 The pages are `network`, `bluetooth`, `sound`, `display`, `wallpaper`,
-`power`, `date-time`, `keyboard`, `mouse`, `notifications` and `about`. If Settings
-is already open, a second invocation brings that window to the page it
+`power`, `date-time`, `keyboard`, `mouse`, `notifications`, `updates` and
+`about`. If Settings is already open, a second invocation brings that window to the page it
 was asked for and exits; the two meet on a socket in `$XDG_RUNTIME_DIR`.
 
 It is not a service. It starts when asked for, exits when its window is
@@ -346,6 +346,15 @@ Do not disturb, and a button that dismisses every notification on
 screen. Both belong to the notification service and are reached through
 its command, `sengi-notify --dnd on|off|status` and `sengi-notify
 --dismiss-all`; the page says when the service is missing or silent.
+
+### Updates
+
+System packages and Flatpak apps that can be updated, a Check for updates
+button, Update all with its progress and a Cancel, and Restart when the
+system asks for one. The work and the reasons for how it is done (the
+password, polkit, what is run as root) are in `crates/sengi-update`. The
+sidebar shows the count from the last look, which Settings makes when it
+starts if the last is over a day old. Nothing runs in the background.
 
 ### About
 

@@ -1,0 +1,189 @@
+// The Updates page: what could be updated, and a button for all of it.
+
+import { Tokens, SengiText, SengiLabel, SengiButton, SengiProgress } from "components.slint";
+import { Page, PageColumn, Card, Divider, SettingRow, RowValue, SectionLabel, Gap, Note } from "../kit.slint";
+
+// One package or app that has an update waiting.
+export struct UpdateRow {
+    title: string,
+    detail: string,
+    // "Security", or nothing.
+    tag: string,
+}
+
+export global UpdatesData {
+    // Nothing is shown of updates on the live system: the page says so
+    // and its buttons are off.
+    in property <bool> live: false;
+    in property <bool> checking: false;
+    in property <bool> working: false;
+    // Words for the top row: how many there are, and when they were
+    // looked for.
+    in property <string> headline;
+    in property <string> subline;
+    // Something to tell: why nothing happened, or what went wrong.
+    in property <string> note;
+    in property <bool> note-warning: true;
+    in property <[UpdateRow]> system;
+    in property <string> system-title;
+    in property <[UpdateRow]> apps;
+    in property <string> apps-title;
+    // While an update runs: what it is doing, how far (-1 when the
+    // tools do not say), and the words under the bar.
+    in property <string> phase;
+    in property <int> percent: -1;
+    in property <string> progress-line;
+    in property <bool> can-cancel: false;
+    in property <bool> can-update: false;
+    in property <bool> restart-needed: false;
+    // How many updates are waiting, for the mark in the sidebar.
+    in property <int> badge: 0;
+
+    callback check();
+    callback update-all();
+    callback cancel();
+    callback restart();
+}
+
+export component UpdatesPage inherits Page {
+    title: "Updates";
+    content-height: column.preferred-height;
+
+    column := PageColumn {
+        if UpdatesData.note != "": Note {
+            text: UpdatesData.note;
+            warning: UpdatesData.note-warning;
+        }
+
+        Card {
+            SettingRow {
+                title: UpdatesData.headline;
+                detail: UpdatesData.subline;
+                enabled: !UpdatesData.live;
+
+                VerticalLayout {
+                    alignment: center;
+
+                    HorizontalLayout {
+                        spacing: Tokens.space-sm;
+
+                        SengiButton {
+                            text: UpdatesData.checking ? "Checking\u{2026}" : "Check for updates";
+                            enabled: !UpdatesData.live && !UpdatesData.checking && !UpdatesData.working;
+                            clicked => { UpdatesData.check(); }
+                        }
+
+                        if UpdatesData.can-update: SengiButton {
+                            text: "Update all";
+                            primary: true;
+                            enabled: !UpdatesData.live && !UpdatesData.checking && !UpdatesData.working;
+                            clicked => { UpdatesData.update-all(); }
+                        }
+                    }
+                }
+            }
+        }
+
+        if UpdatesData.working: Card {
+            VerticalLayout {
+                padding: Tokens.space-md;
+                spacing: Tokens.space-sm;
+
+                SengiText {
+                    text: UpdatesData.phase;
+                    font-weight: Tokens.font-weight-medium;
+                    overflow: elide;
+                }
+
+                if UpdatesData.percent >= 0: SengiProgress {
+                    percent: UpdatesData.percent;
+                }
+
+                SengiLabel {
+                    text: UpdatesData.progress-line;
+                    font-weight: Tokens.font-weight-regular;
+                    overflow: elide;
+                }
+
+                HorizontalLayout {
+                    alignment: end;
+
+                    SengiButton {
+                        text: "Cancel";
+                        enabled: UpdatesData.can-cancel;
+                        clicked => { UpdatesData.cancel(); }
+                    }
+                }
+            }
+        }
+
+        if UpdatesData.restart-needed: Card {
+            SettingRow {
+                title: "Restart needed";
+                detail: "Some of the updates take effect after the computer restarts";
+
+                VerticalLayout {
+                    alignment: center;
+
+                    SengiButton {
+                        text: "Restart";
+                        primary: true;
+                        enabled: !UpdatesData.working;
+                        clicked => { UpdatesData.restart(); }
+                    }
+                }
+            }
+        }
+
+        if UpdatesData.system.length > 0: VerticalLayout {
+            spacing: Tokens.space-sm;
+
+            Gap { }
+
+            SectionLabel {
+                text: UpdatesData.system-title;
+            }
+
+            Card {
+                for row[index] in UpdatesData.system: VerticalLayout {
+                    if index > 0: Divider { }
+
+                    SettingRow {
+                        title: row.title;
+                        detail: row.detail;
+
+                        if row.tag != "": RowValue {
+                            text: row.tag;
+                            color: Tokens.color-accent-strong;
+                        }
+                    }
+                }
+            }
+        }
+
+        if UpdatesData.apps.length > 0: VerticalLayout {
+            spacing: Tokens.space-sm;
+
+            Gap { }
+
+            SectionLabel {
+                text: UpdatesData.apps-title;
+            }
+
+            Card {
+                for row[index] in UpdatesData.apps: VerticalLayout {
+                    if index > 0: Divider { }
+
+                    SettingRow {
+                        title: row.title;
+                        detail: row.detail;
+
+                        if row.tag != "": RowValue {
+                            text: row.tag;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
