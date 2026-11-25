@@ -23,12 +23,24 @@ fn main() {
             here.join("../../ui"),
             here.join("../sengi-settings/ui"),
         ]);
-        slint_build::compile_with_output_path(here.join(path), out.join(format!("{name}.rs")), config)
-            .unwrap_or_else(|error| panic!("{path} compiles: {error}"));
+        slint_build::compile_with_output_path(
+            here.join(path),
+            out.join(format!("{name}.rs")),
+            config,
+        )
+        .unwrap_or_else(|error| panic!("{path} compiles: {error}"));
     }
     println!("cargo:rerun-if-changed=../../ui");
     for crate_dir in [
-        "settings", "installer", "greeter", "lock", "quick", "notify", "bar", "dock", "store",
+        "settings",
+        "installer",
+        "greeter",
+        "lock",
+        "quick",
+        "notify",
+        "bar",
+        "dock",
+        "store",
         "launcher",
     ] {
         println!("cargo:rerun-if-changed=../sengi-{crate_dir}/ui");
