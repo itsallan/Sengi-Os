@@ -7,13 +7,10 @@ compositor=${SENGI_COMPOSITOR_PID:-${LABWC_PID:-}}
 # for them, so it is not run in the background. TZ is there when a time
 # zone was chosen in Settings, so that those services tell the same time.
 dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP TZ >/dev/null 2>&1
-# The software renderer smears swaybg's one-pixel colour buffer into a
-# gradient, so give it a real image there.
-if [ "${WLR_RENDERER:-}" = pixman ]; then
-	swaybg -m tile -i /usr/share/sengi-os/wallpaper.svg >/dev/null 2>&1 &
-else
-	swaybg -c '@{color.desktop}' >/dev/null 2>&1 &
-fi
+# The wallpaper is swaybg, with the picture chosen in Settings if there is one.
+. /usr/lib/sengi-os/wallpaper.sh
+# In the background: it waits a second to see the picture took.
+sengi_wallpaper_apply >/dev/null 2>&1 &
 # Bring the bar, dock and desktop back if any ever dies, for as long as this
 # compositor is running. Watching the compositor's own process, not its
 # socket, keeps a loop left over from a crashed session from joining the

@@ -1,0 +1,62 @@
+# What is behind the desktop: swaybg, showing the picture chosen in
+# Settings or else the plain desktop colour. Sourced by session-start at
+# login, and run again by Settings when the choice changes:
+#
+#   sh /usr/lib/sengi-os/wallpaper.sh apply
+#
+# `sengi-settings --wallpaper` prints the picture to show, and nothing
+# when the setting is the plain colour or names a file that is gone or is
+# not a picture it can use, so there is one judge of that and this script
+# only starts the program. A new swaybg goes up before the old one comes
+# down, so the screen is never bare; one that dies at once (an image it
+# cannot read after all) is replaced by the plain colour.
+
+sengi_wallpaper_start() {
+	if [ -n "$1" ]; then
+		swaybg -m fill -c '@{color.desktop}' -i "$1" >/dev/null 2>&1 &
+	elif [ "${WLR_RENDERER:-}" = pixman ]; then
+		# The software renderer smears swaybg's one-pixel colour buffer
+		# into a gradient, so give it a real image there.
+		swaybg -m tile -i /usr/share/sengi-os/wallpaper.svg >/dev/null 2>&1 &
+	else
+		swaybg -c '@{color.desktop}' >/dev/null 2>&1 &
+	fi
+}
+
+sengi_wallpaper_apply() {
+	pidfile=${XDG_RUNTIME_DIR:+$XDG_RUNTIME_DIR/sengi-wallpaper.pid}
+	old=
+	if [ -n "$pidfile" ] && [ -r "$pidfile" ]; then
+		old=$(cat "$pidfile" 2>/dev/null || true)
+		case $old in '' | *[!0-9]*) old= ;; esac
+		# Only a swaybg: the number may have been given to something else.
+		if [ -n "$old" ] && [ "$(cat "/proc/$old/comm" 2>/dev/null)" != swaybg ]; then
+			old=
+		fi
+	fi
+	picture=$(sengi-settings --wallpaper 2>/dev/null || true)
+	sengi_wallpaper_start "$picture"
+	new=$!
+	if [ -n "$picture" ]; then
+		sleep 1
+		if ! kill -0 "$new" 2>/dev/null; then
+			sengi_wallpaper_start ""
+			new=$!
+		fi
+	fi
+	[ -z "$pidfile" ] || echo "$new" >"$pidfile"
+	if [ -n "$old" ]; then
+		# Not before the new one has put its surface up.
+		[ -n "$picture" ] || sleep 1
+		kill "$old" 2>/dev/null || true
+	fi
+}
+
+# Run as a script, not sourced.
+case $0 in
+*/wallpaper.sh)
+	if [ "${1:-}" = apply ]; then
+		sengi_wallpaper_apply
+	fi
+	;;
+esac
