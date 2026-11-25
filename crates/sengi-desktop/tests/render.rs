@@ -126,12 +126,12 @@ fn icons_menus_and_a_new_folder_in_rename() {
 
     // A click on an icon selects it, and a right click on it opens a menu
     // that is not the desktop's.
-    click(&window, 48.0, 40.0, PointerEventButton::Left);
+    click(&window, 48.0, 70.0, PointerEventButton::Left);
     let selected = draw(&window);
     save("selected.png", &selected);
     assert_ne!(selected, plain, "the click did not show");
     assert_eq!(desktop.get_selected(), 0);
-    click(&window, 48.0, 40.0, PointerEventButton::Right);
+    click(&window, 48.0, 70.0, PointerEventButton::Right);
     let item_menu = draw(&window);
     save("item-menu.png", &item_menu);
     assert_ne!(item_menu, selected);

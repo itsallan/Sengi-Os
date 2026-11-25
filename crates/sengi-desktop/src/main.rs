@@ -33,14 +33,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("sengi-desktop: changes in the folder will not show: {error}");
     }
 
-    // Over the whole output, below the windows. No exclusive zone: the
-    // surface keeps clear of the bar and the dock, so no icon is under them.
+    // Over the whole output, below the windows, whatever the bar and the
+    // dock reserve (-1): compositors differ in whether they shrink such a
+    // surface, so the component keeps its icons clear of them itself.
     // Windows get the keyboard back when they are clicked.
     let config = Config::new("sengi-desktop")
         .layer(Layer::Bottom)
         .anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT)
         .size(0, 0)
-        .exclusive_zone(0)
+        .exclusive_zone(-1)
         .keyboard(KeyboardMode::OnDemand)
         .outputs(Outputs::All);
 

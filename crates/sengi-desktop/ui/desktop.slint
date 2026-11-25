@@ -184,8 +184,13 @@ export component Desktop inherits Window {
     private property <length> menu-y;
     private property <int> menu-item: -1;
     // Icons fill a column from the top, then the next column to the right.
+    // The surface is the whole output, so the bar above and the dock below
+    // are kept clear of here.
+    private property <length> top: Tokens.bar-height + Tokens.space-lg;
+    private property <length> bottom: Tokens.dock-item + Tokens.dock-end-padding * 2
+        + Tokens.dock-margin + Tokens.space-lg;
     private property <float> rows: Math.max(1,
-        Math.floor((root.height - Tokens.space-lg * 2) / Tokens.desktop-cell-height));
+        Math.floor((root.height - root.top - root.bottom) / Tokens.desktop-cell-height));
 
     background: transparent;
     default-font-family: Tokens.font-family;
@@ -237,7 +242,7 @@ export component Desktop inherits Window {
 
         for item[index] in root.items: DesktopIcon {
             x: Tokens.space-lg + Math.floor(index / root.rows) * Tokens.desktop-cell-width;
-            y: Tokens.space-lg + Math.mod(index, root.rows) * Tokens.desktop-cell-height;
+            y: root.top + Math.mod(index, root.rows) * Tokens.desktop-cell-height;
             item: item;
 
             pressed(button, at-x, at-y) => {
@@ -262,7 +267,7 @@ export component Desktop inherits Window {
 
         if root.notice != "": SengiSurface {
             raised: true;
-            y: Tokens.space-lg;
+            y: root.top;
             width: min(note.preferred-width + Tokens.space-lg * 2, root.width - Tokens.space-lg * 2);
             height: Tokens.button + Tokens.space-sm;
             x: (root.width - self.width) / 2;
