@@ -3700,6 +3700,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sengi-shots"
+version = "0.8.0"
+dependencies = [
+ "png",
+ "slint",
+ "slint-build",
+]
+
+[[package]]
 name = "sengi-store"
 version = "0.8.0"
 dependencies = [

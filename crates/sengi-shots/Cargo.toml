@@ -1,0 +1,16 @@
+[package]
+name = "sengi-shots"
+description = "Draws every Sengi OS screen with the software renderer, to look at and to test"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+build = "build.rs"
+
+[dependencies]
+slint = { version = "1.18", default-features = false, features = ["compat-1-2", "std", "renderer-software", "software-renderer-systemfonts", "software-renderer-path"] }
+png = "0.18"
+
+[build-dependencies]
+slint-build.workspace = true
