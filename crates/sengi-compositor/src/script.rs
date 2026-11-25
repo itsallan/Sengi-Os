@@ -11,6 +11,7 @@
 //! 1800 release left
 //! 2000 type hello
 //! 2100 key super+q
+//! 2200 swipe 3 -150 0
 //! 2500 screenshot /tmp/after.png
 //! 3000 exit
 //! ```
@@ -42,6 +43,13 @@ pub enum Action {
         pressed: bool,
     },
     Screenshot(PathBuf),
+    /// A swipe of `fingers` fingers that travels this far on the touchpad,
+    /// in five movements, and then lifts.
+    Swipe {
+        fingers: u32,
+        dx: f64,
+        dy: f64,
+    },
     /// Starts a program the way a key or a menu does.
     Spawn(String),
     Exit,
@@ -153,6 +161,13 @@ impl crate::state::State {
                 };
                 self.pointer_button(*code, state, time);
             }
+            Action::Swipe { fingers, dx, dy } => {
+                self.swipe_begin(*fingers);
+                for _ in 0..5 {
+                    self.swipe_update(dx / 5.0, dy / 5.0);
+                }
+                self.swipe_end(false);
+            }
             Action::Spawn(command) => {
                 self.spawn(command);
             }
@@ -196,6 +211,19 @@ pub fn parse(text: &str) -> Result<Vec<Step>, String> {
                         push(Action::Move { x, y })
                     }
                     _ => return Err(err("move needs X and Y")),
+                }
+            }
+            "swipe" => {
+                let mut words = argument.split_whitespace();
+                let fingers = words.next().and_then(|w| w.parse::<u32>().ok());
+                let mut numbers = words.map(str::parse::<f64>);
+                match (fingers, numbers.next(), numbers.next(), numbers.next()) {
+                    (Some(fingers), Some(Ok(dx)), Some(Ok(dy)), None)
+                        if dx.is_finite() && dy.is_finite() =>
+                    {
+                        push(Action::Swipe { fingers, dx, dy })
+                    }
+                    _ => return Err(err("swipe needs FINGERS, DX and DY")),
                 }
             }
             "nudge" => {

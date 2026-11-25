@@ -455,11 +455,11 @@ impl Headless {
                     .space
                     .output_geometry(&screen.output)
                     .map_or(0, |geo| geo.loc.x);
-                pictures.push((
-                    at,
-                    screen.size,
-                    read_rgb(&mut self.renderer, &target, screen.size)?,
-                ));
+                let mut rgb = read_rgb(&mut self.renderer, &target, screen.size)?;
+                // A real display would show it through its colour ramp,
+                // which wlr-screencopy does not see.
+                crate::night::apply(&mut rgb, state.night_tint);
+                pictures.push((at, screen.size, rgb));
             }
             drop(target);
             presented.push((screen.output.clone(), rendered.states));

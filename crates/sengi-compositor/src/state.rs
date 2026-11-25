@@ -125,6 +125,8 @@ pub const MAX_LOCK_ASKERS: usize = 32;
 
 /// Sets the pointing devices to what the settings say.
 pub type ConfigureInputs = Box<dyn FnMut(&Config)>;
+/// Sets the display's colour ramp to a tint, see `night.rs`.
+pub type SetNightTint = Box<dyn FnMut(crate::night::Tint)>;
 /// Says what each pointing device is set to.
 pub type DescribeInputs = Box<dyn Fn() -> Vec<String>>;
 /// Changes what a backend has to for a new arrangement of the outputs, or
@@ -169,6 +171,10 @@ pub struct State {
     pub configure_inputs: Option<ConfigureInputs>,
     /// One line on each pointing device, for the SIGUSR1 report.
     pub describe_inputs: Option<DescribeInputs>,
+    /// What the displays are to be tinted with, and how to tell them.
+    pub night_tint: crate::night::Tint,
+    pub set_night_tint: Option<SetNightTint>,
+    pub night_timer: Option<RegistrationToken>,
     pub output_power: OutputPowerState,
     /// Running as the login screen's compositor, see `become_login_screen`.
     pub login_screen: bool,
@@ -285,6 +291,8 @@ pub struct State {
     /// started, and which one is selected.
     /// The window switcher or a menu, when one is open.
     pub overlay: Option<crate::overlay::Overlay>,
+    /// A three-finger swipe on a touchpad, while the fingers are down.
+    pub swipe: Option<crate::gesture::Active>,
     /// Where a window being dragged to a screen edge will land, drawn as an
     /// outline until it is let go.
     pub snap_hint: Option<crate::snap::Hint>,
@@ -426,6 +434,7 @@ impl State {
                     crate::say!("{}", state.config.keyboard.describe());
                     crate::say!("{}", state.output_power_status());
                     crate::say!("{}", state.power_status());
+                    crate::say!("{}", state.night_status());
                     crate::say!("{}", state.snap_status());
                     crate::say!("{}", state.overlay_status());
                     let inputs = state.describe_inputs.as_ref().map(|describe| describe());
@@ -507,6 +516,9 @@ impl State {
             lock_request_from_holder: false,
             config,
             configure_inputs: None,
+            night_tint: crate::night::NEUTRAL,
+            set_night_tint: None,
+            night_timer: None,
             describe_inputs: None,
             output_power,
             login_screen: false,
@@ -568,6 +580,7 @@ impl State {
             pointer_stale: false,
             swallowed_keys: Swallowed::default(),
             overlay: None,
+            swipe: None,
             snap_hint: None,
             children: Vec::new(),
             idle_clock: crate::power::IdleClock::new(
@@ -1203,6 +1216,7 @@ impl State {
             }
         }
         crate::say!("settings read again");
+        self.night_update();
         self.reload_output_layout();
     }
 

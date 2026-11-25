@@ -15,6 +15,29 @@ pub struct Config {
     pub touchpad: Touchpad,
     pub appearance: Appearance,
     pub power: Power,
+    pub display: Display,
+}
+
+/// What `display.*` says: which output the bar and dock go to, mirroring,
+/// and the night light. The sizes, places and scales of the outputs are
+/// not here: they are the compositor's own file, see `output_store`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Display {
+    /// The output that layer surfaces which name none go to. Empty is the
+    /// first output.
+    pub primary: String,
+    pub mirror: bool,
+    pub night: NightLight,
+}
+
+/// The warm tint at night. Times are minutes after midnight, local time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NightLight {
+    pub enabled: bool,
+    pub from: u32,
+    pub to: u32,
+    /// 0 to 100.
+    pub strength: u32,
 }
 
 /// What `power.*` in the settings says, in the units it is written in.
@@ -71,6 +94,27 @@ pub struct Touchpad {
     pub natural_scroll: bool,
     pub tap: bool,
     pub disable_while_typing: bool,
+    pub click_method: ClickMethod,
+    pub scroll_method: ScrollMethod,
+    /// Whether three-finger swipes do anything.
+    pub gestures: bool,
+}
+
+/// How a press on a touchpad's body becomes a button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClickMethod {
+    /// The lower left and right of the pad are the two buttons.
+    Areas,
+    /// The number of fingers on the pad picks the button.
+    Clickfinger,
+}
+
+/// How fingers on a touchpad scroll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollMethod {
+    TwoFinger,
+    /// One finger along the right or bottom edge.
+    Edge,
 }
 
 /// The two kinds of pointing device Settings tells apart, as labwc does:
@@ -107,10 +151,16 @@ pub struct Pointing {
     pub left_handed: Option<bool>,
     pub tap: Option<bool>,
     pub disable_while_typing: Option<bool>,
+    pub click_method: Option<ClickMethod>,
+    pub scroll_method: Option<ScrollMethod>,
 }
 
 fn speed(settings: &Settings, section: &str) -> f64 {
     (settings.number(section, "speed") as f64 / 100.0).clamp(-1.0, 1.0)
+}
+
+fn clock(settings: &Settings, key: &str, fallback: u32) -> u32 {
+    sengi_config::settings::parse_clock(&settings.text("display", key)).unwrap_or(fallback)
 }
 
 impl Config {
@@ -151,6 +201,25 @@ impl Config {
                 natural_scroll: settings.flag("touchpad", "natural-scroll"),
                 tap: settings.flag("touchpad", "tap-to-click"),
                 disable_while_typing: settings.flag("touchpad", "disable-while-typing"),
+                click_method: match settings.text("touchpad", "click-method").as_str() {
+                    "areas" => ClickMethod::Areas,
+                    _ => ClickMethod::Clickfinger,
+                },
+                scroll_method: match settings.text("touchpad", "scroll-method").as_str() {
+                    "edge" => ScrollMethod::Edge,
+                    _ => ScrollMethod::TwoFinger,
+                },
+                gestures: settings.flag("touchpad", "gestures"),
+            },
+            display: Display {
+                primary: settings.text("display", "primary"),
+                mirror: settings.flag("display", "mirror"),
+                night: NightLight {
+                    enabled: settings.flag("display", "night-light"),
+                    from: clock(settings, "night-from", 21 * 60),
+                    to: clock(settings, "night-to", 7 * 60),
+                    strength: settings.number("display", "night-strength").clamp(0, 100) as u32,
+                },
             },
             appearance: Appearance {
                 window_shadows: settings.flag("appearance", "window-shadows"),
@@ -187,6 +256,8 @@ impl Config {
                 left_handed: Some(self.mouse.left_handed),
                 tap: None,
                 disable_while_typing: None,
+                click_method: None,
+                scroll_method: None,
             },
             Kind::Touchpad => Pointing {
                 speed: self.touchpad.speed,
@@ -194,6 +265,8 @@ impl Config {
                 left_handed: None,
                 tap: Some(self.touchpad.tap),
                 disable_while_typing: Some(self.touchpad.disable_while_typing),
+                click_method: Some(self.touchpad.click_method),
+                scroll_method: Some(self.touchpad.scroll_method),
             },
         }
     }
@@ -319,6 +392,42 @@ mod tests {
         assert!(config("").appearance.window_shadows);
         let off = config("[appearance]\nwindow-shadows = false\n");
         assert!(!off.appearance.window_shadows);
+    }
+
+    #[test]
+    fn the_touchpad_defaults_are_clickfinger_and_two_finger_scrolling() {
+        let touchpad = config("").touchpad;
+        assert_eq!(touchpad.click_method, ClickMethod::Clickfinger);
+        assert_eq!(touchpad.scroll_method, ScrollMethod::TwoFinger);
+        assert!(touchpad.gestures);
+        let set = config(
+            "[touchpad]\nclick-method = \"areas\"\nscroll-method = \"edge\"\ngestures = false\n",
+        )
+        .touchpad;
+        assert_eq!(set.click_method, ClickMethod::Areas);
+        assert_eq!(set.scroll_method, ScrollMethod::Edge);
+        assert!(!set.gestures);
+        // A mouse has neither.
+        let mouse = config("").pointing(Kind::Mouse);
+        assert_eq!((mouse.click_method, mouse.scroll_method), (None, None));
+        let pad = config("[touchpad]\nscroll-method = \"edge\"\n").pointing(Kind::Touchpad);
+        assert_eq!(pad.scroll_method, Some(ScrollMethod::Edge));
+    }
+
+    #[test]
+    fn the_display_settings_default_to_nothing_special() {
+        let display = config("").display;
+        assert_eq!(display.primary, "");
+        assert!(!display.mirror && !display.night.enabled);
+        assert_eq!((display.night.from, display.night.to), (21 * 60, 7 * 60));
+        assert_eq!(display.night.strength, 50);
+        let set = config(
+            "[display]\nprimary = \"HDMI-A-1\"\nnight-light = true\nnight-from = \"22:30\"\nnight-to = \"06:15\"\nnight-strength = 80\n",
+        )
+        .display;
+        assert_eq!(set.primary, "HDMI-A-1");
+        assert!(set.night.enabled);
+        assert_eq!((set.night.from, set.night.to, set.night.strength), (1350, 375, 80));
     }
 
     #[test]

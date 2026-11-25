@@ -67,6 +67,9 @@ impl State {
                 pointer.axis(self, frame);
                 pointer.frame(self);
             }
+            event @ (InputEvent::GestureSwipeBegin { .. }
+            | InputEvent::GestureSwipeUpdate { .. }
+            | InputEvent::GestureSwipeEnd { .. }) => self.process_gesture_event(&event),
             _ => {}
         }
     }

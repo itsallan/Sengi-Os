@@ -19,6 +19,11 @@ pub const WALLPAPER_SOLID: &str = "solid";
 /// The two values of `appearance.theme`.
 pub const THEME_DARK: &str = "dark";
 pub const THEME_LIGHT: &str = "light";
+/// The values of `touchpad.click-method` and `touchpad.scroll-method`.
+pub const CLICK_AREAS: &str = "areas";
+pub const CLICK_CLICKFINGER: &str = "clickfinger";
+pub const SCROLL_TWO_FINGER: &str = "two-finger";
+pub const SCROLL_EDGE: &str = "edge";
 /// Longest wallpaper path kept.
 pub const MAX_WALLPAPER_PATH: usize = 1024;
 
@@ -43,6 +48,15 @@ pub const KEYS: &[(&str, &str, Default)] = &[
     ("touchpad", "natural-scroll", Default::Flag(false)),
     ("touchpad", "tap-to-click", Default::Flag(true)),
     ("touchpad", "disable-while-typing", Default::Flag(true)),
+    ("touchpad", "click-method", Default::Text(CLICK_CLICKFINGER)),
+    ("touchpad", "scroll-method", Default::Text(SCROLL_TWO_FINGER)),
+    ("touchpad", "gestures", Default::Flag(true)),
+    ("display", "primary", Default::Text("")),
+    ("display", "mirror", Default::Flag(false)),
+    ("display", "night-light", Default::Flag(false)),
+    ("display", "night-from", Default::Text("21:00")),
+    ("display", "night-to", Default::Text("07:00")),
+    ("display", "night-strength", Default::Number(50)),
     ("appearance", "window-shadows", Default::Flag(true)),
     ("appearance", "theme", Default::Text(THEME_DARK)),
     ("appearance", "wallpaper", Default::Text(WALLPAPER_SOLID)),
@@ -98,6 +112,29 @@ pub fn check(section: &str, key: &str, value: &Value) -> Result<Value, String> {
             Value::Text(zone) if zone.is_empty() || zone_is_plain(zone) => Ok(value.clone()),
             _ => Err("must be a zone name such as \"Europe/Paris\", or empty".to_string()),
         },
+        ("touchpad", "click-method") => match value {
+            Value::Text(text) if text == CLICK_AREAS || text == CLICK_CLICKFINGER => {
+                Ok(value.clone())
+            }
+            _ => Err("must be \"areas\" or \"clickfinger\"".to_string()),
+        },
+        ("touchpad", "scroll-method") => match value {
+            Value::Text(text) if text == SCROLL_TWO_FINGER || text == SCROLL_EDGE => {
+                Ok(value.clone())
+            }
+            _ => Err("must be \"two-finger\" or \"edge\"".to_string()),
+        },
+        ("display", "night-from" | "night-to") => match value {
+            Value::Text(text) if parse_clock(text).is_some() => Ok(value.clone()),
+            _ => Err("must be a time such as \"21:00\"".to_string()),
+        },
+        ("display", "night-strength") => number(0, 100),
+        ("display", "primary") => match value {
+            Value::Text(name) if name.len() <= 64 && !name.chars().any(char::is_control) => {
+                Ok(value.clone())
+            }
+            _ => Err("must be an output name such as \"eDP-1\", or empty".to_string()),
+        },
         ("appearance", "theme") => match value {
             Value::Text(theme) if theme == THEME_DARK || theme == THEME_LIGHT => Ok(value.clone()),
             _ => Err("must be \"dark\" or \"light\"".to_string()),
@@ -128,6 +165,17 @@ pub fn check(section: &str, key: &str, value: &Value) -> Result<Value, String> {
             _ => Err("has the wrong kind of value".to_string()),
         },
     }
+}
+
+/// `HH:MM` on a 24-hour clock, as minutes after midnight.
+pub fn parse_clock(text: &str) -> Option<u32> {
+    let (hours, minutes) = text.split_once(':')?;
+    let digits = |part: &str| part.len() == 2 && part.bytes().all(|b| b.is_ascii_digit());
+    if !digits(hours) || !digits(minutes) {
+        return None;
+    }
+    let (hours, minutes): (u32, u32) = (hours.parse().ok()?, minutes.parse().ok()?);
+    (hours < 24 && minutes < 60).then_some(hours * 60 + minutes)
 }
 
 /// A wallpaper is `solid` or an absolute path without control characters:
@@ -490,6 +538,20 @@ mod tests {
             "layouts",
             Value::List(vec!["us\nX=1".into()])
         ));
+    }
+
+    #[test]
+    fn the_display_and_touchpad_keys_are_checked() {
+        let bad = |section, key, value| check(section, key, &value).is_err();
+        assert!(!bad("display", "night-from", Value::text("21:00")));
+        assert!(bad("display", "night-from", Value::text("24:00")));
+        assert!(bad("display", "night-to", Value::text("7:00")));
+        assert!(bad("display", "night-strength", Value::Number(101)));
+        assert!(bad("display", "primary", Value::text("a\nb")));
+        assert!(bad("touchpad", "click-method", Value::text("tap")));
+        assert!(!bad("touchpad", "scroll-method", Value::text("edge")));
+        assert_eq!(parse_clock("07:30"), Some(450));
+        assert_eq!(parse_clock("7:30"), None);
     }
 
     #[test]

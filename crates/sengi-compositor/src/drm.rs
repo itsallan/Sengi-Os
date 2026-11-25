@@ -67,7 +67,10 @@ use smithay::{
             control::{connector, crtc, Device as _, Mode, ModeTypeFlags},
             ClientCapability, Device as _,
         },
-        input::{Device as InputDevice, DeviceCapability, Libinput},
+        input::{
+            ClickMethod as ClickMethodLi, Device as InputDevice, DeviceCapability, Libinput,
+            ScrollMethod as ScrollMethodLi,
+        },
         pixman::Image,
         rustix::fs::OFlags,
         wayland_server::Display,
@@ -78,7 +81,7 @@ use smithay::{
 
 use crate::{
     cli::{self, Wanted},
-    config::{Config, Kind},
+    config::{ClickMethod, Config, Kind, ScrollMethod},
     gpu, headless,
     outputs::{HeadPlan, OutputSpec},
     png, render,
@@ -177,6 +180,9 @@ struct Screen {
     /// Asked to be dark but could not be switched off. It is drawn as
     /// usual, and not asked again until the output has been on.
     stays_lit: bool,
+    /// The colour ramp has been looked at since this screen was lit.
+    ramp_tried: bool,
+    no_ramp_said: bool,
 }
 
 /// A display that is plugged in and switched off in Settings: it keeps its
@@ -271,6 +277,43 @@ struct Drm {
     /// A screen was switched off because it could not show the lock, and
     /// is to be lit again once the session is unlocked.
     switched_off: bool,
+    /// The night light's tint, see `night.rs`. Held here so that a screen
+    /// that is lit later, or after a switch of terminals, gets it too.
+    tint: crate::night::Tint,
+}
+
+impl Drm {
+    /// Puts the tint into the colour ramp of every lit screen.
+    fn apply_tint(&mut self) {
+        let tint = self.tint;
+        for screen in &mut self.screens {
+            apply_ramp(&self.device, screen, tint);
+        }
+    }
+}
+
+/// Sets the colour ramp of `screen`'s CRTC to `tint`. A CRTC without a
+/// ramp is left alone, and the first time that is found it is said so.
+fn apply_ramp(device: &DrmDevice, screen: &mut Screen, tint: crate::night::Tint) {
+    screen.ramp_tried = true;
+    let Ok(info) = device.get_crtc(screen.crtc) else {
+        return;
+    };
+    let size = info.gamma_length() as usize;
+    if size < 2 {
+        if tint != crate::night::NEUTRAL && !std::mem::replace(&mut screen.no_ramp_said, true) {
+            crate::say!(
+                "{} has no colour ramp, so no night light there",
+                screen.output.name()
+            );
+        }
+        return;
+    }
+    let [red, green, blue] = crate::night::ramp(tint, size);
+    match device.set_gamma(screen.crtc, &red, &green, &blue) {
+        Ok(()) => {}
+        Err(err) => crate::say!("{}: colour ramp: {err}", screen.output.name()),
+    }
 }
 
 /// Names an output whose frames are made to fail while the session is
@@ -518,6 +561,26 @@ fn configure(device: &mut InputDevice, config: &Config) {
             let _ = device.config_dwt_set_enabled(dwt);
         }
     }
+    if let Some(method) = wanted.click_method {
+        let methods = device.config_click_methods();
+        let method = match method {
+            ClickMethod::Areas => ClickMethodLi::ButtonAreas,
+            ClickMethod::Clickfinger => ClickMethodLi::Clickfinger,
+        };
+        // A pad with real buttons has neither; the call is refused then.
+        if methods.contains(&method) {
+            let _ = device.config_click_set_method(method);
+        }
+    }
+    if let Some(method) = wanted.scroll_method {
+        let wanted = match method {
+            ScrollMethod::TwoFinger => ScrollMethodLi::TwoFinger,
+            ScrollMethod::Edge => ScrollMethodLi::Edge,
+        };
+        if device.config_scroll_methods().contains(&wanted) {
+            let _ = device.config_scroll_set_method(wanted);
+        }
+    }
 }
 
 /// What a pointing device is set to, read back from the device itself,
@@ -538,9 +601,11 @@ fn describe(device: &InputDevice) -> Option<String> {
     );
     if kind == Kind::Touchpad {
         line.push_str(&format!(
-            ", tap {}, disable while typing {}",
+            ", tap {}, disable while typing {}, click {:?}, scroll {:?}",
             on_off(device.config_tap_enabled()),
             on_off(device.config_dwt_enabled()),
+            device.config_click_method(),
+            device.config_scroll_method(),
         ));
     }
     Some(line)
@@ -774,6 +839,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
         libinput: libinput.clone(),
         active: true,
         switched_off: false,
+        tint: crate::night::NEUTRAL,
     };
     backend.rescan(&mut state);
     if backend.screens.is_empty() && matches!(backend.renderer, Renderer::Gles { .. }) {
@@ -845,6 +911,24 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
     handle.insert_source(device_events, move |event, _, state| match event {
         DrmEvent::VBlank(crtc) => {
             state.page_flips += 1;
+            {
+                // A CRTC takes its colour ramp once it is lit: the first
+                // flip of a screen is the first chance to set it.
+                let mut guard = on_flip.borrow_mut();
+                let tint = guard.tint;
+                let Drm {
+                    device, screens, ..
+                } = &mut *guard;
+                if let Some(screen) = screens
+                    .iter_mut()
+                    .find(|screen| screen.crtc == crtc && !screen.ramp_tried)
+                {
+                    screen.ramp_tried = true;
+                    if tint != crate::night::NEUTRAL {
+                        apply_ramp(device, screen, tint);
+                    }
+                }
+            }
             let shown = {
                 let mut backend = on_flip.borrow_mut();
                 let screen = backend
@@ -920,6 +1004,18 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
             configure(device, config);
         }
     }));
+    let tinted = backend.clone();
+    state.set_night_tint = Some(Box::new(move |tint| {
+        let mut backend = tinted.borrow_mut();
+        backend.tint = tint;
+        backend.apply_tint();
+    }));
+    // The tint was worked out before there was a way to apply it.
+    if state.night_tint != crate::night::NEUTRAL {
+        let mut backend = backend.borrow_mut();
+        backend.tint = state.night_tint;
+        backend.apply_tint();
+    }
     state.describe_inputs = Some(Box::new(move || {
         devices.borrow().iter().filter_map(describe).collect()
     }));
@@ -963,7 +1059,11 @@ pub fn run(options: Options) -> Result<(), Box<dyn Error>> {
                     }
                     screen.stale = true;
                 }
+                // The ramp does not always survive the display being away.
+                backend.apply_tint();
                 drop(backend);
+                // The time may be far from where it was.
+                state.night_update();
                 state.request_redraw();
             }
         }
@@ -1699,6 +1799,8 @@ impl Drm {
             failing_since: None,
             queued: 0,
             watched: false,
+            ramp_tried: false,
+            no_ramp_said: false,
         })
     }
 

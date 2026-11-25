@@ -15,6 +15,7 @@ mod dmabuf;
 mod drm;
 mod foreign_toplevel;
 mod frame;
+mod gesture;
 #[cfg(feature = "drm")]
 mod gpu;
 mod headless;
@@ -24,6 +25,7 @@ mod keys;
 mod layer;
 mod layout;
 mod lock;
+mod night;
 #[macro_use]
 mod log;
 mod output_management;
@@ -162,6 +164,7 @@ fn start_clients(state: &mut State, options: &Options) {
     }
     // The times for dimming, switching off and locking, and the lid.
     state.apply_power_config();
+    state.night_update();
     // Xwayland runs for the whole session, so that the programs started
     // here, and the ones they start, have a DISPLAY. Not on the login screen.
     state.start_xwayland();
