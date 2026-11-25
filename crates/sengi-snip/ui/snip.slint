@@ -2,7 +2,7 @@
 // a rectangle on, and the countdown before a delayed shot. Built from the
 // shared components; the dimming is the scrim colour of the tokens.
 
-import { Tokens, SengiText, SengiLabel, SengiSurface } from "components.slint";
+import { Tokens, SengiText, SengiLabel, SengiSurface, SengiIcon } from "components.slint";
 export { ThemeSwitch } from "components.slint";
 
 export component SnipWindow inherits Window {
@@ -74,14 +74,31 @@ export component SnipWindow inherits Window {
 
             SengiSurface {
                 width: hint.preferred-width + Tokens.space-xl * 2;
-                height: hint.preferred-height + Tokens.space-lg * 2;
+                height: hint.preferred-height + Tokens.space-xl + Tokens.space-sm + Tokens.space-lg * 2;
                 x: (parent.width - self.width) / 2;
                 y: (parent.height - self.height) / 2;
 
-                hint := SengiText {
-                    text: "Drag to choose an area.\nEnter or letting go takes it. Escape cancels.";
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
+                VerticalLayout {
+                    padding: Tokens.space-lg;
+                    spacing: Tokens.space-sm;
+                    alignment: center;
+
+                    HorizontalLayout {
+                        alignment: center;
+
+                        SengiIcon {
+                            name: "crosshair-simple";
+                            ink: Tokens.color-accent-strong;
+                            width: Tokens.space-xl;
+                            height: Tokens.space-xl;
+                        }
+                    }
+
+                    hint := SengiText {
+                        text: "Drag to choose an area.\nEnter or letting go takes it. Escape cancels.";
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
                 }
             }
         }

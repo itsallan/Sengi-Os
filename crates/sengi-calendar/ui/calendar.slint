@@ -3,7 +3,7 @@
 // whole output and is see-through around the popup, so a click anywhere
 // else lands here and closes it, as the quick settings panel does.
 
-import { Tokens, SengiText, SengiLabel, SengiSurface, SengiButton } from "components.slint";
+import { Tokens, SengiText, SengiLabel, SengiSurface, SengiButton, SengiIcon } from "components.slint";
 export { ThemeSwitch } from "components.slint";
 
 export struct DayCell {
@@ -72,9 +72,14 @@ export component CalendarWindow inherits Window {
 
                     SengiButton {
                         width: Tokens.button;
-                        text: "\u{2039}";
                         focusable: false;
                         clicked => { Cal.previous(); }
+
+                        SengiIcon {
+                            name: "caret-left";
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                        }
                     }
 
                     SengiText {
@@ -87,9 +92,14 @@ export component CalendarWindow inherits Window {
 
                     SengiButton {
                         width: Tokens.button;
-                        text: "\u{203a}";
                         focusable: false;
                         clicked => { Cal.next(); }
+
+                        SengiIcon {
+                            name: "caret-right";
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                        }
                     }
                 }
 

@@ -1,7 +1,7 @@
 // The Sengi OS quick settings panel: the few controls reached for many
 // times a day, dropped down from the right end of the bar.
 
-import { Tokens, SengiText, SengiLabel, SengiSurface, SengiButton, SengiToggle } from "components.slint";
+import { Tokens, SengiText, SengiLabel, SengiSurface, SengiButton, SengiToggle, SengiIcon } from "components.slint";
 export { ThemeSwitch } from "components.slint";
 import { Metrics, IconButton, Slider, TextField, ListRow, Tile, TileHeader } from "controls.slint";
 import {
@@ -718,8 +718,23 @@ export component QuickWindow inherits Window {
                 VerticalLayout {
                     spacing: Tokens.space-xs;
 
-                    SengiLabel {
-                        text: "Screenshot";
+                    HorizontalLayout {
+                        spacing: Tokens.space-xs;
+
+                        VerticalLayout {
+                            alignment: center;
+
+                            SengiIcon {
+                                name: "camera";
+                                ink: Tokens.color-text-muted;
+                                width: Tokens.font-size-md;
+                                height: Tokens.font-size-md;
+                            }
+                        }
+
+                        SengiLabel {
+                            text: "Screenshot";
+                        }
                     }
 
                     HorizontalLayout {
