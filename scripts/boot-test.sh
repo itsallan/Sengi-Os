@@ -220,11 +220,11 @@ pointer $((screen_w / 8)) $((screen_h / 2))
 # which 1 is the left button, 2 the right and 4 the middle one.
 desktop_fail=
 # Measured at 1280x800: the menu changes 42398 bytes of a dump, the new folder
-# 20954, and each way back to the first dump 0, so the limits are about half of
+# 20954, and each way back to the first dump 0 or, when the minute ticks over, about 4000 for the clock digits, so the limits are about half of
 # what each should change and a few clock digits for what should not.
 desktop_menu_bytes=20000
 desktop_folder_bytes=10000
-desktop_clock_bytes=3000
+desktop_clock_bytes=8000
 desktop_x=$((screen_w / 2))
 desktop_y=$((screen_h / 3))
 desktop_open_menu() {
