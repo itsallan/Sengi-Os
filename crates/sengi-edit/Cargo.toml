@@ -16,6 +16,8 @@ slint = { workspace = true, features = ["software-renderer-systemfonts", "softwa
 sengi-apps = { path = "../sengi-apps" }
 # What an argument names: a path or a file:// address.
 sengi-open = { path = "../sengi-open" }
+# The saved theme, light or dark.
+sengi-config = { path = "../sengi-config" }
 
 [build-dependencies]
 slint-build.workspace = true

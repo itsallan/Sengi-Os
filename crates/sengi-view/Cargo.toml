@@ -14,6 +14,8 @@ slint = { workspace = true, features = ["software-renderer-systemfonts", "softwa
 
 # What an argument names: a path or a file:// address.
 sengi-open = { path = "../sengi-open" }
+# The saved theme, light or dark.
+sengi-config = { path = "../sengi-config" }
 
 # The two decoders, both pure Rust. The pictures are decoded here, straight
 # to the size they are drawn at, not through the toolkit's image loader.

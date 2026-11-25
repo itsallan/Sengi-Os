@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use sengi_edit::app::{self, App, Start};
 use sengi_edit::doc::MAX_BYTES;
-use sengi_edit::ui::{Edit, EditWindow};
+use sengi_edit::ui::{Edit, EditWindow, ThemeSwitch};
 use sengi_shots::harness::{self, BACKDROP};
 use slint::platform::{Key, WindowEvent};
 use slint::ComponentHandle;
@@ -37,6 +37,7 @@ impl Drop for Dir {
 
 fn open_window(dir: &Dir, path: Option<&Path>) -> (EditWindow, std::rc::Rc<App>) {
     let window = EditWindow::new().unwrap();
+    window.global::<ThemeSwitch>().set_light(harness::light());
     window.show().unwrap();
     harness::resize(&harness::window(), 888, 600);
     let app = app::attach(

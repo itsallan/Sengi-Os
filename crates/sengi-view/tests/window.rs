@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use sengi_shots::harness::{self, BACKDROP};
 use sengi_view::app::{self, App};
-use sengi_view::ui::{View, ViewWindow};
+use sengi_view::ui::{ThemeSwitch, View, ViewWindow};
 use slint::platform::{Key, PointerEventButton, WindowEvent};
 use slint::{ComponentHandle, LogicalPosition};
 
@@ -65,6 +65,7 @@ fn pattern_png(width: u32, height: u32) -> Vec<u8> {
 
 fn open_window(path: Option<&Path>) -> (ViewWindow, std::rc::Rc<App>) {
     let window = ViewWindow::new().unwrap();
+    window.global::<ThemeSwitch>().set_light(harness::light());
     window.show().unwrap();
     harness::resize(&harness::window(), 888, 600);
     let app = app::attach(&window, path.map(Path::to_path_buf), true);
