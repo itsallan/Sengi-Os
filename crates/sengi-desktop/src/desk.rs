@@ -112,6 +112,16 @@ impl Desk {
         Ok(())
     }
 
+    /// Makes an empty "untitled file" and puts it in rename.
+    pub fn new_file(&mut self) -> Result<(), String> {
+        let name = files::create_file(&self.dir)
+            .map_err(|error| format!("Cannot make a file: {error}"))?;
+        self.refresh();
+        self.selected = Some(name.clone());
+        self.renaming = Some(name);
+        Ok(())
+    }
+
     pub fn begin_rename(&mut self, index: i32) {
         if let Some(entry) = self.entry(index) {
             let name = entry.name.clone();
@@ -210,6 +220,23 @@ mod tests {
         desk.commit_rename("untitled folder").unwrap();
         desk.new_folder().unwrap();
         assert!(names(&desk).contains(&"untitled folder 2".to_string()));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_new_file_is_empty_selected_and_in_rename() {
+        let (mut desk, root) = desk("new-file");
+        desk.new_file().unwrap();
+        desk.new_file().unwrap();
+        let rows = desk.rows();
+        let listed: Vec<_> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(listed, ["untitled file", "untitled file 2"]);
+        assert!(rows.iter().all(|r| !r.folder));
+        // Only the last one is being named.
+        assert!(!rows[0].renaming && rows[1].renaming && rows[1].selected);
+        desk.commit_rename("notes.txt").unwrap();
+        assert_eq!(names(&desk), ["notes.txt", "untitled file"]);
+        assert!(desk.dir().join("notes.txt").is_file());
         fs::remove_dir_all(root).unwrap();
     }
 

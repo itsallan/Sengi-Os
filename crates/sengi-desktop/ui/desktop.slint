@@ -168,6 +168,7 @@ export component Desktop inherits Window {
     in property <string> notice;
 
     callback new-folder();
+    callback new-file();
     callback open-terminal();
     callback open-settings();
     callback select(int);
@@ -300,6 +301,13 @@ export component Desktop inherits Window {
                     chosen => {
                         root.menu-open = false;
                         root.new-folder();
+                    }
+                }
+                if root.menu-item < 0: MenuRow {
+                    label: "New File";
+                    chosen => {
+                        root.menu-open = false;
+                        root.new-file();
                     }
                 }
                 if root.menu-item < 0: MenuRow {

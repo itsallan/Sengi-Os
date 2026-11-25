@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 /// The name a new folder starts with.
 pub const NEW_FOLDER: &str = "untitled folder";
 
+/// The name a new file starts with.
+pub const NEW_FILE: &str = "untitled file";
+
 /// More than this many entries are not shown. A folder of thousands of files
 /// would otherwise cost memory for icons nobody can see.
 const MAX_ENTRIES: usize = 400;
@@ -65,26 +68,51 @@ fn exists(path: &Path) -> bool {
 /// The first free name of the form "untitled folder", "untitled folder 2",
 /// "untitled folder 3".
 pub fn new_folder_name(dir: &Path) -> String {
-    (1u32..)
-        .map(numbered)
-        .find(|name| !exists(&dir.join(name)))
-        .unwrap_or_else(|| NEW_FOLDER.to_string())
+    free_name(dir, NEW_FOLDER)
 }
 
-fn numbered(n: u32) -> String {
+/// The same for "untitled file".
+pub fn new_file_name(dir: &Path) -> String {
+    free_name(dir, NEW_FILE)
+}
+
+fn free_name(dir: &Path, base: &str) -> String {
+    (1u32..)
+        .map(|n| numbered(base, n))
+        .find(|name| !exists(&dir.join(name)))
+        .unwrap_or_else(|| base.to_string())
+}
+
+fn numbered(base: &str, n: u32) -> String {
     if n == 1 {
-        NEW_FOLDER.to_string()
+        base.to_string()
     } else {
-        format!("{NEW_FOLDER} {n}")
+        format!("{base} {n}")
     }
 }
 
 /// Makes a folder with the first free "untitled folder" name and returns it.
 /// Creating is what claims the name, so two makers cannot get the same one.
 pub fn create_folder(dir: &Path) -> io::Result<String> {
+    claim(dir, NEW_FOLDER, |path| fs::create_dir(path))
+}
+
+/// Makes an empty file with the first free "untitled file" name. Nothing
+/// that is already there is touched: the file is made only if its name is new.
+pub fn create_file(dir: &Path) -> io::Result<String> {
+    claim(dir, NEW_FILE, |path| {
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map(drop)
+    })
+}
+
+fn claim(dir: &Path, base: &str, make: impl Fn(&Path) -> io::Result<()>) -> io::Result<String> {
     for n in 1u32.. {
-        let name = numbered(n);
-        match fs::create_dir(dir.join(&name)) {
+        let name = numbered(base, n);
+        match make(&dir.join(&name)) {
             Ok(()) => return Ok(name),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
@@ -215,6 +243,31 @@ mod tests {
         // A file in the way counts as well.
         fs::write(dir.join("untitled folder 2"), "").unwrap();
         assert_eq!(new_folder_name(&dir), "untitled folder 4");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn new_files_are_numbered_from_two_and_nothing_is_overwritten() {
+        let dir = temp_dir("files");
+        assert_eq!(new_file_name(&dir), "untitled file");
+        assert_eq!(create_file(&dir).unwrap(), "untitled file");
+        assert!(dir.join("untitled file").is_file());
+        assert_eq!(fs::metadata(dir.join("untitled file")).unwrap().len(), 0);
+        assert_eq!(create_file(&dir).unwrap(), "untitled file 2");
+        assert_eq!(create_file(&dir).unwrap(), "untitled file 3");
+        // What is in the way, a file with content, a folder, a dangling link,
+        // is skipped and left as it is.
+        fs::write(dir.join("untitled file 4"), "keep").unwrap();
+        fs::create_dir(dir.join("untitled file 5")).unwrap();
+        std::os::unix::fs::symlink(dir.join("gone"), dir.join("untitled file 6")).unwrap();
+        assert_eq!(create_file(&dir).unwrap(), "untitled file 7");
+        assert_eq!(
+            fs::read_to_string(dir.join("untitled file 4")).unwrap(),
+            "keep"
+        );
+        assert!(!dir.join("gone").exists());
+        // Files and folders count separately.
+        assert_eq!(create_folder(&dir).unwrap(), "untitled folder");
         fs::remove_dir_all(dir).unwrap();
     }
 

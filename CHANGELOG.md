@@ -27,7 +27,7 @@ and the measured idle RAM and boot time.
   or quit it. Pins are saved to ~/.config/sengi-os/dock.toml and survive a
   restart; running apps that are not pinned still follow the pinned ones.
 - sengi-desktop: the folders and files of ~/Desktop show as icons under the
-  windows. Right-click for New Folder (which starts in rename), Open Terminal
+  windows. Right-click for New Folder and New File (both start in rename), Open Terminal
   Here and Settings; select, rename, open and move to the Trash. The image has
   no file manager yet, so opening a folder says so.
 - Every window gets the Sengi OS title bar with close, minimise and maximise,

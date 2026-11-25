@@ -13,7 +13,7 @@ It makes `~/Desktop` on the first run.
 
 ## What it does
 
-- A right click on bare desktop opens a menu: New Folder, Open Terminal Here,
+- A right click on bare desktop opens a menu: New Folder, New File, Open Terminal Here,
   Settings.... A left click anywhere else closes it and clears the selection.
 - New Folder makes "untitled folder" ("untitled folder 2", ...) and puts it
   straight into rename. Return or a click elsewhere keeps the new name, Escape

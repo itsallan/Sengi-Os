@@ -153,6 +153,14 @@ impl Shell {
                 shell.report(result);
             }
         });
+        window.on_new_file({
+            let shell = self.clone();
+            move || {
+                let result = shell.desk.borrow_mut().new_file();
+                shell.sync();
+                shell.report(result);
+            }
+        });
         window.on_open_terminal({
             let shell = self.clone();
             move || {

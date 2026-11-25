@@ -154,5 +154,15 @@ fn icons_menus_and_a_new_folder_in_rename() {
     assert!(dir.join("untitled folder").is_dir());
     assert_eq!(desktop.get_selected(), -1);
 
+    // "New File" is the second row: an empty file, in rename.
+    click(&window, 600.0, 300.0, PointerEventButton::Right);
+    let menu = draw(&window);
+    save("menu-new-file.png", &menu);
+    click(&window, 640.0, 339.0, PointerEventButton::Left);
+    let made = dir.join("untitled file");
+    assert!(made.is_file(), "no new file");
+    assert_eq!(fs::metadata(&made).unwrap().len(), 0);
+    save("new-file.png", &draw(&window));
+
     fs::remove_dir_all(root).unwrap();
 }
