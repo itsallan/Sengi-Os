@@ -145,7 +145,12 @@ fn every_step_is_drawn_at_both_sizes() {
         loop {
             let step = app.step();
             assert_eq!(w.global::<Welcome>().get_step(), step.index());
-            picture(&format!("welcome-{}-{}x{}.png", step_name(step), size.0, size.1));
+            picture(&format!(
+                "welcome-{}-{}x{}.png",
+                step_name(step),
+                size.0,
+                size.1
+            ));
             if step == Step::Done {
                 break;
             }
@@ -200,10 +205,7 @@ fn the_choices_are_run_as_settings_changes() {
     assert_eq!(app.step(), Step::Network);
     assert_eq!(welcome.get_net(), 1);
     welcome.invoke_open_network();
-    assert_eq!(
-        recorder.opened.borrow()[0],
-        ["sengi-settings", "network"]
-    );
+    assert_eq!(recorder.opened.borrow()[0], ["sengi-settings", "network"]);
 
     // Keyboard: a few common layouts at first, a search narrows them, and
     // Return on the field takes the first.

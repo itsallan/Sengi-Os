@@ -96,7 +96,9 @@ fn strings(list: impl IntoIterator<Item = String>) -> ModelRc<SharedString> {
 
 impl App {
     fn with_welcome<T>(&self, f: impl FnOnce(Welcome<'_>) -> T) -> Option<T> {
-        self.window.upgrade().map(|window| f(window.global::<Welcome>()))
+        self.window
+            .upgrade()
+            .map(|window| f(window.global::<Welcome>()))
     }
 
     /// The window for the step the wizard is on.
@@ -111,7 +113,11 @@ impl App {
         let (first, last) = (state.wizard.is_first(), state.wizard.is_last());
         let (wallpaper, suggestions) = (
             state.wallpaper as i32,
-            strings(system::SUGGESTIONS.iter().map(|(label, _)| label.to_string())),
+            strings(
+                system::SUGGESTIONS
+                    .iter()
+                    .map(|(label, _)| label.to_string()),
+            ),
         );
         drop(state);
         self.with_welcome(|w| {
@@ -238,7 +244,7 @@ impl App {
     }
 
     fn next(self: &Rc<Self>) {
-        let moved = self.state.borrow_mut().wizard.next();
+        let moved = self.state.borrow_mut().wizard.advance();
         if moved {
             self.show();
         } else {

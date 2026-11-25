@@ -263,13 +263,13 @@ export component WelcomeWindow inherits Window {
 
         VerticalLayout {
             // The step.
-            HorizontalLayout {
+            Rectangle {
                 vertical-stretch: 1;
-                alignment: center;
 
                 VerticalLayout {
-                    horizontal-stretch: 1;
-                    max-width: Metrics.page;
+                    width: Math.min(parent.width, Metrics.page);
+                    height: parent.height;
+                    x: (parent.width - self.width) / 2;
                     padding: Tokens.space-xl;
                     spacing: Tokens.space-lg;
                     alignment: start;
@@ -341,6 +341,7 @@ export component WelcomeWindow inherits Window {
                                 x: Math.mod(index, parent.columns) * (parent.chip + Tokens.space-sm);
                                 y: Math.floor(index / parent.columns) * (Tokens.button + Tokens.space-sm);
                                 width: parent.chip;
+                                height: Tokens.button;
                                 text: name;
                                 primary: index == Welcome.wallpaper;
                                 outlined: index != Welcome.wallpaper;

@@ -81,7 +81,7 @@ impl Wizard {
     }
 
     /// Goes on. False on the last step, where there is nowhere to go.
-    pub fn next(&mut self) -> bool {
+    pub fn advance(&mut self) -> bool {
         let shown = self.shown();
         match shown.get(self.at() + 1) {
             Some(step) => {
@@ -110,7 +110,7 @@ mod tests {
     fn it_walks_every_step_in_order_and_back() {
         let mut wizard = Wizard::new(false);
         let mut seen = vec![wizard.current()];
-        while wizard.next() {
+        while wizard.advance() {
             seen.push(wizard.current());
         }
         assert_eq!(seen, Step::ALL);
@@ -125,10 +125,10 @@ mod tests {
     #[test]
     fn a_wired_connection_skips_the_network_step() {
         let mut wizard = Wizard::new(true);
-        assert!(wizard.next());
+        assert!(wizard.advance());
         assert_eq!(wizard.current(), Step::Look);
         assert_eq!(wizard.position(), (2, 5));
-        assert!(wizard.next());
+        assert!(wizard.advance());
         assert_eq!(wizard.current(), Step::Keyboard);
         assert!(wizard.back());
         assert_eq!(wizard.current(), Step::Look);
@@ -137,8 +137,8 @@ mod tests {
     #[test]
     fn the_step_the_user_is_on_is_not_taken_away() {
         let mut wizard = Wizard::new(false);
-        wizard.next();
-        wizard.next();
+        wizard.advance();
+        wizard.advance();
         assert_eq!(wizard.current(), Step::Network);
         wizard.set_wired(true);
         assert_eq!(wizard.current(), Step::Network);

@@ -422,10 +422,7 @@ mod tests {
             wallpaper_command(Some(Path::new("/usr/share/backgrounds/sengi/01-a.png")))[3],
             "/usr/share/backgrounds/sengi/01-a.png"
         );
-        assert_eq!(
-            layouts_command(&["de".into(), "us".into()])[3],
-            "de,us"
-        );
+        assert_eq!(layouts_command(&["de".into(), "us".into()])[3], "de,us");
         assert_eq!(settings_command("network"), ["sengi-settings", "network"]);
         assert_eq!(store_command("gimp"), ["sengi-store", "--search", "gimp"]);
         assert_eq!(store_command(""), ["sengi-store"]);
