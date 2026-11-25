@@ -401,11 +401,28 @@ pub fn secure_boot_from(var: &[u8]) -> bool {
     var.len() >= 5 && var[var.len() - 1] == 1
 }
 
+/// Whether Secure Boot is to be taken as on, failing closed: what the
+/// variable says if it could be read; "not on" only when the variable is
+/// not there although the firmware's variables are (firmware that has no
+/// Secure Boot has none); and "on" for anything else, an unreadable
+/// variable or variables that cannot be listed, since a boot loader that
+/// the firmware refuses is worse than a refused option.
+pub fn secure_boot_state(read: std::io::Result<Vec<u8>>, variables_listed: bool) -> bool {
+    match read {
+        Ok(var) => secure_boot_from(&var),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => !variables_listed,
+        Err(_) => true,
+    }
+}
+
 /// How this computer was started, as it is now.
 pub fn firmware_now() -> Firmware {
+    let uefi = std::path::Path::new("/sys/firmware/efi").is_dir();
+    let listed = std::fs::read_dir("/sys/firmware/efi/efivars")
+        .is_ok_and(|mut entries| entries.next().is_some());
     Firmware {
-        uefi: std::path::Path::new("/sys/firmware/efi").is_dir(),
-        secure_boot: std::fs::read(SECURE_BOOT_VAR).is_ok_and(|var| secure_boot_from(&var)),
+        uefi,
+        secure_boot: uefi && secure_boot_state(std::fs::read(SECURE_BOOT_VAR), listed),
     }
 }
 
@@ -708,14 +725,35 @@ const LOOKERS: [&str; 3] = ["blkid", "udevadm", "lsblk"];
 /// judged by what runs inside. `device` is the whole disk's node, `old`
 /// the nodes of the partitions that were there, `esp` the one of them
 /// that GRUB may be put on, `new` the partition made.
-pub fn guard(
-    argv: &[String],
-    device: &str,
-    old: &[String],
-    esp: &str,
-    new: Option<&str>,
-    deletable: &[String],
-) -> Result<(), String> {
+/// What the guard needs to know about the installation to judge a command.
+pub struct Rules<'a> {
+    /// The whole disk's node.
+    pub device: &'a str,
+    /// The nodes of the partitions that were there.
+    pub old: &'a [String],
+    /// The EFI system partition: its node and its number.
+    pub esp: &'a str,
+    pub esp_number: u32,
+    /// What the new partition is called to format and mount it, once it
+    /// exists, and its number.
+    pub new: Option<&'a str>,
+    pub new_number: Option<u32>,
+    /// Firmware entries of ours that may be deleted.
+    pub deletable: &'a [String],
+    /// The firmware's boot order as it is now, which a new order must
+    /// be a permutation of.
+    pub boot_order: &'a [String],
+}
+
+pub fn guard(argv: &[String], rules: &Rules) -> Result<(), String> {
+    let Rules {
+        device,
+        old,
+        esp,
+        new,
+        deletable,
+        ..
+    } = *rules;
     let argv: &[String] = match argv.first().map(String::as_str) {
         Some("chroot") => argv.get(2..).unwrap_or_default(),
         _ => argv,
@@ -743,25 +781,23 @@ pub fn guard(
         }
     }
     if program == "sfdisk" {
-        let reading = args
-            .iter()
-            .any(|arg| arg == "-d" || arg == "--dump" || arg == "--json");
-        let appending = args.iter().any(|arg| arg == "--append" || arg == "-a");
+        // Two argument lists and no others: no abbreviation, no `--wipe=always`,
+        // no `-w`, nothing added.
+        let reading = args == ["-d", device];
+        let appending = args
+            == [
+                "--lock",
+                "--no-reread",
+                "--no-tell-kernel",
+                "--wipe",
+                "never",
+                "--wipe-partitions",
+                "always",
+                "--append",
+                device,
+            ];
         if !reading && !appending {
-            return refuse("sfdisk may only read the table or append one partition");
-        }
-        if args.iter().any(|arg| arg == "--wipe") {
-            // `--wipe never` is the one form that cannot erase anything.
-            let at = args.iter().position(|arg| arg == "--wipe").unwrap_or(0);
-            if args.get(at + 1).map(String::as_str) != Some("never") {
-                return refuse("sfdisk may not wipe the disk");
-            }
-        }
-        if args
-            .iter()
-            .any(|arg| arg.starts_with("--delete") || arg == "-X" || arg == "--part-type")
-        {
-            return refuse("sfdisk may not change old partitions");
+            return refuse("sfdisk may only read the table (-d DISK) or append the one partition, in exactly the form the installer uses");
         }
     }
     // Only the exact forms that an installation uses of the programs
@@ -771,13 +807,14 @@ pub fn guard(
             return refuse("the kernel is told of the new partition only, not of the whole table")
         }
         "partx" => {
-            let fine = args.len() == 4
-                && args[0] == "--add"
-                && args[1] == "--nr"
-                && args[2].chars().all(|c| c.is_ascii_digit())
-                && !args[2].is_empty()
-                && args[3] == device
-                && new.is_some_and(|node| node.ends_with(args[2].as_str()));
+            let fine = rules.new_number.is_some_and(|number| {
+                args == [
+                    "--add".to_string(),
+                    "--nr".to_string(),
+                    number.to_string(),
+                    device.to_string(),
+                ]
+            });
             if !fine {
                 return refuse("partx may only add the new partition");
             }
@@ -786,12 +823,20 @@ pub fn guard(
             let words: Vec<&str> = args.iter().map(String::as_str).collect();
             let fine = match words.as_slice() {
                 [] | ["-v"] => true,
-                ["--quiet", "--create", "--disk", disk, "--part", number, "--label", _, "--loader", _] => {
-                    *disk == device && number.chars().all(|c| c.is_ascii_digit())
+                ["--quiet", "--create", "--disk", disk, "--part", number, "--label", label, "--loader", loader] => {
+                    *disk == device
+                        && *number == rules.esp_number.to_string()
+                        && *label == crate::edit::EFI_LABEL
+                        && *loader == format!("\\EFI\\{}\\grubx64.efi", crate::edit::EFI_ID)
                 }
-                ["--quiet", "--bootorder", order] => order
-                    .split(',')
-                    .all(|entry| entry.len() == 4 && entry.chars().all(|c| c.is_ascii_hexdigit())),
+                ["--quiet", "--bootorder", order] => {
+                    // The same entries, in another order: none added, none left out.
+                    let mut wanted: Vec<&str> = order.split(',').collect();
+                    let mut have: Vec<&str> = rules.boot_order.iter().map(String::as_str).collect();
+                    wanted.sort_unstable();
+                    have.sort_unstable();
+                    !have.is_empty() && wanted == have
+                }
                 ["--quiet", "--bootnum", number, "--delete-bootnum"] => {
                     deletable.iter().any(|entry| entry == number)
                 }
@@ -1300,13 +1345,19 @@ sector-size: 512
         let old: Vec<String> = ["/dev/vda1", "/dev/vda2", "/dev/vda3"]
             .map(String::from)
             .to_vec();
+        let order = ["0001", "0000"].map(String::from).to_vec();
         guard(
             &argv(line),
-            "/dev/vda",
-            &old,
-            "/dev/vda1",
-            Some("/dev/vda4"),
-            &["0003".to_string()],
+            &Rules {
+                device: "/dev/vda",
+                old: &old,
+                esp: "/dev/vda1",
+                esp_number: 1,
+                new: Some("/dev/vda4"),
+                new_number: Some(4),
+                deletable: &["0003".to_string()],
+                boot_order: &order,
+            },
         )
     }
 
@@ -1326,7 +1377,6 @@ sector-size: 512
             "umount /run/x/boot/efi",
             "chroot /run/x grub-install --target=x86_64-efi --efi-directory=/boot/efi --boot-directory=/boot --bootloader-id=sengios --no-nvram --no-uefi-secure-boot",
             "chroot /run/x update-grub",
-            "efibootmgr --quiet --create --disk /dev/vda --part 1 --label Sengi --loader x",
             "efibootmgr -v",
             "efibootmgr",
             "efibootmgr --quiet --bootorder 0001,0000",
@@ -1340,11 +1390,21 @@ sector-size: 512
             "blockdev --rereadpt /dev/vda3",
             "partx --delete --nr 1 /dev/vda",
             "partx --add --nr 3 /dev/vda",
+            "partx --add --nr 14 /dev/vda",
+            "sfdisk --lock --no-reread --no-tell-kernel --wipe=always --wipe-partitions always --append /dev/vda",
+            "sfdisk --lock --no-reread --no-tell-kernel --wipe never --wipe-partitions always -w always --append /dev/vda",
+            "sfdisk -w always --append /dev/vda",
+            "sfdisk -d /dev/vda --wipe always",
+            "sfdisk -d /dev/vdb",
+            "sfdisk --append /dev/vda",
+            "efibootmgr --quiet --bootorder 0001,0009",
+            "efibootmgr --quiet --bootorder 0001",
+            "efibootmgr --quiet --bootorder 0001,0001",
+            "efibootmgr --quiet --bootorder 0001,0000,0002",
             "partx --add /dev/vda",
             "efibootmgr --quiet --bootnum 0000 --delete-bootnum",
             "efibootmgr --delete-bootnum",
             "efibootmgr --quiet --bootorder zzzz",
-            "efibootmgr --quiet --create --disk /dev/sdb --part 1 --label Sengi --loader x",
             "efibootmgr --quiet --bootnum 0003",
             "mkfs.ext4 -q -F /dev/vda3",
             "mkfs.ext4 -q -F /dev/vda1",
@@ -1380,11 +1440,16 @@ sector-size: 512
         let old = vec!["/dev/vda1".to_string()];
         assert!(guard(
             &argv("mkfs.ext4 /dev/vda2"),
-            "/dev/vda",
-            &old,
-            "/dev/vda1",
-            None,
-            &[]
+            &Rules {
+                device: "/dev/vda",
+                old: &old,
+                esp: "/dev/vda1",
+                esp_number: 1,
+                new: None,
+                new_number: None,
+                deletable: &[],
+                boot_order: &[],
+            }
         )
         .is_err());
     }
@@ -1395,6 +1460,31 @@ sector-size: 512
         assert_eq!(nodes("/dev/vda", &table)[2], "/dev/vda3");
         assert_eq!(nodes("/dev/nvme0n1", &table)[0], "/dev/nvme0n1p1");
     }
+    #[test]
+    fn secure_boot_fails_closed() {
+        use std::io::{Error, ErrorKind};
+        let on = vec![6, 0, 0, 0, 1];
+        let off = vec![6, 0, 0, 0, 0];
+        assert!(secure_boot_state(Ok(on), true));
+        assert!(!secure_boot_state(Ok(off), true));
+        // No variable among others: firmware without Secure Boot.
+        assert!(!secure_boot_state(
+            Err(Error::from(ErrorKind::NotFound)),
+            true
+        ));
+        // No variable and no variables at all: cannot tell.
+        assert!(secure_boot_state(
+            Err(Error::from(ErrorKind::NotFound)),
+            false
+        ));
+        // Unreadable.
+        assert!(secure_boot_state(
+            Err(Error::from(ErrorKind::PermissionDenied)),
+            true
+        ));
+        assert!(secure_boot_state(Err(Error::other("odd")), true));
+    }
+
     #[test]
     fn secure_boot_is_read_from_the_variable() {
         assert!(secure_boot_from(&[6, 0, 0, 0, 1]));
@@ -1491,5 +1581,53 @@ sector-size: 512
             secure_boot: true,
         };
         assert_eq!(offer(&good, bios), Err(Why::NotUefi));
+    }
+    #[test]
+    fn the_boot_entry_that_is_made_is_ours_on_the_efi_system_partition() {
+        let make = |part: &str, label: &str, loader: &str, disk: &str| {
+            let argv: Vec<String> = [
+                "efibootmgr",
+                "--quiet",
+                "--create",
+                "--disk",
+                disk,
+                "--part",
+                part,
+                "--label",
+                label,
+                "--loader",
+                loader,
+            ]
+            .map(String::from)
+            .to_vec();
+            let old = vec!["/dev/vda1".to_string()];
+            let order = vec!["0000".to_string()];
+            guard(
+                &argv,
+                &Rules {
+                    device: "/dev/vda",
+                    old: &old,
+                    esp: "/dev/vda1",
+                    esp_number: 1,
+                    new: None,
+                    new_number: None,
+                    deletable: &[],
+                    boot_order: &order,
+                },
+            )
+        };
+        let loader = "\\EFI\\sengios\\grubx64.efi";
+        assert_eq!(make("1", "Sengi OS", loader, "/dev/vda"), Ok(()));
+        // Another partition, another name, another loader, another disk.
+        assert!(make("2", "Sengi OS", loader, "/dev/vda").is_err());
+        assert!(make("1", "Windows Boot Manager", loader, "/dev/vda").is_err());
+        assert!(make(
+            "1",
+            "Sengi OS",
+            "\\EFI\\Microsoft\\Boot\\bootmgfw.efi",
+            "/dev/vda"
+        )
+        .is_err());
+        assert!(make("1", "Sengi OS", loader, "/dev/vdb").is_err());
     }
 }
