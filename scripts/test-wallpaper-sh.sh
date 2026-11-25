@@ -119,7 +119,7 @@ echo "12; rm -rf" >"$tmp/run/sengi-wallpaper.pid"
 run_apply
 check "rubbish in the pid file is no harm" "$(alive "$(pid_of_file)")" yes
 rm -f "$tmp/run/sengi-wallpaper.pid"
-XDG_RUNTIME_DIR= run_apply
+(XDG_RUNTIME_DIR=''; run_apply)
 check "no runtime directory, no pid file, still starts" "$(ls "$tmp/run")" ""
 
 # 8. Sourced, as session-start does, it defines the function and runs nothing.
