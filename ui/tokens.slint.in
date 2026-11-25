@@ -106,6 +106,7 @@ export global Tokens {
     out property <duration> motion-bounce: @{motion.bounce-duration}ms;
     out property <easing> motion-bounce-easing: @{motion.bounce-easing};
     out property <duration> click-guard: @{timing.click-guard}ms;
+    out property <duration> screenshot-delay: @{timing.screenshot-delay}ms;
     out property <duration> input-settle: @{timing.input-settle}ms;
     out property <duration> notification-timeout: @{timing.notification-timeout}ms;
     out property <duration> osd-timeout: @{timing.osd-timeout}ms;

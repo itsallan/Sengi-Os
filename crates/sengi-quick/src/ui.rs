@@ -22,6 +22,9 @@ pub enum Exit {
     Lock,
     /// Close, then open the session menu.
     Session,
+    /// Close, wait this long for the panel to leave the screen, then take
+    /// a picture of the whole screen.
+    Screenshot(Duration),
 }
 
 fn item(row: &NetworkRow) -> NetworkItem {
@@ -217,6 +220,15 @@ pub fn attach(
     window.on_dnd_set({
         let act = act.clone();
         move |on| act(&mut |panel| panel.set_dnd(on))
+    });
+    window.on_screenshot({
+        let (finish, weak) = (finish.clone(), weak.clone());
+        move || {
+            let delay = weak
+                .upgrade()
+                .map_or(0, |window| window.get_screenshot_delay().max(0));
+            finish(Exit::Screenshot(Duration::from_millis(delay as u64)));
+        }
     });
     window.on_lock({
         let finish = finish.clone();

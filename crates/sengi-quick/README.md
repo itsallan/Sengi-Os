@@ -1,8 +1,8 @@
 # sengi-quick
 
 The Sengi OS quick settings panel: Wi-Fi, Bluetooth, volume, brightness,
-do not disturb, battery, and buttons for the lock screen and the session
-menu. It drops down under the right end of the bar.
+do not disturb, battery, and buttons for a screenshot, the lock screen and
+the session menu. It drops down under the right end of the bar.
 
     sengi-quick
 
@@ -21,6 +21,7 @@ click outside it, or the keyboard going elsewhere.
 | Do not disturb | `sengi-notify --dnd on\|off\|status` |
 | Battery | `/sys/class/power_supply` |
 | Lock, Session | `sengi-lock -f`, `sengi-power` |
+| Screenshot | `sengi-shot`, after `timing.screenshot-delay` so the panel is not in the picture |
 
 The commands are constants in `src/commands.rs`. No call on the bus ever
 starts iwd or BlueZ: on a machine without the hardware they are not

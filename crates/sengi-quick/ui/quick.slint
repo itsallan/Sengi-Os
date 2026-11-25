@@ -404,11 +404,16 @@ export component QuickWindow inherits Window {
     callback mute-clicked();
     callback brightness-changed(int);
     callback dnd-set(bool);
+    callback screenshot();
     callback lock();
     callback session();
     callback dismiss();
     // Move the keyboard focus to the next (1) or previous (-1) control.
     callback move-focus(int);
+
+    // Read by the program: how long the panel is gone before the picture is
+    // taken.
+    out property <duration> screenshot-delay: Tokens.screenshot-delay;
 
     title: "Sengi OS quick settings";
     no-frame: true;
@@ -705,6 +710,12 @@ export component QuickWindow inherits Window {
                                 : root.battery-warning ? Tokens.color-warning : Tokens.color-text;
                         }
                     }
+                }
+
+                SengiButton {
+                    height: Tokens.button;
+                    text: "Screenshot";
+                    clicked => { root.screenshot(); }
                 }
 
                 HorizontalLayout {

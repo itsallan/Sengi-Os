@@ -93,6 +93,12 @@ fn main() -> ExitCode {
         Exit::Dismissed => {}
         Exit::Lock => spawn(commands::LOCK),
         Exit::Session => spawn(commands::SESSION),
+        Exit::Screenshot(delay) => {
+            // The panel has been told to go; give the compositor time to
+            // draw the screen without it.
+            std::thread::sleep(delay);
+            spawn(commands::SCREENSHOT);
+        }
     }
     ExitCode::SUCCESS
 }
