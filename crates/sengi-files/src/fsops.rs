@@ -12,7 +12,7 @@ use std::fs;
 use std::io;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use sengi_system::trash::numbered_name;
 
@@ -36,6 +36,8 @@ pub struct Entry {
     /// In the Trash: where it was, and when it was trashed.
     pub original: Option<PathBuf>,
     pub deleted: String,
+    /// In the Trash: the drive whose Trash holds it, None for the user's own.
+    pub volume: Option<PathBuf>,
 }
 
 /// What reading a folder found.
@@ -149,6 +151,7 @@ pub fn read(
             modified: meta.as_ref().map_or(0, MetadataExt::mtime),
             original: None,
             deleted: String::new(),
+            volume: None,
         });
     }
     sort(&mut listing.entries);
@@ -256,11 +259,115 @@ pub struct Copied {
     pub skipped: usize,
 }
 
+/// What a long copy reports to and is asked by: whether to stop, how many
+/// bytes have been written, and a call after each piece so that the caller
+/// can show it. All of it is optional.
+#[derive(Clone, Copy)]
+pub struct Ctl<'a> {
+    pub cancel: Option<&'a AtomicBool>,
+    pub bytes: Option<&'a AtomicU64>,
+    pub tick: Option<&'a dyn Fn()>,
+}
+
+impl Ctl<'_> {
+    /// Nothing to report to, nothing to be stopped by.
+    pub const fn none() -> Ctl<'static> {
+        Ctl {
+            cancel: None,
+            bytes: None,
+            tick: None,
+        }
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancel.is_some_and(|flag| flag.load(Ordering::Relaxed))
+    }
+
+    fn advance(&self, count: u64) {
+        if let Some(bytes) = self.bytes {
+            bytes.fetch_add(count, Ordering::Relaxed);
+        }
+        if let Some(tick) = self.tick {
+            tick();
+        }
+    }
+}
+
+/// The error a stopped copy ends with.
+pub fn cancelled_error() -> io::Error {
+    io::Error::new(io::ErrorKind::Interrupted, "cancelled")
+}
+
+pub fn is_cancelled(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::Interrupted
+        && error.raw_os_error().is_none()
+        && error.to_string() == "cancelled"
+}
+
+/// Writes all of `from` to `to` in pieces of a quarter of a megabyte,
+/// looking at the stop flag before each. Returns the bytes written.
+pub fn copy_stream(
+    from: &mut impl io::Read,
+    to: &mut impl io::Write,
+    ctl: &Ctl,
+) -> io::Result<u64> {
+    let mut buffer = vec![0u8; 256 * 1024];
+    let mut total = 0u64;
+    loop {
+        if ctl.cancelled() {
+            return Err(cancelled_error());
+        }
+        let count = match from.read(&mut buffer) {
+            Ok(0) => return Ok(total),
+            Ok(count) => count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        to.write_all(&buffer[..count])?;
+        total += count as u64;
+        ctl.advance(count as u64);
+    }
+}
+
+/// The bytes in the files under `path`, links not followed. What cannot be
+/// read counts for nothing: this is for a progress line and a check of free
+/// space, not for deciding anything.
+pub fn tree_bytes(path: &Path) -> u64 {
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if meta.is_file() {
+        return meta.len();
+    }
+    if !meta.is_dir() {
+        return 0;
+    }
+    let Ok(items) = fs::read_dir(path) else {
+        return 0;
+    };
+    items.flatten().map(|item| tree_bytes(&item.path())).sum()
+}
+
+/// Whether two paths are on the same file system, so that a move between
+/// them is a rename and not a copy. False when either cannot be looked at.
+pub fn same_disk(a: &Path, b: &Path) -> bool {
+    match (fs::metadata(a), fs::metadata(b)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev(),
+        _ => false,
+    }
+}
+
 /// Copies `src` into the folder `dest_dir` under a name that is free there,
 /// and returns where it went. A folder is copied with everything in it; a
 /// link is made again as a link. If anything fails, what was made is
 /// removed again and `src` is untouched.
 pub fn copy_into(src: &Path, dest_dir: &Path) -> io::Result<Copied> {
+    copy_into_with(src, dest_dir, &Ctl::none())
+}
+
+/// As [`copy_into`], and can be stopped and watched through `ctl`. A stopped
+/// copy ends with [`cancelled_error`] and leaves nothing of itself behind.
+pub fn copy_into_with(src: &Path, dest_dir: &Path, ctl: &Ctl) -> io::Result<Copied> {
     let name = name_of(src)?;
     let meta = fs::symlink_metadata(src)?;
     if meta.is_dir() && is_within(dest_dir, src) {
@@ -274,12 +381,12 @@ pub fn copy_into(src: &Path, dest_dir: &Path) -> io::Result<Copied> {
         let target = dest_dir.join(numbered_name(&name, n));
         let made = if meta.is_dir() {
             match fs::create_dir(&target) {
-                Ok(()) => Some(copy_folder_contents(src, &target, &mut skipped)),
+                Ok(()) => Some(copy_folder_contents(src, &target, &mut skipped, ctl)),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => None,
                 Err(error) => return Err(error),
             }
         } else {
-            copy_leaf(src, &target, &meta, &mut skipped)
+            copy_leaf(src, &target, &meta, &mut skipped, ctl)
         };
         match made {
             None => continue,
@@ -314,6 +421,7 @@ fn copy_leaf(
     target: &Path,
     meta: &fs::Metadata,
     skipped: &mut usize,
+    ctl: &Ctl,
 ) -> Option<io::Result<()>> {
     let kind = meta.file_type();
     if kind.is_symlink() {
@@ -342,11 +450,19 @@ fn copy_leaf(
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return None,
         Err(error) => return Some(Err(error)),
     };
-    Some(io::copy(&mut from, &mut to).map(|_| ()))
+    Some(copy_stream(&mut from, &mut to, ctl).map(|_| ()))
 }
 
-fn copy_folder_contents(src: &Path, target: &Path, skipped: &mut usize) -> io::Result<()> {
+fn copy_folder_contents(
+    src: &Path,
+    target: &Path,
+    skipped: &mut usize,
+    ctl: &Ctl,
+) -> io::Result<()> {
     for item in fs::read_dir(src)? {
+        if ctl.cancelled() {
+            return Err(cancelled_error());
+        }
         let item = item?;
         let from = item.path();
         let to = target.join(item.file_name());
@@ -354,9 +470,9 @@ fn copy_folder_contents(src: &Path, target: &Path, skipped: &mut usize) -> io::R
         let meta = fs::symlink_metadata(&from)?;
         if meta.is_dir() {
             fs::create_dir(&to)?;
-            copy_folder_contents(&from, &to, skipped)?;
+            copy_folder_contents(&from, &to, skipped, ctl)?;
             fs::set_permissions(&to, meta.permissions())?;
-        } else if let Some(result) = copy_leaf(&from, &to, &meta, skipped) {
+        } else if let Some(result) = copy_leaf(&from, &to, &meta, skipped, ctl) {
             result?;
         } else {
             return Err(io::Error::new(
@@ -372,6 +488,12 @@ fn copy_folder_contents(src: &Path, target: &Path, skipped: &mut usize) -> io::R
 /// and returns where it went. Across disks it is copied and then removed,
 /// and the original is only removed when the whole copy succeeded.
 pub fn move_into(src: &Path, dest_dir: &Path) -> io::Result<PathBuf> {
+    move_into_with(src, dest_dir, &Ctl::none())
+}
+
+/// As [`move_into`], and a move that has to copy can be stopped and watched
+/// through `ctl`: stopped, it removes the half copy and leaves `src` alone.
+pub fn move_into_with(src: &Path, dest_dir: &Path, ctl: &Ctl) -> io::Result<PathBuf> {
     let name = name_of(src)?;
     let meta = fs::symlink_metadata(src)?;
     if meta.is_dir() && is_within(dest_dir, src) {
@@ -387,7 +509,7 @@ pub fn move_into(src: &Path, dest_dir: &Path) -> io::Result<PathBuf> {
     match fs::rename(src, &target) {
         Ok(()) => Ok(target),
         Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
-            let copied = copy_into(src, dest_dir)?;
+            let copied = copy_into_with(src, dest_dir, ctl)?;
             let removed = if meta.is_dir() {
                 fs::remove_dir_all(src)
             } else {
@@ -856,5 +978,99 @@ pub mod tests {
     fn there_is_free_space_on_the_temp_disk() {
         assert!(free_space(&std::env::temp_dir()).is_some());
         assert!(free_space(Path::new("/definitely/not/here")).is_none());
+    }
+
+    /// A disk that takes `room` bytes and then says it is full.
+    struct SmallDisk {
+        room: usize,
+        taken: usize,
+    }
+
+    impl io::Write for SmallDisk {
+        fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+            if self.taken + data.len() > self.room {
+                return Err(io::Error::from_raw_os_error(libc::ENOSPC));
+            }
+            self.taken += data.len();
+            Ok(data.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_full_disk_stops_the_copy_with_its_own_error() {
+        let mut from = io::Cursor::new(vec![7u8; 1000]);
+        let mut disk = SmallDisk {
+            room: 600,
+            taken: 0,
+        };
+        let error = copy_stream(&mut from, &mut disk, &Ctl::none()).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::ENOSPC));
+        assert_eq!(
+            sengi_system::trash::plain(&error),
+            "There is no space left on the disk"
+        );
+        assert!(!is_cancelled(&error));
+    }
+
+    #[test]
+    fn a_copy_counts_bytes_and_tells_after_each_piece() {
+        let t = Temp::new();
+        let src = t.file("big.bin", "");
+        fs::write(&src, vec![1u8; 700_000]).unwrap();
+        fs::create_dir(t.path().join("dst")).unwrap();
+        let bytes = AtomicU64::new(0);
+        let ticks = std::cell::Cell::new(0u32);
+        let tick = || ticks.set(ticks.get() + 1);
+        let ctl = Ctl {
+            cancel: None,
+            bytes: Some(&bytes),
+            tick: Some(&tick),
+        };
+        let copied = copy_into_with(&src, &t.path().join("dst"), &ctl).unwrap();
+        assert_eq!(fs::metadata(copied.path).unwrap().len(), 700_000);
+        assert_eq!(bytes.load(Ordering::Relaxed), 700_000);
+        assert!(ticks.get() >= 3, "{}", ticks.get());
+        assert_eq!(tree_bytes(&src), 700_000);
+    }
+
+    #[test]
+    fn a_stopped_copy_leaves_nothing_behind_and_the_source_alone() {
+        let t = Temp::new();
+        t.file("src/a.txt", "a");
+        t.file("src/deep/b.txt", "b");
+        fs::create_dir(t.path().join("dst")).unwrap();
+        let stop = AtomicBool::new(true);
+        let ctl = Ctl {
+            cancel: Some(&stop),
+            bytes: None,
+            tick: None,
+        };
+        let (src, dst) = (t.path().join("src"), t.path().join("dst"));
+        let error = copy_into_with(&src, &dst, &ctl).unwrap_err();
+        assert!(is_cancelled(&error));
+        assert_eq!(fs::read_dir(t.path().join("dst")).unwrap().count(), 0);
+        assert!(t.path().join("src/deep/b.txt").exists());
+        // A move that is stopped is not a move.
+        // On one disk a move is a rename and cannot be stopped; either it
+        // moved or it was stopped with the source in place.
+        match move_into_with(&src, &dst, &ctl) {
+            Ok(moved) => assert!(moved.exists()),
+            Err(error) => {
+                assert!(is_cancelled(&error));
+                assert!(t.path().join("src/deep/b.txt").exists());
+            }
+        }
+    }
+
+    #[test]
+    fn two_paths_on_the_temp_disk_are_on_one_disk() {
+        let t = Temp::new();
+        fs::create_dir(t.path().join("a")).unwrap();
+        assert!(same_disk(t.path(), &t.path().join("a")));
+        assert!(!same_disk(t.path(), &t.path().join("missing")));
     }
 }

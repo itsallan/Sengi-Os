@@ -3,24 +3,27 @@
 //! done, on a thread of its own that posts what it found back here, so a
 //! folder of ten thousand files never holds the window up.
 
-use std::cell::RefCell;
-use std::path::Path;
+use std::cell::{Cell, RefCell};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
 use sengi_apps::Env;
 use sengi_system::trash;
 
+use crate::devices::{self, Device, Sources};
 use crate::fsops::{self, Entry};
-use crate::jobs::{self, Report};
+use crate::jobs::{self, Binned, Progress, Report};
 use crate::menu;
 use crate::open;
 use crate::session::{place_icon, places, Place, Session};
-use crate::ui::{Crumb, DialogSpec, FileRow, Files, FilesWindow, MenuEntry, PlaceRow};
+use crate::ui::{Crumb, DeviceRow, DialogSpec, FileRow, Files, FilesWindow, MenuEntry, PlaceRow};
 use crate::watch::Watcher;
+use crate::{hotplug, udisks};
 
 /// What to do when a load is done.
 #[derive(Default, Clone)]
@@ -63,6 +66,12 @@ struct State {
     watcher: Option<Watcher>,
     /// The folder changed while a name was being typed.
     stale: bool,
+    /// Where the drives are looked for, and the ones found.
+    sources: Sources,
+    devices: Vec<Device>,
+    /// How far a copy or move that is running has got, and what to call it.
+    progress: Option<Arc<Progress>>,
+    doing: &'static str,
 }
 
 pub struct App {
@@ -166,7 +175,10 @@ impl State {
     fn status(&self) -> String {
         let session = &self.session;
         if self.busy {
-            return "Working\u{2026}".to_string();
+            return match &self.progress {
+                Some(progress) => progress.line(self.doing),
+                None => "Working\u{2026}".to_string(),
+            };
         }
         if let Some(read) = session.loading {
             return if read == 0 {
@@ -189,6 +201,22 @@ impl State {
             text.push_str(&format!(" \u{b7} {} free", fsops::size_text(free)));
         }
         text
+    }
+
+    /// The drive the folder shown is on, if it is on one.
+    fn device_here(&self) -> Option<usize> {
+        let dir = self.session.dir()?;
+        self.devices.iter().position(|device| {
+            device
+                .mount
+                .as_deref()
+                .is_some_and(|point| dir.starts_with(point))
+        })
+    }
+
+    /// The top folders of the drives that are open.
+    fn volumes(&self) -> Vec<PathBuf> {
+        devices::mounted_in(&self.devices, self.session.media.as_deref())
     }
 
     /// What a drag carries: the name, or how many.
@@ -251,6 +279,18 @@ impl App {
                 })
                 .collect::<Vec<_>>(),
         )));
+        files.set_devices(ModelRc::new(VecModel::from(
+            s.devices
+                .iter()
+                .map(|device| DeviceRow {
+                    name: device.title().into(),
+                    detail: device.detail().into(),
+                    mounted: device.is_mounted(),
+                })
+                .collect::<Vec<_>>(),
+        )));
+        files.set_device(s.device_here().map_or(-1, |at| at as i32));
+        files.set_cancelable(s.busy && s.progress.is_some());
         files.set_place(
             s.places
                 .iter()
@@ -310,7 +350,7 @@ impl App {
 
 /// Reads the place the session is at, on a thread, and shows what comes.
 fn load(app: &Rc<App>, then: Then) {
-    let (generation, place, hidden, cancel, trash_dir) = {
+    let (generation, place, hidden, cancel, trash_dir, volumes) = {
         let mut s = app.state.borrow_mut();
         // Whatever is still being read is not wanted any more.
         s.cancel.store(true, Ordering::Relaxed);
@@ -323,13 +363,14 @@ fn load(app: &Rc<App>, then: Then) {
             s.session.show_hidden,
             s.cancel.clone(),
             s.session.trash.clone(),
+            s.volumes(),
         )
     };
     set_watch(app);
     app.render();
     run_job(
         app,
-        move || read_place(&place, hidden, &cancel, &trash_dir, generation),
+        move || read_place(&place, hidden, &cancel, &trash_dir, &volumes, generation),
         move |app, result| loaded(app, generation, result),
     );
 }
@@ -406,6 +447,7 @@ fn read_place(
     hidden: bool,
     cancel: &AtomicBool,
     trash_dir: &Path,
+    volumes: &[PathBuf],
     generation: u64,
 ) -> Read {
     match place {
@@ -421,25 +463,39 @@ fn read_place(
         })
         .map(|listing| (listing.entries, listing.skipped))
         .map_err(|error| read_error(dir, &error)),
-        Place::Trash => trash::list(trash_dir)
-            .map(|items| {
-                let mut entries: Vec<Entry> = items
-                    .into_iter()
-                    .map(|item| Entry {
-                        name: item.name,
-                        folder: item.folder,
-                        link: false,
-                        size: 0,
-                        modified: 0,
-                        original: item.original,
-                        deleted: item.date,
-                    })
-                    .collect();
-                fsops::sort(&mut entries);
-                (entries, 0)
-            })
-            .map_err(|error| read_error(trash_dir, &error)),
+        Place::Trash => read_trash(trash_dir, volumes),
     }
+}
+
+/// The user's own Trash and the Trash of each drive that is open, as one list.
+fn read_trash(trash_dir: &Path, volumes: &[PathBuf]) -> Read {
+    let entry = |item: trash::Item, volume: Option<PathBuf>| Entry {
+        name: item.name,
+        folder: item.folder,
+        link: false,
+        size: 0,
+        modified: 0,
+        original: item.original,
+        deleted: item.date,
+        volume,
+    };
+    let mut entries: Vec<Entry> = trash::list(trash_dir)
+        .map_err(|error| read_error(trash_dir, &error))?
+        .into_iter()
+        .map(|item| entry(item, None))
+        .collect();
+    for volume in volumes {
+        // A drive that cannot be read, or has no Trash, adds nothing.
+        if let Ok(items) = jobs::list_volume_trash(volume) {
+            entries.extend(
+                items
+                    .into_iter()
+                    .map(|item| entry(item, Some(volume.clone()))),
+            );
+        }
+    }
+    fsops::sort(&mut entries);
+    Ok((entries, 0))
 }
 
 fn loaded(app: &Rc<App>, generation: u64, result: Result<(Vec<Entry>, usize), String>) {
@@ -659,14 +715,19 @@ fn trash_selected(app: &Rc<App>) {
                     .to_string(),
             )
         } else {
-            s.session
-                .changeable_selection()
-                .map(|paths| (paths, s.session.trash.clone()))
+            s.session.changeable_selection().and_then(|paths| {
+                let guard = s
+                    .session
+                    .guard_ref()
+                    .cloned()
+                    .ok_or("Nothing can be changed.")?;
+                Ok((paths, s.session.trash.clone(), guard))
+            })
         }
     };
     match planned {
-        Ok((paths, bin)) => {
-            let report = jobs::trash_items(&bin, &paths);
+        Ok((paths, bin, guard)) => {
+            let report = jobs::trash_items(&guard, &bin, &paths);
             let text = report.say_with("Moved", " to the Trash");
             app.say_report(&report, text);
             reload_selecting(app, Vec::new(), false);
@@ -710,14 +771,53 @@ fn paste(app: &Rc<App>) {
             return;
         }
     };
-    app.state.borrow_mut().busy = true;
+    let cut = clipboard.cut;
+    start_paste(
+        app,
+        clipboard.items,
+        cut,
+        dest,
+        if cut { "Moved" } else { "Pasted" },
+        cut,
+    );
+}
+
+/// Copies or moves `items` into `dest` on a thread of its own, with a line
+/// at the bottom that says how far it has got and a button that stops it.
+fn start_paste(
+    app: &Rc<App>,
+    items: Vec<PathBuf>,
+    cut: bool,
+    dest: PathBuf,
+    verb: &'static str,
+    clear_clipboard: bool,
+) {
+    let progress = Arc::new(Progress::default());
+    {
+        let mut s = app.state.borrow_mut();
+        s.busy = true;
+        s.progress = Some(progress.clone());
+        s.doing = if cut { "Moving" } else { "Copying" };
+    }
     app.clear_notice();
     app.render();
-    let cut = clipboard.cut;
     run_job(
         app,
-        move || jobs::paste(&clipboard.items, cut, &dest),
-        move |app, report| job_done(app, &report, if cut { "Moved" } else { "Pasted" }, cut),
+        move || {
+            // The line at the bottom is drawn at most a few times a second.
+            let last: Cell<Option<Instant>> = Cell::new(None);
+            let tick = || {
+                let due = last
+                    .get()
+                    .is_none_or(|at| at.elapsed() >= Duration::from_millis(120));
+                if due {
+                    last.set(Some(Instant::now()));
+                    post(|app| app.render());
+                }
+            };
+            jobs::paste_with(&items, cut, &dest, &progress, &tick)
+        },
+        move |app, report| job_done(app, &report, verb, clear_clipboard),
     );
 }
 
@@ -725,9 +825,10 @@ fn job_done(app: &Rc<App>, report: &Report, verb: &str, clear_clipboard: bool) {
     {
         let mut s = app.state.borrow_mut();
         s.busy = false;
-        // What was cut is where it was cut to now; a failed one stays on
-        // the clipboard so that it can be tried again.
-        if clear_clipboard && !report.failed() {
+        s.progress = None;
+        // What was cut is where it was cut to now; a failed or stopped one
+        // stays on the clipboard so that it can be tried again.
+        if clear_clipboard && !report.failed() && !report.cancelled {
             s.session.clipboard = None;
         }
     }
@@ -752,11 +853,14 @@ fn restore(app: &Rc<App>) {
     }
     let planned = {
         let s = app.state.borrow();
-        let names: Vec<String> = s
+        let names: Vec<Binned> = s
             .session
             .selected_entries()
             .iter()
-            .map(|entry| entry.name.clone())
+            .map(|entry| Binned {
+                name: entry.name.clone(),
+                volume: entry.volume.clone(),
+            })
             .collect();
         match (&s.session.guard, names.is_empty()) {
             (_, true) => Err("Select what to restore.".to_string()),
@@ -826,10 +930,10 @@ fn dialog_confirmed(app: &Rc<App>) {
     let Some(Asking::EmptyTrash) = close_dialog(app) else {
         return;
     };
-    let (guard, bin) = {
+    let (guard, bin, volumes) = {
         let s = app.state.borrow();
         match &s.session.guard {
-            Some(guard) => (guard.clone(), s.session.trash.clone()),
+            Some(guard) => (guard.clone(), s.session.trash.clone(), s.volumes()),
             None => return,
         }
     };
@@ -838,7 +942,7 @@ fn dialog_confirmed(app: &Rc<App>) {
     app.render();
     run_job(
         app,
-        move || jobs::empty_trash(&guard, &bin),
+        move || jobs::empty_trash(&guard, &bin, &volumes),
         move |app, report| {
             app.state.borrow_mut().busy = false;
             let text = if report.failed() {
@@ -963,8 +1067,23 @@ fn drop_items(app: &Rc<App>, kind: i32, target: i32) {
                 }
                 _ => None,
             }
-        } else {
+        } else if kind == 1 {
             s.places.get(target).map(|place| place.1.clone())
+        } else {
+            // A drive in the sidebar: it has to be open to be dropped on.
+            match s.devices.get(target) {
+                Some(device) => match &device.mount {
+                    Some(point) => Some(Place::Folder(point.clone())),
+                    None => {
+                        let text = format!("Open \"{}\" first.", device.title());
+                        drop(s);
+                        app.say(text, true);
+                        app.render();
+                        return;
+                    }
+                },
+                None => None,
+            }
         }
     };
     let Some(dest) = dest else { return };
@@ -975,21 +1094,164 @@ fn drop_items(app: &Rc<App>, kind: i32, target: i32) {
     };
     let plan = app.state.borrow().session.drop_plan(&dest);
     match plan {
-        Ok(items) => {
-            app.state.borrow_mut().busy = true;
-            app.clear_notice();
-            app.render();
-            run_job(
-                app,
-                move || jobs::paste(&items, true, &dest),
-                |app, report| job_done(app, &report, "Moved", false),
-            );
-        }
+        Ok(items) => start_paste(app, items, true, dest, "Moved", false),
         Err(error) => {
             app.say(error, true);
             app.render();
         }
     }
+}
+
+/// A drive in the sidebar was clicked: an open one is shown, one that is
+/// not is opened first, by `udisksctl`, on a thread of its own.
+fn open_device(app: &Rc<App>, at: usize) {
+    if !app.idle() || app.state.borrow().renaming.is_some() {
+        return;
+    }
+    let (device, env, sources) = {
+        let s = app.state.borrow();
+        let Some(device) = s.devices.get(at) else {
+            return;
+        };
+        (device.clone(), s.env.clone(), s.sources.clone())
+    };
+    if let Some(point) = &device.mount {
+        navigate(app, Place::Folder(point.clone()));
+        return;
+    }
+    {
+        let mut s = app.state.borrow_mut();
+        s.busy = true;
+        s.progress = None;
+    }
+    app.say(format!("Opening \"{}\"\u{2026}", device.title()), false);
+    app.render();
+    let name = device.name.clone();
+    run_job(
+        app,
+        move || {
+            let result = udisks::mount(&env, &device);
+            (result, devices::discover(&sources))
+        },
+        move |app, (result, found)| device_opened(app, &name, result, found),
+    );
+}
+
+fn device_opened(app: &Rc<App>, name: &str, result: Result<(), String>, found: Vec<Device>) {
+    let point = found
+        .iter()
+        .find(|device| device.name == name)
+        .and_then(|device| device.mount.clone());
+    {
+        let mut s = app.state.borrow_mut();
+        s.busy = false;
+        s.devices = found;
+    }
+    match (result, point) {
+        (Ok(()), Some(point)) => navigate(app, Place::Folder(point)),
+        (Ok(()), None) => {
+            app.say("The drive was opened but cannot be found.", true);
+            app.render();
+        }
+        (Err(error), _) => {
+            app.say(error, true);
+            app.render();
+        }
+    }
+}
+
+/// The Eject button of a drive: Files leaves it, every volume on its disk is
+/// unmounted and the disk is powered off, and the answer is said at the
+/// bottom, naming what is using the drive when it is busy.
+fn eject_device(app: &Rc<App>, at: usize) {
+    if !app.idle() || app.state.borrow().renaming.is_some() {
+        return;
+    }
+    let (device, all, env, sources) = {
+        let s = app.state.borrow();
+        let Some(device) = s.devices.get(at) else {
+            return;
+        };
+        (
+            device.clone(),
+            s.devices.clone(),
+            s.env.clone(),
+            s.sources.clone(),
+        )
+    };
+    // A window that is looking into the drive lets go of it first.
+    let inside = {
+        let s = app.state.borrow();
+        s.session.dir().is_some_and(|dir| {
+            all.iter()
+                .filter(|other| other.disk == device.disk)
+                .filter_map(|other| other.mount.as_deref())
+                .any(|point| dir.starts_with(point))
+        })
+    };
+    if inside {
+        let home = app.state.borrow().session.home.clone();
+        navigate(app, Place::Folder(home));
+    }
+    {
+        let mut s = app.state.borrow_mut();
+        s.busy = true;
+        s.progress = None;
+    }
+    app.say(format!("Ejecting \"{}\"\u{2026}", device.title()), false);
+    app.render();
+    run_job(
+        app,
+        move || {
+            let result = udisks::eject(&env, &all, &device);
+            (result, devices::discover(&sources))
+        },
+        |app, (result, found)| {
+            {
+                let mut s = app.state.borrow_mut();
+                s.busy = false;
+                s.devices = found;
+            }
+            match result {
+                Ok(text) => app.say(text, false),
+                Err(error) => app.say(error, true),
+            }
+            reload_selecting(app, Vec::new(), false);
+        },
+    );
+}
+
+/// The kernel said a drive came or went, or was opened or closed.
+pub fn devices_changed(app: &Rc<App>, found: Vec<Device>) {
+    let (changed, gone, in_trash) = {
+        let mut s = app.state.borrow_mut();
+        let changed = s.devices != found;
+        s.devices = found;
+        // The folder shown was on a drive that is no longer open.
+        let gone = match (s.session.dir(), s.session.media.as_deref()) {
+            (Some(dir), Some(media)) => dir
+                .strip_prefix(media)
+                .ok()
+                .and_then(|rest| rest.components().next())
+                .map(|first| media.join(first.as_os_str()))
+                .filter(|top| !s.devices.iter().any(|d| d.mount.as_deref() == Some(top))),
+            _ => None,
+        };
+        (changed, gone, s.session.in_trash())
+    };
+    if let Some(top) = gone {
+        let name = top
+            .file_name()
+            .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+        let home = app.state.borrow().session.home.clone();
+        if !app.state.borrow().busy {
+            navigate(app, Place::Folder(home));
+            app.say(format!("\"{name}\" is not there any more."), true);
+        }
+    } else if changed && in_trash && !app.state.borrow().busy {
+        refresh(app);
+    }
+    app.render();
 }
 
 /// What the window is opened with.
@@ -998,6 +1260,18 @@ pub struct Start {
     pub place: Place,
     /// Said at the start, such as that the folder asked for is not there.
     pub notice: Option<String>,
+    /// `/run/media/USER`, where the drives are opened.
+    pub media: Option<PathBuf>,
+    /// Where the drives are looked for.
+    pub sources: Sources,
+}
+
+/// Where the user's drives are mounted: `/run/media/USER`.
+pub fn media_root(user: Option<std::ffi::OsString>, home: &Path) -> Option<PathBuf> {
+    let user = user
+        .filter(|user| !user.is_empty())
+        .or_else(|| home.file_name().map(|name| name.to_os_string()))?;
+    Some(PathBuf::from("/run/media").join(user))
 }
 
 pub fn run(window: FilesWindow, start: Start) -> Result<(), slint::PlatformError> {
@@ -1008,6 +1282,16 @@ pub fn run(window: FilesWindow, start: Start) -> Result<(), slint::PlatformError
             set_watch(&app);
         }
         Err(error) => eprintln!("sengi-files: not watching folders: {error}"),
+    }
+    // Drives coming and going: one more thread that sleeps until the kernel
+    // says so.
+    let sources = app.state.borrow().sources.clone();
+    let hotplug = hotplug::spawn(move || {
+        let found = devices::discover(&sources);
+        post(move |app| devices_changed(app, found));
+    });
+    if let Err(error) = hotplug {
+        eprintln!("sengi-files: not watching for drives: {error}");
     }
     let result = window.run();
     APP.with(|slot| *slot.borrow_mut() = None);
@@ -1020,7 +1304,8 @@ pub fn run(window: FilesWindow, start: Start) -> Result<(), slint::PlatformError
 pub fn attach(window: &FilesWindow, start: Start, sync: bool) -> Rc<App> {
     let home = start.env.home.clone();
     let bin = start.env.data_home.join("Trash");
-    let session = Session::new(home.clone(), bin, start.place);
+    let session = Session::new(home.clone(), bin, start.place).with_media(start.media);
+    let found = devices::discover(&start.sources);
     let app = Rc::new(App {
         window: window.as_weak(),
         state: RefCell::new(State {
@@ -1042,6 +1327,10 @@ pub fn attach(window: &FilesWindow, start: Start, sync: bool) -> Rc<App> {
             rows: Rc::new(VecModel::default()),
             watcher: None,
             stale: false,
+            sources: start.sources,
+            devices: found,
+            progress: None,
+            doing: "Copying",
         }),
     });
     APP.with(|slot| *slot.borrow_mut() = Some(app.clone()));
@@ -1214,6 +1503,19 @@ fn wire(window: &FilesWindow, app: &Rc<App>) {
         app.render();
     });
     on!(on_restore, |app| restore(&app));
+    on!(on_go_device, |app, at| open_device(
+        &app,
+        at.max(0) as usize
+    ));
+    on!(on_eject_device, |app, at| eject_device(
+        &app,
+        at.max(0) as usize
+    ));
+    on!(on_cancel_job, |app| {
+        if let Some(progress) = &app.state.borrow().progress {
+            progress.cancel.store(true, Ordering::Relaxed);
+        }
+    });
     on!(on_empty_trash, |app| ask_to_empty(&app));
     on!(on_dialog_confirmed, |app| dialog_confirmed(&app));
     on!(on_dialog_cancelled, |app| {
@@ -1254,9 +1556,12 @@ pub fn start_for(env: &Env, arg: Option<&str>, cwd: &Path) -> Start {
             Err(notice) => (home, Some(notice)),
         },
     };
+    let user = std::env::var_os("USER").or_else(|| std::env::var_os("LOGNAME"));
     Start {
         env: env.clone(),
         place,
         notice,
+        media: media_root(user, &env.home),
+        sources: Sources::system(),
     }
 }

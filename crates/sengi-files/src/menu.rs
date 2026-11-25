@@ -101,6 +101,7 @@ mod tests {
             modified: 0,
             original: None,
             deleted: String::new(),
+            volume: None,
         }
     }
 

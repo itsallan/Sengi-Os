@@ -40,6 +40,8 @@ pub struct Session {
     /// None when the home folder cannot be found: nothing can then be
     /// changed.
     pub guard: Option<Guard>,
+    /// Where the user's drives are mounted, `/run/media/USER`.
+    pub media: Option<PathBuf>,
     pub place: Place,
     back: Vec<Place>,
     forward: Vec<Place>,
@@ -67,6 +69,7 @@ impl Session {
             home,
             trash,
             guard,
+            media: None,
             place,
             back: Vec::new(),
             forward: Vec::new(),
@@ -81,6 +84,21 @@ impl Session {
             loading: None,
             generation: 0,
         }
+    }
+
+    /// Lets the drives mounted in `media` be changed too, and shows their
+    /// paths from the drive's name.
+    pub fn with_media(mut self, media: Option<PathBuf>) -> Session {
+        self.guard = Guard::with_media(&self.home, &self.trash, media.as_deref());
+        self.media = media;
+        self
+    }
+
+    /// Whether `dir` is a drive's top folder.
+    pub fn is_volume_root(&self, dir: &Path) -> bool {
+        self.media
+            .as_deref()
+            .is_some_and(|media| dir.parent() == Some(media))
     }
 
     pub fn in_trash(&self) -> bool {
@@ -143,6 +161,10 @@ impl Session {
     /// The place above this one: a folder's parent, and for the Trash, home.
     pub fn parent_place(&self) -> Option<Place> {
         match &self.place {
+            // Above a drive is not the folder all drives are in, but home.
+            Place::Folder(dir) if self.is_volume_root(dir) => {
+                Some(Place::Folder(self.home.clone()))
+            }
             Place::Folder(dir) => dir.parent().map(|p| Place::Folder(p.to_path_buf())),
             Place::Trash => Some(Place::Folder(self.home.clone())),
         }
@@ -410,15 +432,33 @@ impl Session {
             }
             Place::Folder(dir) => {
                 let mut crumbs = Vec::new();
-                let (start, rest) = match dir.strip_prefix(&self.home) {
-                    Ok(rest) => (self.home.clone(), rest.to_path_buf()),
-                    Err(_) => (
+                // On a drive the path starts at the drive, by its name.
+                let on_drive = self.media.as_ref().and_then(|media| {
+                    let rest = dir.strip_prefix(media).ok()?;
+                    let first = rest.components().next()?;
+                    let top = media.join(first.as_os_str());
+                    let below = rest.strip_prefix(first.as_os_str()).ok()?.to_path_buf();
+                    Some((top, below))
+                });
+                let (start, rest) = match (on_drive, dir.strip_prefix(&self.home)) {
+                    (Some((top, below)), _) => (top, below),
+                    (None, Ok(rest)) => (self.home.clone(), rest.to_path_buf()),
+                    (None, Err(_)) => (
                         PathBuf::from("/"),
                         dir.strip_prefix("/").unwrap_or(dir).to_path_buf(),
                     ),
                 };
+                let label = if start == self.home {
+                    "Home".to_string()
+                } else if self.is_volume_root(&start) {
+                    start
+                        .file_name()
+                        .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+                } else {
+                    "/".to_string()
+                };
                 crumbs.push(Crumb {
-                    label: if start == self.home { "Home" } else { "/" }.to_string(),
+                    label,
                     place: Place::Folder(start.clone()),
                 });
                 let mut at = start;
@@ -499,6 +539,7 @@ mod tests {
             modified: 0,
             original: None,
             deleted: String::new(),
+            volume: None,
         }
     }
 
@@ -775,6 +816,30 @@ mod tests {
         assert!(s.drop_plan(&t.path().join("outside")).is_err());
         s.place = Place::Trash;
         assert!(s.drop_plan(&home.join("Documents")).is_err());
+    }
+
+    #[test]
+    fn a_drive_is_where_the_path_bar_starts_and_home_is_above_it() {
+        let mut s = Session::new(
+            "/h".into(),
+            "/h/.local/share/Trash".into(),
+            Place::Folder("/run/media/u/My Stick/photos/2026".into()),
+        )
+        .with_media(Some("/run/media/u".into()));
+        let crumbs = s.crumbs();
+        let labels: Vec<&str> = crumbs.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, ["My Stick", "photos", "2026"]);
+        assert_eq!(
+            crumbs[0].place,
+            Place::Folder("/run/media/u/My Stick".into())
+        );
+        s.place = Place::Folder("/run/media/u/My Stick".into());
+        assert_eq!(s.parent_place(), Some(Place::Folder("/h".into())));
+        s.place = Place::Folder("/run/media/u/My Stick/photos".into());
+        assert_eq!(
+            s.parent_place(),
+            Some(Place::Folder("/run/media/u/My Stick".into()))
+        );
     }
 
     #[test]

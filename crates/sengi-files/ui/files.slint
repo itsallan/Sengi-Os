@@ -22,6 +22,14 @@ export struct PlaceRow {
     icon: string,
 }
 
+// A USB stick, card or external disk in the sidebar. `detail` is its size and
+// whether it is open.
+export struct DeviceRow {
+    name: string,
+    detail: string,
+    mounted: bool,
+}
+
 // One row of the right-click menu.
 export struct MenuEntry {
     id: string,
@@ -60,6 +68,12 @@ export global Files {
     in property <[PlaceRow]> places;
     // Which of the places is open, or -1 for none of them.
     in property <int> place: -1;
+    // The drives under the places, and which of them the folder shown is on,
+    // or -1.
+    in property <[DeviceRow]> devices;
+    in property <int> device: -1;
+    // A copy or move is running and can be stopped.
+    in property <bool> cancelable: false;
     in property <[Crumb]> crumbs;
     in property <bool> in-trash: false;
     in property <bool> can-back: false;
@@ -97,6 +111,10 @@ export global Files {
     callback open-selected();
     callback step(int, bool);
     callback go-place(int);
+    // A drive: show it, opening it first if it is not open; and eject it.
+    callback go-device(int);
+    callback eject-device(int);
+    callback cancel-job();
     callback go-crumb(int);
     callback back();
     callback forward();
@@ -121,7 +139,7 @@ export global Files {
     // A right-click on a row, or -1 on the empty space.
     callback context(int);
     callback menu-chosen(string);
-    // The selection was dropped on a folder row (0) or a place (1).
+    // The selection was dropped on a folder row (0), a place (1) or a drive (2).
     callback drop-items(int, int);
 }
 
@@ -223,6 +241,13 @@ component MenuItem inherits Rectangle {
 component Sidebar inherits Rectangle {
     // The place a drag is over, or -1.
     in property <int> drop-place: -1;
+    // The drive a drag is over, or -1.
+    in property <int> drop-device: -1;
+    // Where the drives start, under a heading, and how far apart they are.
+    out property <length> devices-top: Tokens.space-sm
+        + Files.places.length * (Tokens.button + Tokens.space-sm + Tokens.space-xxs)
+        + Tokens.space-sm + Tokens.space-xl;
+    out property <length> dev-step: Tokens.button + Tokens.space-md + Tokens.space-xxs;
 
     background: Tokens.color-surface;
 
@@ -261,6 +286,93 @@ component Sidebar inherits Rectangle {
 
         touch := TouchArea {
             clicked => { Files.go-place(index); }
+        }
+    }
+
+    if Files.devices.length > 0: SengiLabel {
+        x: Tokens.space-md;
+        y: root.devices-top - Tokens.space-xl;
+        width: parent.width - Tokens.space-md * 2;
+        height: Tokens.space-xl;
+        text: "Devices";
+        vertical-alignment: center;
+    }
+
+    for device[index] in Files.devices: dev-row := Rectangle {
+        private property <bool> chosen: index == Files.device;
+        private property <bool> target: index == root.drop-device;
+
+        x: Tokens.space-sm;
+        y: root.devices-top + index * root.dev-step;
+        width: parent.width - Tokens.space-sm * 2;
+        height: root.dev-step - Tokens.space-xxs;
+        border-radius: Tokens.radius;
+        border-width: self.target ? Tokens.focus-ring-width : 0;
+        border-color: Tokens.color-accent;
+        background: self.target ? Tokens.color-surface-raised
+            : self.chosen ? Tokens.color-surface-hover
+            : row-touch.has-hover ? Tokens.color-surface-raised : transparent;
+        animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+
+        SengiIcon {
+            x: Tokens.space-md;
+            y: (parent.height - self.height) / 2;
+            name: "folder";
+            ink: parent.chosen ? Tokens.color-text : Tokens.color-text-muted;
+        }
+
+        row-touch := TouchArea {
+            clicked => { Files.go-device(index); }
+        }
+
+        VerticalLayout {
+            x: Tokens.space-md * 2 + Tokens.bar-icon;
+            width: parent.width - self.x - (device.mounted ? eject.width + Tokens.space-md : Tokens.space-sm);
+            height: parent.height;
+            alignment: center;
+
+            SengiText {
+                text: device.name;
+                font-weight: dev-row.chosen ? Tokens.font-weight-medium : Tokens.font-weight-regular;
+                overflow: elide;
+            }
+
+            SengiText {
+                text: device.detail;
+                font-size: Tokens.font-size-sm;
+                color: Tokens.color-text-muted;
+                overflow: elide;
+            }
+        }
+
+        // Eject: unmount, then power the drive off. Over the row's own
+        // touch area, so a click here is not a click on the row.
+        eject := Rectangle {
+            visible: device.mounted;
+            x: parent.width - self.width - Tokens.space-sm;
+            y: (parent.height - self.height) / 2;
+            width: eject-label.preferred-width + Tokens.space-md;
+            height: Tokens.button - Tokens.space-sm;
+            border-radius: Tokens.radius;
+            background: eject-touch.has-hover ? Tokens.color-surface-hover : transparent;
+            border-width: Tokens.border-width;
+            border-color: Tokens.color-border;
+            accessible-role: button;
+            accessible-label: "Eject " + device.name;
+
+            eject-label := SengiText {
+                width: parent.width;
+                height: parent.height;
+                text: "Eject";
+                font-size: Tokens.font-size-sm;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            eject-touch := TouchArea {
+                enabled: device.mounted;
+                clicked => { Files.eject-device(index); }
+            }
         }
     }
 
@@ -349,6 +461,7 @@ export component FilesWindow inherits Window {
     private property <length> drag-y: 0;
     private property <int> drop-row: -1;
     private property <int> drop-place: -1;
+    private property <int> drop-device: -1;
     private property <length> side-step: Tokens.button + Tokens.space-sm + Tokens.space-xxs;
     // The program asks the list to move by raising a count.
     private property <int> top-tick: Files.scroll-top;
@@ -388,6 +501,7 @@ export component FilesWindow inherits Window {
         root.dragging = false;
         root.drop-row = -1;
         root.drop-place = -1;
+        root.drop-device = -1;
     }
 
     // The pointer is at (x, y) in the window with the button down on a row.
@@ -406,11 +520,17 @@ export component FilesWindow inherits Window {
         }
         root.drop-row = -1;
         root.drop-place = -1;
+        root.drop-device = -1;
         if x < Tokens.settings-sidebar-width {
             let at = Math.floor((y - Tokens.space-sm) / root.side-step);
             if at >= 0 && at < Files.places.length
                 && y - Tokens.space-sm - at * root.side-step < Tokens.button + Tokens.space-sm {
                 root.drop-place = at;
+            }
+            let dev = Math.floor((y - sidebar.devices-top) / sidebar.dev-step);
+            if dev >= 0 && dev < Files.devices.length
+                && y - sidebar.devices-top - dev * sidebar.dev-step < sidebar.dev-step - Tokens.space-xxs {
+                root.drop-device = dev;
             }
         } else if y > list.absolute-position.y && y < list.absolute-position.y + list.height {
             let at = Math.floor((y - list.absolute-position.y + list.offset) / root.line);
@@ -426,6 +546,8 @@ export component FilesWindow inherits Window {
             Files.drop-items(0, root.drop-row);
         } else if root.dragging && root.drop-place >= 0 {
             Files.drop-items(1, root.drop-place);
+        } else if root.dragging && root.drop-device >= 0 {
+            Files.drop-items(2, root.drop-device);
         }
         root.end-drag();
     }
@@ -534,8 +656,9 @@ export component FilesWindow inherits Window {
             return EventResult.accept;
         }
 
-        Sidebar {
+        sidebar := Sidebar {
             drop-place: root.drop-place;
+            drop-device: root.drop-device;
             x: 0;
             y: 0;
             width: Tokens.settings-sidebar-width;
@@ -785,6 +908,12 @@ export component FilesWindow inherits Window {
                             : Files.notice-is-error ? Tokens.color-danger : Tokens.color-text;
                         vertical-alignment: center;
                         overflow: elide;
+                    }
+
+                    if Files.cancelable: SengiButton {
+                        text: "Cancel";
+                        focusable: false;
+                        clicked => { Files.cancel-job(); }
                     }
 
                     SengiLabel {

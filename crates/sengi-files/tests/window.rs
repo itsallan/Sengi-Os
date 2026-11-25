@@ -9,6 +9,7 @@ use std::time::Instant;
 
 use sengi_apps::Env;
 use sengi_files::app::{self, App, Start};
+use sengi_files::devices::Sources;
 use sengi_files::session::Place;
 use sengi_files::ui::{Files, FilesWindow};
 use sengi_shots::harness::{self, BACKDROP};
@@ -73,13 +74,33 @@ impl Drop for Home {
 }
 
 fn open_window(home: &Home, place: &Path, size: (u32, u32)) -> (FilesWindow, std::rc::Rc<App>) {
+    // No drives: nothing here to find.
+    let sources = Sources {
+        sys_block: home.root.join("no-sys"),
+        mountinfo: home.root.join("no-mountinfo"),
+        udev_data: home.root.join("no-udev"),
+        by_label: home.root.join("no-labels"),
+    };
+    open_with(home, place, size, "/nonexistent", None, sources)
+}
+
+fn open_with(
+    home: &Home,
+    place: &Path,
+    size: (u32, u32),
+    path: &str,
+    media: Option<PathBuf>,
+    sources: Sources,
+) -> (FilesWindow, std::rc::Rc<App>) {
     let window = FilesWindow::new().unwrap();
     window.show().unwrap();
     harness::resize(&harness::window(), size.0, size.1);
     let start = Start {
-        env: home.env("/nonexistent"),
+        env: home.env(path),
         place: Place::Folder(place.to_path_buf()),
         notice: None,
+        media,
+        sources,
     };
     let app = app::attach(&window, start, true);
     harness::advance(400);
@@ -404,6 +425,195 @@ fn files_window() {
     drop(_app);
 
     polish(&home);
+    drives(&home);
+}
+
+/// Two made-up USB sticks: "My Stick", open under the media folder, and
+/// "BACKUP", which is not. A `udisksctl` that does what udisks would to the
+/// mount table.
+struct Drives {
+    sources: Sources,
+    media: PathBuf,
+    bin: String,
+    log: PathBuf,
+}
+
+fn drives(home: &Home) -> Drives {
+    let root = &home.root;
+    for (disk, numbers, part, part_numbers, label, encoded) in [
+        ("sdb", "8:16", "sdb1", "8:17", "My_Stick", "My\\x20Stick"),
+        ("sdc", "8:32", "sdc1", "8:33", "BACKUP", "BACKUP"),
+    ] {
+        let real = root
+            .join("sys/devices/pci0000:00/0000:00:14.0/usb1/1-2/block")
+            .join(disk);
+        fs::create_dir_all(real.join(part)).unwrap();
+        fs::write(real.join("removable"), "1\n").unwrap();
+        fs::write(real.join("dev"), format!("{numbers}\n")).unwrap();
+        fs::write(real.join("size"), "31250000\n").unwrap();
+        fs::write(real.join(part).join("partition"), "1\n").unwrap();
+        fs::write(real.join(part).join("dev"), format!("{part_numbers}\n")).unwrap();
+        fs::write(real.join(part).join("size"), "31000000\n").unwrap();
+        fs::create_dir_all(root.join("sys/block")).unwrap();
+        std::os::unix::fs::symlink(&real, root.join("sys/block").join(disk)).unwrap();
+        fs::create_dir_all(root.join("run/udev/data")).unwrap();
+        fs::write(
+            root.join("run/udev/data").join(format!("b{part_numbers}")),
+            format!("E:ID_FS_TYPE=exfat\nE:ID_FS_LABEL={label}\nE:ID_FS_LABEL_ENC={encoded}\n"),
+        )
+        .unwrap();
+    }
+    let media = root.join("run/media/live");
+    let stick = media.join("My Stick");
+    fs::create_dir_all(stick.join("trip")).unwrap();
+    fs::write(stick.join("photo.jpg"), "photo").unwrap();
+    fs::write(stick.join("trip/map.png"), "map").unwrap();
+    let mountinfo = root.join("mountinfo");
+    let stick_text = stick.to_str().unwrap().replace(' ', "\\040");
+    fs::write(
+        &mountinfo,
+        format!("40 25 8:17 / {stick_text} rw - exfat /dev/sdb1 rw\n"),
+    )
+    .unwrap();
+    let log = root.join("udisksctl.log");
+    let bin_dir = root.join("bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+    let script = format!(
+        "#!/bin/sh\necho \"$@\" >>'{log}'\ncase \"$1\" in\n\
+         mount) mkdir -p '{media}/BACKUP'; echo '41 25 8:33 / {media}/BACKUP rw - exfat /dev/sdc1 rw' >>'{info}' ;;\n\
+         unmount) : >'{info}' ;;\nesac\n",
+        log = log.display(),
+        media = media.display(),
+        info = mountinfo.display(),
+    );
+    let program = bin_dir.join("udisksctl");
+    fs::write(&program, script).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let drives = Drives {
+        sources: Sources {
+            sys_block: root.join("sys/block"),
+            mountinfo,
+            udev_data: root.join("run/udev/data"),
+            by_label: root.join("dev/disk/by-label"),
+        },
+        media,
+        bin: bin_dir.to_str().unwrap().to_string(),
+        log,
+    };
+    let documents = home.home.join("Documents");
+    let (w, app) = open_with(
+        home,
+        &documents,
+        (888, 600),
+        &drives.bin,
+        Some(drives.media.clone()),
+        drives.sources.clone(),
+    );
+
+    // Both sticks are in the sidebar, one of them open.
+    let rows: Vec<_> = files(&w).get_devices().iter().collect();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].name.as_str(), "My Stick");
+    assert!(rows[0].mounted);
+    assert_eq!(rows[1].name.as_str(), "BACKUP");
+    assert!(!rows[1].mounted);
+    assert!(rows[0].detail.ends_with("Mounted"), "{}", rows[0].detail);
+    assert!(
+        rows[1].detail.ends_with("Not mounted"),
+        "{}",
+        rows[1].detail
+    );
+    picture("files-devices-888x600.png");
+
+    // Click the open one: its folder is shown, from the drive's name.
+    files(&w).invoke_go_device(0);
+    assert_eq!(app.place(), Place::Folder(stick.clone()));
+    assert_eq!(app.names(), ["trip", "photo.jpg"]);
+    assert_eq!(files(&w).get_device(), 0);
+    assert_eq!(files(&w).get_crumbs().row_count(), 1);
+    picture("files-drive-888x600.png");
+
+    // Copy from home to the drive, twice: the second never replaces.
+    files(&w).invoke_go_place(2);
+    app.select_named("notes.txt");
+    files(&w).invoke_copy();
+    files(&w).invoke_go_device(0);
+    files(&w).invoke_paste();
+    assert_eq!(
+        fs::read_to_string(stick.join("notes.txt")).unwrap(),
+        "notes"
+    );
+    files(&w).invoke_paste();
+    assert_eq!(
+        fs::read_to_string(stick.join("notes 2.txt")).unwrap(),
+        "notes"
+    );
+    assert!(home.home.join("Documents/notes.txt").exists());
+
+    // Rename on the drive, and trash: the Trash is the drive's own.
+    app.select_named("photo.jpg");
+    files(&w).invoke_menu_chosen("trash".into());
+    assert!(!stick.join("photo.jpg").exists());
+    assert!(
+        app.status_text().starts_with("Moved 1 item"),
+        "{}",
+        app.status_text()
+    );
+    let found: Vec<_> = fs::read_dir(&stick)
+        .unwrap()
+        .flatten()
+        .filter(|item| item.file_name().to_string_lossy().starts_with(".Trash-"))
+        .collect();
+    assert_eq!(found.len(), 1);
+    assert!(found[0].path().join("files/photo.jpg").exists());
+    // ...and it is in the Trash window, and comes back from there.
+    files(&w).invoke_go_place(files(&w).get_places().row_count() as i32 - 1);
+    assert!(app.names().contains(&"photo.jpg".to_string()));
+    app.select_named("photo.jpg");
+    files(&w).invoke_restore();
+    assert!(stick.join("photo.jpg").exists());
+
+    // Move from the drive to home, as a drop on a place does.
+    files(&w).invoke_go_device(0);
+    app.select_named("notes 2.txt");
+    files(&w).invoke_drop_items(1, 2);
+    assert!(home.home.join("Documents/notes 2.txt").exists());
+    assert!(!stick.join("notes 2.txt").exists());
+
+    // Open the second one: udisksctl is asked, and the window goes there.
+    files(&w).invoke_go_device(1);
+    let backup = drives.media.join("BACKUP");
+    assert_eq!(app.place(), Place::Folder(backup));
+    let calls = fs::read_to_string(&drives.log).unwrap();
+    assert!(
+        calls.contains("mount --block-device /dev/sdc1 --no-user-interaction"),
+        "{calls}"
+    );
+
+    // Eject the first while looking at it: the window leaves it, the drive
+    // is unmounted and powered off.
+    files(&w).invoke_go_device(0);
+    files(&w).invoke_eject_device(0);
+    assert_eq!(app.place(), Place::Folder(home.home.clone()));
+    assert!(
+        app.status_text().contains("can be taken out now"),
+        "{}",
+        app.status_text()
+    );
+    let calls = fs::read_to_string(&drives.log).unwrap();
+    assert!(
+        calls.contains("unmount --block-device /dev/sdb1"),
+        "{calls}"
+    );
+    assert!(
+        calls.contains("power-off --block-device /dev/sdb "),
+        "{calls}"
+    );
+    picture("files-ejected-888x600.png");
+    drives
 }
 
 fn row_of(app: &App, name: &str) -> usize {

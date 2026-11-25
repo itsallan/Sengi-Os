@@ -44,6 +44,12 @@ and the measured idle RAM and boot time.
   closes it. `appearance.week-start` in settings.toml (monday, sunday or
   saturday) sets the first column.
 
+- Files lists USB sticks, SD cards and external disks under Devices in the
+  sidebar, opens them with a click (no password), has an Eject button, and
+  follows plugging and unplugging. On an open drive it copies, moves, renames
+  and trashes (into the drive's own Trash), with a progress line and Cancel for
+  long copies and clear messages for a full or read-only drive. The image adds
+  udisks2, which stays off until the first drive is opened.
 - The screen dims after 2 minutes without input and goes off after 5, and
   any key, click or movement brings it back. Dimming, switching off and an
   optional lock are timed by sengi-compositor itself, with no polling and

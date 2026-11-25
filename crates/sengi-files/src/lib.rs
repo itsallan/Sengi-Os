@@ -4,12 +4,15 @@
 //! window is closed.
 
 pub mod app;
+pub mod devices;
 pub mod fsops;
 pub mod guard;
+pub mod hotplug;
 pub mod jobs;
 pub mod menu;
 pub mod open;
 pub mod session;
+pub mod udisks;
 pub mod watch;
 
 pub mod ui {

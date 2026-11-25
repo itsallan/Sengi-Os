@@ -70,18 +70,70 @@ it. `sengi-desktop` opens folders in it.
   space is free; a notice for what just happened replaces it until the next
   click or key.
 
+## USB sticks and external disks
+
+Under the places the sidebar has a Devices section: the USB sticks, SD cards
+and external disks that are plugged in, each by its label (or its size when it
+has none), with its size and whether it is open.
+
+- Click a drive that is open to look in it. Click one that is not and it is
+  opened first (mounted under `/run/media/USER/LABEL`, no password), then
+  shown. A drive that cannot be opened says why at the bottom: its file system
+  is not one the kernel reads, or it is in use.
+- Eject next to an open drive closes every volume on that disk and powers the
+  disk off, then says it can be taken out. If something is using it, the line
+  says so and nothing is powered off. A window that is looking into the drive
+  moves to Home first.
+- The list follows the hardware: one thread sleeps on the kernel's uevent
+  socket and on `/proc/self/mountinfo`, so a stick plugged in or mounted by
+  another program shows up about half a second later, with no polling. If the
+  folder shown was on a drive that went away, the window goes Home and says so.
+- Only drives are offered that are removable, hang off a USB bus, or are SD
+  cards in a built-in reader. The computer's own disks never are, and neither
+  is any disk with a partition that is part of the running system (mounted at
+  `/`, `/boot`, `/usr`, `/var`, `/home` and the like) or that carries the label
+  `SENGIOS`, the live medium. Swap, LUKS and RAID members are left out because
+  they are not file systems to open.
+- Where it reads from: `/sys/block` (disks, partitions, sizes, removable, the
+  bus), udev's database in `/run/udev/data` (file system and label; the
+  `\x20` escapes in a label are decoded), `/dev/disk/by-label` as a fallback
+  for the label, and `/proc/self/mountinfo` (where it is mounted, read-only).
+  No D-Bus library is linked: opening and ejecting run `udisksctl mount`,
+  `unmount` and `power-off` with `--no-user-interaction`, and nothing else.
+  Files never formats, partitions or writes to a device.
+- On an open drive Files copies, moves, renames, makes folders and trashes, as
+  in home. Pasting between home and a drive is a copy that runs on a thread
+  with a line of progress (items and bytes) and a Cancel button: a cancelled
+  copy removes what it had written and leaves the original. Names are never
+  replaced; a taken name becomes "name 2". There is a check for room first,
+  and a full or read-only drive is reported as "There is no space left on the
+  disk" or "The disk is read-only".
+- Trash on a drive is the drive's own, as the freedesktop.org specification has
+  it: `.Trash/UID` if the drive has a `.Trash` with the sticky bit, otherwise
+  `.Trash-UID`, with `Path=` relative to the top of the drive. So an item stays
+  on the drive it came from and is still there when it is plugged in elsewhere.
+  The Trash place lists the home Trash and the Trash of every open drive;
+  Restore and Empty Trash work on both.
+- Drag onto a drive in the sidebar to move there (it has to be open).
+
 ## What it will not do
 
 Files looks anywhere that can be read, but only changes things inside the home
-folder. Making, renaming, cutting, trashing, pasting, restoring and emptying
-the Trash are refused elsewhere, with a line that says so. The home folder
-itself, Desktop, Documents, Downloads, Music, Pictures, Public, Templates,
-Videos, `.config`, `.local` and `.local/share` cannot be moved, renamed or
-trashed. Paths are judged after links in their folder are resolved, so a link
-in home that points at `/etc` does not make `/etc` changeable.
+folder and on the drives opened as above (`/run/media/USER/...`). Making,
+renaming, cutting, trashing, pasting, restoring and emptying the Trash are
+refused elsewhere, with a line that says so. The home folder itself, Desktop,
+Documents, Downloads, Music, Pictures, Public, Templates, Videos, `.config`,
+`.local` and `.local/share` cannot be moved, renamed or trashed, and neither
+can the top folder of a drive (that is what Eject is for) or a drive's Trash
+folder. Paths are judged after links in their folder are resolved, so a link in
+home or on a stick that points at `/etc` does not make `/etc` changeable.
 
-Not in this version: thumbnails, tabs, searching, mounting disks or USB sticks,
-dragging to another window, and a Forward button (the keys work).
+Not in this version: thumbnails, tabs, searching, formatting or partitioning a
+drive, unlocking encrypted drives, optical discs, a plugged-in notification
+(Files has to be open to hear of a drive), dragging to another window, and a
+Forward button (the keys work). The sidebar uses the folder glyph for drives;
+Phosphor's `hard-drives`, `usb` and `eject-simple` are not in
+`ui/icons/phosphor/bold` yet and would suit the drive rows and the Eject button.
 
 ## Speed
 
@@ -93,9 +145,13 @@ cannot be closed while one of them is working.
 
 ## Code
 
-- `fsops.rs`: reading, sorting, naming, copying and moving.
-- `guard.rs`: what may be changed.
+- `fsops.rs`: reading, sorting, naming, copying and moving, with progress and
+  stopping.
+- `guard.rs`: what may be changed: home and open drives.
 - `jobs.rs`: paste, trash, restore and empty, with what to say afterwards.
+- `devices.rs`: which drives to offer, from sysfs, udev's database and mountinfo.
+- `hotplug.rs`: the thread that hears of drives coming and going.
+- `udisks.rs`: open and eject through `udisksctl`.
 - `session.rs`: the place, history, entries, selection, clipboard and path bar.
 - `menu.rs`: what the right-click menu offers.
 - `watch.rs`: the inotify watcher, one thread, with a 150 ms settle.
