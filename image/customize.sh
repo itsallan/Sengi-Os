@@ -58,6 +58,9 @@ chroot "$root" passwd -l root >/dev/null
 chroot "$root" systemctl enable greetd systemd-networkd systemd-resolved systemd-oomd \
 	systemd-timesyncd sengi-boot-report sengi-install-report
 chroot "$root" systemctl disable iwd bluetooth networking 2>/dev/null || true
+# udisksd is for the first drive that is opened in Files: the bus starts it
+# then (org.freedesktop.UDisks2 names the unit), so it is not wanted at boot.
+chroot "$root" systemctl disable udisks2 2>/dev/null || true
 # What is masked here is masked on an installed system too: the installer
 # copies this image. So each of these is a decision for both.
 #

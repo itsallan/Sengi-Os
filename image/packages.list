@@ -36,6 +36,14 @@ polkitd
 # its own password prompt for a program that has no polkit agent. Nothing
 # is resident: pkexec runs for the length of one update.
 pkexec
+#
+# Files opens USB sticks and external disks through udisksctl, which asks
+# udisksd, which asks polkit. Its stock policy lets the person at the screen
+# open and eject a drive with no password, so no rule of ours is needed.
+# udisksd is started by the bus on the first request and is not enabled at
+# boot (see customize.sh); the file system drivers it uses are the
+# kernel's (vfat, exfat, ntfs3, ext4).
+udisks2
 labwc
 xwayland
 swayidle

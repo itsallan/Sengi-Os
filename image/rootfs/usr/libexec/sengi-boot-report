@@ -29,6 +29,24 @@ polkit_wanted=$(systemctl show polkit.service -p WantedBy -p RequiredBy --value 
 if [ "$polkit_state" != static ] || [ -n "$polkit_wanted" ]; then
 	echo "SENGI-FAIL polkit.service is started at boot ($polkit_state, wanted by '$polkit_wanted'), not on demand" >$port
 fi
+# Files opens USB sticks through udisksctl. udisksd is started by the bus on
+# the first request, as polkit is, and must not be started at boot: it would
+# cost memory on every machine for the sake of the few that have a stick.
+if [ -e /usr/lib/systemd/system/udisks2.service ]; then
+	udisks_state=$(systemctl is-enabled udisks2.service 2>&1)
+	case $udisks_state in
+	disabled | static | masked) ;;
+	*) echo "SENGI-FAIL udisks2.service is enabled at boot ($udisks_state), not on demand" >$port ;;
+	esac
+	if systemctl is-active --quiet udisks2.service; then
+		echo "SENGI-FAIL udisks2.service is running with no drive opened" >$port
+	fi
+	# polkit lets the person at the screen open a drive with no password
+	# only when logind counts the session as active and local; said here so
+	# that a session that is not shows up before a person meets it.
+	session=$(loginctl list-sessions --no-legend | awk '$3 == "live" && $4 == "seat0" {print $1; exit}')
+	echo "SENGI-INFO udisks2: enabled=$udisks_state active=$(systemctl is-active udisks2.service) session=${session:-none} Active=$(loginctl show-session "$session" -p Active --value 2>&1) Remote=$(loginctl show-session "$session" -p Remote --value 2>&1)" >$port
+fi
 {
 	# When each piece of the desktop was started, in seconds since boot,
 	# beside the desktop marker above, and when polkit was called for.
