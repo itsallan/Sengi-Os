@@ -98,7 +98,13 @@ fn network(w: &SettingsWindow, variant: &str) {
     d.set_saved(true);
     let mut nets = vec![
         item("a", "Home", "Connected", "signal", 4),
-        item("b", "Neighbour with an extremely long network name that goes on", "WPA2 Personal, saved", "signal", 3),
+        item(
+            "b",
+            "Neighbour with an extremely long network name that goes on",
+            "WPA2 Personal, saved",
+            "signal",
+            3,
+        ),
         item("c", "Cafe Guest", "Open", "signal", 2),
         item("d", "x", "WPA3", "signal", 1),
     ];
@@ -109,11 +115,23 @@ fn network(w: &SettingsWindow, variant: &str) {
     nets[3].status = "Joining…".into();
     if variant == "many" {
         for n in 0..14 {
-            nets.push(item(&format!("n{n}"), &format!("Network number {n}"), "WPA2 Personal", "signal", 1 + n % 4));
+            nets.push(item(
+                &format!("n{n}"),
+                &format!("Network number {n}"),
+                "WPA2 Personal",
+                "signal",
+                1 + n % 4,
+            ));
         }
     }
     d.set_networks(list(nets));
-    d.set_wired(list(vec![item("w", "Wired connection", "192.168.1.5", "wired", 0)]));
+    d.set_wired(list(vec![item(
+        "w",
+        "Wired connection",
+        "192.168.1.5",
+        "wired",
+        0,
+    )]));
 }
 
 fn bluetooth(w: &SettingsWindow, variant: &str) {
@@ -123,7 +141,13 @@ fn bluetooth(w: &SettingsWindow, variant: &str) {
     d.set_status("On".into());
     d.set_searching(variant == "search");
     let mut mine = vec![
-        item("1", "Allan's headphones with a very long product name", "Connected", "headphones", 0),
+        item(
+            "1",
+            "Allan's headphones with a very long product name",
+            "Connected",
+            "headphones",
+            0,
+        ),
         item("2", "Keyboard", "Not connected", "keyboard", 0),
     ];
     mine[0].action = "Disconnect".into();
@@ -231,7 +255,13 @@ fn keyboard(w: &SettingsWindow, variant: &str) {
     let d = w.global::<KeyboardData>();
     let mut layouts = vec![item("us", "English (US)", "us", "keyboard", 0)];
     if variant == "several" {
-        layouts.push(item("fr", "French (Rwanda, with a very long variant name)", "fr", "keyboard", 0));
+        layouts.push(item(
+            "fr",
+            "French (Rwanda, with a very long variant name)",
+            "fr",
+            "keyboard",
+            0,
+        ));
         layouts.push(item("de", "German", "de", "keyboard", 0));
         d.set_several(true);
         d.set_switch("Alt + Shift".into());
@@ -285,7 +315,11 @@ fn every_page() {
         ("network", "many", Box::new(|w| network(w, "many"))),
         ("network", "off", Box::new(|w| network(w, "off"))),
         ("bluetooth", "on", Box::new(|w| bluetooth(w, "on"))),
-        ("bluetooth", "blocked", Box::new(|w| bluetooth(w, "blocked"))),
+        (
+            "bluetooth",
+            "blocked",
+            Box::new(|w| bluetooth(w, "blocked")),
+        ),
         ("sound", "on", Box::new(|w| sound(w, "on"))),
         ("sound", "none", Box::new(|w| sound(w, "none"))),
         ("display", "one", Box::new(|w| display(w, "one"))),
@@ -296,14 +330,22 @@ fn every_page() {
         ("keyboard", "one", Box::new(|w| keyboard(w, "one"))),
         ("keyboard", "several", Box::new(|w| keyboard(w, "several"))),
         ("mouse", "on", Box::new(pointer)),
-        ("notifications", "on", Box::new(|w| {
-            let d = w.global::<NotificationsData>();
-            d.set_available(true);
-        })),
-        ("notifications", "off", Box::new(|w| {
-            let d = w.global::<NotificationsData>();
-            d.set_note("The notification service is not running.".into());
-        })),
+        (
+            "notifications",
+            "on",
+            Box::new(|w| {
+                let d = w.global::<NotificationsData>();
+                d.set_available(true);
+            }),
+        ),
+        (
+            "notifications",
+            "off",
+            Box::new(|w| {
+                let d = w.global::<NotificationsData>();
+                d.set_note("The notification service is not running.".into());
+            }),
+        ),
         ("about", "on", Box::new(about)),
     ];
     for (page, variant, fill) in &scenes {
@@ -429,7 +471,13 @@ fn focus_hover_dialog_chooser() {
     c.set_items(list(
         (0..30)
             .map(|n| {
-                let mut i = item(&format!("z{n}"), &format!("Africa/City number {n}"), "UTC+2", "", 0);
+                let mut i = item(
+                    &format!("z{n}"),
+                    &format!("Africa/City number {n}"),
+                    "UTC+2",
+                    "",
+                    0,
+                );
                 i.checked = n == 3;
                 i
             })

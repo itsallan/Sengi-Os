@@ -22,13 +22,7 @@ fn swatch(size: u32, rgb: [u8; 3]) -> Image {
     Image::from_rgba8(buffer)
 }
 
-fn show<T: ComponentHandle>(
-    w: &T,
-    width: u32,
-    height: u32,
-    name: &str,
-    backdrop: [u8; 3],
-) {
+fn show<T: ComponentHandle>(w: &T, width: u32, height: u32, name: &str, backdrop: [u8; 3]) {
     w.show().unwrap();
     let win = harness::window();
     harness::resize(&win, width, height);
@@ -49,14 +43,15 @@ fn bars() {
             w.set_volume("72%".into());
             w.set_battery("64%".into());
             w.set_output_width(width as f32);
-            let entry = |id: i32, letter: &str, rgb: Option<[u8; 3]>, attention: bool| bar::TrayEntry {
-                id,
-                icon: rgb.map(|c| swatch(16, c)).unwrap_or_default(),
-                has_icon: rgb.is_some(),
-                letter: letter.into(),
-                label: format!("Tray app {id}").into(),
-                attention,
-            };
+            let entry =
+                |id: i32, letter: &str, rgb: Option<[u8; 3]>, attention: bool| bar::TrayEntry {
+                    id,
+                    icon: rgb.map(|c| swatch(16, c)).unwrap_or_default(),
+                    has_icon: rgb.is_some(),
+                    letter: letter.into(),
+                    label: format!("Tray app {id}").into(),
+                    attention,
+                };
             match variant {
                 "tray" => w.set_tray(list(vec![
                     entry(1, "S", Some([200, 80, 60]), false),
@@ -65,7 +60,18 @@ fn bars() {
                 ])),
                 "many" => w.set_tray(list(
                     (0..14)
-                        .map(|n| entry(n, "A", if n % 2 == 0 { Some([70, 100, 200]) } else { None }, false))
+                        .map(|n| {
+                            entry(
+                                n,
+                                "A",
+                                if n % 2 == 0 {
+                                    Some([70, 100, 200])
+                                } else {
+                                    None
+                                },
+                                false,
+                            )
+                        })
                         .collect(),
                 )),
                 "low" => {
@@ -83,7 +89,13 @@ fn bars() {
                 }
                 _ => {}
             }
-            show(&w, width, 28, &format!("bar-{variant}-{width}.png"), BACKDROP);
+            show(
+                &w,
+                width,
+                28,
+                &format!("bar-{variant}-{width}.png"),
+                BACKDROP,
+            );
         }
     }
 }
@@ -169,7 +181,14 @@ fn docks() {
     }
 }
 
-fn card(serial: i32, app: &str, summary: &str, body: &str, critical: bool, actions: &[(&str, &str)]) -> notify::Card {
+fn card(
+    serial: i32,
+    app: &str,
+    summary: &str,
+    body: &str,
+    critical: bool,
+    actions: &[(&str, &str)],
+) -> notify::Card {
     notify::Card {
         serial,
         app: app.into(),
@@ -216,9 +235,30 @@ fn history(n: usize) -> ModelRc<notify::HistoryItem> {
 fn notifications() {
     let w = notify::NotifyWindow::new().unwrap();
     w.set_cards(list(vec![
-        card(1, "Files", "Copy finished", "report.pdf was copied to Documents.", false, &[]),
-        card(2, "Calendar", "Meeting in 5 minutes with a title that is really quite long indeed", "Team stand-up, room 4, bring the notes from last week and a pen.", false, &[("open", "Open"), ("snooze", "Snooze")]),
-        card(3, "Battery", "Battery low", "9% left. Plug in the charger.", true, &[("settings", "Power settings")]),
+        card(
+            1,
+            "Files",
+            "Copy finished",
+            "report.pdf was copied to Documents.",
+            false,
+            &[],
+        ),
+        card(
+            2,
+            "Calendar",
+            "Meeting in 5 minutes with a title that is really quite long indeed",
+            "Team stand-up, room 4, bring the notes from last week and a pen.",
+            false,
+            &[("open", "Open"), ("snooze", "Snooze")],
+        ),
+        card(
+            3,
+            "Battery",
+            "Battery low",
+            "9% left. Plug in the charger.",
+            true,
+            &[("settings", "Power settings")],
+        ),
     ]));
     w.set_queued(2);
     show(&w, 400, 480, "notify-cards-400x480.png", BACKDROP);
@@ -228,7 +268,13 @@ fn notifications() {
         w.set_centre_open(true);
         w.set_dnd(n == 3);
         w.set_centre_focus(if n == 3 { 2 } else { -1 });
-        show(&w, 1366, 768, &format!("notify-centre-{label}-1366x768.png"), BACKDROP);
+        show(
+            &w,
+            1366,
+            768,
+            &format!("notify-centre-{label}-1366x768.png"),
+            BACKDROP,
+        );
     }
 }
 
@@ -243,7 +289,13 @@ fn nets() -> Vec<quick::NetworkItem> {
     };
     let mut list = vec![
         n("a", "Home", true, true, 4),
-        n("b", "Neighbour with an extremely long network name that goes on", true, false, 3),
+        n(
+            "b",
+            "Neighbour with an extremely long network name that goes on",
+            true,
+            false,
+            3,
+        ),
         n("c", "Cafe Guest", false, false, 2),
         n("d", "Old router", true, true, 1),
     ];
@@ -286,7 +338,9 @@ fn quicks() {
                 "passphrase" => {
                     w.set_networks(list(nets()));
                     w.set_prompt_open(true);
-                    w.set_prompt_network("Neighbour with an extremely long network name that goes on".into());
+                    w.set_prompt_network(
+                        "Neighbour with an extremely long network name that goes on".into(),
+                    );
                     w.set_prompt_problem("Wrong passphrase".into());
                 }
                 "off" => {
@@ -318,21 +372,28 @@ fn quicks() {
                 }
                 _ => {}
             }
-            show(&w, width, height, &format!("quick-{variant}-{width}x{height}.png"), BACKDROP);
+            show(
+                &w,
+                width,
+                height,
+                &format!("quick-{variant}-{width}x{height}.png"),
+                BACKDROP,
+            );
         }
     }
 }
 
 fn stores() {
-    let row = |name: &str, summary: &str, state: store::RowState, rgb: Option<[u8; 3]>| store::Row {
-        id: name.into(),
-        name: name.into(),
-        summary: summary.into(),
-        icon: rgb.map(|c| swatch(40, c)).unwrap_or_default(),
-        has_icon: rgb.is_some(),
-        letter: name.chars().next().unwrap().to_string().into(),
-        state,
-    };
+    let row =
+        |name: &str, summary: &str, state: store::RowState, rgb: Option<[u8; 3]>| store::Row {
+            id: name.into(),
+            name: name.into(),
+            summary: summary.into(),
+            icon: rgb.map(|c| swatch(40, c)).unwrap_or_default(),
+            has_icon: rgb.is_some(),
+            letter: name.chars().next().unwrap().to_string().into(),
+            state,
+        };
     use store::RowState::*;
     for variant in ["results", "empty", "error", "many"] {
         for (width, height) in [(800u32, 600u32), (1024, 768), (1920, 1080)] {
@@ -349,7 +410,12 @@ fn stores() {
                     ];
                     if variant == "many" {
                         for n in 0..20 {
-                            rows.push(row(&format!("App {n}"), "Does something useful", Available, None));
+                            rows.push(row(
+                                &format!("App {n}"),
+                                "Does something useful",
+                                Available,
+                                None,
+                            ));
                         }
                     }
                     g.set_rows(list(rows));
@@ -364,7 +430,13 @@ fn stores() {
                     g.set_message_is_error(true);
                 }
             }
-            show(&w, width, height, &format!("store-{variant}-{width}x{height}.png"), BACKDROP);
+            show(
+                &w,
+                width,
+                height,
+                &format!("store-{variant}-{width}x{height}.png"),
+                BACKDROP,
+            );
         }
     }
 }
@@ -376,10 +448,21 @@ fn launchers() {
     };
     let rows: Vec<launcher::Row> = (0..24)
         .map(|n| launcher::Row {
-            name: list(vec![seg("Fi", true), seg(&format!("refox number {n} with a long name"), false)]),
-            detail: if n % 2 == 0 { "Web Browser".into() } else { "".into() },
+            name: list(vec![
+                seg("Fi", true),
+                seg(&format!("refox number {n} with a long name"), false),
+            ]),
+            detail: if n % 2 == 0 {
+                "Web Browser".into()
+            } else {
+                "".into()
+            },
             title: format!("Firefox {n}").into(),
-            icon: if n % 3 != 0 { swatch(48, [200, 80, 60]) } else { Image::default() },
+            icon: if n % 3 != 0 {
+                swatch(48, [200, 80, 60])
+            } else {
+                Image::default()
+            },
             has_icon: n % 3 != 0,
             letter: "F".into(),
         })
@@ -414,7 +497,13 @@ fn launchers() {
                 w.set_error("Could not start Firefox 0: no such file".into());
             }
         }
-        show(&w, 1280, 720, &format!("launcher-{variant}-1280x720.png"), BACKDROP);
+        show(
+            &w,
+            1280,
+            720,
+            &format!("launcher-{variant}-1280x720.png"),
+            BACKDROP,
+        );
     }
     let w = launcher::LauncherWindow::new().unwrap();
     w.set_grid_capable(true);

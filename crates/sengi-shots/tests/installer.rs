@@ -99,12 +99,24 @@ fn scene(page: &str, variant: &str, w: &InstallerWindow) {
             g.set_place("Step 2 of 4".into());
             g.set_disk_note("Choose the disk to install on. Then say whether to erase it, or to install beside what is on it.".into());
             let mut disks = vec![
-                disk("a", "SanDisk SD8SN8U · 256 GB", "/dev/sda · SATA · serial …400999 · One volume, Windows (NTFS) “Data”"),
-                disk("b", "A disk whose maker chose a rather long model name for it · 1 TB", "/dev/nvme0n1 · NVMe"),
+                disk(
+                    "a",
+                    "SanDisk SD8SN8U · 256 GB",
+                    "/dev/sda · SATA · serial …400999 · One volume, Windows (NTFS) “Data”",
+                ),
+                disk(
+                    "b",
+                    "A disk whose maker chose a rather long model name for it · 1 TB",
+                    "/dev/nvme0n1 · NVMe",
+                ),
             ];
             if v == "many" {
                 for n in 0..8 {
-                    disks.push(disk(&format!("x{n}"), &format!("Disk · {} GB", 16 << (n % 4)), "/dev/sdb"));
+                    disks.push(disk(
+                        &format!("x{n}"),
+                        &format!("Disk · {} GB", 16 << (n % 4)),
+                        "/dev/sdb",
+                    ));
                 }
             }
             if v == "none" {
@@ -115,7 +127,11 @@ fn scene(page: &str, variant: &str, w: &InstallerWindow) {
             g.set_disks(list(disks));
             if v == "erase" || v == "beside" || v == "many" {
                 g.set_disk_chosen(true);
-                let mut erase = disk("erase", "Erase the whole disk", "Everything on the disk is removed and Sengi OS takes all of it.");
+                let mut erase = disk(
+                    "erase",
+                    "Erase the whole disk",
+                    "Everything on the disk is removed and Sengi OS takes all of it.",
+                );
                 erase.action = "".into();
                 erase.checked = v != "beside";
                 let mut beside = disk("beside", "Install beside the existing system", "Adds one partition of 64 GB in free space. Nothing that is already on the disk is changed.");
@@ -143,7 +159,9 @@ fn scene(page: &str, variant: &str, w: &InstallerWindow) {
                 g.set_user_name("Root".into());
                 g.set_host_name("Zen Book".into());
                 g.set_full_name_problem("Say what to call you".into());
-                g.set_user_name_problem("Use lower-case letters, digits, - and _, and start with a letter".into());
+                g.set_user_name_problem(
+                    "Use lower-case letters, digits, - and _, and start with a letter".into(),
+                );
                 g.set_host_name_problem("A computer name has no spaces".into());
                 g.set_password_problem("The two do not match".into());
                 g.set_can_next(false);
@@ -173,7 +191,10 @@ fn scene(page: &str, variant: &str, w: &InstallerWindow) {
                     g.set_outcome("done".into());
                     g.set_outcome_words("Sengi OS is on SanDisk SD8SN8U · 256 GB. Restart, take out the USB stick, and the computer starts Sengi OS.".into());
                     g.set_next_label("Restart".into());
-                    g.set_outcome_facts(list(vec![info("Your account", "allan"), info("Computer name", "zenbook")]));
+                    g.set_outcome_facts(list(vec![
+                        info("Your account", "allan"),
+                        info("Computer name", "zenbook"),
+                    ]));
                 }
                 _ => {
                     g.set_steps(steps(2, true));
@@ -218,7 +239,8 @@ fn every_page() {
             let win = harness::window();
             harness::resize(&win, width, height);
             harness::advance(300);
-            harness::draw(&win, BACKDROP).save(&format!("installer-{page}-{variant}-{width}x{height}.png"));
+            harness::draw(&win, BACKDROP)
+                .save(&format!("installer-{page}-{variant}-{width}x{height}.png"));
             w.hide().unwrap();
         }
     }

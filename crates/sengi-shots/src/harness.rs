@@ -97,11 +97,7 @@ pub fn draw(window: &MinimalSoftwareWindow, backdrop: [u8; 3]) -> Picture {
             ]
         })
         .collect();
-    Picture {
-        width,
-        height,
-        rgb,
-    }
+    Picture { width, height, rgb }
 }
 
 impl Picture {
