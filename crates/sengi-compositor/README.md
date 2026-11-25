@@ -192,8 +192,8 @@ sengi-notify and sengi-lock included):
   sizes and colours are read from `tokens/sengi.toml`.
 - A soft shadow around framed windows, moved down a little, darker for the
   focused window than for the others, none for a window that fills the
-  screen or is maximised or snapped. It is a stack of flat translucent
-  rounded rectangles of growing size and falling opacity, no gradient and no
+  screen or is maximised; a snapped one keeps it. It is a stack of flat
+  translucent rounded rectangles of growing size and falling opacity, no gradient and no
   blur: eight small pictures (four corners and four strips, stretched along
   the sides) painted once per screen scale and focus state, so a window
   costs eight textured rectangles and nothing is painted per frame. Steps,

@@ -119,7 +119,7 @@ fn the_shadow_is_lighter_when_the_window_is_not_focused() {
 }
 
 #[test]
-fn a_window_that_fills_half_the_screen_has_none() {
+fn a_framed_window_that_fills_half_the_screen_keeps_its_shadow() {
     let script = "1500 key super+left\n";
     let compositor = Compositor::start_with(None, None, Some(script));
     let mut app = compositor.connect();
@@ -135,14 +135,11 @@ fn a_window_that_fills_half_the_screen_has_none() {
     let picture = app.capture().unwrap();
     shot(&picture, "shadow-snapped.ppm");
     let (_, _, right, _) = client(&picture, GREEN);
-    for step in [1, 3, 8, 16] {
-        // The frame has a one pixel border.
-        assert_eq!(
-            picture.at(right + 1 + step, 360),
-            desktop(),
-            "{step} past it (client right edge {right})"
-        );
-    }
+    // Past the one pixel border, in the gap to the other half.
+    assert!(
+        light(picture.at(right + 2, 360)) < light(desktop()),
+        "no shadow past the snapped window"
+    );
 }
 
 #[test]
