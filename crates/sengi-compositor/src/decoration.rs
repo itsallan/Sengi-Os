@@ -705,6 +705,33 @@ mod tests {
     }
 
     #[test]
+    fn the_light_theme_paints_the_frame_from_the_light_palette() {
+        let tokens = Tokens::themed(true);
+        let light = Theme::from_tokens(&tokens);
+        let dark = theme();
+        assert_eq!(light.active, tokens.color("color-light.surface").unwrap());
+        assert_eq!(light.inactive, tokens.color("color-light.bg").unwrap());
+        assert_ne!(light.active, dark.active);
+        assert_ne!(light.text, dark.text);
+        // The traffic lights keep their colours; only the inactive grey moves.
+        assert_eq!(light.lights[0].fill, dark.lights[0].fill);
+        assert_ne!(light.light_inactive, dark.light_inactive);
+        // Sizes and type do not change with the palette.
+        assert_eq!(light.radius, dark.radius);
+        assert_eq!(light.metrics.titlebar, dark.metrics.titlebar);
+        assert_eq!(light.font_family, dark.font_family);
+
+        let middle = (300, light.metrics.titlebar as usize / 2);
+        let active = draw_titlebar(&light, &bar(true), None);
+        let inactive = draw_titlebar(&light, &bar(false), None);
+        assert_eq!(active.pixel(middle.0, middle.1), rgba(light.active));
+        assert_eq!(inactive.pixel(middle.0, middle.1), rgba(light.inactive));
+        // The bar is light: no dark fill is left over from the other set.
+        let pixel = active.pixel(middle.0, middle.1);
+        assert!(pixel[0] > 200 && pixel[1] > 200 && pixel[2] > 200);
+    }
+
+    #[test]
     fn fill_and_border_use_the_theme_colours() {
         let theme = theme();
         let active = draw_titlebar(&theme, &bar(true), None);

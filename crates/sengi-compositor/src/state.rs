@@ -481,7 +481,7 @@ impl State {
             },
         )?;
 
-        let tokens = Tokens::builtin();
+        let tokens = Tokens::themed(config.appearance.light);
         let theme = Theme::from_tokens(&tokens);
         if crate::text::Font::load(&theme.font_family, theme.font_weight, theme.font_px).is_none() {
             crate::say!(
@@ -1185,8 +1185,17 @@ impl State {
             configure(&config);
         }
         let shadows_changed = self.config.appearance != config.appearance;
+        let theme_changed = self.config.appearance.light != config.appearance.light;
         self.config = config;
         self.apply_power_config();
+        if theme_changed {
+            // Frames, menus and the colour behind the windows are painted
+            // from the palette; the painters are made again from it.
+            self.tokens = Tokens::themed(self.config.appearance.light);
+            self.theme = Theme::from_tokens(&self.tokens);
+            self.painters.clear();
+            self.refresh_painters();
+        }
         if shadows_changed {
             // The bottom corners are painted over the shadow.
             for window in self.space.elements().chain(self.minimised.iter()) {

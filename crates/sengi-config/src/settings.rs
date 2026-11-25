@@ -16,6 +16,9 @@ pub const MAX_LAYOUTS: usize = 4;
 
 /// The value of `appearance.wallpaper` that means the plain desktop colour.
 pub const WALLPAPER_SOLID: &str = "solid";
+/// The two values of `appearance.theme`.
+pub const THEME_DARK: &str = "dark";
+pub const THEME_LIGHT: &str = "light";
 /// Longest wallpaper path kept.
 pub const MAX_WALLPAPER_PATH: usize = 1024;
 
@@ -41,6 +44,7 @@ pub const KEYS: &[(&str, &str, Default)] = &[
     ("touchpad", "tap-to-click", Default::Flag(true)),
     ("touchpad", "disable-while-typing", Default::Flag(true)),
     ("appearance", "window-shadows", Default::Flag(true)),
+    ("appearance", "theme", Default::Text(THEME_DARK)),
     ("appearance", "wallpaper", Default::Text(WALLPAPER_SOLID)),
 ];
 
@@ -93,6 +97,10 @@ pub fn check(section: &str, key: &str, value: &Value) -> Result<Value, String> {
         ("clock", "time-zone") => match value {
             Value::Text(zone) if zone.is_empty() || zone_is_plain(zone) => Ok(value.clone()),
             _ => Err("must be a zone name such as \"Europe/Paris\", or empty".to_string()),
+        },
+        ("appearance", "theme") => match value {
+            Value::Text(theme) if theme == THEME_DARK || theme == THEME_LIGHT => Ok(value.clone()),
+            _ => Err("must be \"dark\" or \"light\"".to_string()),
         },
         ("appearance", "wallpaper") => match value {
             Value::Text(path) if wallpaper_is_plain(path) => Ok(value.clone()),
@@ -281,6 +289,13 @@ impl Settings {
             Some(Value::Text(text)) => text,
             _ => String::new(),
         }
+    }
+
+    /// Whether the light theme is chosen. The user's file decides, then the
+    /// system's, which is all a program that runs as another user, such as
+    /// the login screen, can see.
+    pub fn light(&self) -> bool {
+        self.text("appearance", "theme") == THEME_LIGHT
     }
 
     pub fn layouts(&self) -> Vec<Layout> {
@@ -475,6 +490,23 @@ mod tests {
             "layouts",
             Value::List(vec!["us\nX=1".into()])
         ));
+    }
+
+    #[test]
+    fn the_theme_is_dark_unless_light_is_chosen() {
+        assert!(!settings("", "").light());
+        assert!(settings("", "[appearance]\ntheme = \"light\"\n").light());
+        // The login screen cannot read the user's file: the system's counts.
+        assert!(settings("[appearance]\ntheme = \"light\"\n", "").light());
+        assert!(!settings(
+            "[appearance]\ntheme = \"light\"\n",
+            "[appearance]\ntheme = \"dark\"\n"
+        )
+        .light());
+        // A value nobody knows is no theme.
+        assert!(!settings("", "[appearance]\ntheme = \"blue\"\n").light());
+        assert!(check("appearance", "theme", &Value::text("blue")).is_err());
+        assert!(check("appearance", "theme", &Value::Flag(true)).is_err());
     }
 
     #[test]

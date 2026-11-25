@@ -36,6 +36,8 @@ pub struct Power {
 pub struct Appearance {
     /// Whether framed windows have a shadow.
     pub window_shadows: bool,
+    /// Whether frames, title bars and menus use the light palette.
+    pub light: bool,
 }
 
 /// The layouts as XKB takes them: names, variants and options, each a
@@ -152,6 +154,7 @@ impl Config {
             },
             appearance: Appearance {
                 window_shadows: settings.flag("appearance", "window-shadows"),
+                light: settings.light(),
             },
             power: Power {
                 dim_after: settings.number("power", "dim-after"),
@@ -303,6 +306,12 @@ mod tests {
             (30, 90, 600)
         );
         assert!(!power.lock_on_sleep && power.lid_does_nothing);
+    }
+
+    #[test]
+    fn the_theme_is_dark_unless_light_is_chosen() {
+        assert!(!config("").appearance.light);
+        assert!(config("[appearance]\ntheme = \"light\"\n").appearance.light);
     }
 
     #[test]
