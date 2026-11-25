@@ -9,8 +9,9 @@ use std::os::fd::AsFd;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
+use std::time::Duration;
 
-use sengi_shot::{Invocation, Region, Stamp};
+use sengi_shot::{Invocation, Options, Region, Stamp};
 use wayland_client::globals::{registry_queue_init, GlobalListContents};
 use wayland_client::protocol::{
     wl_buffer::WlBuffer,
@@ -143,10 +144,41 @@ struct Picture {
     rgb: Vec<u8>,
 }
 
+/// How long the compositor needs to take the selection screen, the
+/// countdown or the quick settings panel off the screen, so none of them is
+/// in the picture. The same as `timing.screenshot-delay` in the tokens.
+const OVERLAY_GONE: Duration = Duration::from_millis(400);
+
+/// What sengi-snip did.
+enum Snip {
+    /// It ran to the end: a choice, or the countdown running out.
+    Done(String),
+    /// Escape, a click on the countdown, or the keyboard going elsewhere.
+    Cancelled,
+    /// It could not start or fell over.
+    Unavailable(String),
+}
+
+fn snip(arguments: &[&str]) -> Snip {
+    let run = Command::new("sengi-snip")
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stderr(Stdio::inherit())
+        .output();
+    match run {
+        Ok(output) if output.status.success() => {
+            Snip::Done(String::from_utf8_lossy(&output.stdout).into_owned())
+        }
+        Ok(output) if output.status.code() == Some(1) => Snip::Cancelled,
+        Ok(output) => Snip::Unavailable(format!("sengi-snip failed ({})", output.status)),
+        Err(error) => Snip::Unavailable(format!("cannot run sengi-snip: {error}")),
+    }
+}
+
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    let (wanted, region) = match sengi_shot::parse(&arguments) {
-        Ok(Invocation::Take { output, region }) => (output, region),
+    let mut options = match sengi_shot::parse(&arguments) {
+        Ok(Invocation::Take(options)) => options,
         Ok(Invocation::Help) => {
             print!("{}", sengi_shot::USAGE);
             return ExitCode::SUCCESS;
@@ -160,21 +192,82 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // The things a person does first, however long they take: choosing the
+    // part, then the countdown. The time limit below is for the copy only.
+    if options.select {
+        match snip(&["--select"]) {
+            Snip::Done(line) => match sengi_shot::parse_choice(&line) {
+                Some((output, region)) => {
+                    options.output = output;
+                    options.region = Some(region);
+                }
+                None => return fail("the selection screen said something unexpected"),
+            },
+            Snip::Cancelled => return ExitCode::SUCCESS,
+            Snip::Unavailable(message) => return fail(&message),
+        }
+        std::thread::sleep(OVERLAY_GONE);
+    }
+    if options.delay > 0 {
+        match snip(&["--countdown", &options.delay.to_string()]) {
+            Snip::Done(_) => {}
+            Snip::Cancelled => return ExitCode::SUCCESS,
+            // No countdown to show: wait quietly all the same.
+            Snip::Unavailable(message) => {
+                eprintln!("sengi-shot: {message}");
+                std::thread::sleep(Duration::from_secs(options.delay.into()));
+            }
+        }
+        std::thread::sleep(OVERLAY_GONE);
+    }
     // SAFETY: alarm only sets a timer; SIGALRM ends the process.
     unsafe { libc::alarm(GIVE_UP_SECONDS) };
-    match take(wanted.as_deref(), region) {
+    let Options {
+        output,
+        region,
+        clipboard,
+        ..
+    } = options;
+    match take(output.as_deref(), region) {
         Ok(saved) => {
             for path in &saved {
                 println!("{}", path.display());
             }
-            notify(&saved);
+            let copied = clipboard.then(|| copy_to_clipboard(&saved));
+            notify(&saved, copied);
             ExitCode::SUCCESS
         }
-        Err(message) => {
-            eprintln!("sengi-shot: {message}");
-            tell("Screenshot failed", &message);
-            ExitCode::FAILURE
+        Err(message) => fail(&message),
+    }
+}
+
+fn fail(message: &str) -> ExitCode {
+    eprintln!("sengi-shot: {message}");
+    tell("Screenshot failed", message);
+    ExitCode::FAILURE
+}
+
+/// Puts the first picture on the clipboard. Our compositor offers no
+/// data-control protocol, which is what a program needs to set the
+/// clipboard without a window of its own, so this asks wl-copy, if it is
+/// installed, and says so if not.
+fn copy_to_clipboard(saved: &[PathBuf]) -> Result<(), String> {
+    let path = saved.first().ok_or("there is no picture")?;
+    let file = File::open(path).map_err(|e| format!("cannot read the picture: {e}"))?;
+    let (program, arguments) = sengi_shot::CLIPBOARD_COMMAND;
+    let status = Command::new(program)
+        .args(arguments)
+        .stdin(file)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    match status {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(format!("{program} failed ({status})")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(format!("{program} is not installed"))
         }
+        Err(error) => Err(format!("cannot run {program}: {error}")),
     }
 }
 
@@ -344,12 +437,20 @@ fn save(path: &Path, picture: &Picture) -> Result<(), String> {
         .map_err(|e| format!("cannot save {}: {e}", path.display()))
 }
 
-fn notify(saved: &[PathBuf]) {
-    let body = saved
+fn notify(saved: &[PathBuf], copied: Option<Result<(), String>>) {
+    let mut body = saved
         .iter()
         .map(|path| path.display().to_string())
         .collect::<Vec<_>>()
         .join("\n");
+    match copied {
+        Some(Ok(())) => body.push_str("\nCopied to the clipboard"),
+        Some(Err(why)) => {
+            eprintln!("sengi-shot: not copied to the clipboard: {why}");
+            body.push_str(&format!("\nNot copied to the clipboard: {why}"));
+        }
+        None => {}
+    }
     tell("Screenshot saved", &body);
 }
 

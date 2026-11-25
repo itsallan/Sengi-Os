@@ -5,16 +5,27 @@
 use std::path::{Path, PathBuf};
 
 pub const USAGE: &str = "\
-Usage: sengi-shot [--output NAME] [--region X,Y,WIDTH,HEIGHT]
+Usage: sengi-shot [--select] [--delay SECONDS] [--clipboard]
+                  [--output NAME] [--region X,Y,WIDTH,HEIGHT]
 
 Saves a PNG of the screen to ~/Pictures/Screenshot-DATE-TIME.png and says
 where in a notification. With several outputs each gets a file, named after
-the output. --region is in the logical coordinates of the output, and is
-what the compositor passes for Alt+Print.
+the output.
+
+  --select         dim the screen and drag a rectangle to keep; Enter or
+                   letting go takes it, Escape cancels (needs sengi-snip)
+  --delay N        wait N seconds first (1 to 60), counting down on screen
+  --clipboard      also copy the picture to the clipboard (needs wl-copy)
+  --output NAME    one output only
+  --region X,Y,W,H a part of the output, in its logical coordinates; this
+                   is what the compositor passes for Alt+Print
 
   -h, --help       show this help
   -V, --version    show the version
 ";
+
+/// The longest wait before a shot.
+pub const MAX_DELAY: u32 = 60;
 
 /// A part of an output, in its logical coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,19 +36,27 @@ pub struct Region {
     pub height: i32,
 }
 
+/// What was asked for.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Options {
+    pub output: Option<String>,
+    pub region: Option<Region>,
+    /// Pick the region on screen, with the mouse.
+    pub select: bool,
+    /// Seconds to wait first; 0 for none.
+    pub delay: u32,
+    pub clipboard: bool,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Invocation {
-    Take {
-        output: Option<String>,
-        region: Option<Region>,
-    },
+    Take(Options),
     Help,
     Version,
 }
 
 pub fn parse<S: AsRef<str>>(arguments: &[S]) -> Result<Invocation, String> {
-    let mut output = None;
-    let mut region = None;
+    let mut options = Options::default();
     let mut words = arguments.iter().map(AsRef::as_ref);
     while let Some(word) = words.next() {
         match word {
@@ -45,17 +64,48 @@ pub fn parse<S: AsRef<str>>(arguments: &[S]) -> Result<Invocation, String> {
             "-V" | "--version" => return Ok(Invocation::Version),
             "--output" => {
                 let name = words.next().ok_or("--output needs a name")?;
-                output = Some(name.to_string());
+                options.output = Some(name.to_string());
             }
             "--region" => {
                 let text = words.next().ok_or("--region needs X,Y,WIDTH,HEIGHT")?;
-                region = Some(parse_region(text)?);
+                options.region = Some(parse_region(text)?);
+            }
+            "--select" => options.select = true,
+            "--clipboard" => options.clipboard = true,
+            "--delay" => {
+                let text = words.next().ok_or("--delay needs a number of seconds")?;
+                options.delay = match text.parse::<u32>() {
+                    Ok(n) if (1..=MAX_DELAY).contains(&n) => n,
+                    _ => {
+                        return Err(format!(
+                            "'{text}' is not a number of seconds from 1 to {MAX_DELAY}"
+                        ))
+                    }
+                };
             }
             other => return Err(format!("unknown argument '{other}'")),
         }
     }
-    Ok(Invocation::Take { output, region })
+    if options.select && options.region.is_some() {
+        return Err("--select and --region both say which part; use one".into());
+    }
+    if options.select && options.output.is_some() {
+        return Err("--select picks the output itself; leave --output out".into());
+    }
+    Ok(Invocation::Take(options))
 }
+
+/// What sengi-snip prints for a choice: `NAME X,Y,WIDTH,HEIGHT`, with `-`
+/// for a name it does not know.
+pub fn parse_choice(line: &str) -> Option<(Option<String>, Region)> {
+    let (name, region) = line.trim().split_once(' ')?;
+    let region = parse_region(region).ok()?;
+    Some(((name != "-").then(|| name.to_string()), region))
+}
+
+/// Where a screenshot is copied to the clipboard from: the program that
+/// does it, and how it is told the kind of picture.
+pub const CLIPBOARD_COMMAND: (&str, &[&str]) = ("wl-copy", &["--type", "image/png"]);
 
 fn parse_region(text: &str) -> Result<Region, String> {
     let bad = || format!("'{text}' is not X,Y,WIDTH,HEIGHT");
@@ -181,25 +231,24 @@ pub fn encode_png(rgb: &[u8], width: u32, height: u32) -> Result<Vec<u8>, png::E
 mod tests {
     use super::*;
 
+    fn take(options: Options) -> Result<Invocation, String> {
+        Ok(Invocation::Take(options))
+    }
+
     #[test]
     fn the_command_line() {
-        assert_eq!(
-            parse::<&str>(&[]),
-            Ok(Invocation::Take {
-                output: None,
-                region: None
-            })
-        );
+        assert_eq!(parse::<&str>(&[]), take(Options::default()));
         assert_eq!(
             parse(&["--output", "eDP-1", "--region", "10,20,300,200"]),
-            Ok(Invocation::Take {
+            take(Options {
                 output: Some("eDP-1".into()),
                 region: Some(Region {
                     x: 10,
                     y: 20,
                     width: 300,
                     height: 200
-                })
+                }),
+                ..Options::default()
             })
         );
         assert_eq!(parse(&["-h"]), Ok(Invocation::Help));
@@ -208,6 +257,58 @@ mod tests {
         assert!(parse(&["--region", "a,b,c,d"]).is_err());
         assert!(parse(&["--output"]).is_err());
         assert!(parse(&["--wild"]).is_err());
+    }
+
+    #[test]
+    fn select_delay_and_clipboard() {
+        assert_eq!(
+            parse(&["--select", "--delay", "3", "--clipboard"]),
+            take(Options {
+                select: true,
+                delay: 3,
+                clipboard: true,
+                ..Options::default()
+            })
+        );
+        assert_eq!(
+            parse(&["--delay", "60"]),
+            take(Options {
+                delay: 60,
+                ..Options::default()
+            })
+        );
+        for bad in [
+            &["--delay", "0"][..],
+            &["--delay", "61"],
+            &["--delay", "-1"],
+            &["--delay", "soon"],
+            &["--delay"],
+            &["--select", "--region", "1,2,3,4"],
+            &["--select", "--output", "eDP-1"],
+        ] {
+            assert!(parse(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_choice_from_the_selection_screen() {
+        // The same line sengi-snip's tests expect to write.
+        assert_eq!(
+            parse_choice("eDP-1 10,20,640,480\n"),
+            Some((
+                Some("eDP-1".into()),
+                Region {
+                    x: 10,
+                    y: 20,
+                    width: 640,
+                    height: 480
+                }
+            ))
+        );
+        assert_eq!(parse_choice("- 0,0,5,5").unwrap().0, None);
+        assert_eq!(parse_choice(""), None);
+        assert_eq!(parse_choice("eDP-1"), None);
+        assert_eq!(parse_choice("eDP-1 1,2,0,4"), None);
     }
 
     fn stamp() -> Stamp {

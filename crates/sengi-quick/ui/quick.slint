@@ -405,7 +405,9 @@ export component QuickWindow inherits Window {
     callback mute-clicked();
     callback brightness-changed(int);
     callback dnd-set(bool);
-    callback screenshot();
+    // 0 the whole screen, 1 a part of it picked with the pointer, 2 the
+    // whole screen after a countdown.
+    callback screenshot(int);
     callback lock();
     callback session();
     callback dismiss();
@@ -713,10 +715,40 @@ export component QuickWindow inherits Window {
                     }
                 }
 
-                SengiButton {
-                    height: Tokens.button;
-                    text: "Screenshot";
-                    clicked => { root.screenshot(); }
+                VerticalLayout {
+                    spacing: Tokens.space-xs;
+
+                    SengiLabel {
+                        text: "Screenshot";
+                    }
+
+                    HorizontalLayout {
+                        spacing: Tokens.space-sm;
+
+                        SengiButton {
+                            horizontal-stretch: 1;
+                            preferred-width: Tokens.button;
+                            height: Tokens.button;
+                            text: "Screen";
+                            clicked => { root.screenshot(0); }
+                        }
+
+                        SengiButton {
+                            horizontal-stretch: 1;
+                            preferred-width: Tokens.button;
+                            height: Tokens.button;
+                            text: "Area";
+                            clicked => { root.screenshot(1); }
+                        }
+
+                        SengiButton {
+                            horizontal-stretch: 1;
+                            preferred-width: Tokens.button;
+                            height: Tokens.button;
+                            text: "In 5 s";
+                            clicked => { root.screenshot(2); }
+                        }
+                    }
                 }
 
                 HorizontalLayout {

@@ -1,0 +1,204 @@
+// The two small screens a screenshot can ask for: the dimmed screen to drag
+// a rectangle on, and the countdown before a delayed shot. Built from the
+// shared components; the dimming is the scrim colour of the tokens.
+
+import { Tokens, SengiText, SengiLabel, SengiSurface } from "components.slint";
+export { ThemeSwitch } from "components.slint";
+
+export component SnipWindow inherits Window {
+    title: "Sengi OS screenshot selection";
+    no-frame: true;
+    background: transparent;
+    forward-focus: keys;
+
+    // The two ends of the drag and the size of the screen, in logical
+    // pixels. Rust turns them into a rectangle, or says it is too small.
+    callback committed(float, float, float, float, float, float);
+    callback cancelled();
+    // "640 x 480", worked out by Rust.
+    pure callback size-text(int, int) -> string;
+
+    in-out property <bool> dragging: false;
+    private property <length> start-x;
+    private property <length> start-y;
+    private property <length> end-x: max(0px, min(touch.mouse-x, root.width));
+    private property <length> end-y: max(0px, min(touch.mouse-y, root.height));
+    private property <length> left: min(root.start-x, root.end-x);
+    private property <length> top: min(root.start-y, root.end-y);
+    private property <length> box-width: abs(root.end-x - root.start-x);
+    private property <length> box-height: abs(root.end-y - root.start-y);
+
+    function commit() {
+        if root.dragging {
+            root.dragging = false;
+            root.committed(
+                root.start-x / 1px, root.start-y / 1px,
+                root.end-x / 1px, root.end-y / 1px,
+                root.width / 1px, root.height / 1px);
+        }
+    }
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.cancelled();
+            } else if event.text == Key.Return {
+                root.commit();
+            } else {
+                return EventResult.reject;
+            }
+            return EventResult.accept;
+        }
+
+        touch := TouchArea {
+            mouse-cursor: crosshair;
+            pointer-event(event) => {
+                if event.button == PointerEventButton.left {
+                    if event.kind == PointerEventKind.down {
+                        root.start-x = max(0px, min(self.mouse-x, root.width));
+                        root.start-y = max(0px, min(self.mouse-y, root.height));
+                        root.dragging = true;
+                    } else if event.kind == PointerEventKind.up {
+                        root.commit();
+                    }
+                } else if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                    root.cancelled();
+                }
+            }
+        }
+
+        // Before the drag the whole screen is dimmed, with the way to
+        // leave said once.
+        if !root.dragging: Rectangle {
+            background: Tokens.color-scrim;
+
+            SengiSurface {
+                width: hint.preferred-width + Tokens.space-xl * 2;
+                height: hint.preferred-height + Tokens.space-lg * 2;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+
+                hint := SengiText {
+                    text: "Drag to choose an area.\nEnter or letting go takes it. Escape cancels.";
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // While dragging, everything round the rectangle is dimmed and the
+        // rectangle is left clear.
+        if root.dragging: Rectangle {
+            Rectangle {
+                x: 0px;
+                y: 0px;
+                width: root.width;
+                height: root.top;
+                background: Tokens.color-scrim;
+            }
+
+            Rectangle {
+                x: 0px;
+                y: root.top + root.box-height;
+                width: root.width;
+                height: root.height - root.top - root.box-height;
+                background: Tokens.color-scrim;
+            }
+
+            Rectangle {
+                x: 0px;
+                y: root.top;
+                width: root.left;
+                height: root.box-height;
+                background: Tokens.color-scrim;
+            }
+
+            Rectangle {
+                x: root.left + root.box-width;
+                y: root.top;
+                width: root.width - root.left - root.box-width;
+                height: root.box-height;
+                background: Tokens.color-scrim;
+            }
+
+            Rectangle {
+                x: root.left;
+                y: root.top;
+                width: root.box-width;
+                height: root.box-height;
+                border-width: Tokens.border-width;
+                border-color: Tokens.color-accent;
+            }
+
+            // The size, under the rectangle if there is room, else above it,
+            // else inside its bottom edge.
+            SengiSurface {
+                width: size.preferred-width + Tokens.space-md * 2;
+                height: size.preferred-height + Tokens.space-xs * 2;
+                x: max(0px, min(root.left, root.width - self.width));
+                y: root.top + root.box-height + Tokens.space-xs + self.height <= root.height
+                    ? root.top + root.box-height + Tokens.space-xs
+                    : root.top - Tokens.space-xs - self.height >= 0px
+                        ? root.top - Tokens.space-xs - self.height
+                        : root.top + root.box-height - self.height - Tokens.space-xs;
+                raised: true;
+
+                size := SengiText {
+                    text: root.size-text(round(root.box-width / 1px), round(root.box-height / 1px));
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}
+
+export component CountdownWindow inherits Window {
+    title: "Sengi OS screenshot countdown";
+    no-frame: true;
+    background: transparent;
+    preferred-width: Tokens.snip-countdown-width;
+    preferred-height: Tokens.snip-countdown-height;
+    out property <length> wanted-width: Tokens.snip-countdown-width;
+    out property <length> wanted-height: Tokens.snip-countdown-height;
+
+    in property <int> seconds;
+    callback clicked();
+    // Where the surface sits: just under the bar, which is where the
+    // quick settings and the calendar start too.
+    out property <length> top-margin: Tokens.bar-height + Tokens.space-sm;
+
+    SengiSurface {
+        raised: true;
+
+        HorizontalLayout {
+            padding: Tokens.space-md;
+            spacing: Tokens.space-md;
+
+            SengiText {
+                text: root.seconds;
+                font-size: Tokens.font-size-xl;
+                font-weight: Tokens.font-weight-bold;
+                color: Tokens.color-accent-strong;
+                vertical-alignment: center;
+            }
+
+            VerticalLayout {
+                alignment: center;
+
+                SengiText {
+                    text: "Screenshot in " + root.seconds + (root.seconds == 1 ? " second" : " seconds");
+                    font-weight: Tokens.font-weight-medium;
+                }
+
+                SengiLabel {
+                    text: "Click to cancel";
+                }
+            }
+        }
+
+        TouchArea {
+            clicked => { root.clicked(); }
+        }
+    }
+}

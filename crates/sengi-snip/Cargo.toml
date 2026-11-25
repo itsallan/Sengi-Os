@@ -1,0 +1,21 @@
+[package]
+name = "sengi-snip"
+description = "The screens sengi-shot asks for: drag a rectangle, and count down"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+sengi-config = { path = "../sengi-config" }
+sengi-layer = { path = "../sengi-layer" }
+# Not the workspace entry: that one pulls in the winit backend. sengi-layer
+# is the backend here and turns on the software renderer.
+slint = { version = "1.18", default-features = false, features = ["compat-1-2", "std"] }
+
+[build-dependencies]
+slint-build.workspace = true
+
+[dev-dependencies]
+sengi-shots = { path = "../sengi-shots" }

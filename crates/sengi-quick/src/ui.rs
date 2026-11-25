@@ -23,8 +23,29 @@ pub enum Exit {
     /// Close, then open the session menu.
     Session,
     /// Close, wait this long for the panel to leave the screen, then take
-    /// a picture of the whole screen.
-    Screenshot(Duration),
+    /// a picture of the screen in the way asked.
+    Screenshot(Shot, Duration),
+}
+
+/// The ways the panel asks for a screenshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shot {
+    /// The whole screen at once.
+    Screen,
+    /// A rectangle dragged on the dimmed screen.
+    Area,
+    /// The whole screen, after a countdown.
+    Delayed,
+}
+
+impl Shot {
+    fn from_choice(choice: i32) -> Shot {
+        match choice {
+            1 => Shot::Area,
+            2 => Shot::Delayed,
+            _ => Shot::Screen,
+        }
+    }
 }
 
 fn item(row: &NetworkRow) -> NetworkItem {
@@ -223,11 +244,14 @@ pub fn attach(
     });
     window.on_screenshot({
         let (finish, weak) = (finish.clone(), weak.clone());
-        move || {
+        move |choice| {
             let delay = weak
                 .upgrade()
                 .map_or(0, |window| window.get_screenshot_delay().max(0));
-            finish(Exit::Screenshot(Duration::from_millis(delay as u64)));
+            finish(Exit::Screenshot(
+                Shot::from_choice(choice),
+                Duration::from_millis(delay as u64),
+            ));
         }
     });
     window.on_lock({

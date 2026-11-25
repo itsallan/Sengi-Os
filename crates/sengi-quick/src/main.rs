@@ -16,7 +16,7 @@ use sengi_quick::cli::{self, Action};
 use sengi_quick::commands;
 use sengi_quick::instance::{self, Claim, Instance};
 use sengi_quick::panel::Panel;
-use sengi_quick::ui::{self, Exit, QuickWindow};
+use sengi_quick::ui::{self, Exit, QuickWindow, Shot};
 use sengi_system::services::{Event, Services, Workers};
 
 /// Set to have the panel say on standard error how long each step of
@@ -93,11 +93,15 @@ fn main() -> ExitCode {
         Exit::Dismissed => {}
         Exit::Lock => spawn(commands::LOCK),
         Exit::Session => spawn(commands::SESSION),
-        Exit::Screenshot(delay) => {
+        Exit::Screenshot(shot, delay) => {
             // The panel has been told to go; give the compositor time to
             // draw the screen without it.
             std::thread::sleep(delay);
-            spawn(commands::SCREENSHOT);
+            spawn(match shot {
+                Shot::Screen => commands::SCREENSHOT,
+                Shot::Area => commands::SCREENSHOT_AREA,
+                Shot::Delayed => commands::SCREENSHOT_DELAYED,
+            });
         }
     }
     ExitCode::SUCCESS
