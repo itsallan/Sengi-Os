@@ -3675,6 +3675,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sengi-osd"
+version = "0.8.0"
+dependencies = [
+ "png",
+ "sengi-layer",
+ "sengi-system",
+ "sengi-tokens",
+ "slint",
+ "slint-build",
+]
+
+[[package]]
 name = "sengi-quick"
 version = "0.8.0"
 dependencies = [
@@ -3695,6 +3707,16 @@ dependencies = [
  "sengi-text",
  "slint",
  "slint-build",
+ "wayland-client",
+ "wayland-protocols-wlr",
+]
+
+[[package]]
+name = "sengi-shot"
+version = "0.8.0"
+dependencies = [
+ "libc",
+ "png",
  "wayland-client",
  "wayland-protocols-wlr",
 ]

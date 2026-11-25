@@ -1,0 +1,24 @@
+[package]
+name = "sengi-osd"
+description = "The Sengi OS level indicator shown after a volume or brightness key"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+sengi-layer = { path = "../sengi-layer" }
+# No features: only what `wpctl get-volume` prints, which is plain std.
+sengi-system = { path = "../sengi-system" }
+sengi-tokens = { path = "../sengi-tokens" }
+# Not the workspace entry: that one pulls in the winit backend. sengi-layer
+# is the backend here and turns on the software renderer.
+slint = { version = "1.18", default-features = false, features = ["compat-1-2", "std"] }
+
+[dev-dependencies]
+# The render test writes pictures of the panel.
+png = "0.18"
+
+[build-dependencies]
+slint-build.workspace = true

@@ -1,0 +1,52 @@
+// The level indicator: an icon and a bar in a small panel. It takes no
+// input and is on screen for a moment after a key.
+
+import { Tokens, SengiIcon } from "components.slint";
+
+export component OsdWindow inherits Window {
+    // A Phosphor Bold icon by name (not called icon: a Window has one), and how full the bar is, 0 to 100.
+    in property <string> glyph: "speaker-high";
+    in property <int> percent: 50;
+
+    background: transparent;
+    width: Tokens.osd-width;
+    height: Tokens.osd-height;
+
+    Rectangle {
+        background: Tokens.color-surface;
+        border-radius: Tokens.radius;
+        border-width: Tokens.border-width;
+        border-color: Tokens.color-border;
+
+        HorizontalLayout {
+            padding: Tokens.space-lg;
+            spacing: Tokens.space-md;
+
+            VerticalLayout {
+                alignment: center;
+                SengiIcon {
+                    name: root.glyph;
+                    width: Tokens.osd-icon;
+                    height: Tokens.osd-icon;
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                // The track, and the fill over it.
+                Rectangle {
+                    height: Tokens.osd-bar;
+                    border-radius: self.height / 2;
+                    background: Tokens.color-surface-raised;
+
+                    Rectangle {
+                        x: 0;
+                        width: parent.width * Math.clamp(root.percent, 0, 100) / 100;
+                        border-radius: parent.border-radius;
+                        background: Tokens.color-accent;
+                    }
+                }
+            }
+        }
+    }
+}
