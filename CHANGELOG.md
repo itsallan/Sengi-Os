@@ -7,6 +7,10 @@ and the measured idle RAM and boot time.
 
 ### Added
 
+- Settings has a Wallpaper page: the plain colour, six flat wallpapers in the
+  Sengi OS colours, or a PNG or JPEG of your own, by path or from ~/Pictures.
+  It shows at once and is remembered; a missing or broken file falls back to
+  the desktop colour with a note.
 - The Store shows real install progress read from Flatpak: a bar with the
   percentage, the step and the speed when Flatpak gives them, and an
   honest moving bar when it does not.

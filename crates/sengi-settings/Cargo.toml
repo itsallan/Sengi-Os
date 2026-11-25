@@ -22,6 +22,10 @@ sengi-text = { path = "../sengi-text" }
 # reads the same file through the same crate.
 sengi-config = { path = "../sengi-config" }
 
+# Previews of PNG wallpapers, decoded and shrunk on the Wallpaper page. The
+# desktop shell links no decoder; this program is the one that picks pictures.
+png = "0.18"
+
 # The window's own Wayland connection belongs to the toolkit. The Display
 # page has a second one for the output management protocol.
 wayland-client = "0.31"

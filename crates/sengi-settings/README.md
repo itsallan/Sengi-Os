@@ -6,8 +6,8 @@ down the left and the chosen one's page at the right.
     sengi-settings            open Settings
     sengi-settings sound      open it at a page
 
-The pages are `network`, `bluetooth`, `sound`, `display`, `power`,
-`date-time`, `keyboard`, `mouse`, `notifications` and `about`. If Settings
+The pages are `network`, `bluetooth`, `sound`, `display`, `wallpaper`,
+`power`, `date-time`, `keyboard`, `mouse`, `notifications` and `about`. If Settings
 is already open, a second invocation brings that window to the page it
 was asked for and exits; the two meet on a socket in `$XDG_RUNTIME_DIR`.
 
@@ -55,12 +55,15 @@ ignored in favour of the system's value or the default.
 | `touchpad.natural-scroll` | `false` | As for mice. |
 | `touchpad.tap-to-click` | `true` | A tap is a click. |
 | `touchpad.disable-while-typing` | `true` | Ignore the touchpad while keys are being pressed. |
+| `appearance.window-shadows` | `true` | Whether framed windows have a shadow (sengi-compositor). |
+| `appearance.wallpaper` | `"solid"` | `"solid"` for the desktop colour, or the full path of a PNG or JPEG to show behind the desktop. |
 
 Two options are for the session's start-up scripts, which should not have
 to read TOML:
 
     sengi-settings --get power.lock-after    print the value in effect
     sengi-settings --apply                    write the files below
+    sengi-settings --wallpaper               print the picture to show, if any
 
 A third changes a setting from a script or a test the way the window
 does: the value is checked and saved, the files below are written, and
@@ -228,6 +231,35 @@ Wayland connection of its own; brightness read from
 Not done: arranging several displays, mirroring, rotation, switching an
 output off, saving the layout across sessions (labwc keeps what it is
 given only until it exits; a kept mode is not written to a file yet).
+
+### Wallpaper
+
+- The picture behind the desktop: `solid` (the default, the desktop
+  colour), one of the six wallpapers Sengi OS ships, or a PNG or JPEG of
+  the user's. The setting is `appearance.wallpaper`: `solid`, or the full
+  path of the picture.
+- The page shows what is in use with a preview, a grid of the shipped
+  wallpapers with their thumbnails, a field for the full path of a picture
+  (with Return or Use), and the PNG and JPEG files directly in
+  `~/Pictures`, each with its size or the reason it cannot be used. There
+  is no file chooser yet: once Files exists it can fill the same field.
+- A file is judged by its first bytes, not its name: it has to be a
+  readable PNG or JPEG of at most 10 megapixels and 64 MB. swaybg keeps
+  the decoded picture while it runs (four bytes a pixel), so a picture over
+  2.5 megapixels says what it costs, for example "about 34 MB". A picture
+  that is refused says why next to the field.
+- A picture that goes missing or stops being readable after it was chosen
+  does not break the session: the desktop colour is shown, and the page
+  says that the chosen picture cannot be shown and why.
+- The change shows at once. After the key is written Settings runs
+  `sh /usr/lib/sengi-os/wallpaper.sh apply`, which starts a new swaybg with
+  the picture that `sengi-settings --wallpaper` prints and then ends the
+  old one. At login `session-start` runs the same function. The lock and
+  login screens have their own look and ignore the setting.
+- Previews are decoded by Settings itself and only for PNG: the shipped
+  wallpapers come with a 192 by 108 thumbnail, and a picture of the user's
+  is shrunk as it is read. A JPEG is listed by name and size and is not
+  drawn.
 
 ### Power
 

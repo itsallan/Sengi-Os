@@ -1,0 +1,249 @@
+// The Wallpaper page.
+
+import { Tokens, SengiText, SengiButton } from "components.slint";
+import { Page, PageColumn, Card, Divider, SettingRow, SectionLabel, Gap, Metrics, Note, TextField } from "../kit.slint";
+
+// One picture to choose from. The plain colour has no image.
+export struct WallpaperTile {
+    path: string,
+    title: string,
+    image: image,
+    has-image: bool,
+    chosen: bool,
+}
+
+// A file of the Pictures folder.
+export struct PictureRow {
+    path: string,
+    title: string,
+    detail: string,
+    usable: bool,
+    chosen: bool,
+}
+
+export global WallpaperData {
+    in property <image> current-image;
+    in property <bool> has-current-image: false;
+    in property <string> current-title;
+    in property <string> current-detail;
+    // Why the chosen picture is not shown, or empty.
+    in property <string> notice;
+    in property <[WallpaperTile]> tiles;
+    in property <[PictureRow]> pictures;
+    in property <string> pictures-note;
+    // Why the path that was typed was refused, or empty.
+    in property <string> path-error;
+
+    // "solid", or the full path of a picture.
+    callback choose(string);
+}
+
+// A thumbnail with its name under it. The one in use has a ring in the
+// accent colour; the one the keyboard is on, in the focus colour.
+component Tile inherits Rectangle {
+    in property <WallpaperTile> tile;
+    callback clicked();
+
+    forward-focus: scope;
+
+    pic := Rectangle {
+        y: 0;
+        width: parent.width;
+        height: parent.width * 9 / 16;
+        border-radius: Tokens.radius;
+        clip: true;
+        background: Tokens.color-desktop;
+
+        if root.tile.has-image: Image {
+            source: root.tile.image;
+            image-fit: cover;
+            width: parent.width;
+            height: parent.height;
+        }
+
+        Rectangle {
+            border-radius: Tokens.radius;
+            border-width: scope.has-focus ? Tokens.focus-ring-width
+                : root.tile.chosen ? Tokens.focus-ring-width : Tokens.border-width;
+            border-color: scope.has-focus ? Tokens.color-focus-ring
+                : root.tile.chosen ? Tokens.color-accent : Tokens.color-border;
+        }
+    }
+
+    SengiText {
+        y: pic.height;
+        width: parent.width;
+        height: Tokens.settings-wallpaper-label;
+        text: root.tile.title;
+        color: root.tile.chosen ? Tokens.color-accent : Tokens.color-text;
+        font-weight: root.tile.chosen ? Tokens.font-weight-medium : Tokens.font-weight-regular;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    scope := FocusScope {
+        focus-on-click: false;
+
+        key-pressed(event) => {
+            if event.text == " " || event.text == Key.Return {
+                root.clicked();
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+    }
+
+    TouchArea {
+        clicked => {
+            scope.focus();
+            root.clicked();
+        }
+    }
+}
+
+export component WallpaperPage inherits Page {
+    private property <length> gap: Tokens.space-md;
+    private property <length> tile-width: (root.column-width - root.gap * 2) / 3;
+    private property <length> tile-height: root.tile-width * 9 / 16 + Tokens.settings-wallpaper-label;
+    private property <int> rows: Math.ceil(WallpaperData.tiles.length / 3);
+
+    title: "Wallpaper";
+    content-height: column.preferred-height;
+
+    column := PageColumn {
+        SectionLabel {
+            text: "Current";
+        }
+
+        Card {
+            SettingRow {
+                title: WallpaperData.current-title;
+                detail: WallpaperData.current-detail;
+
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: Tokens.settings-wallpaper-preview;
+                        height: self.width * 9 / 16;
+                        border-radius: Tokens.radius;
+                        clip: true;
+                        background: Tokens.color-desktop;
+
+                        if WallpaperData.has-current-image: Image {
+                            source: WallpaperData.current-image;
+                            image-fit: cover;
+                            width: parent.width;
+                            height: parent.height;
+                        }
+
+                        Rectangle {
+                            border-radius: Tokens.radius;
+                            border-width: Tokens.border-width;
+                            border-color: Tokens.color-border;
+                        }
+                    }
+                }
+            }
+        }
+
+        if WallpaperData.notice != "": Note {
+            text: WallpaperData.notice;
+            warning: true;
+        }
+
+        Gap { }
+
+        SectionLabel {
+            text: "Sengi OS wallpapers";
+        }
+
+        Rectangle {
+            preferred-height: root.rows * root.tile-height + Math.max(root.rows - 1, 0) * root.gap;
+
+            for tile[index] in WallpaperData.tiles: Tile {
+                x: Math.mod(index, 3) * (root.tile-width + root.gap);
+                y: Math.floor(index / 3) * (root.tile-height + root.gap);
+                width: root.tile-width;
+                height: root.tile-height;
+                tile: tile;
+                clicked => { WallpaperData.choose(tile.path); }
+            }
+        }
+
+        Gap { }
+
+        SectionLabel {
+            text: "Your own picture";
+        }
+
+        Card {
+            SettingRow {
+                title: "Picture file";
+                detail: "The full path of a PNG or JPEG. A file chooser will come with Files.";
+
+                HorizontalLayout {
+                    spacing: Tokens.space-sm;
+                    alignment: end;
+
+                    VerticalLayout {
+                        alignment: center;
+                        field := TextField {
+                            width: Metrics.control-wide;
+                            placeholder: "/home/you/Pictures/photo.jpg";
+                            accepted(text) => { WallpaperData.choose(text); }
+                        }
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+                        SengiButton {
+                            text: "Use";
+                            clicked => { WallpaperData.choose(field.text); }
+                        }
+                    }
+                }
+            }
+
+        }
+
+        if WallpaperData.path-error != "": Note {
+            text: WallpaperData.path-error;
+            warning: true;
+        }
+
+        if WallpaperData.pictures.length > 0: SectionLabel {
+            text: "In your Pictures folder";
+        }
+
+        if WallpaperData.pictures.length > 0: Card {
+            for picture[index] in WallpaperData.pictures: VerticalLayout {
+                if index > 0: Divider { }
+
+                SettingRow {
+                    title: picture.title;
+                    detail: picture.detail;
+                    alert: !picture.usable;
+
+                    VerticalLayout {
+                        alignment: center;
+                        if picture.chosen: SengiText {
+                            text: "In use";
+                            color: Tokens.color-accent;
+                            vertical-alignment: center;
+                        }
+                        if !picture.chosen: SengiButton {
+                            text: "Use";
+                            enabled: picture.usable;
+                            clicked => { WallpaperData.choose(picture.path); }
+                        }
+                    }
+                }
+            }
+        }
+
+        if WallpaperData.pictures-note != "": Note {
+            text: WallpaperData.pictures-note;
+        }
+    }
+}

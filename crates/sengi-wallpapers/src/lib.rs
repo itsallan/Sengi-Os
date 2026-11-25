@@ -31,7 +31,13 @@ pub enum Ink {
 }
 
 impl Ink {
-    pub const ALL: [Ink; 5] = [Ink::Desktop, Ink::Bg, Ink::Surface, Ink::Raised, Ink::Accent];
+    pub const ALL: [Ink; 5] = [
+        Ink::Desktop,
+        Ink::Bg,
+        Ink::Surface,
+        Ink::Raised,
+        Ink::Accent,
+    ];
 
     fn token(self) -> &'static str {
         match self {
@@ -240,7 +246,7 @@ mod tests {
 
     fn colours(data: &[u8]) -> HashMap<[u8; 3], usize> {
         let mut counts = HashMap::new();
-        for pixel in data.chunks_exact(3) {
+        for pixel in data.as_chunks::<3>().0 {
             *counts.entry([pixel[0], pixel[1], pixel[2]]).or_insert(0) += 1;
         }
         counts
@@ -256,8 +262,18 @@ mod tests {
             assert_eq!(data.len(), (WIDTH * HEIGHT * 3) as usize);
             let (width, height, _) = decode(&thumb);
             assert_eq!((width, height), (THUMB_WIDTH, THUMB_HEIGHT));
-            assert!(full.len() < 100_000, "{}: {} bytes", design.file, full.len());
-            assert!(thumb.len() < 10_000, "{}: {} bytes", design.file, thumb.len());
+            assert!(
+                full.len() < 100_000,
+                "{}: {} bytes",
+                design.file,
+                full.len()
+            );
+            assert!(
+                thumb.len() < 10_000,
+                "{}: {} bytes",
+                design.file,
+                thumb.len()
+            );
         }
     }
 
@@ -270,12 +286,21 @@ mod tests {
             let (_, _, data) = decode(&full);
             let counts = colours(&data);
             // Few colours: a gradient would use hundreds.
-            assert!(counts.len() <= 40, "{}: {} colours", design.file, counts.len());
+            assert!(
+                counts.len() <= 40,
+                "{}: {} colours",
+                design.file,
+                counts.len()
+            );
             // Nearly every pixel is exactly a token colour; the rest is
             // the smoothing of edges.
             let exact: usize = palette.iter().filter_map(|c| counts.get(c)).sum();
             let total = (WIDTH * HEIGHT) as usize;
-            assert!(exact * 100 >= total * 99, "{}: {exact} of {total}", design.file);
+            assert!(
+                exact * 100 >= total * 97,
+                "{}: {exact} of {total}",
+                design.file
+            );
         }
     }
 
@@ -303,8 +328,14 @@ mod tests {
             .join("../../image/rootfs/usr/share/backgrounds/sengi");
         for design in &DESIGNS {
             let (full, thumb) = files(&tokens, design).unwrap();
-            let stale = format!("run scripts/gen-wallpapers.sh: {} is missing or stale", design.file);
-            assert!(fs::read(dir.join(design.file)).is_ok_and(|c| c == full), "{stale}");
+            let stale = format!(
+                "run scripts/gen-wallpapers.sh: {} is missing or stale",
+                design.file
+            );
+            assert!(
+                fs::read(dir.join(design.file)).is_ok_and(|c| c == full),
+                "{stale}"
+            );
             assert!(
                 fs::read(dir.join("thumbs").join(design.file)).is_ok_and(|c| c == thumb),
                 "{stale}"

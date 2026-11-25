@@ -31,6 +31,7 @@ use sengi_settings::settings::Settings;
 use sengi_settings::sound::page::SoundPage;
 use sengi_settings::store::Dirs;
 use sengi_settings::ui::SettingsWindow;
+use sengi_settings::wallpaper::WallpaperPage;
 use sengi_settings::{derive, secret};
 
 /// Set to have the program say on standard error how long starting took.
@@ -173,6 +174,12 @@ fn main() -> ExitCode {
                 }
             };
         }
+        Action::Wallpaper => {
+            if let Some(path) = sengi_settings::wallpaper::for_session(&load_settings(&dirs)) {
+                println!("{}", path.display());
+            }
+            return ExitCode::SUCCESS;
+        }
         Action::Screen(on) => {
             return match sengi_settings::screen::switch(on) {
                 Ok(()) => ExitCode::SUCCESS,
@@ -190,6 +197,7 @@ fn main() -> ExitCode {
             // The same steps as a change made in the window: the file,
             // then what the session reads, then the session is told.
             let mut settings = load_settings(&dirs);
+            let wallpaper = section == "appearance" && key == "wallpaper";
             let changed = sengi_settings::settings::value_from_text(&section, &key, &value)
                 .and_then(|value| settings.change(&[(section, key, value)]));
             if let Err(problem) = changed {
@@ -200,6 +208,9 @@ fn main() -> ExitCode {
             let applied = derive::apply(&dirs, &settings);
             if applied.changed() {
                 derive::reconfigure();
+            }
+            if wallpaper {
+                sengi_settings::wallpaper::refresh();
             }
             let problems = applied.problems();
             for problem in &problems {
@@ -335,6 +346,7 @@ fn register_pages(app: &std::rc::Rc<App>, services: Services) {
     );
     app.register(Page::Sound, SoundPage::attach(app, services.sound));
     app.register(Page::Display, DisplayPage::attach(app, services.display));
+    app.register(Page::Wallpaper, WallpaperPage::attach(app));
     app.register(
         Page::Power,
         PowerPage::attach(app, services.bus.clone(), services.class.clone()),

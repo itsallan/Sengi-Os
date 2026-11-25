@@ -3,7 +3,9 @@
 
 use sengi_shots::harness::{self, BACKDROP};
 use sengi_shots::settings::*;
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{
+    ComponentHandle, Image, ModelRc, Rgb8Pixel, SharedPixelBuffer, SharedString, VecModel,
+};
 
 fn list<T: Clone + 'static>(items: Vec<T>) -> ModelRc<T> {
     ModelRc::new(VecModel::from(items))
@@ -34,6 +36,7 @@ fn pages() -> ModelRc<PageEntry> {
         ("bluetooth", "Bluetooth", "bluetooth"),
         ("sound", "Sound", "speaker"),
         ("display", "Display", "display"),
+        ("wallpaper", "Wallpaper", "sun"),
         ("power", "Power", "battery"),
         ("date-time", "Date & Time", "clock"),
         ("keyboard", "Keyboard", "keyboard"),
@@ -218,6 +221,89 @@ fn display(w: &SettingsWindow, variant: &str) {
     d.set_outputs(list(outs));
 }
 
+// The thumbnails the image ships, decoded as the page would draw them.
+fn thumb(file: &str) -> Image {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../image/rootfs/usr/share/backgrounds/sengi/thumbs")
+        .join(file);
+    let mut reader = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(path).unwrap()))
+        .read_info()
+        .unwrap();
+    let mut data = vec![0; reader.output_buffer_size().unwrap()];
+    let frame = reader.next_frame(&mut data).unwrap();
+    let mut buffer = SharedPixelBuffer::<Rgb8Pixel>::new(frame.width, frame.height);
+    buffer
+        .make_mut_bytes()
+        .copy_from_slice(&data[..frame.buffer_size()]);
+    Image::from_rgb8(buffer)
+}
+
+fn wallpaper(w: &SettingsWindow, variant: &str) {
+    let d = w.global::<WallpaperData>();
+    let files = [
+        "01-graphite",
+        "02-horizon",
+        "03-hills",
+        "04-tiles",
+        "05-sunrise",
+        "06-stripes",
+    ];
+    let chosen = if variant == "solid" { 0 } else { 3 };
+    let mut tiles = vec![WallpaperTile {
+        path: "solid".into(),
+        title: "Solid colour".into(),
+        chosen: chosen == 0,
+        ..Default::default()
+    }];
+    for (index, file) in files.iter().enumerate() {
+        let title = file[3..].to_string();
+        tiles.push(WallpaperTile {
+            path: format!("/usr/share/backgrounds/sengi/{file}.png").into(),
+            title: format!("{}{}", title[..1].to_uppercase(), &title[1..]).into(),
+            image: thumb(&format!("{file}.png")),
+            has_image: true,
+            chosen: chosen == index + 1,
+        });
+    }
+    d.set_tiles(list(tiles));
+    if variant == "solid" {
+        d.set_current_title("Solid colour".into());
+        d.set_current_detail("The plain desktop colour. It uses the least memory.".into());
+    } else {
+        d.set_current_title("Tiles".into());
+        d.set_current_detail("PNG, 1920 by 1080".into());
+        d.set_current_image(thumb("04-tiles.png"));
+        d.set_has_current_image(true);
+    }
+    if variant == "missing" {
+        d.set_current_title("Solid colour".into());
+        d.set_current_detail("The plain desktop colour, until a picture is chosen.".into());
+        d.set_has_current_image(false);
+        d.set_notice(
+            "The chosen picture cannot be shown: /home/allan/Pictures/beach.jpg is not there."
+                .into(),
+        );
+        d.set_path_error("/home/allan/Pictures/notes.txt is not a PNG or JPEG picture".into());
+    }
+    let row = |name: &str, detail: &str, usable: bool, chosen: bool| PictureRow {
+        path: format!("/home/allan/Pictures/{name}").into(),
+        title: name.into(),
+        detail: detail.into(),
+        usable,
+        chosen,
+    };
+    d.set_pictures(list(vec![
+        row(
+            "beach.jpg",
+            "JPEG, 4000 by 2667. It takes about 43 MB of memory while it is the wallpaper.",
+            true,
+            false,
+        ),
+        row("logo.png", "PNG, 512 by 512", true, false),
+        row("scan.jpg", "This file is too big, over 64 MB", false, false),
+    ]));
+}
+
 fn power(w: &SettingsWindow, variant: &str) {
     let d = w.global::<PowerData>();
     d.set_blank("After 5 minutes".into());
@@ -323,6 +409,17 @@ fn every_page() {
         ("sound", "none", Box::new(|w| sound(w, "none"))),
         ("display", "one", Box::new(|w| display(w, "one"))),
         ("display", "two", Box::new(|w| display(w, "two"))),
+        (
+            "wallpaper",
+            "picture",
+            Box::new(|w| wallpaper(w, "picture")),
+        ),
+        ("wallpaper", "solid", Box::new(|w| wallpaper(w, "solid"))),
+        (
+            "wallpaper",
+            "missing",
+            Box::new(|w| wallpaper(w, "missing")),
+        ),
         ("power", "desktop", Box::new(|w| power(w, "desktop"))),
         ("power", "battery", Box::new(|w| power(w, "battery"))),
         ("date-time", "on", Box::new(datetime)),

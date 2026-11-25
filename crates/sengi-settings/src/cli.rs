@@ -6,13 +6,14 @@ Usage: sengi-settings [PAGE]
        sengi-settings --get SECTION.KEY
        sengi-settings --set SECTION.KEY VALUE
        sengi-settings --apply
+       sengi-settings --wallpaper
        sengi-settings --screen off|on
 
 Open Sengi OS Settings, at PAGE if one is named. If Settings is already
 open, that window is brought to the page instead.
 
-Pages: network, bluetooth, sound, display, power, date-time, keyboard,
-       mouse, notifications, about
+Pages: network, bluetooth, sound, display, wallpaper, power, date-time,
+       keyboard, mouse, notifications, about
 
   --get SECTION.KEY  print the setting in effect, for scripts
   --set SECTION.KEY VALUE
@@ -21,6 +22,8 @@ Pages: network, bluetooth, sound, display, power, date-time, keyboard,
                      Lists are given with commas, flags as true or false.
                      The idle times in [power] take effect at the next login
   --apply            write the files other programs read from the settings
+  --wallpaper       print the picture to show behind the desktop, if there is
+                     one that can be shown, for the session's start-up
   --screen off|on    switch every display off, or back on
   -h, --help         show this help
   -V, --version      show the version
@@ -33,6 +36,7 @@ pub enum Page {
     Bluetooth,
     Sound,
     Display,
+    Wallpaper,
     Power,
     DateTime,
     Keyboard,
@@ -42,11 +46,12 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Page; 10] = [
+    pub const ALL: [Page; 11] = [
         Page::Network,
         Page::Bluetooth,
         Page::Sound,
         Page::Display,
+        Page::Wallpaper,
         Page::Power,
         Page::DateTime,
         Page::Keyboard,
@@ -67,6 +72,7 @@ impl Page {
             Page::Keyboard => "keyboard",
             Page::Mouse => "mouse",
             Page::Notifications => "notifications",
+            Page::Wallpaper => "wallpaper",
             Page::About => "about",
         }
     }
@@ -82,6 +88,7 @@ impl Page {
             Page::Keyboard => "Keyboard",
             Page::Mouse => "Mouse & Touchpad",
             Page::Notifications => "Notifications",
+            Page::Wallpaper => "Wallpaper",
             Page::About => "About",
         }
     }
@@ -100,6 +107,7 @@ impl Page {
                 "datetime" | "date" | "time" | "clock" => Some(Page::DateTime),
                 "touchpad" | "pointer" => Some(Page::Mouse),
                 "notification" => Some(Page::Notifications),
+                "background" | "desktop-background" => Some(Page::Wallpaper),
                 _ => None,
             })
     }
@@ -122,6 +130,8 @@ pub enum Action {
     },
     /// Write the derived files and exit.
     Apply,
+    /// Print the picture to show behind the desktop, or nothing.
+    Wallpaper,
     /// Switch the displays on or off and exit.
     Screen(bool),
     /// Open the window over made-up services. Debug builds only, and not
@@ -139,6 +149,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Action, String> {
         Some("-h" | "--help") => Action::Help,
         Some("-V" | "--version") => Action::Version,
         Some("--apply") => Action::Apply,
+        Some("--wallpaper") => Action::Wallpaper,
         Some("--screen") => match args.next().as_deref() {
             Some("on") => Action::Screen(true),
             Some("off") => Action::Screen(false),
@@ -232,6 +243,11 @@ mod tests {
         assert_eq!(parsed(&["--help"]), Ok(Action::Help));
         assert_eq!(parsed(&["-V"]), Ok(Action::Version));
         assert_eq!(parsed(&["--apply"]), Ok(Action::Apply));
+        assert_eq!(parsed(&["--wallpaper"]), Ok(Action::Wallpaper));
+        assert_eq!(
+            parsed(&["background"]),
+            Ok(Action::Open(Some(Page::Wallpaper)))
+        );
         assert_eq!(parsed(&["--screen", "off"]), Ok(Action::Screen(false)));
         assert_eq!(parsed(&["--screen", "on"]), Ok(Action::Screen(true)));
         assert!(parsed(&["--screen"]).is_err());

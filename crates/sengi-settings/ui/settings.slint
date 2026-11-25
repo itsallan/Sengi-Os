@@ -15,8 +15,9 @@ import { KeyboardData, KeyboardPage } from "pages/keyboard.slint";
 import { AboutData, AboutPage } from "pages/about.slint";
 import { NotificationsData, NotificationsPage } from "pages/notifications.slint";
 import { PointerData, PointerSide, PointerPage } from "pages/pointer.slint";
+import { WallpaperData, WallpaperTile, PictureRow, WallpaperPage } from "pages/wallpaper.slint";
 
-export { Item, InfoRow, DialogSpec, AboutData, NotificationsData, PointerData, PointerSide, KeyboardData, PowerData, DateTimeData, NetworkData, BluetoothData, SoundData, SoundSide, DisplayData, DisplayOutput }
+export { Item, InfoRow, DialogSpec, WallpaperData, WallpaperTile, PictureRow, AboutData, NotificationsData, PointerData, PointerSide, KeyboardData, PowerData, DateTimeData, NetworkData, BluetoothData, SoundData, SoundSide, DisplayData, DisplayOutput }
 
 export struct PageEntry {
     name: string,
@@ -225,6 +226,7 @@ export component SettingsWindow inherits Window {
         if root.page == "bluetooth": BluetoothPage { }
         if root.page == "sound": SoundPage { }
         if root.page == "display": DisplayPage { }
+        if root.page == "wallpaper": WallpaperPage { }
         if root.page == "power": PowerPage { }
         if root.page == "date-time": DateTimePage { }
         if root.page == "keyboard": KeyboardPage { }

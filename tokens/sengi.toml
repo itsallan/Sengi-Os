@@ -130,6 +130,10 @@ settings-sidebar-width = 200
 settings-page-width = 640
 settings-control-width = 200
 settings-control-wide = 240
+# The wallpaper page: the preview of the current picture in a row, and the
+# strip of a picture's name under its thumbnail.
+settings-wallpaper-preview = 144
+settings-wallpaper-label = 28
 
 [window]
 # The round buttons in the title bar: their diameter, the space between two,

@@ -959,6 +959,7 @@ fn icon(page: Page) -> &'static str {
         Page::Bluetooth => "bluetooth",
         Page::Sound => "speaker",
         Page::Display => "display",
+        Page::Wallpaper => "sun",
         Page::Power => "battery",
         Page::DateTime => "clock",
         Page::Keyboard => "keyboard",

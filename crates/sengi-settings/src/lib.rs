@@ -25,6 +25,7 @@ pub mod services;
 pub mod settings;
 pub mod sound;
 pub mod store;
+pub mod wallpaper;
 pub mod worker;
 
 /// The system bus, as sengi-system opens and reads it.
