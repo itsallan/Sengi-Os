@@ -239,6 +239,11 @@ pub fn decide_enabled(on_now: usize, saved: &[Option<bool>]) -> Vec<bool> {
     }
 }
 
+/// Whether there are several `rects` and they are all one and the same.
+pub fn is_mirror(rects: &[Rect]) -> bool {
+    rects.len() > 1 && rects.windows(2).all(|pair| pair[0] == pair[1])
+}
+
 /// Whether any two of `rects` overlap.
 pub fn overlap(rects: &[Rect]) -> bool {
     rects.iter().enumerate().any(|(i, a)| {
@@ -601,6 +606,7 @@ impl State {
         }
         self.refresh_painters();
         self.refit_fullscreen();
+        self.follow_primary();
         self.usable_area_changed();
         self.settle_pointer_after_layout();
         self.update_keyboard_focus();
@@ -692,11 +698,15 @@ impl State {
             }
             rects.push(Rect::new(head.position.0, head.position.1, lw, lh));
         }
-        if overlap(&rects) {
-            return Err("outputs would overlap".into());
-        }
-        if !edge_connected(&rects) {
-            return Err("outputs would not touch, and the pointer could not cross".into());
+        // Outputs of the same size in the same place show the same thing:
+        // that is what mirroring is, and the only overlap allowed.
+        if !is_mirror(&rects) {
+            if overlap(&rects) {
+                return Err("outputs would overlap".into());
+            }
+            if !edge_connected(&rects) {
+                return Err("outputs would not touch, and the pointer could not cross".into());
+            }
         }
         Ok(())
     }
@@ -1206,6 +1216,16 @@ mod tests {
         let new = [r(0, 0, 50, 50), r(0, 100, 100, 100)];
         let at = follow_changes(&old, &new, &[false; 2]);
         assert_eq!(at[1], Some((0, 50)));
+    }
+
+    #[test]
+    fn identical_rectangles_are_a_mirror_and_nothing_else_is() {
+        let a = r(0, 0, 100, 50).unwrap();
+        assert!(is_mirror(&[a, a]));
+        assert!(is_mirror(&[a, a, a]));
+        assert!(!is_mirror(&[a]));
+        assert!(!is_mirror(&[a, r(0, 0, 100, 51).unwrap()]));
+        assert!(!is_mirror(&[a, r(100, 0, 100, 50).unwrap()]));
     }
 
     #[test]

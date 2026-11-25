@@ -18,15 +18,14 @@ pub struct Config {
     pub display: Display,
 }
 
-/// What `display.*` says: which output the bar and dock go to, mirroring,
-/// and the night light. The sizes, places and scales of the outputs are
+/// What `display.*` says: which output the bar and dock go to, and the
+/// night light. The sizes, places and scales of the outputs are
 /// not here: they are the compositor's own file, see `output_store`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Display {
     /// The output that layer surfaces which name none go to. Empty is the
     /// first output.
     pub primary: String,
-    pub mirror: bool,
     pub night: NightLight,
 }
 
@@ -213,7 +212,6 @@ impl Config {
             },
             display: Display {
                 primary: settings.text("display", "primary"),
-                mirror: settings.flag("display", "mirror"),
                 night: NightLight {
                     enabled: settings.flag("display", "night-light"),
                     from: clock(settings, "night-from", 21 * 60),
@@ -418,7 +416,7 @@ mod tests {
     fn the_display_settings_default_to_nothing_special() {
         let display = config("").display;
         assert_eq!(display.primary, "");
-        assert!(!display.mirror && !display.night.enabled);
+        assert!(!display.night.enabled);
         assert_eq!((display.night.from, display.night.to), (21 * 60, 7 * 60));
         assert_eq!(display.night.strength, 50);
         let set = config(

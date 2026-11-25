@@ -293,6 +293,9 @@ pub struct State {
     pub overlay: Option<crate::overlay::Overlay>,
     /// A three-finger swipe on a touchpad, while the fingers are down.
     pub swipe: Option<crate::gesture::Active>,
+    /// The bar and dock surfaces that asked for no output: they follow
+    /// `display.primary`.
+    pub primary_layers: Vec<WlSurface>,
     /// Where a window being dragged to a screen edge will land, drawn as an
     /// outline until it is let go.
     pub snap_hint: Option<crate::snap::Hint>,
@@ -581,6 +584,7 @@ impl State {
             swallowed_keys: Swallowed::default(),
             overlay: None,
             swipe: None,
+            primary_layers: Vec::new(),
             snap_hint: None,
             children: Vec::new(),
             idle_clock: crate::power::IdleClock::new(
@@ -1218,6 +1222,7 @@ impl State {
         crate::say!("settings read again");
         self.night_update();
         self.reload_output_layout();
+        self.follow_primary();
     }
 
     /// Tells idle watchers such as swayidle that the user did something,

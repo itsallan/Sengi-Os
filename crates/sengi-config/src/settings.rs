@@ -52,7 +52,6 @@ pub const KEYS: &[(&str, &str, Default)] = &[
     ("touchpad", "scroll-method", Default::Text(SCROLL_TWO_FINGER)),
     ("touchpad", "gestures", Default::Flag(true)),
     ("display", "primary", Default::Text("")),
-    ("display", "mirror", Default::Flag(false)),
     ("display", "night-light", Default::Flag(false)),
     ("display", "night-from", Default::Text("21:00")),
     ("display", "night-to", Default::Text("07:00")),

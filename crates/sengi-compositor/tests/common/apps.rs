@@ -389,7 +389,7 @@ impl Client {
             &surface,
             output,
             Layer::Top,
-            "test bar".into(),
+            "sengi-bar".into(),
             &self.handle,
             (),
         );
