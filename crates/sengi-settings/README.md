@@ -57,6 +57,14 @@ ignored in favour of the system's value or the default.
 | `touchpad.natural-scroll` | `false` | As for mice. |
 | `touchpad.tap-to-click` | `true` | A tap is a click. |
 | `touchpad.disable-while-typing` | `true` | Ignore the touchpad while keys are being pressed. |
+| `touchpad.click-method` | `"clickfinger"` | `"clickfinger"` (one finger left click, two fingers right click) or `"areas"` (the bottom corners are the buttons). |
+| `touchpad.scroll-method` | `"two-finger"` | `"two-finger"` or `"edge"` (one finger along the right or bottom edge). |
+| `touchpad.gestures` | `true` | Three-finger swipes: left and right switch windows, up shows the switcher (sengi-compositor). |
+| `display.primary` | `""` | The output the bar and the dock go to, such as `"eDP-1"`. Empty is the one the pointer is on (sengi-compositor). |
+| `display.night-light` | `false` | Warm the screen between `night-from` and `night-to` (sengi-compositor). |
+| `display.night-from` | `"21:00"` | When the night light comes on, `HH:MM`, local time. |
+| `display.night-to` | `"07:00"` | When it goes off. |
+| `display.night-strength` | `50` | How warm, 0 to 100. 0 is no tint, 100 is about 3000 K. |
 | `appearance.window-shadows` | `true` | Whether framed windows have a shadow (sengi-compositor). |
 | `appearance.wallpaper` | `"solid"` | `"solid"` for the desktop colour, or the full path of a PNG or JPEG to show behind the desktop. |
 

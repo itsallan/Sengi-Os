@@ -84,7 +84,9 @@ fn rc_block(settings: &Settings) -> String {
          \x20     <leftHanded>{}</leftHanded>\n      <pointerSpeed>{}</pointerSpeed>\n    </device>\n\
          \x20   <device category=\"touchpad\">\n      <naturalScroll>{}</naturalScroll>\n\
          \x20     <pointerSpeed>{}</pointerSpeed>\n      <tap>{}</tap>\n\
-         \x20     <disableWhileTyping>{}</disableWhileTyping>\n    </device>\n  </libinput>\n",
+         \x20     <disableWhileTyping>{}</disableWhileTyping>\n\
+         \x20     <clickMethod>{}</clickMethod>\n      <scrollMethod>{}</scrollMethod>\n\
+         \x20   </device>\n  </libinput>\n",
         settings.number("keyboard", "repeat-rate"),
         settings.number("keyboard", "repeat-delay"),
         yes_no(settings.flag("mouse", "natural-scroll")),
@@ -94,6 +96,16 @@ fn rc_block(settings: &Settings) -> String {
         speed("touchpad"),
         yes_no(settings.flag("touchpad", "tap-to-click")),
         yes_no(settings.flag("touchpad", "disable-while-typing")),
+        if settings.text("touchpad", "click-method") == "areas" {
+            "buttonAreas"
+        } else {
+            "clickfinger"
+        },
+        if settings.text("touchpad", "scroll-method") == "edge" {
+            "edge"
+        } else {
+            "twoFinger"
+        },
     )
 }
 

@@ -45,6 +45,7 @@ pub const DEMOS: &[&str] = &[
     "bluetooth-off",
     "sound",
     "display",
+    "display-one",
 ];
 
 /// The services of a made-up machine, and the page that shows them off.
@@ -141,6 +142,14 @@ pub fn demo(name: &str) -> Option<(crate::cli::Page, Services)> {
             });
             Page::Sound
         }
+        "display-one" => {
+            use display::testing::{laptop, Fake};
+            let fake = Fake::with(vec![laptop()]);
+            *fake.backlight.lock().unwrap_or_else(|p| p.into_inner()) =
+                display::backlight::parse("intel_backlight", "4800", "7500");
+            services.display = fake;
+            Page::Display
+        }
         "display" => {
             use display::testing::{laptop, mode, Fake};
             let external = display::Output {
@@ -153,6 +162,7 @@ pub fn demo(name: &str) -> Option<(crate::cli::Page, Services)> {
                 ],
                 current: Some(mode(3840, 2160, 60)),
                 scale: 1500,
+                position: (1920, 0),
                 ..laptop()
             };
             let fake = Fake::with(vec![laptop(), external]);

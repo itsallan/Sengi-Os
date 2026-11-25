@@ -7,6 +7,20 @@ and the measured idle RAM and boot time.
 
 ### Added
 
+- Settings, Display: the displays drawn where they are, a Position choice for
+  each (left of, right of, above, below or mirroring another), and a Main
+  display, which is where the bar and the dock go. Positions and scales are
+  tried for 15 seconds and go back unless kept, and are remembered for each
+  display. Mirroring puts two displays of the same size in one place.
+- Night light: Settings, Display has a switch, a start and end time (21:00 to
+  07:00 unless set) and a warmth. It is a colour ramp on the display, so it
+  costs nothing per frame and screenshots stay untinted. Needs a display
+  driver with a colour ramp, which a virtual machine's usually lacks.
+- Touchpad: Settings, Mouse & Touchpad has Click (by number of fingers or by
+  the bottom corners), Scroll (two fingers or the edge) and Three-finger
+  swipes. Left and right swipes switch windows, up shows the switcher, down
+  picks the selected window. Pinching is ignored. None of this has been tried
+  on a real touchpad yet.
 - The screen dims after 2 minutes without input and goes off after 5, and
   any key, click or movement brings it back. Dimming, switching off and an
   optional lock are timed by sengi-compositor itself, with no polling and

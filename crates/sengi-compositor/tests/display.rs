@@ -129,7 +129,10 @@ fn a_weaker_strength_is_a_milder_tint() {
     };
     let (g25, b25) = green_at(25, "weak");
     let (g100, b100) = green_at(100, "strong");
-    assert!(g25 > g100 && b25 > b100, "{g25},{b25} against {g100},{b100}");
+    assert!(
+        g25 > g100 && b25 > b100,
+        "{g25},{b25} against {g100},{b100}"
+    );
     assert!(g25 < 0xc0 && b25 < 0xc0);
 }
 
@@ -148,9 +151,15 @@ fn the_tint_comes_on_at_the_start_of_the_night_and_goes_with_a_reload() {
     while compositor.said("night light: on").is_none() && std::time::Instant::now() < end {
         std::thread::sleep(Duration::from_millis(100));
     }
-    assert!(compositor.said("night light: on").is_some(), "never came on");
+    assert!(
+        compositor.said("night light: on").is_some(),
+        "never came on"
+    );
     let line = compositor.status_line("night light:");
-    assert!(line.contains("21:00 to 07:00") && line.contains("strength 60"), "{line}");
+    assert!(
+        line.contains("21:00 to 07:00") && line.contains("strength 60"),
+        "{line}"
+    );
 
     // Switched off in Settings: SIGHUP reads it and the tint goes.
     compositor.write_settings("[display]\nnight-light = false\n");
@@ -160,22 +169,22 @@ fn the_tint_comes_on_at_the_start_of_the_night_and_goes_with_a_reload() {
         std::thread::sleep(Duration::from_millis(50));
     }
     assert!(compositor.said("night light: off").is_some());
-    assert!(compositor.status_line("night light:").ends_with("night light: off"));
+    assert!(compositor
+        .status_line("night light:")
+        .ends_with("night light: off"));
 }
 
 #[test]
 fn the_bar_goes_to_the_primary_output_and_follows_it_on_a_reload() {
-    let compositor = Compositor::start_args_in(
-        &["--outputs", "1280x720,800x600"],
-        None,
-        &[],
-    );
+    let compositor = Compositor::start_args_in(&["--outputs", "1280x720,800x600"], None, &[]);
     compositor.write_settings("[display]\nprimary = \"HEADLESS-2\"\n");
     compositor.signal("HUP");
     std::thread::sleep(Duration::from_millis(500));
     let mut app = compositor.connect();
     let _bar = app.bar(24, BAR).unwrap();
-    let on = |app: &mut Client, name: &str| app.capture_named(name).unwrap().at(10, 4) == BAR & 0xff_ffff;
+    let on = |app: &mut Client, name: &str| {
+        app.capture_named(name).unwrap().at(10, 4) == BAR & 0xff_ffff
+    };
     assert!(on(&mut app, "HEADLESS-2"), "not on the primary output");
     assert!(!on(&mut app, "HEADLESS-1"));
 
@@ -197,7 +206,10 @@ fn outputs_of_one_size_in_one_place_are_a_mirror_and_others_still_may_not_overla
     let compositor = Compositor::start_args(&["--outputs", "1280x720,1280x720"], None);
     let mut app = compositor.connect();
     let manager = app.manager().unwrap();
-    let ops = [Op::keep("HEADLESS-1").at(0, 0), Op::keep("HEADLESS-2").at(0, 0)];
+    let ops = [
+        Op::keep("HEADLESS-1").at(0, 0),
+        Op::keep("HEADLESS-2").at(0, 0),
+    ];
     assert_eq!(
         app.configure(&manager, None, &ops, true).unwrap(),
         Outcome::Succeeded
@@ -213,14 +225,20 @@ fn outputs_of_one_size_in_one_place_are_a_mirror_and_others_still_may_not_overla
     };
     assert!(has(&first) && has(&second));
     // Then pulled apart again.
-    let ops = [Op::keep("HEADLESS-1").at(0, 0), Op::keep("HEADLESS-2").at(1280, 0)];
+    let ops = [
+        Op::keep("HEADLESS-1").at(0, 0),
+        Op::keep("HEADLESS-2").at(1280, 0),
+    ];
     assert_eq!(
         app.configure(&manager, None, &ops, true).unwrap(),
         Outcome::Succeeded
     );
     assert_eq!(app.head("HEADLESS-2").position, (1280, 0));
     // A scale on one of them makes them different sizes: not a mirror.
-    let ops = [Op::keep("HEADLESS-1").at(0, 0).scale(2.0), Op::keep("HEADLESS-2").at(0, 0)];
+    let ops = [
+        Op::keep("HEADLESS-1").at(0, 0).scale(2.0),
+        Op::keep("HEADLESS-2").at(0, 0),
+    ];
     assert_eq!(
         app.configure(&manager, None, &ops, true).unwrap(),
         Outcome::Failed
@@ -254,8 +272,7 @@ fn focus_counts(clients: &mut [Client]) -> Vec<(u32, u32)> {
 #[test]
 fn a_three_finger_swipe_left_walks_back_through_the_windows() {
     // 150 to the left is two steps: past the middle window to the first.
-    let compositor =
-        Compositor::start_with(None, None, Some("3000 swipe 3 -150 0\n"));
+    let compositor = Compositor::start_with(None, None, Some("3000 swipe 3 -150 0\n"));
     let mut clients = three_windows(&compositor);
     assert!(
         clients[0].wait(Duration::from_secs(6), |seen| seen.keyboard_enters >= 2),
@@ -288,7 +305,11 @@ fn other_swipes_and_a_switched_off_setting_do_nothing() {
     let mut clients = three_windows(&compositor);
     clients[0].wait(Duration::from_secs(5), |_| false);
     let counts = focus_counts(&mut clients);
-    assert_eq!(counts.iter().map(|c| c.0).collect::<Vec<_>>(), vec![1, 1, 1], "{counts:?}");
+    assert_eq!(
+        counts.iter().map(|c| c.0).collect::<Vec<_>>(),
+        vec![1, 1, 1],
+        "{counts:?}"
+    );
 
     let compositor = Compositor::start_with(
         None,
@@ -330,5 +351,7 @@ fn a_swipe_up_opens_the_switcher_and_a_swipe_down_picks() {
     }
     let counts = focus_counts(&mut clients);
     assert!(counts.iter().any(|c| c.0 >= 2), "{counts:?}");
-    assert!(compositor.status_line("overlay:").ends_with("overlay: none"));
+    assert!(compositor
+        .status_line("overlay:")
+        .ends_with("overlay: none"));
 }

@@ -1,7 +1,7 @@
 // The Mouse & Touchpad page.
 
 import { Tokens, SengiToggle } from "components.slint";
-import { Page, PageColumn, Card, Divider, SettingRow, RowValue, SectionLabel, Gap, Metrics, Slider } from "../kit.slint";
+import { Page, PageColumn, Card, Divider, SettingRow, RowValue, SectionLabel, Gap, Metrics, Slider, ChoiceButton } from "../kit.slint";
 
 // The switches of one kind of pointing device. A mouse has no use for
 // the last two, nor a touchpad for the second.
@@ -17,10 +17,30 @@ export global PointerData {
     in property <PointerSide> touchpad;
     in-out property <int> mouse-speed: 0;
     in-out property <int> touchpad-speed: 0;
+    // What the touchpad's click and scroll methods are called now.
+    in property <string> click-method;
+    in property <string> scroll-method;
+    in property <bool> gestures: true;
 
     // Section ("mouse" or "touchpad"), key, value.
     callback set-flag(string, string, bool);
     callback set-speed(string, int);
+    // "click-method" or "scroll-method".
+    callback choose(string);
+}
+
+component ChoiceRow inherits SettingRow {
+    in property <string> value;
+    callback pressed();
+
+    VerticalLayout {
+        alignment: center;
+        ChoiceButton {
+            width: Metrics.control;
+            text: root.value;
+            clicked => { root.pressed(); }
+        }
+    }
 }
 
 component SpeedRow inherits SettingRow {
@@ -135,6 +155,33 @@ export component PointerPage inherits Page {
                 section: "touchpad";
                 key: "disable-while-typing";
                 on: PointerData.touchpad.disable-while-typing;
+            }
+
+            Divider { }
+
+            ChoiceRow {
+                title: "Click";
+                detail: "How a press on the pad becomes a left or right click";
+                value: PointerData.click-method;
+                pressed => { PointerData.choose("click-method"); }
+            }
+
+            Divider { }
+
+            ChoiceRow {
+                title: "Scroll";
+                value: PointerData.scroll-method;
+                pressed => { PointerData.choose("scroll-method"); }
+            }
+
+            Divider { }
+
+            FlagRow {
+                title: "Three-finger swipes";
+                detail: "Left and right switch windows, up shows them";
+                section: "touchpad";
+                key: "gestures";
+                on: PointerData.gestures;
             }
         }
     }

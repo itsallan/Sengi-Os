@@ -51,7 +51,8 @@ impl WlrLayerShellHandler for State {
     }
 
     fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
-        self.primary_layers.retain(|kept| kept != surface.wl_surface());
+        self.primary_layers
+            .retain(|kept| kept != surface.wl_surface());
         // Also on outputs that are off: a bar can be destroyed after its
         // output was switched off.
         let outputs: Vec<Output> = self

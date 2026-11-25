@@ -397,6 +397,13 @@ Known gaps, as of today.
   pointer on the first output that is on, not on the one it belongs to.
 - Scales 2 and 1.5 are tested on the headless backend and by screenshots
   there, but have not been looked at on the image or on a real screen.
+- The night light needs a real display driver: the colour ramp has not been
+  set on one (no real CRTC was driven), and which of the laptop panel and
+  an external screen take a ramp depends on the driver. Mirroring and the
+  primary output have not been tried with real screens either.
+- Three-finger swipes and the click and scroll methods have only been
+  tested without a device: the swipes by a script that calls the same
+  code, the libinput settings not at all. They need a real touchpad.
 - The touchpad settings (tap to click, disable while typing) have not been
   seen working: there is no touchpad in a VM.
 - GLES costs memory that is Mesa's, not ours: Debian's `libgallium` links
@@ -616,7 +623,13 @@ tells the compositor it is running under: `labwc --reconfigure` there,
 - `[mouse]`: `speed`, `natural-scroll`, `left-handed`, for every pointing
   device that cannot be tapped.
 - `[touchpad]`: `speed`, `natural-scroll`, `tap-to-click`,
-  `disable-while-typing`, for those that can.
+  `disable-while-typing`, `click-method` (`clickfinger`, one finger left
+  and two right, or `areas`, the bottom corners) and `scroll-method`
+  (`two-finger` or `edge`), for those that can. A pad with real buttons
+  has no click method, and one without an edge has no edge scrolling: the
+  setting is left alone there. `gestures` switches the swipes off.
+- `[display]`: `primary`, the output the bar and the dock go to, and the
+  night light, see "Display: scale, arrangement and night light".
 - `[appearance]`: `window-shadows`, whether framed windows have a shadow
   (on unless set).
 - `[power]`: `dim-after`, `blank-after` and `lock-after`, in seconds (zero
@@ -655,6 +668,53 @@ seconds and flipped no page. It is 11 MB Pss against labwc's 25.
 
 Not seen: anything on real hardware, the lock after the idle timeout in
 this image, and logging out through the session menu.
+
+### Display: scale, arrangement and night light
+
+Scale: every output has its own, from 0.5 to 4, announced as fractional
+scale where a client asks for it. Settings offers 100 to 200 percent in
+steps of 25. It is saved by output name in `outputs.toml`, applied live by
+wlr-output-management and again on SIGHUP, and bar, dock and desktop take
+their size from the output they are on, so they follow (tested at 1.5 and
+2 on the headless backend).
+
+Arrangement: Settings' Position choice is a position set through the same
+protocol, left of, right of, above or below another output. An overlap is
+refused, with one exception: outputs of the same logical size in the same
+place are a mirror, and each draws the whole desktop there. Mirroring
+outputs of different sizes is not done: Settings sets the second to the
+first's size and scale, or does not offer it. `display.primary` names the
+output that the bar and the dock (layer surfaces called `sengi-bar` and
+`sengi-dock` that name no output) are put on, and when it changes on SIGHUP
+they are moved there. Without it they go where the pointer is. Laptop
+panel, lid and plug-in events do not move them again.
+
+Night light: `display.night-light`, `night-from` and `night-to` (21:00 and
+07:00 unless set, local time) and `night-strength` (0 to 100, which is 6500
+K down to 3000 K). The tint is the CRTC's colour ramp (the gamma table the
+kernel gives every CRTC), set when the night begins or ends, not a pass over
+each frame: it costs nothing while drawing, direct scanout and damage
+tracking stay as they are, and what wlr-screencopy hands out, sengi-shot
+included, is the picture before the ramp, so screenshots are untinted. It is
+chosen over a multiply in the final composition because that would cost
+every frame and tint the screenshots. A driver without a ramp (virtio-gpu in
+a VM) gets no night light, and the journal says so
+once. One timer is set for the next edge; nothing wakes the compositor
+meanwhile. It is set again on SIGHUP and when the session comes back after a
+switch of terminals or sleep. The headless backend has no display, so it
+applies the same ramp to the pictures its script saves, as a panel would,
+and tests set the clock with `SENGI_COMPOSITOR_NIGHT_NOW=HH:MM:SS`. The
+colour of the ramp changes at once at the edge, with no fade.
+
+Touchpad gestures: libinput's three-finger swipes. Left is the window used
+before this one, as Alt+Tab goes, a further 70 pixels of travel the one
+before that, and going back undoes it; the window is picked when the fingers
+lift. Up opens the switcher and keeps it open, left and right then move it,
+down picks, Escape closes. There is no overview of the windows, so up shows
+the switcher only. Pinch, hold and swipes with other numbers of fingers are
+ignored. `swipe FINGERS DX DY` in a script plays one.
+
+SIGUSR1 adds a `night light:` line.
 
 ### Idle, sleep and the lid
 

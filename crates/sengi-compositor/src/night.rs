@@ -88,7 +88,7 @@ pub fn apply(rgb: &mut [u8], tint: Tint) {
     if tint == NEUTRAL {
         return;
     }
-    for pixel in rgb.chunks_exact_mut(3) {
+    for pixel in rgb.as_chunks_mut::<3>().0 {
         pixel[0] = (f64::from(pixel[0]) * tint.0).round() as u8;
         pixel[1] = (f64::from(pixel[1]) * tint.1).round() as u8;
         pixel[2] = (f64::from(pixel[2]) * tint.2).round() as u8;

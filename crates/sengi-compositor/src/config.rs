@@ -425,7 +425,10 @@ mod tests {
         .display;
         assert_eq!(set.primary, "HDMI-A-1");
         assert!(set.night.enabled);
-        assert_eq!((set.night.from, set.night.to, set.night.strength), (1350, 375, 80));
+        assert_eq!(
+            (set.night.from, set.night.to, set.night.strength),
+            (1350, 375, 80)
+        );
     }
 
     #[test]

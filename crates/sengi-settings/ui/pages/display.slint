@@ -1,7 +1,7 @@
 // The Display page: brightness where there is a backlight, and for each
 // connected display its resolution, refresh rate and scale.
 
-import { Tokens } from "components.slint";
+import { Tokens, SengiToggle, SengiText, SengiLabel } from "components.slint";
 import { NamedIcon } from "../icons.slint";
 import { Page, PageColumn, Card, Divider, SettingRow, RowValue, SectionLabel, Note, Gap, Metrics, Slider, ChoiceButton } from "../kit.slint";
 
@@ -14,8 +14,21 @@ export struct DisplayOutput {
     resolution: string,
     refresh: string,
     scale: string,
+    // Where it lies among the other displays, empty with only one on.
+    position: string,
+    can-position: bool,
     can-resolution: bool,
     can-refresh: bool,
+}
+
+// A display as a rectangle of the arrangement, in logical pixels.
+export struct ArrangeRect {
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    label: string,
+    primary: bool,
 }
 
 export global DisplayData {
@@ -25,6 +38,26 @@ export global DisplayData {
     in property <bool> has-backlight: false;
     in-out property <int> brightness-value: 100;
     in-out property <bool> brightness-held: false;
+
+    // The displays that are on, drawn where they are, with the box that
+    // holds them. Empty with fewer than two.
+    in property <[ArrangeRect]> arrangement;
+    in property <int> arrange-x: 0;
+    in property <int> arrange-y: 0;
+    in property <int> arrange-w: 1;
+    in property <int> arrange-h: 1;
+    in property <string> primary-title: "Automatic";
+
+    in property <bool> night-on: false;
+    in property <string> night-from: "21:00";
+    in property <string> night-to: "07:00";
+    in-out property <int> night-strength: 50;
+    in-out property <bool> night-held: false;
+    callback set-night(bool);
+    // "from" or "to".
+    callback choose-night(string);
+    callback set-night-strength(int);
+    callback choose-primary();
 
     // The output's name, then "resolution", "refresh" or "scale".
     callback choose(string, string);
@@ -43,6 +76,38 @@ component ChoiceRow inherits SettingRow {
             text: root.value;
             enabled: root.can;
             clicked => { root.pressed(); }
+        }
+    }
+}
+
+// The displays as rectangles, to scale, the main one marked.
+component Arrangement inherits Rectangle {
+    private property <length> pad: Tokens.space-md;
+    private property <float> fit: min(
+        (self.width - root.pad * 2) / (DisplayData.arrange-w * 1px),
+        (self.height - root.pad * 2) / (DisplayData.arrange-h * 1px));
+    private property <length> left: (self.width - DisplayData.arrange-w * 1px * root.fit) / 2;
+    private property <length> top: (self.height - DisplayData.arrange-h * 1px * root.fit) / 2;
+
+    height: Tokens.space-xxl * 3;
+
+    for item in DisplayData.arrangement: Rectangle {
+        x: root.left + (item.x - DisplayData.arrange-x) * 1px * root.fit;
+        y: root.top + (item.y - DisplayData.arrange-y) * 1px * root.fit;
+        width: item.w * 1px * root.fit;
+        height: item.h * 1px * root.fit;
+        border-radius: Tokens.radius;
+        border-width: item.primary ? Tokens.focus-ring-width : Tokens.border-width;
+        border-color: item.primary ? Tokens.color-accent : Tokens.color-border;
+        background: Tokens.color-surface-raised;
+
+        SengiLabel {
+            x: Tokens.space-xs;
+            width: parent.width - Tokens.space-xs * 2;
+            text: item.label;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            overflow: elide;
         }
     }
 }
@@ -93,6 +158,93 @@ export component DisplayPage inherits Page {
             min-height: Tokens.space-md;
         }
 
+        SectionLabel {
+            text: "Night light";
+        }
+
+        Card {
+            SettingRow {
+                title: "Night light";
+                detail: "Warms the screen at night";
+
+                VerticalLayout {
+                    alignment: center;
+                    SengiToggle {
+                        checked: DisplayData.night-on;
+                        toggled(on) => { DisplayData.set-night(on); }
+                    }
+                }
+            }
+
+            Divider { }
+
+            ChoiceRow {
+                title: "From";
+                enabled: DisplayData.night-on;
+                value: DisplayData.night-from;
+                can: DisplayData.night-on;
+                pressed => { DisplayData.choose-night("from"); }
+            }
+
+            Divider { }
+
+            ChoiceRow {
+                title: "To";
+                enabled: DisplayData.night-on;
+                value: DisplayData.night-to;
+                can: DisplayData.night-on;
+                pressed => { DisplayData.choose-night("to"); }
+            }
+
+            Divider { }
+
+            SettingRow {
+                title: "Warmth";
+                enabled: DisplayData.night-on;
+
+                VerticalLayout {
+                    alignment: center;
+                    Slider {
+                        width: Metrics.control;
+                        enabled: DisplayData.night-on;
+                        value <=> DisplayData.night-strength;
+                        released(to) => { DisplayData.set-night-strength(to); }
+                        changed moving => { DisplayData.night-held = self.moving; }
+                    }
+                }
+
+                RowValue {
+                    width: Tokens.value-column-sm;
+                    text: DisplayData.night-strength + "%";
+                }
+            }
+        }
+
+        Gap { }
+
+        if DisplayData.arrangement.length > 0: VerticalLayout {
+            spacing: Tokens.space-sm;
+
+            SectionLabel {
+                text: "Arrangement";
+            }
+
+            Card {
+                Arrangement { }
+
+                Divider { }
+
+                ChoiceRow {
+                    title: "Main display";
+                    detail: "Where the bar and the dock are";
+                    value: DisplayData.primary-title;
+                    pressed => { DisplayData.choose-primary(); }
+                }
+            }
+
+            Gap { }
+        }
+
         for output in DisplayData.outputs: VerticalLayout {
             spacing: Tokens.space-sm;
 
@@ -130,6 +282,16 @@ export component DisplayPage inherits Page {
                     value: output.scale;
                     can: output.enabled;
                     pressed => { DisplayData.choose(output.name, "scale"); }
+                }
+
+                if output.position != "": Divider { }
+
+                if output.position != "": ChoiceRow {
+                    title: "Position";
+                    enabled: output.enabled;
+                    value: output.position;
+                    can: output.can-position;
+                    pressed => { DisplayData.choose(output.name, "position"); }
                 }
             }
 

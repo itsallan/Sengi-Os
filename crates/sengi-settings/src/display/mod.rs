@@ -98,6 +98,8 @@ pub struct Output {
     pub current: Option<Mode>,
     /// In thousandths.
     pub scale: u32,
+    /// Where it is on the desktop, in logical pixels.
+    pub position: (i32, i32),
 }
 
 impl Output {
@@ -152,6 +154,7 @@ impl Output {
     pub fn changed_by(&self, change: &Change) -> bool {
         change.mode.is_some_and(|mode| Some(mode) != self.current)
             || change.scale.is_some_and(|scale| scale != self.scale)
+            || change.position.is_some_and(|place| place != self.position)
     }
 
     /// The change that puts things back as they are now.
@@ -160,7 +163,126 @@ impl Output {
             output: self.name.clone(),
             mode: self.current,
             scale: Some(self.scale),
+            position: Some(self.position),
         }
+    }
+}
+
+/// Where one output is in relation to another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Relation {
+    LeftOf,
+    RightOf,
+    Above,
+    Below,
+    /// The same picture in the same place.
+    Mirror,
+}
+
+impl Relation {
+    pub const ALL: [Relation; 5] = [
+        Relation::RightOf,
+        Relation::LeftOf,
+        Relation::Above,
+        Relation::Below,
+        Relation::Mirror,
+    ];
+
+    pub fn words(self) -> &'static str {
+        match self {
+            Relation::LeftOf => "Left of",
+            Relation::RightOf => "Right of",
+            Relation::Above => "Above",
+            Relation::Below => "Below",
+            Relation::Mirror => "Mirrors",
+        }
+    }
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Relation::LeftOf => "left",
+            Relation::RightOf => "right",
+            Relation::Above => "above",
+            Relation::Below => "below",
+            Relation::Mirror => "mirror",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Relation> {
+        Relation::ALL
+            .into_iter()
+            .find(|relation| relation.id() == id)
+    }
+}
+
+impl Output {
+    /// The size on the desktop: the mode's, shrunk by the scale.
+    pub fn logical_size(&self) -> (i32, i32) {
+        let Some(mode) = self.current else {
+            return (0, 0);
+        };
+        let scale = f64::from(self.scale.max(1)) / 1000.0;
+        (
+            (f64::from(mode.width) / scale).round() as i32,
+            (f64::from(mode.height) / scale).round() as i32,
+        )
+    }
+
+    /// Where it is on the desktop: x, y, width, height.
+    pub fn rect(&self) -> (i32, i32, i32, i32) {
+        let (w, h) = self.logical_size();
+        (self.position.0, self.position.1, w, h)
+    }
+
+    /// How this output lies in relation to `other`, if it is one of the
+    /// ways that can be named: touching along an edge, or on top of it
+    /// with the same size.
+    pub fn relation_to(&self, other: &Output) -> Option<Relation> {
+        let (x, y, w, h) = self.rect();
+        let (ox, oy, ow, oh) = other.rect();
+        if (x, y, w, h) == (ox, oy, ow, oh) {
+            return Some(Relation::Mirror);
+        }
+        let along_y = y < oy + oh && oy < y + h;
+        let along_x = x < ox + ow && ox < x + w;
+        if x == ox + ow && along_y {
+            Some(Relation::RightOf)
+        } else if x + w == ox && along_y {
+            Some(Relation::LeftOf)
+        } else if y == oy + oh && along_x {
+            Some(Relation::Below)
+        } else if y + h == oy && along_x {
+            Some(Relation::Above)
+        } else {
+            None
+        }
+    }
+
+    /// The change that puts this output `relation` to `other`, or `None`
+    /// when it cannot be: a mirror needs a mode of the other's size. Beside
+    /// it, the two share the top or left edge.
+    pub fn placed(&self, relation: Relation, other: &Output) -> Option<Change> {
+        let (ox, oy, ow, oh) = other.rect();
+        let (w, h) = self.logical_size();
+        let mut change = Change {
+            output: self.name.clone(),
+            mode: None,
+            scale: None,
+            position: Some(match relation {
+                Relation::RightOf => (ox + ow, oy),
+                Relation::LeftOf => (ox - w, oy),
+                Relation::Below => (ox, oy + oh),
+                Relation::Above => (ox, oy - h),
+                Relation::Mirror => (ox, oy),
+            }),
+        };
+        if relation == Relation::Mirror {
+            let theirs = other.current?;
+            let mode = self.mode_for(theirs.size())?;
+            change.mode = Some(mode).filter(|mode| Some(*mode) != self.current);
+            change.scale = Some(other.scale).filter(|scale| *scale != self.scale);
+        }
+        Some(change)
     }
 }
 
@@ -170,6 +292,8 @@ pub struct Change {
     pub output: String,
     pub mode: Option<Mode>,
     pub scale: Option<u32>,
+    /// Where on the desktop, in logical pixels.
+    pub position: Option<(i32, i32)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -469,6 +593,7 @@ pub mod testing {
             ],
             current: Some(mode(1920, 1080, 60)),
             scale: 1000,
+            position: (0, 0),
         }
     }
 
@@ -540,6 +665,9 @@ pub mod testing {
             if let Some(scale) = change.scale {
                 output.scale = scale;
             }
+            if let Some(place) = change.position {
+                output.position = place;
+            }
             let now = output.current.map(|m| m.size_words()).unwrap_or_default();
             self.log
                 .lock()
@@ -591,6 +719,7 @@ mod tests {
             output: "eDP-1".to_string(),
             mode: Some(mode(width, height, 60)),
             scale: None,
+            position: None,
         }
     }
 
@@ -890,6 +1019,7 @@ mod tests {
             output: "eDP-1".to_string(),
             mode: Some(mode(1920, 1080, 60)),
             scale: Some(1000),
+            position: None,
         };
         assert!(worked(&fake, vec![Command::Apply(same)]).is_empty());
         assert!(fake.log().is_empty());
@@ -908,6 +1038,7 @@ mod tests {
             output: "eDP-1".to_string(),
             mode: None,
             scale: Some(2000),
+            position: None,
         };
         assert_eq!(worked(&fake, vec![Command::Apply(scale)]), [Event::Trying]);
     }
@@ -947,6 +1078,7 @@ mod tests {
             output: "eDP-1".to_string(),
             mode: None,
             scale: Some(2000),
+            position: None,
         };
         let events = worked(&fake, vec![Command::Apply(scale)]);
         assert_eq!(events, [Event::Trying]);
@@ -1015,5 +1147,89 @@ mod tests {
                 "brightness intel_backlight 50"
             ]
         );
+    }
+
+    fn second() -> Output {
+        Output {
+            name: "HDMI-A-1".to_string(),
+            title: "Dell U2720Q".to_string(),
+            modes: vec![mode(1920, 1080, 60), mode(1280, 720, 60)],
+            current: Some(mode(1920, 1080, 60)),
+            position: (1920, 0),
+            ..laptop()
+        }
+    }
+
+    #[test]
+    fn the_size_on_the_desktop_is_the_mode_over_the_scale() {
+        let mut output = laptop();
+        assert_eq!(output.logical_size(), (1920, 1080));
+        output.scale = 1500;
+        assert_eq!(output.logical_size(), (1280, 720));
+        output.scale = 2000;
+        assert_eq!(output.rect(), (0, 0, 960, 540));
+    }
+
+    #[test]
+    fn where_one_output_lies_is_read_off_the_places() {
+        let (a, b) = (laptop(), second());
+        assert_eq!(b.relation_to(&a), Some(Relation::RightOf));
+        assert_eq!(a.relation_to(&b), Some(Relation::LeftOf));
+        let mut below = second();
+        below.position = (0, 1080);
+        assert_eq!(below.relation_to(&a), Some(Relation::Below));
+        let mut mirror = second();
+        mirror.position = (0, 0);
+        assert_eq!(mirror.relation_to(&a), Some(Relation::Mirror));
+        let mut apart = second();
+        apart.position = (5000, 0);
+        assert_eq!(apart.relation_to(&a), None);
+    }
+
+    #[test]
+    fn placing_an_output_names_its_new_corner() {
+        let (a, b) = (laptop(), second());
+        let at = |relation| b.placed(relation, &a).and_then(|change| change.position);
+        assert_eq!(at(Relation::RightOf), Some((1920, 0)));
+        assert_eq!(at(Relation::LeftOf), Some((-1920, 0)));
+        assert_eq!(at(Relation::Below), Some((0, 1080)));
+        assert_eq!(at(Relation::Above), Some((0, -1080)));
+    }
+
+    #[test]
+    fn a_mirror_takes_the_size_and_scale_of_the_other() {
+        let mut a = laptop();
+        a.scale = 1500;
+        let mut b = second();
+        b.current = Some(mode(1280, 720, 60));
+        let change = b
+            .placed(Relation::Mirror, &a)
+            .expect("a mirror is possible");
+        assert_eq!(change.position, Some((0, 0)));
+        assert_eq!(change.mode, Some(mode(1920, 1080, 60)));
+        assert_eq!(change.scale, Some(1500));
+        // No mode of the other's size, no mirror.
+        let mut small = second();
+        small.modes = vec![mode(1280, 720, 60)];
+        assert!(small.placed(Relation::Mirror, &a).is_none());
+    }
+
+    #[test]
+    fn a_position_is_a_change_and_is_put_back_by_restore() {
+        let (a, b) = (laptop(), second());
+        let change = b.placed(Relation::Below, &a).unwrap();
+        assert!(b.changed_by(&change));
+        assert_eq!(b.restore().position, Some((1920, 0)));
+        assert!(!b.changed_by(&b.restore()));
+    }
+
+    #[test]
+    fn a_position_on_trial_is_undone_with_the_rest() {
+        let fake = Fake::with(vec![laptop(), second()]);
+        let change = second().placed(Relation::Below, &laptop()).unwrap();
+        fake.apply(&change).unwrap();
+        assert_eq!(fake.read().outputs.unwrap()[1].position, (0, 1080));
+        fake.apply(&second().restore()).unwrap();
+        assert_eq!(fake.read().outputs.unwrap()[1].position, (1920, 0));
     }
 }

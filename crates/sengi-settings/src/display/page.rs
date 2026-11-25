@@ -7,10 +7,13 @@ use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, Timer, TimerMode};
 
-use super::{scale_words, Change, Command, DisplayService, Event, Output, Reading, SCALES, TRIAL};
+use super::{
+    scale_words, Change, Command, DisplayService, Event, Output, Reading, Relation, SCALES, TRIAL,
+};
 use crate::app::{self, App, Choice, Controller};
 use crate::cli::Page;
-use crate::ui::{DialogSpec, DisplayData, DisplayOutput};
+use crate::store::Value;
+use crate::ui::{ArrangeRect, DialogSpec, DisplayData, DisplayOutput};
 use crate::worker::Handle;
 
 /// How long leaving waits for the worker to put a change on trial back.
@@ -49,6 +52,52 @@ pub struct DisplayPage {
     clock: Timer,
 }
 
+/// Every half hour of the day, as the settings write a time.
+fn night_times() -> Vec<String> {
+    (0..48)
+        .map(|half| format!("{:02}:{:02}", half / 2, half % 2 * 30))
+        .collect()
+}
+
+/// The rectangles of the outputs that are on, in logical pixels, with the
+/// main one marked, and the box that holds them all: x, y, width, height.
+/// Without a main display the first is not marked: there is none.
+pub fn arrangement(all: &[Output], primary: &str) -> (Vec<ArrangeRect>, (i32, i32, i32, i32)) {
+    let on: Vec<&Output> = all
+        .iter()
+        .filter(|o| o.enabled && o.current.is_some())
+        .collect();
+    if on.len() < 2 {
+        return (Vec::new(), (0, 0, 1, 1));
+    }
+    let (mut left, mut top, mut right, mut bottom) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+    for output in &on {
+        let (x, y, w, h) = output.rect();
+        left = left.min(x);
+        top = top.min(y);
+        right = right.max(x + w);
+        bottom = bottom.max(y + h);
+    }
+    let rects = on
+        .iter()
+        .map(|output| {
+            let (x, y, w, h) = output.rect();
+            ArrangeRect {
+                x,
+                y,
+                w,
+                h,
+                label: output.title.as_str().into(),
+                primary: output.name == primary,
+            }
+        })
+        .collect();
+    (
+        rects,
+        (left, top, (right - left).max(1), (bottom - top).max(1)),
+    )
+}
+
 /// What the dialog says with `left` to go.
 pub fn countdown(left: Duration) -> String {
     match left.as_secs_f32().ceil() as u64 {
@@ -57,8 +106,22 @@ pub fn countdown(left: Duration) -> String {
     }
 }
 
-fn shown(output: &Output) -> DisplayOutput {
+/// The words for where `output` lies among the others that are on.
+pub fn position_words(output: &Output, all: &[Output]) -> String {
+    let others = all
+        .iter()
+        .filter(|other| other.enabled && other.name != output.name);
+    for other in others {
+        if let Some(relation) = output.relation_to(other) {
+            return format!("{} {}", relation.words(), other.title);
+        }
+    }
+    "Somewhere else".to_string()
+}
+
+fn shown(output: &Output, all: &[Output]) -> DisplayOutput {
     let size = output.current.map(|mode| mode.size());
+    let several = all.iter().filter(|other| other.enabled).count() > 1;
     DisplayOutput {
         name: output.name.as_str().into(),
         title: output.title.as_str().into(),
@@ -73,6 +136,13 @@ fn shown(output: &Output) -> DisplayOutput {
             .map_or("Unknown".to_string(), |mode| mode.refresh_words())
             .into(),
         scale: scale_words(output.scale).into(),
+        position: if several && output.enabled {
+            position_words(output, all)
+        } else {
+            String::new()
+        }
+        .into(),
+        can_position: several && output.enabled,
         can_resolution: output.enabled && output.sizes().len() > 1,
         can_refresh: output.enabled && size.is_some_and(|size| output.rates(size).len() > 1),
     }
@@ -101,6 +171,64 @@ impl DisplayPage {
                 page.choose(&app, &name, &what);
             }
         });
+        let (weak, weak_app) = (Rc::downgrade(&page), Rc::downgrade(app));
+        data.on_choose_primary(move || {
+            if let (Some(page), Some(app)) = (weak.upgrade(), weak_app.upgrade()) {
+                page.choose_primary(&app);
+            }
+        });
+        let weak_app = Rc::downgrade(app);
+        data.on_set_night(move |on| {
+            if let Some(app) = weak_app.upgrade() {
+                if app.set("display", "night-light", Value::Flag(on)) {
+                    app.apply_to_session();
+                }
+            }
+        });
+        let weak_app = Rc::downgrade(app);
+        data.on_choose_night(move |which| {
+            let Some(app) = weak_app.upgrade() else {
+                return;
+            };
+            let key = if which == "from" {
+                "night-from"
+            } else {
+                "night-to"
+            };
+            let now = app.settings.borrow().text("display", key);
+            let choices = night_times()
+                .into_iter()
+                .map(|time| Choice {
+                    current: time == now,
+                    id: time.clone(),
+                    title: time,
+                    detail: String::new(),
+                })
+                .collect();
+            let title = if which == "from" {
+                "Night light starts"
+            } else {
+                "Night light ends"
+            };
+            app.choose(title, false, choices, move |app, id| {
+                if app.set("display", key, Value::Text(id)) {
+                    app.apply_to_session();
+                    if let Some(page) = app.page::<DisplayPage>() {
+                        page.render_settings(app);
+                    }
+                }
+            });
+        });
+        let weak_app = Rc::downgrade(app);
+        data.on_set_night_strength(move |strength| {
+            if let Some(app) = weak_app.upgrade() {
+                let value = Value::Number(i64::from(strength.clamp(0, 100)));
+                if app.set("display", "night-strength", value) {
+                    app.apply_to_session();
+                }
+            }
+        });
+        page.render_settings(app);
         let weak = Rc::downgrade(&page);
         data.on_brightness(move |percent| {
             if let Some(page) = weak.upgrade() {
@@ -168,6 +296,7 @@ impl DisplayPage {
                         output: output.name.clone(),
                         mode: Some(mode),
                         scale: None,
+                        position: None,
                     }));
                 });
             }
@@ -190,6 +319,7 @@ impl DisplayPage {
                         output: output.name.clone(),
                         mode: Some(mode),
                         scale: None,
+                        position: None,
                     }));
                 });
             }
@@ -212,11 +342,86 @@ impl DisplayPage {
                                 output: output.name.clone(),
                                 mode: None,
                                 scale: Some(scale),
+                                position: None,
                             }),
                     );
                 });
             }
+            "position" => {
+                let others: Vec<Output> = self
+                    .reading
+                    .borrow()
+                    .outputs
+                    .iter()
+                    .flatten()
+                    .filter(|other| other.enabled && other.name != output.name)
+                    .cloned()
+                    .collect();
+                let mut choices = Vec::new();
+                for other in &others {
+                    for relation in Relation::ALL {
+                        if output.placed(relation, other).is_none() {
+                            continue;
+                        }
+                        choices.push(Choice {
+                            id: format!("{}:{}", relation.id(), other.name),
+                            title: format!("{} {}", relation.words(), other.title),
+                            detail: String::new(),
+                            current: output.relation_to(other) == Some(relation),
+                        });
+                    }
+                }
+                app.choose("Position", false, choices, move |_, id| {
+                    let change = id.split_once(':').and_then(|(relation, name)| {
+                        let relation = Relation::from_id(relation)?;
+                        let other = others.iter().find(|other| other.name == name)?;
+                        output.placed(relation, other)
+                    });
+                    apply(change);
+                });
+            }
             _ => {}
+        }
+    }
+
+    /// The main display button: which output the bar and dock go to.
+    fn choose_primary(self: &Rc<Self>, app: &Rc<App>) {
+        let now = app.settings.borrow().text("display", "primary");
+        let mut choices = vec![Choice {
+            id: String::new(),
+            title: "Automatic".to_string(),
+            detail: "The display the pointer is on".to_string(),
+            current: now.is_empty(),
+        }];
+        let reading = self.reading.borrow();
+        for output in reading.outputs.iter().flatten().filter(|o| o.enabled) {
+            choices.push(Choice {
+                id: output.name.clone(),
+                title: output.title.clone(),
+                detail: output.name.clone(),
+                current: output.name == now,
+            });
+        }
+        drop(reading);
+        app.choose("Main display", false, choices, |app, id| {
+            if app.set("display", "primary", Value::Text(id)) {
+                app.apply_to_session();
+                if let Some(page) = app.page::<DisplayPage>() {
+                    page.render_settings(app);
+                }
+            }
+        });
+    }
+
+    /// The night light's switch, times and strength.
+    fn render_settings(&self, app: &Rc<App>) {
+        let settings = app.settings.borrow();
+        let data = app.window.global::<DisplayData>();
+        data.set_night_on(settings.flag("display", "night-light"));
+        data.set_night_from(settings.text("display", "night-from").into());
+        data.set_night_to(settings.text("display", "night-to").into());
+        if !data.get_night_held() {
+            data.set_night_strength(settings.number("display", "night-strength") as i32);
         }
     }
 
@@ -324,8 +529,22 @@ impl DisplayPage {
             }
             .into(),
         );
-        let outputs: Vec<DisplayOutput> = reading.outputs.iter().flatten().map(shown).collect();
+        let all: Vec<Output> = reading.outputs.iter().flatten().cloned().collect();
+        let outputs: Vec<DisplayOutput> = all.iter().map(|output| shown(output, &all)).collect();
         data.set_outputs(app::model(outputs));
+        let (rects, bounds) = arrangement(&all, &app.settings.borrow().text("display", "primary"));
+        data.set_arrangement(app::model(rects));
+        data.set_arrange_x(bounds.0);
+        data.set_arrange_y(bounds.1);
+        data.set_arrange_w(bounds.2);
+        data.set_arrange_h(bounds.3);
+        let primary = app.settings.borrow().text("display", "primary");
+        data.set_primary_title(
+            all.iter()
+                .find(|output| output.enabled && output.name == primary)
+                .map_or("Automatic".to_string(), |output| output.title.clone())
+                .into(),
+        );
         data.set_has_backlight(reading.backlight.is_some());
         if let (Some(light), false) = (&reading.backlight, data.get_brightness_held()) {
             data.set_brightness_value(light.percent() as i32);
@@ -334,7 +553,8 @@ impl DisplayPage {
 }
 
 impl Controller for DisplayPage {
-    fn show(&self, _app: &Rc<App>) {
+    fn show(&self, app: &Rc<App>) {
+        self.render_settings(app);
         let mut worker = self.worker.lock().unwrap_or_else(|p| p.into_inner());
         match worker.as_ref() {
             Some(worker) => worker.refresh(),
@@ -388,7 +608,7 @@ mod tests {
 
     #[test]
     fn an_output_is_shown_with_what_can_be_changed() {
-        let shown_laptop = shown(&laptop());
+        let shown_laptop = shown(&laptop(), &[laptop()]);
         assert_eq!(shown_laptop.resolution, "1920 × 1080");
         assert_eq!(shown_laptop.refresh, "60 Hz");
         assert_eq!(shown_laptop.scale, "100%");
@@ -396,13 +616,58 @@ mod tests {
 
         let mut one_rate = laptop();
         one_rate.current = Some(mode(1600, 900, 60));
-        assert!(!shown(&one_rate).can_refresh);
+        assert!(!shown(&one_rate, &[one_rate.clone()]).can_refresh);
 
         let mut off = laptop();
         off.enabled = false;
         off.current = None;
-        let shown_off = shown(&off);
+        let shown_off = shown(&off, &[off.clone()]);
         assert!(!shown_off.can_resolution && !shown_off.can_refresh);
         assert_eq!(shown_off.resolution, "Unknown");
+    }
+
+    fn beside() -> Output {
+        Output {
+            name: "HDMI-A-1".to_string(),
+            title: "Dell U2720Q".to_string(),
+            current: Some(mode(1920, 1080, 60)),
+            position: (1920, 0),
+            ..laptop()
+        }
+    }
+
+    #[test]
+    fn the_arrangement_is_drawn_only_with_two_outputs_on() {
+        let (rects, _) = arrangement(&[laptop()], "");
+        assert!(rects.is_empty());
+        let mut off = beside();
+        off.enabled = false;
+        assert!(arrangement(&[laptop(), off], "").0.is_empty());
+
+        let (rects, bounds) = arrangement(&[laptop(), beside()], "HDMI-A-1");
+        assert_eq!(rects.len(), 2);
+        assert_eq!(bounds, (0, 0, 3840, 1080));
+        assert!(!rects[0].primary && rects[1].primary);
+        assert_eq!(rects[1].x, 1920);
+    }
+
+    #[test]
+    fn an_output_is_said_to_lie_beside_another() {
+        let all = [laptop(), beside()];
+        assert_eq!(position_words(&all[1], &all), "Right of Built-in display");
+        assert_eq!(position_words(&all[0], &all), "Left of Dell U2720Q");
+        assert!(shown(&all[1], &all).can_position);
+        assert!(!shown(&all[0], &all[..1]).can_position);
+        assert_eq!(shown(&all[0], &all[..1]).position, "");
+    }
+
+    #[test]
+    fn the_night_times_are_every_half_hour_and_all_are_valid_settings() {
+        let times = night_times();
+        assert_eq!(times.len(), 48);
+        assert_eq!((times[0].as_str(), times[47].as_str()), ("00:00", "23:30"));
+        for time in times {
+            assert!(crate::settings::check("display", "night-from", &Value::Text(time)).is_ok());
+        }
     }
 }

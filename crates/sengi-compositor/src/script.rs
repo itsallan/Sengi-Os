@@ -12,6 +12,7 @@
 //! 2000 type hello
 //! 2100 key super+q
 //! 2200 swipe 3 -150 0
+//! 2300 scroll 120
 //! 2500 screenshot /tmp/after.png
 //! 3000 exit
 //! ```
@@ -43,6 +44,11 @@ pub enum Action {
         pressed: bool,
     },
     Screenshot(PathBuf),
+    /// The wheel turned by this much (pixels, down is positive) at the
+    /// pointer.
+    Scroll {
+        dy: f64,
+    },
     /// A swipe of `fingers` fingers that travels this far on the touchpad,
     /// in five movements, and then lifts.
     Swipe {
@@ -161,6 +167,19 @@ impl crate::state::State {
                 };
                 self.pointer_button(*code, state, time);
             }
+            Action::Scroll { dy } => {
+                use smithay::{
+                    backend::input::{Axis, AxisSource},
+                    input::pointer::AxisFrame,
+                };
+                let frame = AxisFrame::new(time)
+                    .source(AxisSource::Wheel)
+                    .value(Axis::Vertical, *dy)
+                    .v120(Axis::Vertical, (*dy / 15.0 * 120.0) as i32);
+                let pointer = self.seat.get_pointer().expect("seat has a pointer");
+                pointer.axis(self, frame);
+                pointer.frame(self);
+            }
             Action::Swipe { fingers, dx, dy } => {
                 self.swipe_begin(*fingers);
                 for _ in 0..5 {
@@ -213,6 +232,10 @@ pub fn parse(text: &str) -> Result<Vec<Step>, String> {
                     _ => return Err(err("move needs X and Y")),
                 }
             }
+            "scroll" => match argument.trim().parse::<f64>() {
+                Ok(dy) if dy.is_finite() => push(Action::Scroll { dy }),
+                _ => return Err(err("scroll needs DY")),
+            },
             "swipe" => {
                 let mut words = argument.split_whitespace();
                 let fingers = words.next().and_then(|w| w.parse::<u32>().ok());

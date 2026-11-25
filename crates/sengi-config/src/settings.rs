@@ -49,7 +49,11 @@ pub const KEYS: &[(&str, &str, Default)] = &[
     ("touchpad", "tap-to-click", Default::Flag(true)),
     ("touchpad", "disable-while-typing", Default::Flag(true)),
     ("touchpad", "click-method", Default::Text(CLICK_CLICKFINGER)),
-    ("touchpad", "scroll-method", Default::Text(SCROLL_TWO_FINGER)),
+    (
+        "touchpad",
+        "scroll-method",
+        Default::Text(SCROLL_TWO_FINGER),
+    ),
     ("touchpad", "gestures", Default::Flag(true)),
     ("display", "primary", Default::Text("")),
     ("display", "night-light", Default::Flag(false)),

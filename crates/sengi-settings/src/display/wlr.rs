@@ -69,6 +69,7 @@ struct Head {
     modes: Vec<ModeEntry>,
     current: Option<ObjectId>,
     scale: f64,
+    position: (i32, i32),
 }
 
 /// An output as `wl_output` describes it. The management protocol has
@@ -193,6 +194,7 @@ impl Dispatch<ZwlrOutputManagerV1, ()> for State {
                         modes: Vec::new(),
                         current: None,
                         scale: 1.0,
+                        position: (0, 0),
                     });
                 }
             }
@@ -248,6 +250,7 @@ impl Dispatch<ZwlrOutputHeadV1, ()> for State {
             zwlr_output_head_v1::Event::Enabled { enabled } => head.enabled = enabled != 0,
             zwlr_output_head_v1::Event::CurrentMode { mode } => head.current = Some(mode.id()),
             zwlr_output_head_v1::Event::Scale { scale } => head.scale = scale,
+            zwlr_output_head_v1::Event::Position { x, y } => head.position = (x, y),
             _ => {}
         }
     }
@@ -458,6 +461,7 @@ fn outputs(state: &State) -> Vec<Output> {
                 current,
                 modes,
                 scale: scale_thousandths(head.scale),
+                position: head.position,
             }
         })
         .collect();
@@ -583,6 +587,9 @@ impl DisplayService for Wlr {
             }
             if let Some(scale) = change.scale {
                 settings.set_scale(f64::from(scale.clamp(250, 8000)) / 1000.0);
+            }
+            if let Some((x, y)) = change.position {
+                settings.set_position(x, y);
             }
         }
         // Applying it would change nothing and still look like success.
@@ -749,6 +756,7 @@ mod tests {
             output: "eDP-1".to_string(),
             mode: None,
             scale: Some(2000),
+            position: None,
         };
         assert_eq!(wlr.apply(&change), Err(ApplyError::Unavailable));
         wlr.settle();

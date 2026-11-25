@@ -184,7 +184,10 @@ mod tests {
 
     fn run(moves: &[(f64, f64)]) -> Vec<Act> {
         let mut swipe = Swipe::default();
-        moves.iter().flat_map(|&(x, y)| swipe.update(x, y)).collect()
+        moves
+            .iter()
+            .flat_map(|&(x, y)| swipe.update(x, y))
+            .collect()
     }
 
     #[test]
@@ -212,7 +215,10 @@ mod tests {
 
     #[test]
     fn up_shows_and_down_picks_once() {
-        assert_eq!(run(&[(1.0, -40.0), (0.0, -40.0), (0.0, -40.0)]), vec![Act::Show]);
+        assert_eq!(
+            run(&[(1.0, -40.0), (0.0, -40.0), (0.0, -40.0)]),
+            vec![Act::Show]
+        );
         assert_eq!(run(&[(0.0, 70.0), (0.0, 70.0)]), vec![Act::Pick]);
     }
 
