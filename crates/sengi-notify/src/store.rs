@@ -101,6 +101,9 @@ pub struct Store {
     history: VecDeque<Entry>,
     /// Lines added since the centre was last looked at.
     unread: usize,
+    /// Goes up with every change to the history, so that the file is only
+    /// written when there is something new for it.
+    changes: u64,
     dnd: bool,
     /// Since when the countdowns have been standing still.
     paused_at: Option<u64>,
@@ -125,6 +128,7 @@ impl Store {
             unseen: VecDeque::new(),
             history: VecDeque::new(),
             unread: 0,
+            changes: 0,
             dnd: false,
             paused_at: None,
             counter: 0,
@@ -146,6 +150,25 @@ impl Store {
     /// Lines in the centre that came in since [`Store::mark_read`].
     pub fn unread(&self) -> usize {
         self.unread
+    }
+
+    /// A number that differs between two calls if the history changed in
+    /// between.
+    pub fn changes(&self) -> u64 {
+        self.changes
+    }
+
+    /// Puts lines remembered from an earlier run behind whatever is in the
+    /// history, newest first. They are not unread.
+    pub fn restore(&mut self, notes: Vec<Notification>) {
+        for note in notes {
+            if self.history.len() >= self.limits.history {
+                break;
+            }
+            let key = self.next();
+            self.history.push_back(Entry { key, note });
+        }
+        self.changes += 1;
     }
 
     pub fn mark_read(&mut self) {
@@ -360,6 +383,7 @@ impl Store {
     }
 
     fn remember(&mut self, note: &Notification, generation: u64, replaces: bool) {
+        self.changes += 1;
         if replaces {
             // Still open: its line in the centre follows the new content.
             if let Some(index) = self
@@ -559,13 +583,25 @@ impl Store {
             return;
         };
         self.history.remove(index);
+        self.changes += 1;
         self.unread = self.unread.min(self.history.len());
         self.close_where(Reason::Dismissed, closed, |_, generation| generation == key);
         self.promote(now);
     }
 
+    /// Removes every line of one application from the centre, and
+    /// dismisses what that application still has open.
+    pub fn forget_app(&mut self, app: &str, now: u64, closed: &mut Vec<Closed>) {
+        self.history.retain(|entry| entry.note.app != app);
+        self.changes += 1;
+        self.unread = self.unread.min(self.history.len());
+        self.close_where(Reason::Dismissed, closed, |note, _| note.app == app);
+        self.promote(now);
+    }
+
     /// Empties the centre and dismisses everything that is still open.
     pub fn clear(&mut self, closed: &mut Vec<Closed>) {
+        self.changes += 1;
         self.history.clear();
         self.unread = 0;
         self.close_where(Reason::Dismissed, closed, |_, _| true);
@@ -1305,6 +1341,91 @@ mod tests {
         assert!(shown(&store).is_empty());
         assert_eq!(out.len(), 6);
         assert_eq!(store.unread(), 0);
+    }
+
+    fn of_app(app: &str, id: u32) -> Notification {
+        Notification {
+            app: app.to_string(),
+            ..note(id)
+        }
+    }
+
+    #[test]
+    fn clearing_one_app_leaves_the_others_and_closes_what_it_has_open() {
+        let mut store = store();
+        let mut out = Vec::new();
+        store.add(of_app("Mail", 1), 0, &mut out);
+        store.add(of_app("Chat", 2), 0, &mut out);
+        store.add(of_app("Mail", 3), 0, &mut out);
+        store.forget_app("Mail", 100, &mut out);
+        assert_eq!(remembered(&store), [2]);
+        assert_eq!(shown(&store), [2]);
+        assert_eq!(gone(&out), [(3, Reason::Dismissed), (1, Reason::Dismissed)]);
+        assert!(store.unread() <= 1);
+    }
+
+    #[test]
+    fn clearing_an_app_also_drops_what_do_not_disturb_holds_for_it() {
+        let mut store = store();
+        let mut out = Vec::new();
+        store.set_dnd(true, 0, &mut out);
+        store.add(of_app("Mail", 1), 0, &mut out);
+        store.add(of_app("Chat", 2), 0, &mut out);
+        store.forget_app("Mail", 0, &mut out);
+        assert_eq!(remembered(&store), [2]);
+        assert!(store.active(1).is_none());
+        assert!(store.active(2).is_some());
+    }
+
+    #[test]
+    fn do_not_disturb_hides_cards_but_keeps_the_history() {
+        let mut store = store();
+        let mut out = Vec::new();
+        store.set_dnd(true, 0, &mut out);
+        store.add(of_app("Mail", 1), 0, &mut out);
+        assert!(shown(&store).is_empty());
+        assert_eq!(remembered(&store), [1]);
+        // Urgent ones still come through, and stay until dismissed.
+        store.add(critical(2), 0, &mut out);
+        assert_eq!(shown(&store), [2]);
+        store.expire(1_000_000, &mut out);
+        assert_eq!(shown(&store), [2]);
+    }
+
+    #[test]
+    fn restored_lines_go_behind_new_ones_and_are_not_unread() {
+        let mut store = store();
+        let mut out = Vec::new();
+        let old: Vec<Notification> = (1..=9).map(of_app_old).collect();
+        store.restore(old);
+        // Only as many as the history holds.
+        assert_eq!(store.history().len(), 5);
+        assert_eq!(store.unread(), 0);
+        store.add(note(100), 0, &mut out);
+        assert_eq!(remembered(&store), [100, 1, 2, 3, 4]);
+        assert_eq!(store.unread(), 1);
+    }
+
+    fn of_app_old(id: u32) -> Notification {
+        Notification {
+            id,
+            summary: format!("old {id}"),
+            ..Notification::default()
+        }
+    }
+
+    #[test]
+    fn the_change_counter_moves_with_the_history_only() {
+        let mut store = store();
+        let mut out = Vec::new();
+        let start = store.changes();
+        store.add(note(1), 0, &mut out);
+        let added = store.changes();
+        assert_ne!(added, start);
+        store.expire(10_000, &mut out);
+        assert_eq!(store.changes(), added);
+        store.forget_app("nobody", 0, &mut out);
+        assert_ne!(store.changes(), added);
     }
 
     #[test]

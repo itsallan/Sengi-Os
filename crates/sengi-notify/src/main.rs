@@ -9,6 +9,7 @@
 mod cli;
 mod dbus;
 mod gate;
+mod history;
 mod intake;
 mod markup;
 mod notification;
@@ -115,6 +116,7 @@ fn serve() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let config = Config::new("sengi-notify")
         .layer(Layer::Overlay)
         .anchor(Anchor::TOP | Anchor::RIGHT);
+    let running = ui.clone();
     app.run(config, move |context| {
         let window = ui::NotifyWindow::new()?;
         let attached = ui::Ui::attach(&window, context.handle(), signals.clone());
@@ -160,6 +162,10 @@ fn serve() -> Result<ExitCode, Box<dyn std::error::Error>> {
         *ui.borrow_mut() = Some(attached);
         Ok(window)
     })?;
+    // Whatever the timer had not written yet.
+    if let Some(ui) = running.borrow().as_ref() {
+        ui.borrow_mut().save_now();
+    }
     Ok(ExitCode::from(exit.get()))
 }
 

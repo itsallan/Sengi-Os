@@ -66,6 +66,9 @@ pub struct Notification {
     pub desktop_entry: String,
     /// When it arrived, as shown on the card.
     pub time: String,
+    /// The same moment in seconds since the epoch, for "2 min ago" and for
+    /// the history file; 0 if not known.
+    pub at: u64,
 }
 
 /// A hint value, reduced to the types the hints we read can have.
@@ -213,6 +216,7 @@ impl Request<'_> {
             category: self.hints.category,
             desktop_entry: self.hints.desktop_entry,
             time: String::new(),
+            at: 0,
         }
     }
 }

@@ -12,10 +12,18 @@ use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
 
 use crate::cli::{Command, Dnd};
 use crate::dbus::{Signal, ToUi};
+use crate::history::{self, Line};
 use crate::notification::{Urgency, DEFAULT_ACTION};
-use crate::store::{Closed, Limits, Popup, Reason, Store};
+use crate::store::{Closed, Entry, Limits, Popup, Reason, Store};
 
 slint::include_modules!();
+
+/// How long the history file waits for more changes before it is written,
+/// so that a burst of notifications costs one write.
+const SAVE_DELAY: Duration = Duration::from_secs(2);
+
+/// How often "2 min ago" is brought up to date while the centre is open.
+const AGO_EVERY: Duration = Duration::from_secs(30);
 
 /// How long the countdowns stay stopped after the pointer has left the
 /// cards, so that brushing past the edge does not cost the card its time.
@@ -53,6 +61,13 @@ pub struct Ui {
     signals: mpsc::Sender<Signal>,
     expiry: Timer,
     grace: Timer,
+    /// Writes the history file a moment after the last change.
+    save: Timer,
+    /// Refreshes the times in the centre while it is open.
+    ago: Timer,
+    /// Where the history is kept between runs, if anywhere.
+    file: Option<std::path::PathBuf>,
+    saved: u64,
     started: Instant,
     last_serial: i32,
     centre: bool,
@@ -91,6 +106,46 @@ fn card(popup: &Popup, serial: i32, leaving: bool) -> Card {
     }
 }
 
+/// The lines of the centre for these history entries, newest first, as of
+/// `now` in seconds since the epoch: a heading for each application, and
+/// its notifications under it.
+fn history_items(entries: &[&Entry], now: u64) -> Vec<HistoryItem> {
+    let lines = history::group(entries.iter().map(|entry| entry.note.app.as_str()));
+    lines
+        .iter()
+        .map(|line| match *line {
+            Line::Group { first, count } => {
+                let app = entries[first].note.app.as_str();
+                HistoryItem {
+                    key: -1,
+                    header: true,
+                    count: count as i32,
+                    group: app.into(),
+                    app: if app.is_empty() { "Other" } else { app }.into(),
+                    ..HistoryItem::default()
+                }
+            }
+            Line::Entry(index) => {
+                let note = &entries[index].note;
+                HistoryItem {
+                    key: entries[index].key as i32,
+                    app: note.app.as_str().into(),
+                    time: if note.at == 0 {
+                        note.time.clone()
+                    } else {
+                        history::relative(now, note.at)
+                    }
+                    .into(),
+                    summary: note.summary.as_str().into(),
+                    body: note.body.as_str().into(),
+                    critical: note.urgency == Urgency::Critical,
+                    ..HistoryItem::default()
+                }
+            }
+        })
+        .collect()
+}
+
 /// Whether a click at `now` falls inside a guard that lasts until `until`.
 fn guarded(now: u64, until: u64) -> bool {
     now < until
@@ -109,17 +164,29 @@ impl Ui {
         window.set_cards(ModelRc::from(cards.clone()));
         window.set_history(ModelRc::from(history.clone()));
 
+        let limits = Limits::default();
+        let file = history::path();
+        let mut store = Store::new(limits);
+        if let Some(file) = &file {
+            store.restore(history::load(file, limits.history));
+        }
+        let saved = store.changes();
+
         let ui = Rc::new_cyclic(|this| {
             RefCell::new(Ui {
                 window: window.clone_strong(),
                 handle,
-                store: Store::new(Limits::default()),
+                store,
                 cards,
                 rows: Vec::new(),
                 history,
                 signals,
                 expiry: Timer::default(),
                 grace: Timer::default(),
+                save: Timer::default(),
+                ago: Timer::default(),
+                file,
+                saved,
                 started: Instant::now(),
                 last_serial: 0,
                 centre: false,
@@ -194,6 +261,17 @@ impl Ui {
                 }
             }
         });
+        window.on_group_cleared({
+            let weak = weak.clone();
+            move |app| {
+                if let Some(ui) = weak.upgrade() {
+                    ui.borrow_mut().forget_app(app.as_str());
+                }
+            }
+        });
+        // What was remembered shows the first time the centre opens, and
+        // the lines are in order from the start.
+        ui.borrow_mut().sync_history();
         window.on_dnd_toggled(move |dnd| {
             if let Some(ui) = weak.upgrade() {
                 let mut ui = ui.borrow_mut();
@@ -236,6 +314,7 @@ impl Ui {
             ToUi::Notify(note) => {
                 let mut note = *note;
                 note.time = chrono::Local::now().format("%H:%M").to_string();
+                note.at = history::unix_now();
                 self.store.add(note, now, &mut closed);
             }
             ToUi::Close(id) => {
@@ -287,6 +366,16 @@ impl Ui {
         self.window.set_centre_open(open);
         if open {
             self.window.invoke_take_keyboard();
+            // The times were last worked out when the centre was closed.
+            self.sync_history();
+            let this = self.this.clone();
+            self.ago.start(TimerMode::Repeated, AGO_EVERY, move || {
+                if let Some(ui) = this.upgrade() {
+                    ui.borrow_mut().sync_history();
+                }
+            });
+        } else {
+            self.ago.stop();
         }
         self.pause();
         self.arm();
@@ -380,6 +469,46 @@ impl Ui {
         self.refresh(closed);
     }
 
+    /// "Clear" on the heading of a group.
+    fn forget_app(&mut self, app: &str) {
+        if self.centre_is_guarded() {
+            return;
+        }
+        let mut closed = Vec::new();
+        let now = self.now();
+        self.store.forget_app(app, now, &mut closed);
+        self.refresh(closed);
+    }
+
+    /// Writes the history file soon, if it differs from what is in it.
+    fn schedule_save(&mut self) {
+        if self.file.is_none() || self.store.changes() == self.saved || self.save.running() {
+            return;
+        }
+        let this = self.this.clone();
+        self.save.start(TimerMode::SingleShot, SAVE_DELAY, move || {
+            if let Some(ui) = this.upgrade() {
+                ui.borrow_mut().save_now();
+            }
+        });
+    }
+
+    /// Writes the history file now. A failure is not worth more than a line
+    /// on standard error: the history is only a convenience.
+    pub fn save_now(&mut self) {
+        let Some(file) = &self.file else {
+            return;
+        };
+        if self.store.changes() == self.saved {
+            return;
+        }
+        self.saved = self.store.changes();
+        let text = history::encode(self.store.history().map(|entry| &entry.note));
+        if let Err(error) = history::save(file, &text) {
+            eprintln!("sengi-notify: could not save the history: {error}");
+        }
+    }
+
     /// Brings everything in line with the store after a change.
     fn refresh(&mut self, closed: Vec<Closed>) {
         for closed in closed {
@@ -392,6 +521,7 @@ impl Ui {
         }
         self.sync_cards();
         self.sync_history();
+        self.schedule_save();
         self.window.set_queued(self.store.queued() as i32);
         self.arm();
         self.announce();
@@ -509,25 +639,28 @@ impl Ui {
     }
 
     fn sync_history(&mut self) {
-        let items: Vec<HistoryItem> = self
-            .store
-            .history()
-            .map(|entry| HistoryItem {
-                key: entry.key as i32,
-                app: entry.note.app.as_str().into(),
-                time: entry.note.time.as_str().into(),
-                summary: entry.note.summary.as_str().into(),
-                body: entry.note.body.as_str().into(),
-                critical: entry.note.urgency == Urgency::Critical,
-            })
-            .collect();
+        let entries: Vec<_> = self.store.history().collect();
+        let items = history_items(&entries, history::unix_now());
         // Lines that moved under the pointer get the same guard as cards.
+        // Only the lines themselves count: new words in "2 min ago" do not.
+        let same_line = |new: &HistoryItem, old: &HistoryItem| {
+            new.key == old.key && new.header == old.header && new.group == old.group
+        };
         let same = items.len() == self.history.row_count()
             && items
                 .iter()
                 .zip(self.history.iter())
-                .all(|(new, old)| new.key == old.key);
-        if !same && self.centre {
+                .all(|(new, old)| same_line(new, &old));
+        if same {
+            // Updated where they are, so that the list keeps its place.
+            for (index, item) in items.into_iter().enumerate() {
+                if self.history.row_data(index).as_ref() != Some(&item) {
+                    self.history.set_row_data(index, item);
+                }
+            }
+            return;
+        }
+        if self.centre {
             self.centre_guard = self.now() + self.guard_time();
         }
         self.history.set_vec(items);
@@ -616,6 +749,58 @@ impl Ui {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::notification::Notification;
+
+    fn entry(key: u64, app: &str, summary: &str, at: u64) -> Entry {
+        Entry {
+            key,
+            note: Notification {
+                app: app.to_string(),
+                summary: summary.to_string(),
+                body: format!("{summary}, a little more to read."),
+                at,
+                ..Notification::default()
+            },
+        }
+    }
+
+    #[test]
+    fn the_centre_lists_a_heading_per_app_with_a_count_and_relative_times() {
+        let now = 1_000_000;
+        let entries = [
+            entry(1, "Mail", "Newest", now - 30),
+            entry(2, "Chat", "Hi", now - 125),
+            entry(3, "Mail", "Older", now - 3 * 3_600),
+        ];
+        let refs: Vec<&Entry> = entries.iter().collect();
+        let items = history_items(&refs, now);
+        let summary: Vec<(bool, i32, String, String)> = items
+            .iter()
+            .map(|item| {
+                (
+                    item.header,
+                    item.count,
+                    item.app.to_string(),
+                    item.time.to_string(),
+                )
+            })
+            .collect();
+        let line = |header, count, app: &str, time: &str| {
+            (header, count, app.to_string(), time.to_string())
+        };
+        assert_eq!(
+            summary,
+            [
+                line(true, 2, "Mail", ""),
+                line(false, 0, "Mail", "now"),
+                line(false, 0, "Mail", "3 hours ago"),
+                line(true, 1, "Chat", ""),
+                line(false, 0, "Chat", "2 min ago"),
+            ]
+        );
+        assert_eq!(items[0].group.as_str(), "Mail");
+    }
 
     #[test]
     fn a_click_inside_the_guard_is_ignored_and_one_after_it_is_not() {

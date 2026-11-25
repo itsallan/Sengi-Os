@@ -25,9 +25,17 @@ export struct Card {
     leaving: bool,
 }
 
+// A line of the centre: the heading of a group of one application's
+// notifications (header), or one notification below it.
 export struct HistoryItem {
     key: int,
+    header: bool,
+    // The number of notifications in the group, for a heading.
+    count: int,
+    // The application's name as the notifications carry it, to clear by.
+    group: string,
     app: string,
+    // "2 min ago".
     time: string,
     summary: string,
     body: string,
@@ -288,7 +296,8 @@ component HistoryRow inherits SengiSurface {
         spacing: Tokens.space-xs;
 
         Heading {
-            app: root.data.app;
+            // The group heading above says whose it is.
+            app: "";
             time: root.data.time;
             critical: root.data.critical;
         }
@@ -315,6 +324,56 @@ component HistoryRow inherits SengiSurface {
     }
 }
 
+// The application's name, how many notifications it has in the centre,
+// and a button that clears them.
+component GroupHeader inherits Rectangle {
+    in property <HistoryItem> data;
+    in property <bool> focused: false;
+    callback cleared();
+    // Asks the list to scroll until this stretch of it can be seen.
+    callback reveal(length, length);
+
+    height: Tokens.button;
+
+    changed focused => {
+        if root.focused {
+            root.reveal(root.y, root.height);
+        }
+    }
+
+    HorizontalLayout {
+        spacing: Tokens.space-sm;
+
+        SengiText {
+            horizontal-stretch: 0;
+            min-width: 0;
+            text: root.data.app;
+            font-weight: Tokens.font-weight-bold;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+
+        SengiLabel {
+            horizontal-stretch: 1;
+            text: "" + root.data.count;
+            color: Tokens.color-text-muted;
+            vertical-alignment: center;
+        }
+
+        Rectangle {
+            horizontal-stretch: 0;
+            width: clear.preferred-width;
+            clear := SengiButton {
+                height: parent.height;
+                text: "Clear";
+                focusable: false;
+                clicked => { root.cleared(); }
+            }
+            FocusRing { shown: root.focused; }
+        }
+    }
+}
+
 component CentrePanel inherits SengiSurface {
     in property <[HistoryItem]> history;
     in-out property <bool> dnd;
@@ -324,6 +383,7 @@ component CentrePanel inherits SengiSurface {
     // rows; -1 before the keyboard has been used.
     in property <int> keyboard-at: -1;
     callback dismissed(int);
+    callback group-cleared(string);
     callback clear-all();
     callback dnd-toggled(bool);
 
@@ -340,6 +400,16 @@ component CentrePanel inherits SengiSurface {
     private property <length> list-height: Math.max(
         Math.min(list.preferred-height, root.available - head.preferred-height),
         0px);
+
+    // Scrolls the list until this stretch of it can be seen.
+    function reveal-row(top: length, tall: length) {
+        if top < -scroll.content-y {
+            scroll.content-y = -top;
+        } else if top + tall + Tokens.space-md > scroll.height - scroll.content-y {
+            // With the same room under it as the last row has.
+            scroll.content-y = scroll.height - top - tall - Tokens.space-md;
+        }
+    }
 
     width: Tokens.notification-width + Tokens.space-md * 2;
     height: head.preferred-height + root.list-height;
@@ -428,17 +498,18 @@ component CentrePanel inherits SengiSurface {
             padding-bottom: Tokens.space-md;
             spacing: Tokens.space-sm;
 
-            for item[index] in root.history: HistoryRow {
-                data: item;
-                focused: root.keyboard-at == index + 2;
-                dismissed => { root.dismissed(item.key); }
-                reveal(top, tall) => {
-                    if top < -scroll.content-y {
-                        scroll.content-y = -top;
-                    } else if top + tall + Tokens.space-md > scroll.height - scroll.content-y {
-                        // With the same room under it as the last row has.
-                        scroll.content-y = scroll.height - top - tall - Tokens.space-md;
-                    }
+            for item[index] in root.history: line := VerticalLayout {
+                if item.header: GroupHeader {
+                    data: item;
+                    focused: root.keyboard-at == index + 2;
+                    cleared => { root.group-cleared(item.group); }
+                    reveal(top, tall) => { root.reveal-row(line.y + top, tall); }
+                }
+                if !item.header: HistoryRow {
+                    data: item;
+                    focused: root.keyboard-at == index + 2;
+                    dismissed => { root.dismissed(item.key); }
+                    reveal(top, tall) => { root.reveal-row(line.y + top, tall); }
                 }
             }
         }
@@ -481,6 +552,7 @@ export component NotifyWindow inherits Window {
     callback hover-changed(bool);
     callback cards-resized();
     callback history-dismissed(int);
+    callback group-cleared(string);
     callback clear-all();
     callback dnd-toggled(bool);
     callback open-centre();
@@ -517,12 +589,20 @@ export component NotifyWindow inherits Window {
         } else if root.centre-focus == 1 {
             root.dnd = !root.dnd;
             root.dnd-toggled(root.dnd);
+        } else if root.centre-focus >= 2 && root.centre-focus <= root.last-stop
+            && root.history[root.centre-focus - 2].header {
+            root.group-cleared(root.history[root.centre-focus - 2].group);
         }
     }
 
+    // On a row, removes it; on the heading of a group, clears the group.
     function remove-focused() {
         if root.centre-focus >= 2 && root.centre-focus <= root.last-stop {
-            root.history-dismissed(root.history[root.centre-focus - 2].key);
+            if root.history[root.centre-focus - 2].header {
+                root.group-cleared(root.history[root.centre-focus - 2].group);
+            } else {
+                root.history-dismissed(root.history[root.centre-focus - 2].key);
+            }
         }
     }
 
@@ -626,7 +706,8 @@ export component NotifyWindow inherits Window {
         dnd <=> root.dnd;
         keyboard-at: root.centre-focus;
         dismissed(key) => { root.history-dismissed(key); }
-        clear-all => { root.clear-all(); }
+        group-cleared(group) => { root.group-cleared(group); }
+        clear-all =>{ root.clear-all(); }
         dnd-toggled(on) => { root.dnd-toggled(on); }
     }
 }

@@ -95,14 +95,43 @@ Both properties announce changes with the usual
 
 ## In the notification centre
 
+The centre keeps the last 50 notifications, grouped by application. Each
+group has a heading with the app's name, how many notifications it holds and
+a Clear button; the groups are ordered by their newest line and the lines in
+them newest first. Times read "now", "2 min ago", "3 hours ago", "yesterday"
+and "5 days ago", and are brought up to date every 30 seconds while the
+centre is open. Clear all empties everything.
+
 Tab, Shift+Tab and the arrow keys move between Clear all, the
-do-not-disturb switch and the notifications. Return or Space presses the
-button or flips the switch, Delete removes the notification the keyboard
-is on, and Escape closes the centre.
+do-not-disturb switch, the group headings and the notifications. Return or
+Space presses the button or flips the switch, Return or Delete on a heading
+clears its group, Delete on a notification removes it, and Escape closes
+the centre.
+
+Do-not-disturb keeps cards off the screen but not out of the centre.
+Critical notifications are shown regardless, never time out, and stay until
+they are dismissed.
+
+### History file
+
+The history is written to `$XDG_STATE_HOME/sengi-os/notifications` (by
+default `~/.local/state/sengi-os/notifications`) a couple of seconds after it
+changes and when the service quits, and read when it starts, so that it
+survives a restart. It is readable by the user only, never larger than 64 KiB
+(when it would be, the oldest lines are left out) and holds the app, summary,
+body, urgency and time of each line, not what is needed to act on it. A file
+that cannot be read is ignored. Notifications marked `transient` are never
+written.
 
 ## Known limits
 
-- Clicking a notification does not raise the application's window. That
+- A card is dismissed by clicking it or its close button (the click on the
+  card also invokes its default action). Escape or Return cannot dismiss a
+  card: the strip of cards never takes the keyboard, which would steal it from
+  the window being typed in. `sengi-notify --dismiss-all` does it from a key
+  binding.
+- Notifications that were open (not just in the history) are not restored
+  after a restart.- Clicking a notification does not raise the application's window. That
   takes an `ActivationToken` signal backed by xdg-activation, which
   sengi-layer does not speak yet.
 - No application icons, and `image-data` is ignored.
@@ -118,6 +147,10 @@ is on, and Escape closes the centre.
     cargo test -p sengi-notify
     cargo build -p sengi-notify
     crates/sengi-notify/tests/smoke.sh target/debug/sengi-notify
+
+The centre with its groups is drawn headless by
+`cargo test -p sengi-shots --test groups` with `SENGI_RENDER_DIR` set; look
+for `notify-centre-grouped-1366x768.png`.
 
 `smoke.sh` starts its own session bus and headless labwc, and needs
 `labwc`, `dbus-daemon`, `dbus-run-session`, `dbus-monitor`, `gdbus` and
