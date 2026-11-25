@@ -10,6 +10,7 @@ notification centre.
     sengi-notify                      run the service
     sengi-notify --toggle-centre      open or close the notification centre
     sengi-notify --dismiss-all        dismiss every notification on screen
+    sengi-notify --post SUMMARY [BODY]  show a notification of a program that has no UI of its own (sengi-shot)
     sengi-notify --dnd on|off|toggle  set do-not-disturb
     sengi-notify --dnd status         print "on" or "off"
 

@@ -189,6 +189,9 @@ fn main() -> ExitCode {
         Invocation::Send(command) => dbus::send(command)
             .map(|()| ExitCode::SUCCESS)
             .map_err(unreachable),
+        Invocation::Post { summary, body } => dbus::post(&summary, &body)
+            .map(|()| ExitCode::SUCCESS)
+            .map_err(unreachable),
         Invocation::DndStatus => dbus::dnd_status()
             .map(|on| {
                 println!("{}", if on { "on" } else { "off" });

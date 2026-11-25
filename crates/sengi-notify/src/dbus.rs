@@ -536,6 +536,24 @@ pub fn send(command: Command) -> zbus::Result<()> {
     }
 }
 
+/// Shows a notification through the service, for a program that has no UI
+/// of its own, as sengi-shot has not.
+pub fn post(summary: &str, body: &str) -> zbus::Result<()> {
+    let connection = sengi_system::connect::session()?.build()?;
+    let actions: Vec<&str> = Vec::new();
+    let hints: std::collections::HashMap<&str, zbus::zvariant::Value<'_>> =
+        std::collections::HashMap::new();
+    connection
+        .call_method(
+            Some(NAME),
+            PATH,
+            Some(NAME),
+            "Notify",
+            &("Sengi OS", 0u32, "", summary, body, actions, hints, -1i32),
+        )
+        .map(drop)
+}
+
 /// Asks the running service whether do-not-disturb is on.
 pub fn dnd_status() -> zbus::Result<bool> {
     let connection = sengi_system::connect::session()?.build()?;

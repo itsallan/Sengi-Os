@@ -1,0 +1,13 @@
+[package]
+name = "sengi-shot"
+description = "Takes a screenshot of the screen or a window and saves it as a PNG"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+libc = "0.2"
+png = "0.18"
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }

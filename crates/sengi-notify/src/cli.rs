@@ -11,6 +11,7 @@ Options, sent to the running service:
   --dismiss-all         dismiss every notification on screen
   --dnd on|off|toggle   set do-not-disturb
   --dnd status          print whether do-not-disturb is on or off
+  --post SUMMARY [BODY]  show a notification, as a program that has none of its own
   -h, --help            show this help
   -V, --version         show the version
 ";
@@ -30,10 +31,12 @@ pub enum Command {
     Dnd(Dnd),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Invocation {
     Serve,
     Send(Command),
+    /// Show a notification of the caller's.
+    Post { summary: String, body: String },
     /// Print `on` or `off`.
     DndStatus,
     Help,
@@ -57,6 +60,15 @@ pub fn parse<S: AsRef<str>>(arguments: &[S]) -> Result<Invocation, String> {
                 "--dnd takes on, off, toggle or status, not '{other}'"
             )),
         },
+        ["--post", summary] => Ok(Invocation::Post {
+            summary: (*summary).to_string(),
+            body: String::new(),
+        }),
+        ["--post", summary, body] => Ok(Invocation::Post {
+            summary: (*summary).to_string(),
+            body: (*body).to_string(),
+        }),
+        ["--post", ..] => Err("--post takes a summary and perhaps a body".to_string()),
         ["--dnd"] => Err("--dnd takes on, off, toggle or status".to_string()),
         [other, ..] => Err(format!("unknown option '{other}'")),
     }
@@ -69,6 +81,19 @@ mod tests {
     #[test]
     fn no_arguments_runs_the_service() {
         assert_eq!(parse::<&str>(&[]), Ok(Invocation::Serve));
+    }
+
+    #[test]
+    fn post_takes_a_summary_and_a_body() {
+        assert_eq!(
+            parse(&["--post", "Saved", "in Pictures"]),
+            Ok(Invocation::Post {
+                summary: "Saved".into(),
+                body: "in Pictures".into()
+            })
+        );
+        assert!(parse(&["--post"]).is_err());
+        assert!(parse(&["--post", "a", "b", "c"]).is_err());
     }
 
     #[test]
