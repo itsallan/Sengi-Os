@@ -13,6 +13,9 @@ const WINDOWS: &[(&str, &str)] = &[
     ("dock", "../sengi-dock/ui/dock.slint"),
     ("store", "../sengi-store/ui/store.slint"),
     ("launcher", "../sengi-launcher/ui/launcher.slint"),
+    ("files", "../sengi-files/ui/files.slint"),
+    ("desktop", "../sengi-desktop/ui/desktop.slint"),
+    ("osd", "../sengi-osd/ui/osd.slint"),
 ];
 
 fn main() {
@@ -42,6 +45,9 @@ fn main() {
         "dock",
         "store",
         "launcher",
+        "files",
+        "desktop",
+        "osd",
     ] {
         println!("cargo:rerun-if-changed=../sengi-{crate_dir}/ui");
     }

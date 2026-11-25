@@ -30,6 +30,21 @@ impl Platform for Headless {
     }
 }
 
+/// Whether `SENGI_THEME=light` asks for the light palette.
+pub fn light() -> bool {
+    std::env::var("SENGI_THEME").is_ok_and(|theme| theme == "light")
+}
+
+/// The colour of a page of Settings, which the layout checks look for
+/// around the cards: `color.bg` of the theme in use.
+pub fn page_colour() -> [u8; 3] {
+    if light() {
+        [0xf3, 0xf4, 0xf6]
+    } else {
+        [0x16, 0x17, 0x1b]
+    }
+}
+
 /// Call once per thread, before the first component is made.
 pub fn install() {
     // Another test on this thread may have done it already.
@@ -105,11 +120,17 @@ impl Picture {
         self.rgb[y * self.width + x]
     }
 
-    /// Writes a PNG into SENGI_RENDER_DIR, when that is set.
+    /// Writes a PNG into SENGI_RENDER_DIR, when that is set. In the light
+    /// theme the name gets `-light` before the extension.
     pub fn save(&self, name: &str) {
         let Some(dir) = std::env::var_os("SENGI_RENDER_DIR") else {
             return;
         };
+        let name = match name.strip_suffix(".png") {
+            Some(stem) if light() => format!("{stem}-light.png"),
+            _ => name.to_string(),
+        };
+        let name = name.as_str();
         let _ = std::fs::create_dir_all(&dir);
         let file = std::fs::File::create(std::path::Path::new(&dir).join(name)).unwrap();
         let mut encoder = png::Encoder::new(file, self.width as u32, self.height as u32);

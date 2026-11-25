@@ -231,7 +231,7 @@ fn every_page() {
     ];
     for (page, variant) in scenes {
         for (width, height) in [(720u32, 480u32), (888, 600), (1280, 800)] {
-            let w = InstallerWindow::new().unwrap();
+            let w = themed(InstallerWindow::new().unwrap());
             // As the program does before it changes the page.
             w.invoke_release();
             scene(page, variant, &w);

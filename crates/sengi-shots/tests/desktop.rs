@@ -34,7 +34,7 @@ fn show<T: ComponentHandle>(w: &T, width: u32, height: u32, name: &str, backdrop
 fn bars() {
     for variant in ["plain", "tray", "many", "low", "offline"] {
         for width in [800u32, 1366] {
-            let w = bar::Bar::new().unwrap();
+            let w = bar::themed(bar::Bar::new().unwrap());
             w.set_clock("Tue 25 Nov  9:41".into());
             w.set_network("Home".into());
             w.set_wifi(true);
@@ -124,7 +124,7 @@ fn tray_menu() {
     radio.on = true;
     rows.push(radio);
     rows.push(row(7, "Quit"));
-    let w = bar::TrayMenu::new().unwrap();
+    let w = bar::themed(bar::TrayMenu::new().unwrap());
     w.set_panels(list(vec![bar::MenuPanel {
         rows: list(rows),
         marks: true,
@@ -140,7 +140,7 @@ fn tray_menu() {
 
 fn docks() {
     for (variant, n) in [("five", 5usize), ("two", 2), ("twelve", 12)] {
-        let w = dock::Dock::new().unwrap();
+        let w = dock::themed(dock::Dock::new().unwrap());
         let mut items = vec![
             dock::DockItem {
                 name: "Search".into(),
@@ -187,7 +187,7 @@ fn dock_menu() {
     use slint::platform::{PointerEventButton, WindowEvent};
     use slint::LogicalPosition;
 
-    let w = dock::Dock::new().unwrap();
+    let w = dock::themed(dock::Dock::new().unwrap());
     let tile = |name: &str, k: usize| dock::DockItem {
         name: name.into(),
         icon: dock::DockIcon::Image,
@@ -314,7 +314,7 @@ fn history(n: usize) -> ModelRc<notify::HistoryItem> {
 }
 
 fn notifications() {
-    let w = notify::NotifyWindow::new().unwrap();
+    let w = notify::themed(notify::NotifyWindow::new().unwrap());
     w.set_cards(list(vec![
         card(
             1,
@@ -344,7 +344,7 @@ fn notifications() {
     w.set_queued(2);
     show(&w, 400, 480, "notify-cards-400x480.png", BACKDROP);
     for (n, label) in [(0usize, "empty"), (3, "three"), (12, "many")] {
-        let w = notify::NotifyWindow::new().unwrap();
+        let w = notify::themed(notify::NotifyWindow::new().unwrap());
         w.set_history(history(n));
         w.set_centre_open(true);
         w.set_dnd(n == 3);
@@ -389,7 +389,7 @@ fn quicks() {
     let scenes = ["full", "networks", "passphrase", "off", "empty", "low"];
     for variant in scenes {
         for (width, height) in [(800u32, 600u32), (1366, 768)] {
-            let w = quick::QuickWindow::new().unwrap();
+            let w = quick::themed(quick::QuickWindow::new().unwrap());
             w.set_wifi_enabled(true);
             w.set_wifi_on(true);
             w.set_wifi_detail("Home".into());
@@ -480,7 +480,7 @@ fn stores() {
     use store::RowState::*;
     for variant in ["results", "empty", "error", "many"] {
         for (width, height) in [(800u32, 600u32), (1024, 768), (1920, 1080)] {
-            let w = store::StoreWindow::new().unwrap();
+            let w = store::themed(store::StoreWindow::new().unwrap());
             let g = w.global::<store::Store>();
             match variant {
                 "results" | "many" => {
@@ -553,7 +553,7 @@ fn launchers() {
         })
         .collect();
     for variant in ["grid", "list", "menu", "empty", "error"] {
-        let w = launcher::LauncherWindow::new().unwrap();
+        let w = launcher::themed(launcher::LauncherWindow::new().unwrap());
         w.set_grid_capable(true);
         match variant {
             "grid" => {
@@ -590,7 +590,7 @@ fn launchers() {
             BACKDROP,
         );
     }
-    let w = launcher::LauncherWindow::new().unwrap();
+    let w = launcher::themed(launcher::LauncherWindow::new().unwrap());
     w.set_grid_capable(true);
     w.set_grid(true);
     w.set_icons(true);

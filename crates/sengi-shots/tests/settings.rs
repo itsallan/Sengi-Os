@@ -36,7 +36,7 @@ fn pages() -> ModelRc<PageEntry> {
         ("bluetooth", "Bluetooth", "bluetooth"),
         ("sound", "Sound", "speaker"),
         ("display", "Display", "display"),
-        ("wallpaper", "Wallpaper", "sun"),
+        ("wallpaper", "Appearance", "sun"),
         ("power", "Power", "battery"),
         ("date-time", "Date & Time", "clock"),
         ("keyboard", "Keyboard", "keyboard"),
@@ -56,7 +56,9 @@ fn pages() -> ModelRc<PageEntry> {
 }
 
 // The colour of a page behind its cards: bg in tokens/sengi.toml.
-const PAGE: [u8; 3] = [0x16, 0x17, 0x1b];
+fn page_fill() -> [u8; 3] {
+    harness::page_colour()
+}
 // The sidebar and the widest column of a page, in tokens.
 const SIDEBAR: usize = 200;
 const COLUMN: usize = 640;
@@ -72,10 +74,12 @@ fn keeps_to_its_column(picture: &harness::Picture, page: &str, variant: &str, wi
     let right = left + column;
     let name = format!("{page}/{variant} at {width}");
     // One pixel of slack for the border of a card.
-    if let Some(at) = picture.first_other(SIDEBAR + 2, left - 1, 0, picture.height, PAGE) {
+    if let Some(at) = picture.first_other(SIDEBAR + 2, left - 1, 0, picture.height, page_fill()) {
         panic!("{name}: something is drawn left of the column at {at:?}");
     }
-    if let Some(at) = picture.first_other(right + 1, width - SCROLLBAR, 0, picture.height, PAGE) {
+    if let Some(at) =
+        picture.first_other(right + 1, width - SCROLLBAR, 0, picture.height, page_fill())
+    {
         panic!("{name}: something is drawn right of the column at {at:?}");
     }
 }
@@ -449,7 +453,7 @@ fn every_page() {
     ];
     for (page, variant, fill) in &scenes {
         for (width, height) in SIZES {
-            let w = SettingsWindow::new().unwrap();
+            let w = themed(SettingsWindow::new().unwrap());
             w.set_pages(pages());
             w.set_page(SharedString::from(*page));
             fill(&w);
@@ -471,7 +475,7 @@ fn every_page() {
 fn focus_hover_dialog_chooser() {
     harness::install();
     // The sidebar has the keyboard on the chosen row, and the pointer is on another.
-    let w = SettingsWindow::new().unwrap();
+    let w = themed(SettingsWindow::new().unwrap());
     w.set_pages(pages());
     w.set_page("network".into());
     network(&w, "on");
@@ -490,7 +494,7 @@ fn focus_hover_dialog_chooser() {
     harness::draw(&win, BACKDROP).save("settings-tab-focus-888x600.png");
     w.hide().unwrap();
 
-    let w = SettingsWindow::new().unwrap();
+    let w = themed(SettingsWindow::new().unwrap());
     w.set_pages(pages());
     w.set_page("bluetooth".into());
     bluetooth(&w, "on");
@@ -511,7 +515,7 @@ fn focus_hover_dialog_chooser() {
     harness::draw(&win, BACKDROP).save("settings-dialog-code-888x600.png");
     w.hide().unwrap();
 
-    let w = SettingsWindow::new().unwrap();
+    let w = themed(SettingsWindow::new().unwrap());
     w.set_pages(pages());
     w.set_page("network".into());
     network(&w, "on");
@@ -536,7 +540,7 @@ fn focus_hover_dialog_chooser() {
     harness::draw(&win, BACKDROP).save("settings-dialog-input-720x480.png");
     w.hide().unwrap();
 
-    let w = SettingsWindow::new().unwrap();
+    let w = themed(SettingsWindow::new().unwrap());
     w.set_pages(pages());
     w.set_page("date-time".into());
     datetime(&w);
@@ -557,7 +561,7 @@ fn focus_hover_dialog_chooser() {
     harness::draw(&win, BACKDROP).save("settings-dialog-danger-888x600.png");
     w.hide().unwrap();
 
-    let w = SettingsWindow::new().unwrap();
+    let w = themed(SettingsWindow::new().unwrap());
     w.set_pages(pages());
     w.set_page("date-time".into());
     datetime(&w);
@@ -599,7 +603,7 @@ fn cards(picture: &harness::Picture, width: usize) -> Vec<(usize, usize)> {
     let mut runs = Vec::new();
     let mut start = None;
     for y in 0..picture.height {
-        match (picture.at(x, y) != PAGE, start) {
+        match (picture.at(x, y) != page_fill(), start) {
             (true, None) => start = Some(y),
             (false, Some(from)) => {
                 runs.push((from, y));
@@ -655,7 +659,7 @@ fn about_rows_stay_with_their_values() {
     for (width, height) in SIZES {
         let name = |how: &str| format!("about {how} at {width}");
         let open = || {
-            let w = SettingsWindow::new().unwrap();
+            let w = themed(SettingsWindow::new().unwrap());
             w.set_pages(pages());
             w.set_page("about".into());
             w

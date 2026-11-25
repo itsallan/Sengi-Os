@@ -98,7 +98,7 @@ fn login_and_lock() {
         "idle", "typed", "wrong", "waiting", "busy", "choice", "naming", "armed", "dim", "nopower",
     ] {
         for (width, height) in SIZES {
-            let w = greeter::GreeterWindow::new().unwrap();
+            let w = greeter::themed(greeter::GreeterWindow::new().unwrap());
             greet(variant, &w);
             w.show().unwrap();
             let win = harness::window();
@@ -110,7 +110,7 @@ fn login_and_lock() {
     }
     for variant in ["idle", "typed", "wrong", "busy", "layout"] {
         for (width, height) in SIZES {
-            let w = lock::LockWindow::new().unwrap();
+            let w = lock::themed(lock::LockWindow::new().unwrap());
             locked(variant, &w);
             w.show().unwrap();
             let win = harness::window();
