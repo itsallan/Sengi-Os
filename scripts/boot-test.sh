@@ -347,7 +347,26 @@ dock_token() {
 }
 dock_fail=
 dock_icon_pitch=$(($(dock_token icon) + $(dock_token gap)))
-dock_x=$((screen_w / 2 + dock_icon_pitch))
+# The search button comes first and the pinned apps follow in the order of the
+# default dock.toml. The row is centred, so icon number i of n sits
+# (2 * i - (n - 1)) half a pitch from the middle, with n = pinned + 1.
+dock_x_of() {
+	dock_pos=$(awk -v id="$1" -F'[][",]+' '/^pinned/ {
+		n = 0
+		for (i = 2; i <= NF; i++) {
+			gsub(/ /, "", $i)
+			if ($i == "") continue
+			n++
+			if ($i == id) p = n
+		}
+		print p, n
+		exit
+	}' "$(dirname "$0")/../image/rootfs/etc/xdg/sengi-os/dock.toml")
+	dock_idx=${dock_pos% *}
+	dock_count=${dock_pos#* }
+	echo $((screen_w / 2 + dock_icon_pitch * (2 * dock_idx - dock_count) / 2))
+}
+dock_x=$(dock_x_of sengi-settings)
 dock_y=$((screen_h - 43))
 echo "screendump $out/before.ppm" >&3
 sleep 1
@@ -377,7 +396,7 @@ rm -f "$out/before.ppm" "$out/with.ppm" "$out/after.ppm"
 # The Store, from its icon next to Settings: the same click, one icon further
 # on. Closed again with the window shortcut, as Settings is.
 store_fail=
-store_x=$((screen_w / 2 + dock_icon_pitch * 2))
+store_x=$(dock_x_of sengi-store)
 echo "screendump $out/before.ppm" >&3
 sleep 1
 pointer "$store_x" "$dock_y"
