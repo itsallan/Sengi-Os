@@ -122,7 +122,10 @@ impl Open {
             }
         }
         // Closing is one step as far as a later run can tell.
-        let _guard = self.paths.as_ref().and_then(|(_, lock_path)| lock(lock_path));
+        let _guard = self
+            .paths
+            .as_ref()
+            .and_then(|(_, lock_path)| lock(lock_path));
         let _ = socket.set_nonblocking(true);
         if let Some(level) = receive(socket) {
             return Wait::Level(level);
@@ -133,7 +136,10 @@ impl Open {
 
     /// Takes the socket away, for a run that is leaving without waiting.
     pub fn give_up(&self) {
-        let _guard = self.paths.as_ref().and_then(|(_, lock_path)| lock(lock_path));
+        let _guard = self
+            .paths
+            .as_ref()
+            .and_then(|(_, lock_path)| lock(lock_path));
         self.remove();
     }
 

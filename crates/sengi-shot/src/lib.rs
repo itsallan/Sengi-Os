@@ -154,7 +154,7 @@ pub fn xrgb_to_rgb(xrgb: &[u8], width: usize, height: usize, stride: usize) -> O
     }
     let mut rgb = Vec::with_capacity(width * height * 3);
     for row in xrgb.chunks(stride).take(height) {
-        for pixel in row[..width * 4].chunks_exact(4) {
+        for pixel in row[..width * 4].as_chunks::<4>().0 {
             rgb.extend_from_slice(&[pixel[2], pixel[1], pixel[0]]);
         }
     }
@@ -233,7 +233,10 @@ mod tests {
             file_stem(&stamp(), Some("../../x/y")),
             "Screenshot-2026-11-05-090307-xy"
         );
-        assert_eq!(file_stem(&stamp(), Some("/")), "Screenshot-2026-11-05-090307");
+        assert_eq!(
+            file_stem(&stamp(), Some("/")),
+            "Screenshot-2026-11-05-090307"
+        );
     }
 
     #[test]

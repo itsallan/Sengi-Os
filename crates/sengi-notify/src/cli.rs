@@ -36,7 +36,10 @@ pub enum Invocation {
     Serve,
     Send(Command),
     /// Show a notification of the caller's.
-    Post { summary: String, body: String },
+    Post {
+        summary: String,
+        body: String,
+    },
     /// Print `on` or `off`.
     DndStatus,
     Help,

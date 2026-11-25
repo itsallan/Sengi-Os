@@ -272,12 +272,22 @@ fn capture(
         return Err("the compositor would not copy the screen (is it locked?)".into());
     };
     if !matches!(format, wl_shm::Format::Xrgb8888 | wl_shm::Format::Argb8888) {
-        return Err(format!("the compositor sent a format we cannot read: {format:?}"));
+        return Err(format!(
+            "the compositor sent a format we cannot read: {format:?}"
+        ));
     }
     let bytes = stride as usize * height as usize;
     let file = memory_file(bytes)?;
     let pool = shm.create_pool(file.as_fd(), bytes as i32, &qh, ());
-    let buffer = pool.create_buffer(0, width as i32, height as i32, stride as i32, format, &qh, ());
+    let buffer = pool.create_buffer(
+        0,
+        width as i32,
+        height as i32,
+        stride as i32,
+        format,
+        &qh,
+        (),
+    );
     pool.destroy();
     frame.copy(&buffer);
     while !state.ready && !state.failed {
@@ -304,7 +314,10 @@ fn memory_file(bytes: usize) -> Result<File, String> {
     // SAFETY: the name is a C string; the descriptor is ours.
     let fd = unsafe { libc::memfd_create(c"sengi-shot".as_ptr(), libc::MFD_CLOEXEC) };
     if fd < 0 {
-        return Err(format!("no memory to copy into: {}", std::io::Error::last_os_error()));
+        return Err(format!(
+            "no memory to copy into: {}",
+            std::io::Error::last_os_error()
+        ));
     }
     // SAFETY: fd is a fresh descriptor nobody else owns.
     let file = unsafe { File::from_raw_fd(fd) };

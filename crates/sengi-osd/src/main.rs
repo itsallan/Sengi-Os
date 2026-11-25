@@ -90,8 +90,9 @@ fn show(level: Level) -> Result<(), Box<dyn std::error::Error>> {
             Message::Quit => handle.quit(),
         }
     })?;
-    thread::Builder::new().name("wait".into()).spawn(move || {
-        loop {
+    thread::Builder::new()
+        .name("wait".into())
+        .spawn(move || loop {
             match open.wait(time) {
                 Wait::Level(level) => {
                     if sender.send(Message::Show(level)).is_err() {
@@ -104,8 +105,7 @@ fn show(level: Level) -> Result<(), Box<dyn std::error::Error>> {
                     return;
                 }
             }
-        }
-    })?;
+        })?;
 
     let config = Config::new("sengi-osd")
         .layer(Layer::Overlay)
