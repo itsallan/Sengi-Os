@@ -3714,6 +3714,7 @@ name = "sengi-settings"
 version = "0.8.0"
 dependencies = [
  "libc",
+ "png",
  "sengi-config",
  "sengi-system",
  "sengi-text",
@@ -3776,6 +3777,14 @@ version = "0.8.0"
 dependencies = [
  "slint",
  "slint-build",
+]
+
+[[package]]
+name = "sengi-wallpapers"
+version = "0.8.0"
+dependencies = [
+ "png",
+ "sengi-tokens",
 ]
 
 [[package]]
