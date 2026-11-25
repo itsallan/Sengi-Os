@@ -12,7 +12,7 @@ use std::time::SystemTime;
 
 pub use sengi_config::settings::{
     check, wallpaper_is_plain, xkb_word, zone_is_plain, Default, Layout, KEYS, MAX_IDLE_SECONDS,
-    MAX_LAYOUTS, WALLPAPER_SOLID,
+    MAX_LAYOUTS, THEME_DARK, THEME_LIGHT, WALLPAPER_SOLID,
 };
 
 use crate::store::{self, Dirs, Document, Value};

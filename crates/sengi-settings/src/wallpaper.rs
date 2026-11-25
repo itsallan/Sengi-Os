@@ -23,8 +23,9 @@ use slint::{ComponentHandle, Image, Rgb8Pixel, SharedPixelBuffer};
 
 use crate::app::{self, model, App, Controller};
 use crate::settings::{Settings, WALLPAPER_SOLID};
+use crate::settings::{THEME_DARK, THEME_LIGHT};
 use crate::store::Value;
-use crate::ui::{PictureRow, WallpaperData, WallpaperTile};
+use crate::ui::{PictureRow, ThemeSwitch, WallpaperData, WallpaperTile};
 
 /// Where the pictures Sengi OS ships are, and their thumbnails under
 /// `thumbs/`.
@@ -524,7 +525,28 @@ impl WallpaperPage {
                 page.choose(&app, path.as_str());
             }
         });
+        let (weak_app, weak_page) = (Rc::downgrade(app), Rc::downgrade(&page));
+        data.on_choose_theme(move |light| {
+            if let (Some(app), Some(page)) = (weak_app.upgrade(), weak_page.upgrade()) {
+                page.choose_theme(&app, light);
+            }
+        });
         page
+    }
+
+    /// Switch to the dark or the light theme. This window changes at once;
+    /// the rest of the session follows when the setting has been saved.
+    fn choose_theme(&self, app: &Rc<App>, light: bool) {
+        let data = app.window.global::<WallpaperData>();
+        if data.get_theme_light() == light {
+            return;
+        }
+        let name = if light { THEME_LIGHT } else { THEME_DARK };
+        if app.set("appearance", "theme", Value::text(name)) {
+            data.set_theme_light(light);
+            app.window.global::<ThemeSwitch>().set_light(light);
+            app.after_saved(crate::theme::apply_to_session);
+        }
     }
 
     /// Set the wallpaper to `value`, which is `solid` or a path. A path is
@@ -592,6 +614,7 @@ impl WallpaperPage {
 
     fn render(&self, app: &Rc<App>) {
         let data = app.window.global::<WallpaperData>();
+        data.set_theme_light(app.settings.borrow().light());
         let setting = app.settings.borrow().text("appearance", "wallpaper");
         let scan = self.scan.borrow();
         let Some(scan) = scan.as_ref() else {

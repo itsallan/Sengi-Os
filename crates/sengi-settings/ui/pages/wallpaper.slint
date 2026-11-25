@@ -33,9 +33,13 @@ export global WallpaperData {
     in property <string> pictures-note;
     // Why the path that was typed was refused, or empty.
     in property <string> path-error;
+    // Whether the light theme is chosen.
+    in property <bool> theme-light: false;
 
     // "solid", or the full path of a picture.
     callback choose(string);
+    // True for the light theme, false for the dark one.
+    callback choose-theme(bool);
 }
 
 // A thumbnail with its name under it. The one in use has a ring in the
@@ -75,11 +79,113 @@ component Tile inherits Rectangle {
         width: parent.width;
         height: Tokens.settings-wallpaper-label;
         text: root.tile.title;
-        color: root.tile.chosen ? Tokens.color-accent : Tokens.color-text;
+        color: root.tile.chosen ? Tokens.color-accent-strong : Tokens.color-text;
         font-weight: root.tile.chosen ? Tokens.font-weight-medium : Tokens.font-weight-regular;
         horizontal-alignment: center;
         vertical-alignment: center;
         overflow: elide;
+    }
+
+    scope := FocusScope {
+        focus-on-click: false;
+
+        key-pressed(event) => {
+            if event.text == " " || event.text == Key.Return {
+                root.clicked();
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+    }
+
+    TouchArea {
+        clicked => {
+            scope.focus();
+            root.clicked();
+        }
+    }
+}
+
+// One theme to choose from, drawn as a small window in that theme's own
+// colours, whatever theme is showing now. The one in use has a ring in
+// the accent colour; the one the keyboard is on, in the focus colour.
+component ThemeTile inherits Rectangle {
+    in property <string> title;
+    in property <bool> chosen;
+    in property <color> c-bg;
+    in property <color> c-surface;
+    in property <color> c-text;
+    in property <color> c-muted;
+    in property <color> c-accent;
+    in property <color> c-border;
+    callback clicked();
+
+    forward-focus: scope;
+
+    pic := Rectangle {
+        y: 0;
+        width: parent.width;
+        height: parent.width * 9 / 16;
+        border-radius: Tokens.radius;
+        clip: true;
+        background: root.c-bg;
+
+        card := Rectangle {
+            x: Tokens.space-md;
+            y: Tokens.space-md;
+            width: parent.width - Tokens.space-md * 2;
+            height: parent.height - Tokens.space-md * 2;
+            border-radius: Tokens.radius;
+            background: root.c-surface;
+            border-width: Tokens.border-width;
+            border-color: root.c-border;
+
+            Rectangle {
+                x: Tokens.space-md;
+                y: Tokens.space-md;
+                width: parent.width * 45%;
+                height: Tokens.space-xs;
+                border-radius: self.height / 2;
+                background: root.c-text;
+            }
+
+            Rectangle {
+                x: Tokens.space-md;
+                y: Tokens.space-md + Tokens.space-md;
+                width: parent.width * 70%;
+                height: Tokens.space-xs;
+                border-radius: self.height / 2;
+                background: root.c-muted;
+            }
+
+            Rectangle {
+                x: parent.width - self.width - Tokens.space-md;
+                y: parent.height - self.height - Tokens.space-md;
+                width: Tokens.space-xl + Tokens.space-md;
+                height: Tokens.space-lg;
+                border-radius: Tokens.radius;
+                background: root.c-accent;
+            }
+        }
+
+        Rectangle {
+            border-radius: Tokens.radius;
+            border-width: scope.has-focus ? Tokens.focus-ring-width
+                : root.chosen ? Tokens.focus-ring-width : Tokens.border-width;
+            border-color: scope.has-focus ? Tokens.color-focus-ring
+                : root.chosen ? Tokens.color-accent : Tokens.color-border;
+        }
+    }
+
+    SengiText {
+        y: pic.height;
+        width: parent.width;
+        height: Tokens.settings-wallpaper-label;
+        text: root.title;
+        color: root.chosen ? Tokens.color-accent-strong : Tokens.color-text;
+        font-weight: root.chosen ? Tokens.font-weight-medium : Tokens.font-weight-regular;
+        horizontal-alignment: center;
+        vertical-alignment: center;
     }
 
     scope := FocusScope {
@@ -108,12 +214,52 @@ export component WallpaperPage inherits Page {
     private property <length> tile-height: root.tile-width * 9 / 16 + Tokens.settings-wallpaper-label;
     private property <int> rows: Math.ceil(WallpaperData.tiles.length / 3);
 
-    title: "Wallpaper";
+    title: "Appearance";
     content-height: column.preferred-height;
 
     column := PageColumn {
         SectionLabel {
-            text: "Current";
+            text: "Theme";
+        }
+
+        Rectangle {
+            preferred-height: root.tile-height;
+
+            ThemeTile {
+                x: 0;
+                width: root.tile-width;
+                height: root.tile-height;
+                title: "Dark";
+                chosen: !WallpaperData.theme-light;
+                c-bg: Tokens.dark-bg;
+                c-surface: Tokens.dark-surface;
+                c-text: Tokens.dark-text;
+                c-muted: Tokens.dark-text-muted;
+                c-accent: Tokens.dark-accent;
+                c-border: Tokens.dark-border;
+                clicked => { WallpaperData.choose-theme(false); }
+            }
+
+            ThemeTile {
+                x: root.tile-width + root.gap;
+                width: root.tile-width;
+                height: root.tile-height;
+                title: "Light";
+                chosen: WallpaperData.theme-light;
+                c-bg: Tokens.light-bg;
+                c-surface: Tokens.light-surface;
+                c-text: Tokens.light-text;
+                c-muted: Tokens.light-text-muted;
+                c-accent: Tokens.light-accent;
+                c-border: Tokens.light-border;
+                clicked => { WallpaperData.choose-theme(true); }
+            }
+        }
+
+        Gap { }
+
+        SectionLabel {
+            text: "Current wallpaper";
         }
 
         Card {
@@ -229,7 +375,7 @@ export component WallpaperPage inherits Page {
                         alignment: center;
                         if picture.chosen: SengiText {
                             text: "In use";
-                            color: Tokens.color-accent;
+                            color: Tokens.color-accent-strong;
                             vertical-alignment: center;
                         }
                         if !picture.chosen: SengiButton {

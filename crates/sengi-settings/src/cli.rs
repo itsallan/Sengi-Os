@@ -88,7 +88,7 @@ impl Page {
             Page::Keyboard => "Keyboard",
             Page::Mouse => "Mouse & Touchpad",
             Page::Notifications => "Notifications",
-            Page::Wallpaper => "Wallpaper",
+            Page::Wallpaper => "Appearance",
             Page::About => "About",
         }
     }
@@ -107,7 +107,9 @@ impl Page {
                 "datetime" | "date" | "time" | "clock" => Some(Page::DateTime),
                 "touchpad" | "pointer" => Some(Page::Mouse),
                 "notification" => Some(Page::Notifications),
-                "background" | "desktop-background" => Some(Page::Wallpaper),
+                "background" | "desktop-background" | "appearance" | "theme" => {
+                    Some(Page::Wallpaper)
+                }
                 _ => None,
             })
     }

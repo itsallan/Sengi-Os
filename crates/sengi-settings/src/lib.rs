@@ -25,6 +25,7 @@ pub mod services;
 pub mod settings;
 pub mod sound;
 pub mod store;
+pub mod theme;
 pub mod wallpaper;
 pub mod worker;
 
