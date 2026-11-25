@@ -3563,6 +3563,18 @@ name = "sengi-config"
 version = "0.8.0"
 
 [[package]]
+name = "sengi-desktop"
+version = "0.8.0"
+dependencies = [
+ "libc",
+ "png",
+ "sengi-apps",
+ "sengi-layer",
+ "slint",
+ "slint-build",
+]
+
+[[package]]
 name = "sengi-dock"
 version = "0.8.0"
 dependencies = [

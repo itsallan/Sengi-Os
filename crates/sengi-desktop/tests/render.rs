@@ -107,7 +107,11 @@ fn icons_menus_and_a_new_folder_in_rename() {
     save("desktop.png", &plain);
     assert!(painted(&plain, 0, 0, 120, 120) > 400, "no first icon");
     assert!(painted(&plain, 0, 120, 120, 120) > 400, "no second icon");
-    assert_eq!(painted(&plain, 600, 300, 200, 200), 0, "the desktop is not clear");
+    assert_eq!(
+        painted(&plain, 600, 300, 200, 200),
+        0,
+        "the desktop is not clear"
+    );
 
     // A right click on bare desktop opens the menu where it was clicked.
     click(&window, 600.0, 300.0, PointerEventButton::Right);
