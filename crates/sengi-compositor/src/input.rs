@@ -847,9 +847,11 @@ impl State {
         let Some(output) = self.output_for_layer(surface) else {
             return false;
         };
-        layer_map_for_output(&output)
+        let map = layer_map_for_output(&output);
+        let found = map
             .layer_for_surface(surface, WindowSurfaceType::ALL)
-            .is_some_and(|layer| layer.layer() == kind)
+            .is_some_and(|layer| layer.layer() == kind);
+        found
     }
 
     fn click_layer(&mut self, surface: WlSurface) {
