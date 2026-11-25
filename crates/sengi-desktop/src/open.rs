@@ -29,6 +29,9 @@ pub fn open_command(env: &Env, path: &Path, folder: bool) -> Result<Vec<String>,
     if env.find_program("xdg-open").is_some() {
         return Ok(vec!["xdg-open".into(), target]);
     }
+    if !folder && env.find_program("sengi-open").is_some() {
+        return Ok(vec!["sengi-open".into(), target]);
+    }
     if folder {
         let manager = FILE_MANAGERS
             .iter()
@@ -132,6 +135,22 @@ mod tests {
                 Ok(vec!["xdg-open".to_string(), "/h/Desktop/x".to_string()])
             );
         }
+    }
+
+    #[test]
+    fn sengi_open_takes_a_file_when_xdg_open_is_missing() {
+        let env = env_with("open-sengi", &["sengi-open", "sengi-files"]);
+        assert_eq!(
+            open_command(&env, Path::new("/h/Desktop/a.txt"), false),
+            Ok(vec![
+                "sengi-open".to_string(),
+                "/h/Desktop/a.txt".to_string()
+            ])
+        );
+        assert_eq!(
+            open_command(&env, Path::new("/h/Desktop/a"), true),
+            Ok(vec!["sengi-files".to_string(), "/h/Desktop/a".to_string()])
+        );
     }
 
     #[test]

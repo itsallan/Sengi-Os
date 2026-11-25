@@ -26,8 +26,9 @@ it. `sengi-desktop` opens folders in it.
   arrow keys extend; Ctrl+A takes all. Up, Down, Home, End, Page Up and Page
   Down move.
 - Double-click or Return opens a folder in the window, and a file with
-  `xdg-open`. The image has no `xdg-open`, and then the line at the bottom says
-  so, in red, naming the file: nothing fails silently.
+  `xdg-open`, or `sengi-open` when that is not installed (the image has
+  no `xdg-open`). With neither, the line at the bottom says so, in red,
+  naming the file: nothing fails silently.
 - F2 renames in place (the name is taken as typed, minus spaces at the ends;
   a name that exists is refused and the field stays open). Ctrl+Shift+N or the
   New Folder button makes "untitled folder" and starts renaming it.

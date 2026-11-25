@@ -13,13 +13,16 @@ pub fn command(env: &Env, path: &Path) -> Result<Vec<String>, String> {
     let name = path
         .file_name()
         .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
-    if env.find_program("xdg-open").is_none() {
+    let opener = ["xdg-open", "sengi-open"]
+        .into_iter()
+        .find(|program| env.find_program(program).is_some());
+    let Some(opener) = opener else {
         return Err(format!(
             "Cannot open \"{name}\": xdg-open is not installed, so Files does not know which app to use."
         ));
-    }
+    };
     Ok(vec![
-        "xdg-open".to_string(),
+        opener.to_string(),
         path.to_string_lossy().into_owned(),
     ])
 }
@@ -90,6 +93,17 @@ mod tests {
             command(&env, Path::new("/h/a b.txt")),
             Ok(vec!["xdg-open".to_string(), "/h/a b.txt".to_string()])
         );
+    }
+
+    #[test]
+    fn sengi_open_is_used_when_xdg_open_is_missing() {
+        let (_t, env) = env_with(&["sengi-open"]);
+        assert_eq!(
+            command(&env, Path::new("/h/a.txt")),
+            Ok(vec!["sengi-open".to_string(), "/h/a.txt".to_string()])
+        );
+        let (_t, env) = env_with(&["sengi-open", "xdg-open"]);
+        assert_eq!(command(&env, Path::new("/h/a.txt")).unwrap()[0], "xdg-open");
     }
 
     #[test]
