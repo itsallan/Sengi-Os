@@ -119,6 +119,8 @@ where
     layers(output, &[Layer::Overlay], renderer, scale, &mut elements);
     // The window switcher or a menu, above the windows and the bar.
     elements.extend(state.overlay_element(output, renderer));
+    // Where a window dragged to a screen edge will land.
+    elements.extend(state.snap_hint_element(output, renderer));
     // `None` stands for the top layer.
     let mut order: Vec<Option<&Window>> = Vec::new();
     order.extend(filling.as_ref().map(Some));

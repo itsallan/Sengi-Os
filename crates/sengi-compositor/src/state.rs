@@ -285,8 +285,18 @@ pub struct State {
     /// started, and which one is selected.
     /// The window switcher or a menu, when one is open.
     pub overlay: Option<crate::overlay::Overlay>,
+    /// Where a window being dragged to a screen edge will land, drawn as an
+    /// outline until it is let go.
+    pub snap_hint: Option<crate::snap::Hint>,
     /// Programs we started and still have to collect when they exit.
-    children: Vec<Child>,
+    pub(crate) children: Vec<Child>,
+    /// When the screen is dimmed, switched off and locked for want of input.
+    pub idle_clock: crate::power::IdleClock,
+    /// The timer set for the next of those, if there is a next.
+    pub idle_timer: Option<RegistrationToken>,
+    /// The pipe that keeps logind from suspending when the lid is closed,
+    /// while Settings says closing it does nothing.
+    pub lid_hold: Option<std::process::ChildStdin>,
     /// What is painted with, for each scale an output is drawn at.
     pub painters: Vec<Painter>,
     /// Whether the pointer is drawn in the picture a screen copy takes,
@@ -415,6 +425,9 @@ impl State {
                     crate::say!("{}", state.lock_status());
                     crate::say!("{}", state.config.keyboard.describe());
                     crate::say!("{}", state.output_power_status());
+                    crate::say!("{}", state.power_status());
+                    crate::say!("{}", state.snap_status());
+                    crate::say!("{}", state.overlay_status());
                     let inputs = state.describe_inputs.as_ref().map(|describe| describe());
                     for line in inputs.unwrap_or_default() {
                         crate::say!("{line}");
@@ -555,7 +568,14 @@ impl State {
             pointer_stale: false,
             swallowed_keys: Swallowed::default(),
             overlay: None,
+            snap_hint: None,
             children: Vec::new(),
+            idle_clock: crate::power::IdleClock::new(
+                crate::power::Plan::default(),
+                std::time::Duration::ZERO,
+            ),
+            idle_timer: None,
+            lid_hold: None,
             painters: Vec::new(),
             draw_cursor: true,
             client_cursor: CursorImageStatus::default_named(),
@@ -860,6 +880,21 @@ impl State {
                     if let Ok(asker) = stream.try_clone() {
                         state.lock_requested(asker);
                     }
+                } else if line == b"sleep-lock" {
+                    // Just before the computer sleeps: the screen is covered
+                    // before it does, if Settings has it so.
+                    if let Ok(mut asker) = stream.try_clone() {
+                        if state.config.power.lock_on_sleep && !state.login_screen {
+                            state.lock_requested(asker);
+                        } else {
+                            let _ = std::io::Write::write_all(&mut asker, b"skipped\n");
+                        }
+                    }
+                } else if line == b"shortcuts" {
+                    state.show_shortcuts();
+                    if let Ok(mut asker) = stream.try_clone() {
+                        let _ = std::io::Write::write_all(&mut asker, b"ok\n");
+                    }
                 } else if cfg!(feature = "test-hooks") {
                     // Plugs and unplugs screens and gives input, for the tests.
                     if let Ok(mut asker) = stream.try_clone() {
@@ -1002,6 +1037,18 @@ impl State {
         }
         keyboard.change_repeat_info(config.keyboard.repeat_rate, config.keyboard.repeat_delay);
         self.config = config;
+        self.apply_power_config();
+    }
+
+    /// Takes up the times and the lid setting of the settings in effect.
+    pub fn apply_power_config(&mut self) {
+        let power = self.config.power;
+        self.set_idle_plan(crate::power::Plan::from_seconds(
+            power.dim_after,
+            power.blank_after,
+            power.lock_after,
+        ));
+        self.set_lid_does_nothing(power.lid_does_nothing);
     }
 
     /// What to draw at the pointer right now.
@@ -1139,6 +1186,7 @@ impl State {
         }
         let shadows_changed = self.config.appearance != config.appearance;
         self.config = config;
+        self.apply_power_config();
         if shadows_changed {
             // The bottom corners are painted over the shadow.
             for window in self.space.elements().chain(self.minimised.iter()) {
@@ -1156,6 +1204,7 @@ impl State {
     pub fn note_activity(&mut self) -> bool {
         let seat = self.seat.clone();
         self.idle_notifier_state.notify_activity(&seat);
+        self.idle_input();
         let woke = self.any_output_off();
         self.wake_outputs();
         // The cursor moved, a button lit up, a binding did something.

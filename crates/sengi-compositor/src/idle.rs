@@ -55,6 +55,7 @@ impl State {
                 .iter()
                 .any(|surface| has_buffer(surface) && self.is_on_screen(surface));
         self.idle_notifier_state.set_is_inhibited(inhibited);
+        self.idle_hold(inhibited);
     }
 
     /// Whether the window or layer surface that `surface` belongs to is

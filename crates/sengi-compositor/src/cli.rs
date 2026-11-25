@@ -38,6 +38,9 @@ Usage: sengi-compositor [options]
       --reload          ask the running compositor to read the settings again
       --lock            ask the running compositor to lock the screen;
                         returns once every screen is covered
+      --lock-for-sleep  as --lock, unless Settings says not to lock when the
+                        computer goes to sleep; run before it does
+      --shortcuts       show the sheet of keyboard shortcuts (Super+/)
   -h, --help            show this help
   -V, --version         show the version";
 
@@ -133,6 +136,9 @@ pub enum Command {
     Exit,
     Reload,
     Lock,
+    /// `--lock` for the moment before sleep: only if Settings wants it.
+    LockForSleep,
+    Shortcuts,
 }
 
 pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> {
@@ -146,6 +152,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             "-V" | "--version" => return Ok(Command::Version),
             "--exit" => return Ok(Command::Exit),
             "--lock" => return Ok(Command::Lock),
+            "--lock-for-sleep" => return Ok(Command::LockForSleep),
+            "--shortcuts" => return Ok(Command::Shortcuts),
             "--reload" => return Ok(Command::Reload),
             "-s" | "--startup" => options.startup.push(value()?),
             "--session" => options.session = Some(value()?),
@@ -302,6 +310,8 @@ mod tests {
         assert!(run(&["--session"]).is_err());
         assert_eq!(run(&["--exit"]), Ok(Command::Exit));
         assert_eq!(run(&["--lock"]), Ok(Command::Lock));
+        assert_eq!(run(&["--lock-for-sleep"]), Ok(Command::LockForSleep));
+        assert_eq!(run(&["--shortcuts"]), Ok(Command::Shortcuts));
         assert_eq!(run(&["--reload"]), Ok(Command::Reload));
     }
 

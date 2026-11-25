@@ -48,6 +48,8 @@ pub enum Action {
     Launcher,
     Terminal,
     Lock,
+    /// Super+/: the cheat sheet of these bindings.
+    Shortcuts,
     CloseWindow,
     NextWindow,
     PreviousWindow,
@@ -138,72 +140,227 @@ pub fn binding_symbol(keysym: u32, keycode: u32) -> u32 {
     }
 }
 
+/// Which of the held modifiers a binding takes.
+type When = fn(Mods) -> bool;
+
+fn only_logo(m: Mods) -> bool {
+    m.logo && !m.alt && !m.ctrl && !m.shift
+}
+
+fn only_alt(m: Mods) -> bool {
+    m.alt && !m.logo && !m.ctrl && !m.shift
+}
+
+fn alt_and_shift(m: Mods) -> bool {
+    m.alt && m.shift && !m.logo && !m.ctrl
+}
+
+/// The keys of the keyboard's own media row work whatever is held.
+fn anything(_: Mods) -> bool {
+    true
+}
+
+fn plain(m: Mods) -> bool {
+    !m.logo && !m.alt && !m.ctrl && !m.shift
+}
+
+/// Print with Alt or Shift, or with both.
+fn marked(m: Mods) -> bool {
+    !m.logo && !m.ctrl && (m.alt || m.shift)
+}
+
+fn not_logo_or_ctrl(m: Mods) -> bool {
+    !m.logo && !m.ctrl
+}
+
+const LOGO: Mods = Mods {
+    logo: true,
+    alt: false,
+    ctrl: false,
+    shift: false,
+};
+const ALT: Mods = Mods {
+    logo: false,
+    alt: true,
+    ctrl: false,
+    shift: false,
+};
+const ALT_SHIFT: Mods = Mods {
+    logo: false,
+    alt: true,
+    ctrl: false,
+    shift: true,
+};
+const NONE: Mods = Mods {
+    logo: false,
+    alt: false,
+    ctrl: false,
+    shift: false,
+};
+
+/// What a shortcut is about, for grouping the cheat sheet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Section {
+    Apps,
+    Windows,
+    Screen,
+}
+
+impl Section {
+    pub fn title(self) -> &'static str {
+        match self {
+            Section::Apps => "Apps and session",
+            Section::Windows => "Windows",
+            Section::Screen => "Screen and sound",
+        }
+    }
+}
+
+/// One key binding. This table is what `binding` looks keys up in and
+/// what the shortcut cheat sheet lists, so the sheet cannot say anything
+/// the compositor does not do.
+pub struct Bind {
+    pub section: Section,
+    /// The key as the sheet names it, without the modifiers.
+    pub key: &'static str,
+    /// The modifiers the sheet names before the key, and the ones the
+    /// tests hold down.
+    pub mods: Mods,
+    /// Keysyms that trigger it. Letters are lower case; a capital, with
+    /// Caps Lock on, counts as the same.
+    syms: &'static [u32],
+    when: When,
+    pub action: Action,
+    pub what: &'static str,
+    /// Whether the sheet lists it. A few alternative spellings of a
+    /// binding are bound but listed once.
+    pub listed: bool,
+}
+
+const fn bind(
+    section: Section,
+    key: &'static str,
+    mods: Mods,
+    syms: &'static [u32],
+    when: When,
+    action: Action,
+    what: &'static str,
+) -> Bind {
+    Bind {
+        section,
+        key,
+        mods,
+        syms,
+        when,
+        action,
+        what,
+        listed: true,
+    }
+}
+
+const fn unlisted(mut bind: Bind) -> Bind {
+    bind.listed = false;
+    bind
+}
+
+const LETTER_A: u32 = b'a' as u32;
+const LETTER_L: u32 = b'l' as u32;
+const LETTER_Q: u32 = b'q' as u32;
+const SLASH: u32 = b'/' as u32;
+const F1: u32 = 0xffbe;
+
+#[rustfmt::skip]
+pub const BINDINGS: &[Bind] = &[
+    bind(Section::Apps, "Space", LOGO, &[SPACE], only_logo, Action::Launcher, "Search and open apps"),
+    bind(Section::Apps, "Return", LOGO, &[RETURN], only_logo, Action::Terminal, "Open a terminal"),
+    bind(Section::Apps, "L", LOGO, &[LETTER_L], only_logo, Action::Lock, "Lock the screen"),
+    bind(Section::Apps, "/", LOGO, &[SLASH, F1], only_logo, Action::Shortcuts, "Show these shortcuts (also Super+F1)"),
+    bind(Section::Windows, "Q", LOGO, &[LETTER_Q], only_logo, Action::CloseWindow, "Close the window"),
+    bind(Section::Windows, "F4", ALT, &[F4], only_alt, Action::CloseWindow, "Close the window"),
+    bind(Section::Windows, "Tab", ALT, &[TAB, ISO_LEFT_TAB], only_alt, Action::NextWindow, "Switch to the next window"),
+    bind(Section::Windows, "Tab", ALT_SHIFT, &[TAB, ISO_LEFT_TAB], alt_and_shift, Action::PreviousWindow, "Switch to the previous window"),
+    bind(Section::Windows, "A", LOGO, &[LETTER_A], only_logo, Action::Maximise, "Maximise or restore the window"),
+    bind(Section::Windows, "Left", LOGO, &[LEFT], only_logo, Action::Snap(Edge::Left), "Fill the left half of the screen"),
+    bind(Section::Windows, "Right", LOGO, &[RIGHT], only_logo, Action::Snap(Edge::Right), "Fill the right half of the screen"),
+    bind(Section::Windows, "Up", LOGO, &[UP], only_logo, Action::Snap(Edge::Up), "Fill the top half of the screen"),
+    bind(Section::Windows, "Down", LOGO, &[DOWN], only_logo, Action::Snap(Edge::Down), "Fill the bottom half of the screen"),
+    bind(Section::Windows, "Left", ALT, &[LEFT], only_alt, Action::MoveToEdge(Edge::Left), "Move the window to the left edge"),
+    bind(Section::Windows, "Right", ALT, &[RIGHT], only_alt, Action::MoveToEdge(Edge::Right), "Move the window to the right edge"),
+    bind(Section::Windows, "Up", ALT, &[UP], only_alt, Action::MoveToEdge(Edge::Up), "Move the window to the top edge"),
+    bind(Section::Windows, "Down", ALT, &[DOWN], only_alt, Action::MoveToEdge(Edge::Down), "Move the window to the bottom edge"),
+    bind(Section::Screen, "Print", NONE, &[PRINT], plain, Action::Screenshot(Shot::Screen), "Take a picture of the screen"),
+    // With Shift, or Alt, or both: the window in front.
+    bind(Section::Screen, "Print", ALT, &[PRINT], marked, Action::Screenshot(Shot::Window), "Take a picture of the window (Shift+Print too)"),
+    // xkb turns Alt+Print into Sys_Req.
+    unlisted(bind(Section::Screen, "Sys_Req", ALT, &[SYS_REQ], not_logo_or_ctrl, Action::Screenshot(Shot::Window), "")),
+    bind(Section::Screen, "Volume Up", NONE, &[AUDIO_RAISE], anything, Action::Volume(Volume::Up), "Volume up"),
+    bind(Section::Screen, "Volume Down", NONE, &[AUDIO_LOWER], anything, Action::Volume(Volume::Down), "Volume down"),
+    bind(Section::Screen, "Mute", NONE, &[AUDIO_MUTE], anything, Action::Volume(Volume::Mute), "Mute or unmute"),
+    bind(Section::Screen, "Brightness Up", NONE, &[MON_BRIGHTNESS_UP], anything, Action::Brightness(Brightness::Up), "Screen brighter"),
+    bind(Section::Screen, "Brightness Down", NONE, &[MON_BRIGHTNESS_DOWN], anything, Action::Brightness(Brightness::Down), "Screen dimmer"),
+    bind(Section::Screen, "Keyboard Light Up", NONE, &[KBD_BRIGHTNESS_UP], anything, Action::Brightness(Brightness::KeyboardUp), "Keyboard light brighter"),
+    bind(Section::Screen, "Keyboard Light Down", NONE, &[KBD_BRIGHTNESS_DOWN], anything, Action::Brightness(Brightness::KeyboardDown), "Keyboard light dimmer"),
+    bind(Section::Screen, "Keyboard Light", NONE, &[KBD_LIGHT_TOGGLE], anything, Action::Brightness(Brightness::KeyboardToggle), "Keyboard light on or off"),
+];
+
+/// The keys to the other virtual terminals are not in the table, they are
+/// twelve of one kind: `vt_for`. The sheet lists them as one line.
+pub const CONSOLE_KEYS: (&str, &str) = ("Ctrl+Alt+F1 to F12", "Switch to another console");
+
 /// The action bound to a key press, if any. `keysym` is the symbol with the
 /// held modifiers applied.
 pub fn binding(mods: Mods, keysym: u32) -> Option<Action> {
     if let Some(vt) = vt_for(keysym) {
         return Some(Action::SwitchVt(vt));
     }
-    match keysym {
-        AUDIO_RAISE => return Some(Action::Volume(Volume::Up)),
-        AUDIO_LOWER => return Some(Action::Volume(Volume::Down)),
-        AUDIO_MUTE => return Some(Action::Volume(Volume::Mute)),
-        MON_BRIGHTNESS_UP => return Some(Action::Brightness(Brightness::Up)),
-        MON_BRIGHTNESS_DOWN => return Some(Action::Brightness(Brightness::Down)),
-        KBD_BRIGHTNESS_UP => return Some(Action::Brightness(Brightness::KeyboardUp)),
-        KBD_BRIGHTNESS_DOWN => return Some(Action::Brightness(Brightness::KeyboardDown)),
-        KBD_LIGHT_TOGGLE => return Some(Action::Brightness(Brightness::KeyboardToggle)),
-        // With Alt held xkb has already turned Print into Sys_Req.
-        SYS_REQ if !mods.ctrl && !mods.logo => return Some(Action::Screenshot(Shot::Window)),
-        PRINT if !mods.ctrl && !mods.logo => {
-            return Some(Action::Screenshot(if mods.alt || mods.shift {
-                Shot::Window
-            } else {
-                Shot::Screen
-            }))
-        }
-        _ => {}
-    }
-    let letter = char::from_u32(keysym)
-        .filter(char::is_ascii_alphabetic)
-        .map(|c| c.to_ascii_lowercase());
-    let only_logo = mods.logo && !mods.alt && !mods.ctrl && !mods.shift;
-    let only_alt = mods.alt && !mods.logo && !mods.ctrl;
+    let symbol = match char::from_u32(keysym).filter(char::is_ascii_alphabetic) {
+        Some(letter) => u32::from(letter.to_ascii_lowercase()),
+        None => keysym,
+    };
+    BINDINGS
+        .iter()
+        .find(|bind| bind.syms.contains(&symbol) && (bind.when)(mods))
+        .map(|bind| bind.action)
+}
 
-    if only_logo {
-        return match (keysym, letter) {
-            (LEFT, _) => Some(Action::Snap(Edge::Left)),
-            (RIGHT, _) => Some(Action::Snap(Edge::Right)),
-            (UP, _) => Some(Action::Snap(Edge::Up)),
-            (DOWN, _) => Some(Action::Snap(Edge::Down)),
-            (_, Some('a')) => Some(Action::Maximise),
-            (SPACE, _) => Some(Action::Launcher),
-            (RETURN, _) => Some(Action::Terminal),
-            (_, Some('l')) => Some(Action::Lock),
-            (_, Some('q')) => Some(Action::CloseWindow),
-            _ => None,
-        };
+/// The key as the sheet shows it: modifiers, then the key.
+pub fn key_label(bind: &Bind) -> String {
+    let mut label = String::new();
+    if bind.mods.logo {
+        label.push_str("Super+");
     }
-    if only_alt && !mods.shift && keysym == F4 {
-        return Some(Action::CloseWindow);
+    if bind.mods.ctrl {
+        label.push_str("Ctrl+");
     }
-    if only_alt && !mods.shift {
-        match keysym {
-            LEFT => return Some(Action::MoveToEdge(Edge::Left)),
-            RIGHT => return Some(Action::MoveToEdge(Edge::Right)),
-            UP => return Some(Action::MoveToEdge(Edge::Up)),
-            DOWN => return Some(Action::MoveToEdge(Edge::Down)),
-            _ => {}
-        }
+    if bind.mods.alt {
+        label.push_str("Alt+");
     }
-    if only_alt && (keysym == TAB || keysym == ISO_LEFT_TAB) {
-        return Some(if mods.shift {
-            Action::PreviousWindow
-        } else {
-            Action::NextWindow
-        });
+    if bind.mods.shift {
+        label.push_str("Shift+");
     }
-    None
+    label.push_str(bind.key);
+    label
+}
+
+/// One section of the cheat sheet: what to press, and what it does.
+pub type SheetSection = (Section, Vec<(String, &'static str)>);
+
+/// The lines of the cheat sheet, by section. Made from `BINDINGS`, so
+/// nothing here is written twice.
+pub fn cheat_sheet() -> Vec<SheetSection> {
+    let mut sections: Vec<SheetSection> = Vec::new();
+    let mut add = |section: Section, line: (String, &'static str)| match sections
+        .iter_mut()
+        .find(|(known, _)| *known == section)
+    {
+        Some((_, lines)) => lines.push(line),
+        None => sections.push((section, vec![line])),
+    };
+    for bind in BINDINGS.iter().filter(|bind| bind.listed) {
+        add(bind.section, (key_label(bind), bind.what));
+    }
+    add(Section::Apps, (CONSOLE_KEYS.0.to_string(), CONSOLE_KEYS.1));
+    sections
 }
 
 /// The tail of the volume commands: what the indicator shows is read from
@@ -261,6 +418,7 @@ pub fn command(action: Action) -> Option<&'static str> {
         | Action::NextWindow
         | Action::PreviousWindow
         | Action::Overlay(_)
+        | Action::Shortcuts
         | Action::Maximise
         | Action::Snap(_)
         | Action::MoveToEdge(_)
@@ -509,6 +667,83 @@ mod tests {
         assert_eq!(cycle(3, 0, false), 2);
         assert_eq!(cycle(1, 0, true), 0);
         assert_eq!(cycle(0, 0, true), 0);
+    }
+
+    #[test]
+    fn every_row_of_the_table_does_what_it_says() {
+        for bind in BINDINGS {
+            assert!((bind.when)(bind.mods), "{} is not held right", bind.key);
+            for sym in bind.syms {
+                assert_eq!(
+                    binding(bind.mods, *sym),
+                    Some(bind.action),
+                    "{} with {:?}",
+                    key_label(bind),
+                    sym
+                );
+            }
+        }
+    }
+
+    /// Whatever key and modifiers are tried, an action that `binding`
+    /// gives is one the sheet lists. A binding added outside the table
+    /// would fail here.
+    #[test]
+    fn the_sheet_lists_every_action_a_key_can_trigger() {
+        let listed: Vec<Action> = BINDINGS
+            .iter()
+            .filter(|bind| bind.listed)
+            .map(|bind| bind.action)
+            .collect();
+        let symbols = (0x20..0x7f)
+            .chain(0xfd00..0x10000)
+            .chain(0x1008_fe00..0x1008_ff40);
+        for symbol in symbols {
+            for bits in 0..16 {
+                let mods = Mods {
+                    logo: bits & 1 != 0,
+                    alt: bits & 2 != 0,
+                    ctrl: bits & 4 != 0,
+                    shift: bits & 8 != 0,
+                };
+                match binding(mods, symbol) {
+                    None | Some(Action::SwitchVt(_)) => {}
+                    Some(action) => assert!(
+                        listed.contains(&action),
+                        "{symbol:#x} with {mods:?} does {action:?}, which the sheet does not list"
+                    ),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_sheet_is_the_table_in_words() {
+        let sheet = cheat_sheet();
+        let lines: Vec<&(String, &str)> = sheet.iter().flat_map(|(_, lines)| lines).collect();
+        let listed = BINDINGS.iter().filter(|bind| bind.listed).count();
+        assert_eq!(lines.len(), listed + 1, "the table and the console line");
+        let has = |keys: &str, what: &str| lines.iter().any(|l| l.0 == keys && l.1.contains(what));
+        assert!(has("Super+Space", "open apps"));
+        assert!(has("Super+Left", "left half"));
+        assert!(has("Alt+Shift+Tab", "previous window"));
+        assert!(has("Super+/", "shortcuts"));
+        assert!(has("Ctrl+Alt+F1 to F12", "console"));
+        assert!(lines.iter().all(|l| !l.0.is_empty() && !l.1.is_empty()));
+        // The same line is not shown twice.
+        for (index, line) in lines.iter().enumerate() {
+            assert!(!lines[..index].contains(line), "{line:?} twice");
+        }
+    }
+
+    #[test]
+    fn the_cheat_sheet_opens_on_super_slash_and_super_f1() {
+        assert_eq!(binding(LOGO, u32::from(b'/')), Some(Action::Shortcuts));
+        assert_eq!(binding(LOGO, 0xffbe), Some(Action::Shortcuts));
+        assert_eq!(binding(Mods::default(), u32::from(b'/')), None);
+        assert_eq!(binding(ALT, u32::from(b'/')), None);
+        assert_eq!(command(Action::Shortcuts), None);
+        assert!(!works_when_locked(Action::Shortcuts));
     }
 
     #[test]

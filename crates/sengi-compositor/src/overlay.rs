@@ -16,7 +16,7 @@ use smithay::{
 };
 
 use crate::{
-    card::{self, Layout, Row, Tile},
+    card::{self, Layout, Row, Sheet, Tile},
     keys::{self, Action},
     outputs::scale_key,
     render::OutputElement,
@@ -33,6 +33,8 @@ pub enum Overlay {
         /// The output it is shown on: the one the pointer was on.
         output: Output,
     },
+    /// Super+/: the keyboard shortcuts, on the screen that was active.
+    Shortcuts { output: Output },
     /// A menu, at the pointer where it was opened (logical, on the desktop).
     Menu {
         kind: MenuKind,
@@ -106,6 +108,16 @@ impl State {
     /// Whether the switcher or a menu is open.
     pub fn overlay_open(&self) -> bool {
         self.overlay.is_some()
+    }
+
+    /// One line for the SIGUSR1 report.
+    pub fn overlay_status(&self) -> &'static str {
+        match self.overlay {
+            None => "overlay: none",
+            Some(Overlay::Switcher { .. }) => "overlay: switcher",
+            Some(Overlay::Menu { .. }) => "overlay: menu",
+            Some(Overlay::Shortcuts { .. }) => "overlay: shortcuts",
+        }
     }
 
     /// Whether the keys and the pointer may open a card: not on the lock
@@ -321,7 +333,8 @@ impl State {
                     }
                 }
             }
-            None => {}
+            // Any press closes the sheet, whatever is under it.
+            Some(Overlay::Shortcuts { .. }) | None => {}
         }
         self.request_redraw();
     }
@@ -346,9 +359,11 @@ impl State {
     /// Whether the open card is on `output`.
     pub fn overlay_output_is(&self, output: &Output) -> bool {
         match self.overlay.as_ref() {
-            Some(Overlay::Switcher { output: on, .. } | Overlay::Menu { output: on, .. }) => {
-                on == output
-            }
+            Some(
+                Overlay::Switcher { output: on, .. }
+                | Overlay::Menu { output: on, .. }
+                | Overlay::Shortcuts { output: on },
+            ) => on == output,
             None => false,
         }
     }
@@ -356,7 +371,9 @@ impl State {
     /// The output the open card is on, if it is still there.
     fn overlay_output(&self) -> Option<Output> {
         let output = match self.overlay.as_ref()? {
-            Overlay::Switcher { output, .. } | Overlay::Menu { output, .. } => output,
+            Overlay::Switcher { output, .. }
+            | Overlay::Menu { output, .. }
+            | Overlay::Shortcuts { output } => output,
         };
         self.head(output)
             .is_some_and(|head| head.enabled)
@@ -391,6 +408,8 @@ impl State {
         let theme = &painter.theme;
         let font = painter.font.as_ref();
         match self.overlay.as_ref()? {
+            // Drawn as a sheet, see `sheet_on`.
+            Overlay::Shortcuts { .. } => None,
             Overlay::Switcher { windows, .. } => {
                 let titles: Vec<(String, char)> = windows
                     .iter()
@@ -424,6 +443,55 @@ impl State {
         }
     }
 
+    /// The shortcuts sheet as it is drawn on `output`, with its top left
+    /// corner in the output's pixels, if that is where it is open.
+    pub fn sheet_on(&self, output: &Output) -> Option<(Sheet, (i32, i32))> {
+        if self.is_locked() || self.login_screen {
+            return None;
+        }
+        let Some(Overlay::Shortcuts { output: on }) = self.overlay.as_ref() else {
+            return None;
+        };
+        if on != output || !self.head(output).is_some_and(|head| head.enabled) {
+            return None;
+        }
+        let geometry = self.space.output_geometry(output)?;
+        let scale = self.scale_of(output);
+        let screen_w = (f64::from(geometry.size.w) * scale).round() as i32;
+        let screen_h = (f64::from(geometry.size.h) * scale).round() as i32;
+        let painter = self.painter(scale);
+        let sheet = card::shortcuts(
+            &painter.theme,
+            painter.font.as_ref(),
+            &keys::cheat_sheet(),
+            screen_w,
+        );
+        let left = ((screen_w - sheet.width) / 2).max(0);
+        let top = ((screen_h - sheet.height) / 2).max(0);
+        Some((sheet, (left, top)))
+    }
+
+    /// Super+/: shows the sheet of shortcuts, or takes it away.
+    pub fn toggle_shortcuts(&mut self) {
+        if matches!(self.overlay, Some(Overlay::Shortcuts { .. })) {
+            self.close_overlay();
+        } else {
+            self.show_shortcuts();
+        }
+    }
+
+    /// Shows the sheet of shortcuts if nothing else is open.
+    pub fn show_shortcuts(&mut self) {
+        if self.overlay.is_some() || !self.may_open_overlay() {
+            return;
+        }
+        let Some(output) = self.active_output() else {
+            return;
+        };
+        self.overlay = Some(Overlay::Shortcuts { output });
+        self.request_redraw();
+    }
+
     /// The open card as a render element on `output`, drawn in the screen's
     /// pixels: nothing when no card is open there.
     pub fn overlay_element<R>(&self, output: &Output, renderer: &mut R) -> Option<OutputElement<R>>
@@ -431,14 +499,19 @@ impl State {
         R: Renderer + ImportMem,
         R::TextureId: Clone + Send + Texture + 'static,
     {
-        let (layout, (left, top)) = self.card_on(output)?;
-        let selected = match self.overlay.as_ref()? {
-            Overlay::Switcher { selected, .. } => Some(*selected),
-            Overlay::Menu { selected, .. } => *selected,
-        };
         let scale = self.scale_of(output);
         let theme = &self.painter(scale).theme;
-        let canvas = layout.draw(theme, selected);
+        let (canvas, (left, top)) = if let Some((sheet, place)) = self.sheet_on(output) {
+            (sheet.draw(theme), place)
+        } else {
+            let (layout, place) = self.card_on(output)?;
+            let selected = match self.overlay.as_ref()? {
+                Overlay::Switcher { selected, .. } => Some(*selected),
+                Overlay::Menu { selected, .. } => *selected,
+                Overlay::Shortcuts { .. } => None,
+            };
+            (layout.draw(theme, selected), place)
+        };
         let buffer_scale = scale.round().max(1.0) as i32;
         let (w, h) = (canvas.width() as i32, canvas.height() as i32);
         let buffer = MemoryRenderBuffer::from_slice(

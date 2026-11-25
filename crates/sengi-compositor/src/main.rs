@@ -32,12 +32,14 @@ mod output_store;
 mod outputs;
 mod overlay;
 mod png;
+mod power;
 mod render;
 mod screencopy;
 mod script;
 mod security;
 mod shadow;
 mod shell;
+mod snap;
 mod state;
 mod text;
 mod window;
@@ -83,7 +85,9 @@ fn main() -> ExitCode {
         }
         Ok(Command::Exit) => return signal_compositor("TERM"),
         Ok(Command::Reload) => return signal_compositor("HUP"),
-        Ok(Command::Lock) => return ask_to_lock(),
+        Ok(Command::Lock) => return ask("lock", "locked"),
+        Ok(Command::LockForSleep) => return ask("sleep-lock", "locked"),
+        Ok(Command::Shortcuts) => return ask("shortcuts", "ok"),
         Err(err) => {
             crate::say!("{err}\n{}", cli::USAGE);
             return ExitCode::from(2);
@@ -156,6 +160,8 @@ fn start_clients(state: &mut State, options: &Options) {
         let locker = options.locker.as_deref().unwrap_or(keys::DEFAULT_LOCKER);
         state.set_locker(locker);
     }
+    // The times for dimming, switching off and locking, and the lid.
+    state.apply_power_config();
     // Xwayland runs for the whole session, so that the programs started
     // here, and the ones they start, have a DISPLAY. Not on the login screen.
     state.start_xwayland();
@@ -196,11 +202,12 @@ fn signal_compositor(signal: &str) -> ExitCode {
     }
 }
 
-/// `--lock`: asks the compositor this was started under to lock the
-/// screen, and waits for its answer. Success means every screen is
-/// covered, which is what `swayidle -w` waits for before the machine
-/// sleeps.
-fn ask_to_lock() -> ExitCode {
+/// `--lock` and the other requests that go to the control socket: asks
+/// the compositor this was started under, and waits for its answer.
+/// For the lock, success means every screen is covered, which is what
+/// the machine waits for before it sleeps. `skipped` is a good answer
+/// too: the request was understood and nothing was asked for.
+fn ask(request: &str, done: &str) -> ExitCode {
     use std::io::{BufRead, BufReader, Write};
 
     let path = state::control_path(
@@ -218,16 +225,16 @@ fn ask_to_lock() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    if let Err(err) = stream.write_all(b"lock\n") {
-        crate::say!("could not ask for the lock: {err}");
+    if let Err(err) = stream.write_all(format!("{request}\n").as_bytes()) {
+        crate::say!("could not ask for {request}: {err}");
         return ExitCode::FAILURE;
     }
     let mut answer = String::new();
     let _ = BufReader::new(stream).read_line(&mut answer);
-    if answer.trim() == "locked" {
+    if answer.trim() == done || answer.trim() == "skipped" {
         ExitCode::SUCCESS
     } else {
-        crate::say!("the screen was not locked");
+        crate::say!("{request}: not done");
         ExitCode::FAILURE
     }
 }

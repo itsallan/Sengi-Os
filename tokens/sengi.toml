@@ -161,6 +161,12 @@ alpha-focused = 55
 alpha-unfocused = 30
 color = "#000000"
 
+[snap]
+# The outline shown while a window is dragged to a screen edge: the accent
+# at this many percent opaque, for the flat fill and for the line around it.
+hint-fill-alpha = 22
+hint-edge-alpha = 85
+
 [menu]
 # A menu's rows: the height of a row, the space between the menu's edge and
 # its rows, and how far a separator line is pulled in from the row's ends.

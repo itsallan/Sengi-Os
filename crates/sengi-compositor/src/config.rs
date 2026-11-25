@@ -14,6 +14,22 @@ pub struct Config {
     pub mouse: Mouse,
     pub touchpad: Touchpad,
     pub appearance: Appearance,
+    pub power: Power,
+}
+
+/// What `power.*` in the settings says, in the units it is written in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Power {
+    /// Seconds without input before the screen is dimmed, switched off and
+    /// locked. Zero is never.
+    pub dim_after: i64,
+    pub blank_after: i64,
+    pub lock_after: i64,
+    /// Lock the screen before the computer sleeps.
+    pub lock_on_sleep: bool,
+    /// Closing the lid does nothing: the compositor holds the lid switch
+    /// so that logind does not suspend.
+    pub lid_does_nothing: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,6 +153,13 @@ impl Config {
             appearance: Appearance {
                 window_shadows: settings.flag("appearance", "window-shadows"),
             },
+            power: Power {
+                dim_after: settings.number("power", "dim-after"),
+                blank_after: settings.number("power", "blank-after"),
+                lock_after: settings.number("power", "lock-after"),
+                lock_on_sleep: settings.flag("power", "lock-on-sleep"),
+                lid_does_nothing: settings.text("power", "lid") == "nothing",
+            },
         }
     }
 
@@ -256,6 +279,30 @@ mod tests {
         assert!(config.mouse.natural_scroll && config.mouse.left_handed);
         assert_eq!(config.touchpad.speed, 1.0);
         assert!(!config.touchpad.tap && !config.touchpad.disable_while_typing);
+    }
+
+    #[test]
+    fn the_power_defaults_dim_then_switch_off_and_lock_only_for_sleep() {
+        let power = config("").power;
+        assert_eq!(power.dim_after, 120);
+        assert_eq!(power.blank_after, 300);
+        assert_eq!(power.lock_after, 0);
+        assert!(power.lock_on_sleep);
+        assert!(!power.lid_does_nothing);
+    }
+
+    #[test]
+    fn the_power_settings_are_taken_over() {
+        let power = config(
+            "[power]\ndim-after = 30\nblank-after = 90\nlock-after = 600\n\
+             lock-on-sleep = false\nlid = \"nothing\"\n",
+        )
+        .power;
+        assert_eq!(
+            (power.dim_after, power.blank_after, power.lock_after),
+            (30, 90, 600)
+        );
+        assert!(!power.lock_on_sleep && power.lid_does_nothing);
     }
 
     #[test]

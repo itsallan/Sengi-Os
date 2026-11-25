@@ -200,6 +200,213 @@ impl Layout {
     }
 }
 
+/// The keyboard shortcuts cheat sheet: a title, the sections of
+/// shortcuts in columns, and how to close it. Laid out once, like the
+/// other cards.
+pub struct Sheet {
+    pub width: i32,
+    pub height: i32,
+    title: Option<TextBitmap>,
+    footer: Option<TextBitmap>,
+    columns: Vec<SheetColumn>,
+    /// What each line says, in words, in the order they are drawn: the
+    /// keys and what they do. For the tests, which compare it with the
+    /// table the keys are bound by.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub lines: Vec<(String, String)>,
+}
+
+struct SheetColumn {
+    x: i32,
+    key_width: i32,
+    items: Vec<SheetItem>,
+}
+
+enum SheetItem {
+    Heading {
+        y: i32,
+        text: Option<TextBitmap>,
+    },
+    Line {
+        y: i32,
+        keys: Option<TextBitmap>,
+        keys_width: i32,
+        what: Option<TextBitmap>,
+    },
+}
+
+const SHEET_TITLE: &str = "Keyboard shortcuts";
+const SHEET_FOOTER: &str = "Press Esc or click anywhere to close";
+
+/// The sheet for `sections` on a screen `screen_width` pixels wide. The
+/// sections go into two columns, the largest first, each into the column
+/// that is shorter so far.
+pub fn shortcuts(
+    theme: &Theme,
+    font: Option<&Font>,
+    sections: &[crate::keys::SheetSection],
+    screen_width: i32,
+) -> Sheet {
+    let card = theme.card;
+    let row = card.menu_row;
+    let render = |text: &str| font.map(|font| font.render(text));
+    let width_of = |bitmap: &Option<TextBitmap>| bitmap.as_ref().map_or(0, |b| b.width as i32);
+
+    // Which section goes into which column.
+    let mut order: Vec<usize> = (0..sections.len()).collect();
+    order.sort_by_key(|index| std::cmp::Reverse(sections[*index].1.len()));
+    let mut taken: [Vec<usize>; 2] = [Vec::new(), Vec::new()];
+    let mut rows = [0usize; 2];
+    for index in order {
+        let side = usize::from(rows[1] < rows[0]);
+        taken[side].push(index);
+        rows[side] += sections[index].1.len() + 1;
+    }
+    for side in &mut taken {
+        side.sort_unstable();
+    }
+
+    let head = row + card.gap;
+    let mut lines = Vec::new();
+    let mut columns: Vec<SheetColumn> = Vec::new();
+    let mut tallest = 0;
+    let mut x = card.pad_x;
+    let between = 2 * card.pad_x;
+    let columns_count = taken.iter().filter(|side| !side.is_empty()).count().max(1) as i32;
+    let room = screen_width - 2 * card.margin - 2 * card.pad_x - (columns_count - 1) * between;
+    let each = (room / columns_count).max(1);
+    for side in taken.iter().filter(|side| !side.is_empty()) {
+        let mut items = Vec::new();
+        let mut y = head;
+        let mut key_width = 0;
+        let mut whats: Vec<(usize, String)> = Vec::new();
+        for (position, index) in side.iter().enumerate() {
+            let (section, entries) = &sections[*index];
+            if position > 0 {
+                y += card.gap;
+            }
+            items.push(SheetItem::Heading {
+                y,
+                text: render(section.title()),
+            });
+            y += row;
+            for (keys, what) in entries {
+                let bitmap = render(keys);
+                let chip = width_of(&bitmap) + card.gap;
+                key_width = key_width.max(chip);
+                whats.push((items.len(), (*what).to_string()));
+                items.push(SheetItem::Line {
+                    y,
+                    keys: bitmap,
+                    keys_width: chip,
+                    what: None,
+                });
+                lines.push((keys.clone(), (*what).to_string()));
+                y += row;
+            }
+        }
+        // The words, cut to the room the column has.
+        let room_for_words = (each - key_width - card.gap).max(0) as usize;
+        let mut widest = 0;
+        for (at, what) in whats {
+            let bitmap = font.map(|font| font.fit(&what, room_for_words));
+            widest = widest.max(width_of(&bitmap));
+            if let SheetItem::Line { what, .. } = &mut items[at] {
+                *what = bitmap;
+            }
+        }
+        let column_width = key_width + card.gap + widest;
+        columns.push(SheetColumn {
+            x,
+            key_width,
+            items,
+        });
+        x += column_width + between;
+        tallest = tallest.max(y);
+    }
+    let footer = render(SHEET_FOOTER);
+    let title = render(SHEET_TITLE);
+    let width = (x - between + card.pad_x).max(width_of(&footer) + 2 * card.pad_x);
+    Sheet {
+        width,
+        height: tallest + card.gap + row + card.pad_y,
+        title,
+        footer,
+        columns,
+        lines,
+    }
+}
+
+impl Sheet {
+    #[cfg(test)]
+    fn columns_count(&self) -> usize {
+        self.columns.len()
+    }
+
+    /// How many lines, headings included, each column has.
+    #[cfg(test)]
+    fn column_rows(&self) -> Vec<usize> {
+        self.columns.iter().map(|c| c.items.len()).collect()
+    }
+
+    pub fn draw(&self, theme: &Theme) -> Canvas {
+        let card = theme.card;
+        let row = card.menu_row;
+        let mut canvas = Canvas::new(self.width.max(1) as usize, self.height.max(1) as usize);
+        let radius = theme.radius as f32;
+        let edge = theme.metrics.border;
+        canvas.round_rect(0, 0, self.width, self.height, radius, theme.border);
+        canvas.round_rect(
+            edge,
+            edge,
+            self.width - 2 * edge,
+            self.height - 2 * edge,
+            (radius - edge as f32).max(0.0),
+            theme.active,
+        );
+        let centre = |bitmap: &TextBitmap, y: i32| y + (row - bitmap.height as i32) / 2;
+        if let Some(title) = &self.title {
+            canvas.label(title, card.pad_x, centre(title, card.pad_y), theme.text);
+        }
+        for column in &self.columns {
+            for item in &column.items {
+                match item {
+                    SheetItem::Heading { y, text } => {
+                        if let Some(text) = text {
+                            canvas.label(text, column.x, centre(text, *y), theme.text_muted);
+                        }
+                    }
+                    SheetItem::Line {
+                        y,
+                        keys,
+                        keys_width,
+                        what,
+                    } => {
+                        canvas.round_rect(column.x, *y, *keys_width, row, radius, theme.raised);
+                        if let Some(keys) = keys {
+                            canvas.label(
+                                keys,
+                                column.x + card.gap / 2,
+                                centre(keys, *y),
+                                theme.text,
+                            );
+                        }
+                        if let Some(what) = what {
+                            let left = column.x + column.key_width + card.gap;
+                            canvas.label(what, left, centre(what, *y), theme.text);
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(footer) = &self.footer {
+            let y = self.height - card.pad_y - row;
+            canvas.label(footer, card.pad_x, centre(footer, y), theme.text_muted);
+        }
+        canvas
+    }
+}
+
 fn contains(rect: Rect, x: i32, y: i32) -> bool {
     x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h
 }
@@ -224,6 +431,38 @@ mod tests {
         assert_eq!(rows[1].w, width - 24);
         assert_eq!(rows[2], Rect::new(6, 6 + 22 + rows[1].h, width - 12, 22));
         assert_eq!(layout.height, 6 + 22 + rows[1].h + 22 + 6);
+    }
+
+    #[test]
+    fn the_sheet_says_what_the_key_table_says_and_no_more() {
+        let theme = Theme::from_tokens(&sengi_tokens::Tokens::builtin());
+        let sections = crate::keys::cheat_sheet();
+        let sheet = shortcuts(&theme, None, &sections, 1280);
+        let mut wanted: Vec<(String, String)> = sections
+            .iter()
+            .flat_map(|(_, lines)| lines.iter().map(|(k, w)| (k.clone(), (*w).to_string())))
+            .collect();
+        let mut drawn = sheet.lines.clone();
+        wanted.sort();
+        drawn.sort();
+        assert_eq!(drawn, wanted);
+        // One line for each listed binding, and the console keys.
+        let bound = crate::keys::BINDINGS.iter().filter(|b| b.listed).count();
+        assert_eq!(sheet.lines.len(), bound + 1);
+    }
+
+    #[test]
+    fn the_sheet_is_in_two_columns_that_are_about_as_tall_as_each_other() {
+        let theme = Theme::from_tokens(&sengi_tokens::Tokens::builtin());
+        let sheet = shortcuts(&theme, None, &crate::keys::cheat_sheet(), 1280);
+        assert_eq!(sheet.columns_count(), 2);
+        let sizes = sheet.column_rows();
+        let (a, b) = (sizes[0] as i32, sizes[1] as i32);
+        assert!((a - b).abs() <= 4, "{sizes:?}");
+        // And it is no taller than a small screen.
+        assert!(sheet.height < 600, "{} px tall", sheet.height);
+        let canvas = sheet.draw(&theme);
+        assert_eq!(canvas.width() as i32, sheet.width);
     }
 
     #[test]

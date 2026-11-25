@@ -76,8 +76,21 @@ pub struct Theme {
     pub accent_text: Rgba,
     /// The surface a card of settings sits on, one step above the bar.
     pub raised: Rgba,
+    /// The outline that shows where a dragged window will snap: the
+    /// accent, see-through, for the fill and for the line around it.
+    pub snap_fill: Rgba,
+    pub snap_edge: Rgba,
     pub card: CardMetrics,
     pub shadow: ShadowStyle,
+}
+
+/// `colour` as opaque as `percent` of its own opacity.
+fn percent_of(colour: Rgba, percent: u32) -> Rgba {
+    let alpha = u32::from(colour.a) * percent.min(100) / 100;
+    Rgba {
+        a: alpha as u8,
+        ..colour
+    }
 }
 
 impl Theme {
@@ -147,6 +160,8 @@ impl Theme {
             accent: color("color.accent"),
             accent_text: color("color.accent-text"),
             raised: color("color.surface-raised"),
+            snap_fill: percent_of(color("color.accent"), px("snap.hint-fill-alpha") as u32),
+            snap_edge: percent_of(color("color.accent"), px("snap.hint-edge-alpha") as u32),
             shadow: ShadowStyle::from_tokens(tokens),
             card: CardMetrics {
                 menu_width: px("size.menu-width"),

@@ -31,6 +31,7 @@ use crate::{
     layout::Rect,
     outputs::scale_key,
     shadow::{self, Falloff},
+    snap::Snap,
     state::{set_activated, State},
     text::Font,
 };
@@ -695,20 +696,12 @@ impl State {
         self.request_redraw();
     }
 
-    /// Fills half of the screen on `edge`, as labwc's SnapToEdge does. A
-    /// maximised window is first given back its size.
-    pub fn snap_to_edge(&mut self, window: &Window, edge: Edge) {
-        if data(window).fullscreen.get().is_some() {
-            return;
-        }
-        if data(window).restore.get().is_some() {
-            self.set_maximised(window, false);
-        }
-        let Some(area) = self.snap_area(window) else {
-            return;
-        };
+    /// The frame `window` takes when it fills half of the screen on
+    /// `edge`, as labwc's SnapToEdge does.
+    pub fn half_frame(&self, window: &Window, edge: Edge) -> Option<Rect> {
+        let area = self.snap_area(window)?;
         let gap = self.edge_gap();
-        let frame = match edge {
+        Some(match edge {
             Edge::Left => Rect::new(area.x, area.y, area.w / 2 - gap / 2, area.h),
             Edge::Right => {
                 let at = area.w / 2 + gap / 2;
@@ -719,6 +712,29 @@ impl State {
                 let at = area.h / 2 + gap / 2;
                 Rect::new(area.x, area.y + at, area.w, area.h - at)
             }
+        })
+    }
+
+    /// Whether letting go of `window` at a screen edge may snap it: not a
+    /// window that fills the screen, or a menu.
+    pub fn can_snap(&self, window: &Window) -> bool {
+        is_client(window)
+            && !is_override(window)
+            && data(window).fullscreen.get().is_none()
+            && self.frame_rect(window).is_some()
+    }
+
+    /// Fills half of the screen on `edge`, as labwc's SnapToEdge does. A
+    /// maximised window is first given back its size.
+    pub fn snap_to_edge(&mut self, window: &Window, edge: Edge) {
+        if data(window).fullscreen.get().is_some() {
+            return;
+        }
+        if data(window).restore.get().is_some() {
+            self.set_maximised(window, false);
+        }
+        let Some(frame) = self.half_frame(window, edge) else {
+            return;
         };
         self.fill_frame(window, frame);
     }
@@ -749,25 +765,10 @@ impl State {
     /// side, as labwc does with its default range of one pixel and
     /// topMaximize.
     pub fn snap_after_move(&mut self, window: &Window, location: (f64, f64)) {
-        const RANGE: f64 = 1.0;
-        let Some(output) = self.output_at(location.into()) else {
-            return;
-        };
-        let Some(screen) = self.space.output_geometry(&output) else {
-            return;
-        };
-        let (x, y) = location;
-        let (left, top) = (f64::from(screen.loc.x), f64::from(screen.loc.y));
-        let right = left + f64::from(screen.size.w);
-        let bottom = top + f64::from(screen.size.h);
-        if y <= top + RANGE {
-            self.set_maximised(window, true);
-        } else if x <= left + RANGE {
-            self.snap_to_edge(window, Edge::Left);
-        } else if x >= right - RANGE {
-            self.snap_to_edge(window, Edge::Right);
-        } else if y >= bottom - RANGE {
-            self.snap_to_edge(window, Edge::Down);
+        match self.snap_for(location) {
+            Some((_, Snap::Maximise)) => self.set_maximised(window, true),
+            Some((_, Snap::Half(edge))) => self.snap_to_edge(window, edge),
+            None => {}
         }
     }
 

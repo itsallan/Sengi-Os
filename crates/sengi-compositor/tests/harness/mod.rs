@@ -240,8 +240,14 @@ impl Compositor {
     /// Runs `sengi-compositor --lock` against this compositor, the way the
     /// session's idle command does. It ends when the compositor answers.
     pub fn ask_for_lock(&self) -> Child {
+        self.ask_with("--lock")
+    }
+
+    /// Runs `sengi-compositor` with `request` (`--lock-for-sleep`,
+    /// `--shortcuts`) against this compositor, as the session does.
+    pub fn ask_with(&self, request: &str) -> Child {
         Command::new(env!("CARGO_BIN_EXE_sengi-compositor"))
-            .arg("--lock")
+            .arg(request)
             .env("XDG_RUNTIME_DIR", &self.dir)
             .env("WAYLAND_DISPLAY", self.socket.file_name().expect("a name"))
             .stderr(Stdio::null())

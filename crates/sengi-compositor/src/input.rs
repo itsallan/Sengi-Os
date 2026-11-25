@@ -246,9 +246,14 @@ impl State {
                 if data.overlay_open() {
                     let keysym = key.modified_sym().raw();
                     let picked = match (binding, keysym) {
-                        (Some(action @ (Action::NextWindow | Action::PreviousWindow)), _) => {
-                            Some(action)
-                        }
+                        (
+                            Some(
+                                action @ (Action::NextWindow
+                                | Action::PreviousWindow
+                                | Action::Shortcuts),
+                            ),
+                            _,
+                        ) => Some(action),
                         (_, keys::ESCAPE) => Some(Action::Overlay(Step::Cancel)),
                         (_, keys::RETURN | keys::KP_ENTER) => Some(Action::Overlay(Step::Activate)),
                         (_, keys::UP) => Some(Action::Overlay(Step::Up)),
@@ -341,12 +346,13 @@ impl State {
                     }
                 }
             }
+            Action::Shortcuts => self.toggle_shortcuts(),
             Action::NextWindow | Action::PreviousWindow => {
                 let forward = action == Action::NextWindow;
                 match self.overlay {
                     Some(Overlay::Switcher { .. }) => self.step_switcher(forward),
-                    // A menu is open: Alt+Tab is not for it.
-                    Some(Overlay::Menu { .. }) => {}
+                    // A menu or the sheet is open: Alt+Tab is not for it.
+                    Some(Overlay::Menu { .. } | Overlay::Shortcuts { .. }) => {}
                     None => self.open_switcher(forward),
                 }
             }
@@ -747,6 +753,11 @@ impl State {
             Some(Drag::Move { window, offset }) => {
                 let (window, offset) = (window.clone(), *offset);
                 self.move_frame_to(&window, x + offset.0, y + offset.1);
+                if self.is_locked() {
+                    self.clear_snap_hint();
+                } else {
+                    self.update_snap_hint(&window, (location.x, location.y));
+                }
             }
             Some(Drag::Resize {
                 window,
@@ -785,6 +796,7 @@ impl State {
     /// nothing in here may use the pointer handle.
     fn finish_drag(&mut self, location: Point<f64, Logical>) {
         let (x, y) = cell(location);
+        self.clear_snap_hint();
         match self.drag.take() {
             Some(Drag::Resize { window, .. }) => window::finish_resize(&window),
             Some(Drag::Press { window, button }) => {
@@ -804,6 +816,7 @@ impl State {
     /// The grab is gone, by release or because something took the pointer
     /// away (the lock, a popup). Whatever was in progress stops here.
     pub fn drag_ended(&mut self) {
+        self.clear_snap_hint();
         if let Some(Drag::Resize { window, .. }) = self.drag.take() {
             window::finish_resize(&window);
         }
