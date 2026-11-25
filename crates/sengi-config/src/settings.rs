@@ -63,6 +63,7 @@ pub const KEYS: &[(&str, &str, Default)] = &[
     ("appearance", "window-shadows", Default::Flag(true)),
     ("appearance", "theme", Default::Text(THEME_DARK)),
     ("appearance", "wallpaper", Default::Text(WALLPAPER_SOLID)),
+    ("appearance", "week-start", Default::Text("monday")),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,6 +142,12 @@ pub fn check(section: &str, key: &str, value: &Value) -> Result<Value, String> {
         ("appearance", "theme") => match value {
             Value::Text(theme) if theme == THEME_DARK || theme == THEME_LIGHT => Ok(value.clone()),
             _ => Err("must be \"dark\" or \"light\"".to_string()),
+        },
+        ("appearance", "week-start") => match value {
+            Value::Text(day) if matches!(day.as_str(), "monday" | "sunday" | "saturday") => {
+                Ok(value.clone())
+            }
+            _ => Err("must be \"monday\", \"sunday\" or \"saturday\"".to_string()),
         },
         ("appearance", "wallpaper") => match value {
             Value::Text(path) if wallpaper_is_plain(path) => Ok(value.clone()),

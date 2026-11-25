@@ -210,6 +210,17 @@ impl Clock {
         }
     }
 
+    /// The day it is in the clock's zone: year, month 1 to 12, day.
+    pub fn ymd(&self, now: DateTime<Utc>) -> Option<(i32, u32, u32)> {
+        let text = format_as(now, &self.zone, "%Y-%m-%d");
+        let mut parts = text.splitn(3, '-');
+        Some((
+            parts.next()?.parse().ok()?,
+            parts.next()?.parse().ok()?,
+            parts.next()?.parse().ok()?,
+        ))
+    }
+
     /// The date in full: `Thursday 12 November`.
     pub fn date(&self, now: DateTime<Utc>) -> String {
         format_as(now, &self.zone, DATE)

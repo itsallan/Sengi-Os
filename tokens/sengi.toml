@@ -165,6 +165,16 @@ list-row-height = 42
 dialog-width = 360
 chooser-width = 480
 chooser-lines = 8
+# The Calculator: the window as it opens, and the height of its display.
+calc-window-width = 320
+calc-window-height = 480
+calc-display-height = 64
+# The calendar popup under the clock: one day of the month grid.
+calendar-cell = 40
+calendar-cell-height = 32
+# The countdown that shows before a delayed screenshot.
+snip-countdown-width = 168
+snip-countdown-height = 72
 # A value shown beside its control: "100%", "+100", "1000 ms".
 value-column-sm = 40
 value-column-md = 60

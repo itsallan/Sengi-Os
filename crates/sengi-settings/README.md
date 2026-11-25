@@ -67,6 +67,7 @@ ignored in favour of the system's value or the default.
 | `display.night-strength` | `50` | How warm, 0 to 100. 0 is no tint, 100 is about 3000 K. |
 | `appearance.window-shadows` | `true` | Whether framed windows have a shadow (sengi-compositor). |
 | `appearance.wallpaper` | `"solid"` | `"solid"` for the desktop colour, or the full path of a PNG or JPEG to show behind the desktop. |
+| `appearance.week-start` | `"monday"` | `"monday"`, `"sunday"` or `"saturday"`: the first column of the calendar under the clock. Edit the file; Settings has no control for it yet. |
 
 Two options are for the session's start-up scripts, which should not have
 to read TOML:

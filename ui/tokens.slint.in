@@ -112,6 +112,13 @@ export global Tokens {
     out property <length> dialog-width: @{size.dialog-width}px;
     out property <length> chooser-width: @{size.chooser-width}px;
     out property <int> chooser-lines: @{size.chooser-lines};
+    out property <length> calc-window-width: @{size.calc-window-width}px;
+    out property <length> calc-window-height: @{size.calc-window-height}px;
+    out property <length> calc-display-height: @{size.calc-display-height}px;
+    out property <length> calendar-cell: @{size.calendar-cell}px;
+    out property <length> calendar-cell-height: @{size.calendar-cell-height}px;
+    out property <length> snip-countdown-width: @{size.snip-countdown-width}px;
+    out property <length> snip-countdown-height: @{size.snip-countdown-height}px;
     out property <length> value-column-sm: @{size.value-column-sm}px;
     out property <length> value-column-md: @{size.value-column-md}px;
     out property <length> value-column-lg: @{size.value-column-lg}px;
