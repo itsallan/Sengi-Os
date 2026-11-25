@@ -34,7 +34,10 @@ the focused app priority. sengi-settings is the settings application: network,
 Bluetooth, sound, display, power, date and time, keyboard, mouse and touchpad,
 notifications, and a page about the machine. It is an ordinary window that
 runs only while it is open. sengi-files is the file manager, an ordinary
-window too: the home folder and its places, the Trash, copy, move and rename. sengi-lock is the lock screen: the time, the
+window too: the home folder and its places, the Trash, copy, move and rename.
+sengi-open opens a file in the program for it: sengi-edit (a plain text
+editor) for text, sengi-view (an image viewer) for PNG and JPEG, Files for
+folders. sengi-lock is the lock screen: the time, the
 date and a password field on every output, started when the screen locks
 and gone when it unlocks. It is unlocked with the user's password.
 The laptop keys are handled by the compositor: volume and brightness (also

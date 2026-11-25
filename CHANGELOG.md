@@ -46,6 +46,16 @@ and the measured idle RAM and boot time.
   follows the folder when other programs change it, natural order ("file2"
   before "file10"), drag and drop of items onto folders and places, Alt+Right
   for forward, and Phosphor Bold glyphs on the places and buttons.
+- Double-click a file and it opens (sengi-open): text, code, Markdown and logs
+  in Text Editor, PNG and JPEG pictures in Image Viewer, folders in Files, and
+  a notification "Nothing can open this file" for anything else. Files and
+  the desktop use it, and the default apps are set for Flatpak apps and the Store.
+- Text Editor (sengi-edit), a plain UTF-8 editor: Ctrl+S saves, Ctrl+Z and
+  Ctrl+Shift+Z undo and redo, Ctrl+F finds, and closing with unsaved changes asks
+  first. Files that are not text or are over 5 MB are not opened, and it says why.
+- Image Viewer (sengi-view) for PNG and JPEG: fit to the window, + - 0 to zoom,
+  drag to move, Left and Right through the folder, the size in pixels and the
+  size of the file in the status line. Pictures over 100 megapixels are refused.
 - The Store shows real install progress read from Flatpak: a bar with the
   percentage, the step and the speed when Flatpak gives them, and an
   honest moving bar when it does not.

@@ -3592,6 +3592,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sengi-edit"
+version = "0.8.0"
+dependencies = [
+ "sengi-apps",
+ "sengi-open",
+ "sengi-shots",
+ "slint",
+ "slint-build",
+]
+
+[[package]]
 name = "sengi-files"
 version = "0.8.0"
 dependencies = [
@@ -3706,6 +3717,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sengi-open"
+version = "0.8.0"
+dependencies = [
+ "sengi-apps",
+ "sengi-system",
+]
+
+[[package]]
 name = "sengi-osd"
 version = "0.8.0"
 dependencies = [
@@ -3799,6 +3818,19 @@ version = "0.8.0"
 dependencies = [
  "slint",
  "slint-build",
+]
+
+[[package]]
+name = "sengi-view"
+version = "0.8.0"
+dependencies = [
+ "png",
+ "sengi-open",
+ "sengi-shots",
+ "slint",
+ "slint-build",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]

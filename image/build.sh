@@ -22,7 +22,7 @@ mkdir -p "$work/iso/live" "$work/iso/boot/grub" "$out"
 # Our own programs, built against the same Debian the image is made of.
 export CARGO_HOME="$work/cargo" CARGO_TARGET_DIR="$work/target"
 export RUSTFLAGS="--remap-path-prefix=$src=. --remap-path-prefix=$work=/build"
-programs="sengi-bar sengi-brightness sengi-desktop sengi-dock sengi-focus sengi-greeter sengi-install sengi-launcher sengi-lock sengi-notify sengi-osd sengi-quick sengi-shot"
+programs="sengi-bar sengi-brightness sengi-desktop sengi-dock sengi-focus sengi-greeter sengi-install sengi-launcher sengi-lock sengi-notify sengi-open sengi-osd sengi-quick sengi-shot"
 set --
 for program in $programs; do
 	set -- "$@" -p "$program"
@@ -75,7 +75,10 @@ cargo build --release --locked --manifest-path "$src/Cargo.toml" -p sengi-settin
 # Files is one too, but wants none of what Settings pulls into sengi-system, so
 # it is built on its own.
 cargo build --release --locked --manifest-path "$src/Cargo.toml" -p sengi-files
-programs="$programs sengi-settings sengi-installer sengi-store sengi-files"
+# The text editor and the image viewer are windows too. They link no D-Bus
+# and no Settings code, so they too are built apart from the others.
+cargo build --release --locked --manifest-path "$src/Cargo.toml" -p sengi-edit -p sengi-view
+programs="$programs sengi-settings sengi-installer sengi-store sengi-files sengi-edit sengi-view"
 for program in $programs; do
 	install -D -m 0755 "$work/target/release/$program" "$work/overlay/usr/bin/$program"
 done
@@ -87,6 +90,10 @@ install -D -m 0644 "$src/crates/sengi-store/sengi-store.desktop" \
 	"$work/overlay/usr/share/applications/sengi-store.desktop"
 install -D -m 0644 "$src/crates/sengi-files/sengi-files.desktop" \
 	"$work/overlay/usr/share/applications/sengi-files.desktop"
+install -D -m 0644 "$src/crates/sengi-edit/sengi-edit.desktop" \
+	"$work/overlay/usr/share/applications/sengi-edit.desktop"
+install -D -m 0644 "$src/crates/sengi-view/sengi-view.desktop" \
+	"$work/overlay/usr/share/applications/sengi-view.desktop"
 
 # The compositor preview is a workspace of its own, so Smithay stays out of
 # everyone else's build. No window backend and no test switches in the image.

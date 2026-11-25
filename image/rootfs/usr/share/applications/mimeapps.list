@@ -1,0 +1,24 @@
+[Default Applications]
+# What opens what, for every program that asks the desktop: Files, the
+# desktop icons, Flatpak apps through the portal and the Store. A user's own
+# ~/.config/mimeapps.list wins over this one.
+inode/directory=sengi-files.desktop
+image/png=sengi-view.desktop
+image/jpeg=sengi-view.desktop
+text/plain=sengi-edit.desktop
+text/markdown=sengi-edit.desktop
+text/x-log=sengi-edit.desktop
+text/x-csrc=sengi-edit.desktop
+text/x-chdr=sengi-edit.desktop
+text/x-python=sengi-edit.desktop
+text/x-shellscript=sengi-edit.desktop
+text/x-rust=sengi-edit.desktop
+text/html=sengi-edit.desktop
+text/css=sengi-edit.desktop
+text/csv=sengi-edit.desktop
+text/xml=sengi-edit.desktop
+application/json=sengi-edit.desktop
+application/xml=sengi-edit.desktop
+application/x-shellscript=sengi-edit.desktop
+application/toml=sengi-edit.desktop
+application/yaml=sengi-edit.desktop
