@@ -256,18 +256,22 @@ echo "desktop menu closed: $changed bytes differ from before" >&2
 if [ -z "$desktop_fail" ] && [ "$changed" -ge "$desktop_clock_bytes" ]; then
 	desktop_fail="the desktop menu did not close on a left click ($changed bytes differ from before)"
 fi
-# New Folder is the first row: 6 px of padding and half a 22 px row down.
-if [ -z "$desktop_fail" ]; then
+# New Folder and New File are the first two rows: 6 px of padding, then
+# 22 px rows, so the middles are 17 and 39 px below the click.
+for made in "folder 17" "file 39"; do
+	kind=${made% *}
+	row=${made#* }
+	[ -z "$desktop_fail" ] || break
 	desktop_open_menu
-	pointer $((desktop_x + 40)) $((desktop_y + 17))
+	pointer $((desktop_x + 40)) $((desktop_y + row))
 	click
-	shot desktop-new-folder
+	shot "desktop-new-$kind"
 	echo "screendump $out/with.ppm" >&3
 	sleep 1
 	changed=$(cmp -l "$out/before.ppm" "$out/with.ppm" 2>/dev/null | wc -l)
-	echo "desktop new folder: $changed bytes changed" >&2
+	echo "desktop new $kind: $changed bytes changed" >&2
 	if [ "$changed" -lt "$desktop_folder_bytes" ]; then
-		desktop_fail="New Folder in the desktop menu put no folder on the desktop ($changed bytes of the screen changed)"
+		desktop_fail="New ${kind} in the desktop menu put nothing on the desktop ($changed bytes of the screen changed)"
 	fi
 	key esc 1
 	key delete 2
@@ -275,11 +279,11 @@ if [ -z "$desktop_fail" ]; then
 	echo "screendump $out/after.ppm" >&3
 	sleep 1
 	changed=$(cmp -l "$out/before.ppm" "$out/after.ppm" 2>/dev/null | wc -l)
-	echo "desktop folder deleted: $changed bytes differ from before" >&2
+	echo "desktop $kind deleted: $changed bytes differ from before" >&2
 	if [ -z "$desktop_fail" ] && [ "$changed" -ge "$desktop_clock_bytes" ]; then
-		desktop_fail="Delete did not take the new folder off the desktop ($changed bytes differ from before)"
+		desktop_fail="Delete did not take the new $kind off the desktop ($changed bytes differ from before)"
 	fi
-fi
+done
 rm -f "$out/before.ppm" "$out/with.ppm" "$out/after.ppm"
 pointer $((screen_w / 8)) $((screen_h / 2))
 # SENGI_STOP_AFTER=desktop ends the run here, to try this step on its own.
