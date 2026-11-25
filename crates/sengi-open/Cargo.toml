@@ -1,0 +1,13 @@
+[package]
+name = "sengi-open"
+description = "The Sengi OS opener: picks the program that opens a file, a folder or an address"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+# Finding programs on PATH and starting them.
+sengi-apps = { path = "../sengi-apps" }
+# Reading a file:// address back into a path. No features, so no bus.
+sengi-system = { path = "../sengi-system" }
