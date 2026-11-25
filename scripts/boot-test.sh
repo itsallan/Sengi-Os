@@ -212,35 +212,83 @@ key esc 1
 # Park the pointer on empty desktop so the hover does not follow us around.
 pointer $((screen_w / 8)) $((screen_h / 2))
 
-# The desktop's own menu: a right click on bare desktop, clear of the bar and
-# the dock, opens New Folder, Open Terminal Here and Settings, and a left
-# click somewhere else closes it again. Only the screen can say, so raw dumps
-# are compared: the menu is a few thousand pixels, the bar's clock a few
-# hundred at most. mouse_button 4 is the right button.
+# The desktop's own menu. A right click on bare desktop, clear of the bar and
+# the dock, opens New Folder, Open Terminal Here and Settings; a left click
+# somewhere else closes it; New Folder makes a folder that is in rename, and
+# Escape and Delete then take it away again (into the Trash). Only the screen
+# can say, so raw dumps are compared. QEMU's mouse_button takes a bitmask in
+# which 1 is the left button, 2 the right and 4 the middle one.
 desktop_fail=
+# Measured at 1280x800: the menu changes 42398 bytes of a dump, the new folder
+# 20954, and each way back to the first dump 0, so the limits are about half of
+# what each should change and a few clock digits for what should not.
+desktop_menu_bytes=20000
+desktop_folder_bytes=10000
+desktop_clock_bytes=3000
+desktop_x=$((screen_w / 2))
+desktop_y=$((screen_h / 3))
+desktop_open_menu() {
+	pointer "$desktop_x" "$desktop_y"
+	echo "mouse_button 2" >&3
+	sleep 0.2
+	echo "mouse_button 0" >&3
+	sleep 2
+}
 echo "screendump $out/before.ppm" >&3
 sleep 1
-pointer $((screen_w / 2)) $((screen_h / 3))
-echo "mouse_button 4" >&3
-sleep 0.2
-echo "mouse_button 0" >&3
-sleep 2
+desktop_open_menu
 shot desktop-menu
 echo "screendump $out/with.ppm" >&3
 sleep 1
 changed=$(cmp -l "$out/before.ppm" "$out/with.ppm" 2>/dev/null | wc -l)
-if [ "$changed" -lt 5000 ]; then
+echo "desktop menu: $changed bytes changed" >&2
+if [ "$changed" -lt "$desktop_menu_bytes" ]; then
 	desktop_fail="a right click on the desktop opened no menu ($changed bytes of the screen changed)"
 fi
 pointer $((screen_w * 3 / 4)) $((screen_h * 2 / 3))
 click
+# Back where the first dump had it, or the two cursors count as a change.
+pointer $((screen_w / 8)) $((screen_h / 2))
 echo "screendump $out/after.ppm" >&3
 sleep 1
-if [ -z "$desktop_fail" ] && [ "$(cmp -l "$out/before.ppm" "$out/after.ppm" 2>/dev/null | wc -l)" -ge 3000 ]; then
-	desktop_fail="the desktop menu did not close on a left click"
+changed=$(cmp -l "$out/before.ppm" "$out/after.ppm" 2>/dev/null | wc -l)
+echo "desktop menu closed: $changed bytes differ from before" >&2
+if [ -z "$desktop_fail" ] && [ "$changed" -ge "$desktop_clock_bytes" ]; then
+	desktop_fail="the desktop menu did not close on a left click ($changed bytes differ from before)"
+fi
+# New Folder is the first row: 6 px of padding and half a 22 px row down.
+if [ -z "$desktop_fail" ]; then
+	desktop_open_menu
+	pointer $((desktop_x + 40)) $((desktop_y + 17))
+	click
+	shot desktop-new-folder
+	echo "screendump $out/with.ppm" >&3
+	sleep 1
+	changed=$(cmp -l "$out/before.ppm" "$out/with.ppm" 2>/dev/null | wc -l)
+	echo "desktop new folder: $changed bytes changed" >&2
+	if [ "$changed" -lt "$desktop_folder_bytes" ]; then
+		desktop_fail="New Folder in the desktop menu put no folder on the desktop ($changed bytes of the screen changed)"
+	fi
+	key esc 1
+	key delete 2
+	pointer $((screen_w / 8)) $((screen_h / 2))
+	echo "screendump $out/after.ppm" >&3
+	sleep 1
+	changed=$(cmp -l "$out/before.ppm" "$out/after.ppm" 2>/dev/null | wc -l)
+	echo "desktop folder deleted: $changed bytes differ from before" >&2
+	if [ -z "$desktop_fail" ] && [ "$changed" -ge "$desktop_clock_bytes" ]; then
+		desktop_fail="Delete did not take the new folder off the desktop ($changed bytes differ from before)"
+	fi
 fi
 rm -f "$out/before.ppm" "$out/with.ppm" "$out/after.ppm"
 pointer $((screen_w / 8)) $((screen_h / 2))
+# SENGI_STOP_AFTER=desktop ends the run here, to try this step on its own.
+if [ "${SENGI_STOP_AFTER:-}" = desktop ]; then
+	stop
+	[ -z "$desktop_fail" ] || echo "FAIL: $desktop_fail" >&2
+	[ -z "$desktop_fail" ]
+	exit
+fi
 
 # Settings, found and started the way a person would, through the launcher,
 # then closed again. The guest says when the process is there and when it
