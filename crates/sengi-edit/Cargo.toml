@@ -1,0 +1,25 @@
+[package]
+name = "sengi-edit"
+description = "The Sengi OS text editor: one plain UTF-8 file in a window"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+# An ordinary window, as Settings and Files are: the workspace entry with
+# what the software renderer needs to find Inter and to draw the icons.
+slint = { workspace = true, features = ["software-renderer-systemfonts", "software-renderer-path"] }
+
+# The home folder, from the environment. No icon feature, so no image decoder.
+sengi-apps = { path = "../sengi-apps" }
+# What an argument names: a path or a file:// address.
+sengi-open = { path = "../sengi-open" }
+
+[build-dependencies]
+slint-build.workspace = true
+
+[dev-dependencies]
+# The window with no display, to drive it with keys and draw it.
+sengi-shots = { path = "../sengi-shots" }

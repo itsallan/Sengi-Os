@@ -1,0 +1,93 @@
+// A multi-line text area: wrapped plain text that scrolls, with the caret,
+// selection, clipboard and undo that Slint's TextInput brings. Built from
+// the tokens alone, like the rest of the component library, and kept out of
+// components.slint so programs that have no use for it do not compile it.
+
+import { Tokens } from "components.slint";
+
+export component SengiTextArea inherits Rectangle {
+    in-out property <string> text <=> input.text;
+    // Shows the text and lets it be selected and copied, nothing more.
+    in property <bool> read-only: false;
+    in property <bool> mono: true;
+    out property <bool> has-focus: input.has-focus;
+    // Where the caret is, in bytes from the start of the text.
+    out property <int> cursor: input.cursor-position-byte-offset;
+    // The other end of the selection; the same as `cursor` when nothing is
+    // selected.
+    out property <int> anchor: input.anchor-position-byte-offset;
+    // The text was changed by the person typing.
+    callback edited();
+    // The caret moved, by key, by click or by `select`.
+    callback moved();
+
+    private property <length> pad: Tokens.space-sm;
+    private property <length> bar: Tokens.space-xs;
+    private property <length> overflow: Math.max(input.height + root.pad * 2 - flick.height, 0);
+
+    // Selects bytes `start` to `end`, the caret at the end.
+    public function select(start: int, end: int) {
+        input.set-selection-offsets(start, end);
+    }
+
+    public function take-focus() {
+        input.focus();
+    }
+
+    forward-focus: input;
+    background: Tokens.color-bg;
+    border-radius: Tokens.radius;
+    border-width: input.has-focus ? Tokens.focus-ring-width : Tokens.border-width;
+    border-color: input.has-focus ? Tokens.color-focus-ring : Tokens.color-border;
+    clip: true;
+
+    flick := Flickable {
+        x: Tokens.border-width;
+        y: Tokens.border-width;
+        width: parent.width - Tokens.border-width * 2;
+        height: parent.height - Tokens.border-width * 2;
+        content-width: self.width;
+        content-height: input.height + root.pad * 2;
+
+        input := TextInput {
+            x: root.pad;
+            y: root.pad;
+            width: flick.width - root.pad * 2 - root.bar;
+            height: Math.max(self.preferred-height, flick.height - root.pad * 2);
+            wrap: word-wrap;
+            single-line: false;
+            read-only: root.read-only;
+            color: Tokens.color-text;
+            font-family: root.mono ? Tokens.font-mono : Tokens.font-family;
+            font-size: Tokens.font-size-md;
+            vertical-alignment: top;
+            selection-background-color: Tokens.color-accent;
+            selection-foreground-color: Tokens.color-accent-text;
+            text-cursor-width: Tokens.space-xxs;
+
+            edited => { root.edited(); }
+
+            cursor-position-changed(position) => {
+                // Keep the caret in view, a line of margin each way.
+                let margin = Tokens.font-size-lg * 1.5;
+                let top = position.y + root.pad;
+                if top + flick.content-y < 0 {
+                    flick.content-y = -Math.max(top - margin, 0);
+                } else if top + margin + flick.content-y > flick.height {
+                    flick.content-y = -Math.min(top + margin - flick.height, root.overflow);
+                }
+                root.moved();
+            }
+        }
+    }
+
+    if root.overflow > 0: Rectangle {
+        x: parent.width - self.width - Tokens.space-xxs;
+        y: Tokens.space-xxs + (parent.height - Tokens.space-xs - self.height)
+            * Math.min(-flick.content-y, root.overflow) / root.overflow;
+        width: root.bar;
+        height: Math.max(parent.height * flick.height / (input.height + root.pad * 2), Tokens.space-xl);
+        border-radius: self.width / 2;
+        background: Tokens.color-border;
+    }
+}

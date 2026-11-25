@@ -1,0 +1,298 @@
+// The Text Editor window: a bar with the file's name and two buttons, a find
+// bar when it is asked for, the text, and one line at the bottom. Built from
+// the shared components, Settings' kit and the text area of ui/; nothing
+// here has a colour or a size of its own.
+
+import { Tokens, SengiText, SengiLabel, SengiButton } from "components.slint";
+import { TextField, DialogLayer, DialogSpec } from "kit.slint";
+import { SengiTextArea } from "text-area.slint";
+
+export { DialogSpec }
+
+// What the window shows and what it reports. Rust fills the one and hears
+// the other.
+export global Edit {
+    // The text itself: the program reads it when it saves.
+    in-out property <string> text;
+    // The caret and the other end of the selection, in bytes.
+    in-out property <int> cursor;
+    in-out property <int> anchor;
+    // Asks the window to select these bytes; the count goes up for each ask.
+    in property <int> select-from;
+    in property <int> select-to;
+    in property <int> select-tick;
+    // The window title, and the name shown over the text.
+    in property <string> title: "Text Editor";
+    in property <string> name;
+    in property <bool> dirty: false;
+    // Why the file is not shown, said in place of the text. Empty when it is.
+    in property <string> refusal;
+    in property <string> status;
+    in property <string> notice;
+    in property <bool> notice-is-error: false;
+    in-out property <bool> find-open: false;
+    in-out property <string> find-text;
+    // "2 of 5", "No match" or nothing.
+    in property <string> find-result;
+    in property <bool> dialog-open: false;
+    in property <DialogSpec> dialog;
+
+    callback save();
+    callback close();
+    callback text-edited();
+    callback caret-moved();
+    callback find-changed(string);
+    callback find-next();
+    callback find-previous();
+    callback dialog-confirmed(string);
+    callback dialog-cancelled();
+}
+
+export component EditWindow inherits Window {
+    title: Edit.title;
+    preferred-width: Tokens.settings-window-width;
+    preferred-height: Tokens.settings-window-height;
+    min-width: Tokens.settings-window-min-width;
+    min-height: Tokens.settings-window-min-height;
+    background: Tokens.color-bg;
+    default-font-family: Tokens.font-family;
+    default-font-size: Tokens.font-size-md;
+
+    // The renderer keeps two buffers and only one of them knows after a
+    // change of size or scale that it is new, so for a few frames the
+    // whole window is drawn, as Settings does.
+    private property <float> pixel: 1phx / 1px;
+    private property <int> sheet: 0;
+    private property <int> sheets-owed: 0;
+
+    function draw-everything() {
+        root.sheet += 1;
+        root.sheets-owed = 3;
+    }
+
+    function open-find() {
+        Edit.find-open = true;
+        find-field.take-focus();
+        find-field.select-all();
+    }
+
+    function close-find() {
+        Edit.find-open = false;
+        area.take-focus();
+    }
+
+    // The caret and selection, for the program, which cannot ask the text area.
+    function sync() {
+        Edit.cursor = area.cursor;
+        Edit.anchor = area.anchor;
+    }
+
+    private property <int> select-tick: Edit.select-tick;
+    changed select-tick => {
+        area.select(Edit.select-from, Edit.select-to);
+        root.sync();
+    }
+
+    changed pixel => { root.draw-everything(); }
+    changed width => { root.draw-everything(); }
+    changed height => { root.draw-everything(); }
+
+    Timer {
+        interval: Tokens.motion-fast;
+        running: root.sheets-owed > 0;
+        triggered => {
+            root.sheet += 1;
+            root.sheets-owed -= 1;
+        }
+    }
+
+    Rectangle {
+        background: Math.mod(root.sheet, 2) == 0 ? transparent : Tokens.color-bg.transparentize(1);
+    }
+
+    scope := FocusScope {
+        key-pressed(event) => {
+            if Edit.dialog-open {
+                return EventResult.reject;
+            }
+            if event.modifiers.control {
+                if event.text == "s" || event.text == "S" {
+                    Edit.save();
+                } else if event.text == "f" || event.text == "F" {
+                    root.open-find();
+                } else if event.text == "w" || event.text == "W" || event.text == "q" || event.text == "Q" {
+                    Edit.close();
+                } else {
+                    return EventResult.reject;
+                }
+                return EventResult.accept;
+            }
+            if event.text == Key.F3 {
+                if event.modifiers.shift {
+                    Edit.find-previous();
+                } else {
+                    Edit.find-next();
+                }
+                return EventResult.accept;
+            }
+            if event.text == Key.Escape && Edit.find-open {
+                root.close-find();
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+
+        VerticalLayout {
+            HorizontalLayout {
+                padding: Tokens.space-md;
+                spacing: Tokens.space-sm;
+
+                SengiText {
+                    horizontal-stretch: 1;
+                    text: (Edit.dirty ? "* " : "") + Edit.name;
+                    font-weight: Tokens.font-weight-medium;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                SengiButton {
+                    text: "Find";
+                    enabled: Edit.refusal == "";
+                    focusable: false;
+                    clicked => {
+                        if Edit.find-open {
+                            root.close-find();
+                        } else {
+                            root.open-find();
+                        }
+                    }
+                }
+
+                SengiButton {
+                    text: "Save";
+                    primary: Edit.dirty;
+                    enabled: Edit.refusal == "";
+                    focusable: false;
+                    clicked => {
+                        Edit.save();
+                        area.take-focus();
+                    }
+                }
+            }
+
+            Rectangle {
+                height: Tokens.border-width;
+                background: Tokens.color-border;
+            }
+
+            HorizontalLayout {
+                visible: Edit.find-open;
+                height: Edit.find-open ? Tokens.button + Tokens.space-sm * 2 : 0;
+                padding-left: Tokens.space-md;
+                padding-right: Tokens.space-md;
+                padding-top: Tokens.space-sm;
+                padding-bottom: Tokens.space-xs;
+                spacing: Tokens.space-sm;
+
+                find-field := TextField {
+                    horizontal-stretch: 1;
+                    text <=> Edit.find-text;
+                    placeholder: "Find";
+                    edited(text) => { Edit.find-changed(text); }
+                    accepted(text) => { Edit.find-next(); }
+                    cancelled => { root.close-find(); }
+                }
+
+                SengiLabel {
+                    width: Tokens.value-column-lg;
+                    text: Edit.find-result;
+                    vertical-alignment: center;
+                }
+
+                SengiButton {
+                    text: "Previous";
+                    focusable: false;
+                    clicked => { Edit.find-previous(); }
+                }
+
+                SengiButton {
+                    text: "Next";
+                    focusable: false;
+                    clicked => { Edit.find-next(); }
+                }
+            }
+
+            Rectangle {
+                vertical-stretch: 1;
+
+                area := SengiTextArea {
+                    visible: Edit.refusal == "";
+                    x: Tokens.space-md;
+                    y: Tokens.space-md;
+                    width: parent.width - Tokens.space-md * 2;
+                    height: parent.height - Tokens.space-md * 2;
+                    text <=> Edit.text;
+                    edited => { root.sync(); Edit.text-edited(); }
+                    moved => { root.sync(); Edit.caret-moved(); }
+                    init => { self.take-focus(); }
+                }
+
+                if Edit.refusal != "": VerticalLayout {
+                    alignment: center;
+                    padding: Tokens.space-xl;
+                    spacing: Tokens.space-md;
+
+                    SengiText {
+                        text: "This file is not opened";
+                        font-size: Tokens.font-size-lg;
+                        font-weight: Tokens.font-weight-bold;
+                        horizontal-alignment: center;
+                    }
+
+                    SengiText {
+                        text: Edit.refusal;
+                        color: Tokens.color-text-muted;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+
+            Rectangle {
+                height: Tokens.border-width;
+                background: Tokens.color-border;
+            }
+
+            HorizontalLayout {
+                padding-left: Tokens.space-md;
+                padding-right: Tokens.space-md;
+                padding-top: Tokens.space-sm;
+                padding-bottom: Tokens.space-sm;
+                spacing: Tokens.space-md;
+
+                SengiLabel {
+                    horizontal-stretch: 1;
+                    text: Edit.notice != "" ? Edit.notice : Edit.status;
+                    color: Edit.notice == "" ? Tokens.color-text-muted
+                        : Edit.notice-is-error ? Tokens.color-danger : Tokens.color-text;
+                    font-weight: Tokens.font-weight-regular;
+                    overflow: elide;
+                }
+
+                SengiLabel {
+                    text: "UTF-8";
+                    font-weight: Tokens.font-weight-regular;
+                }
+            }
+        }
+    }
+
+    if Edit.dialog-open: DialogLayer {
+        spec: Edit.dialog;
+        confirmed(text) => { Edit.dialog-confirmed(text); }
+        cancelled => {
+            Edit.dialog-cancelled();
+            scope.focus();
+        }
+    }
+}

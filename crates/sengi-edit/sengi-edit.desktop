@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Text Editor
+GenericName=Text Editor
+Comment=Write and change plain text files
+Exec=sengi-edit %F
+Icon=sengi-edit
+Terminal=false
+StartupWMClass=sengi-edit
+Categories=Utility;TextEditor;
+MimeType=text/plain;text/markdown;text/x-log;text/x-csrc;text/x-chdr;text/x-python;text/x-shellscript;text/x-rust;text/html;text/css;text/csv;text/xml;application/json;application/xml;application/x-shellscript;application/toml;application/yaml;
+Keywords=text;editor;notes;write;
