@@ -61,6 +61,10 @@ export global Tokens {
     out property <length> dock-dot: @{dock.dot}px;
     out property <length> dock-dot-gap: @{dock.dot-gap}px;
     out property <length> dock-bounce: @{dock.bounce}px;
+    out property <length> desktop-cell-width: @{desktop.cell-width}px;
+    out property <length> desktop-cell-height: @{desktop.cell-height}px;
+    out property <length> desktop-icon: @{desktop.icon}px;
+    out property <length> desktop-label-height: @{desktop.label-height}px;
     out property <length> titlebar-height: @{size.titlebar-height}px;
     out property <length> launcher-width: @{size.launcher-width}px;
     out property <length> menu-width: @{size.menu-width}px;

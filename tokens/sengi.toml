@@ -189,6 +189,14 @@ icon = 24
 bar = 6
 margin = 96
 
+[desktop]
+# An icon on the desktop: the cell it sits in, the icon in the cell, and the
+# room for its name (two lines).
+cell-width = 96
+cell-height = 104
+icon = 48
+label-height = 36
+
 [motion]
 fast = 120
 base = 200
