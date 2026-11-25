@@ -94,10 +94,13 @@ esac
 
 # The lid and the power button are logind's, set by the image, and the
 # screen is locked before the computer sleeps by a hook systemd runs.
+# loginctl show does not list these; the merged configuration logind reads
+# does, the last assignment of a name winning.
+logind_conf=$(systemd-analyze cat-config systemd/logind.conf 2>/dev/null)
 for pair in HandleLidSwitch=suspend HandleLidSwitchExternalPower=suspend \
-	HandleLidSwitchDocked=ignore HandlePowerKey=suspend; do
-	got=$(loginctl show -p "${pair%%=*}" --value 2>/dev/null)
-	[ "$got" = "${pair#*=}" ] || echo "SENGI-FAIL logind has ${pair%%=*}=$got, not ${pair#*=}" >$port
+	HandleLidSwitchDocked=ignore HandlePowerKey=suspend HandlePowerKeyLongPress=poweroff; do
+	got=$(printf '%s\n' "$logind_conf" | grep "^${pair%%=*}=" | tail -n 1)
+	[ "$got" = "$pair" ] || echo "SENGI-FAIL logind config has '$got', not $pair" >$port
 done
 [ -x /usr/lib/systemd/system-sleep/sengi-lock-on-sleep ] ||
 	echo "SENGI-FAIL the lock before sleep is not in the image" >$port
