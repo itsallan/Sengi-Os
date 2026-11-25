@@ -77,6 +77,8 @@ fn keeps_to_its_column(picture: &harness::Picture, page: &str, variant: &str, wi
     }
 }
 
+type Scene = (&'static str, &'static str, Box<dyn Fn(&SettingsWindow)>);
+
 const SIZES: [(u32, u32); 3] = [(720, 480), (888, 600), (1280, 800)];
 
 fn network(w: &SettingsWindow, variant: &str) {
@@ -278,7 +280,7 @@ fn about(w: &SettingsWindow) {
 #[test]
 fn every_page() {
     harness::install();
-    let scenes: Vec<(&str, &str, Box<dyn Fn(&SettingsWindow)>)> = vec![
+    let scenes: Vec<Scene> = vec![
         ("network", "connected", Box::new(|w| network(w, "on"))),
         ("network", "many", Box::new(|w| network(w, "many"))),
         ("network", "off", Box::new(|w| network(w, "off"))),
