@@ -227,6 +227,9 @@ sengi-notify and sengi-lock included):
   and maximised windows fill exactly the area left free.
 - Keyboard focus for layer surfaces: a launcher is typed into while it is open
   and the window gets the keyboard back afterwards.
+- A surface on the bottom layer is a desktop program (sengi-desktop): it gets
+  the right-click itself, and the compositor's own root menu opens only on
+  the wallpaper.
 - wlr-foreign-toplevel-management: title, app id, activated, maximised and
   minimised state; activate, close, maximise and minimise requests. The
   waybar taskbar lists windows and restores a minimised one on click;

@@ -288,6 +288,29 @@ fn a_right_click_on_a_title_bar_opens_the_window_menu() {
     assert_ne!(rgb(picture.at(712, 258 + 106)), CARD, "the menu runs on");
 }
 
+/// A program that draws the desktop on the bottom layer, as sengi-desktop
+/// does, gets the right-click: the root menu stays shut.
+#[test]
+fn a_desktop_program_gets_the_right_click_and_the_root_menu_stays_shut() {
+    let script = "1500 move 200 200\n1600 click right\n";
+    let compositor = Compositor::start_with(None, None, Some(script));
+    let mut app = compositor.connect();
+    let _desktop = app.desktop(BLUE).unwrap();
+    let _pointer = app.pointer().unwrap();
+    assert!(
+        app.wait(Duration::from_secs(4), |seen| seen
+            .more
+            .button_serial
+            .is_some()),
+        "the desktop program never saw the click"
+    );
+    assert_eq!(
+        rgb(app.capture().unwrap().at(204, 204)),
+        rgb(BLUE),
+        "the root menu opened over the desktop program"
+    );
+}
+
 /// A right-click on the client area of a window opens nothing.
 #[test]
 fn a_right_click_on_a_window_opens_no_menu() {

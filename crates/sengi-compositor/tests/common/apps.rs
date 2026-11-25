@@ -401,6 +401,32 @@ impl Client {
         Ok((surface, bar))
     }
 
+    /// A desktop: a surface of one colour over the whole output, on the
+    /// layer sengi-desktop is on, between the wallpaper and the windows.
+    pub fn desktop(&mut self, argb: u32) -> Result<(WlSurface, ZwlrLayerSurfaceV1), Failure> {
+        let shell: ZwlrLayerShellV1 = self.globals.bind(&self.handle, 1..=4, ())?;
+        let surface = self.compositor.create_surface(&self.handle, ());
+        let desktop = shell.get_layer_surface(
+            &surface,
+            None,
+            Layer::Bottom,
+            "test desktop".into(),
+            &self.handle,
+            (),
+        );
+        desktop.set_size(0, 0);
+        desktop.set_anchor(Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right);
+        desktop.set_exclusive_zone(0);
+        surface.commit();
+        if !self.wait(SOON, |seen| seen.more.layer_configure.is_some()) {
+            return Err("the desktop was never configured".into());
+        }
+        let (serial, width, height) = self.seen.more.layer_configure.take().unwrap_or_default();
+        desktop.ack_configure(serial);
+        self.paint(&surface, width as i32, height as i32, argb)?;
+        Ok((surface, desktop))
+    }
+
     /// A dock along the bottom edge that keeps `height` rows for itself.
     pub fn dock(
         &mut self,

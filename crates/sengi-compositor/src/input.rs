@@ -593,14 +593,22 @@ impl State {
         }
 
         // Right-click on a title bar opens the window's menu, and on the
-        // desktop the root menu. The bar and the dock are not the desktop.
+        // desktop the root menu. The bar and the dock are not the desktop,
+        // and neither is sengi-desktop: a surface on the bottom layer is a
+        // desktop of its own that makes its own menu.
         if button == BTN_RIGHT {
             let at = (location.x, location.y);
             let on_desktop = match &target {
                 None => true,
-                Some(Target::Surface { window: None, .. }) => self
-                    .layer_surface_under(location, &[Layer::Top, Layer::Overlay])
-                    .is_none(),
+                Some(Target::Surface {
+                    window: None,
+                    surface,
+                    ..
+                }) => {
+                    self.layer_surface_under(location, &[Layer::Top, Layer::Overlay])
+                        .is_none()
+                        && !self.is_on_layer(surface, Layer::Bottom)
+                }
                 _ => false,
             };
             match &target {
@@ -832,6 +840,16 @@ impl State {
             return false;
         };
         frame.contains(x, y) && self.theme.metrics.in_button_group(x - frame.x, y - frame.y)
+    }
+
+    /// Whether `surface` belongs to a layer surface on `kind`.
+    fn is_on_layer(&self, surface: &WlSurface, kind: Layer) -> bool {
+        let Some(output) = self.output_for_layer(surface) else {
+            return false;
+        };
+        layer_map_for_output(&output)
+            .layer_for_surface(surface, WindowSurfaceType::ALL)
+            .is_some_and(|layer| layer.layer() == kind)
     }
 
     fn click_layer(&mut self, surface: WlSurface) {
