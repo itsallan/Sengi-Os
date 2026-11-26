@@ -3,6 +3,7 @@
 
 pub mod app;
 pub mod catalog;
+pub mod featured;
 pub mod flatpak;
 pub mod icons;
 pub mod progress;

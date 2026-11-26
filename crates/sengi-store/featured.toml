@@ -1,0 +1,39 @@
+# The apps the Store recommends before anything is typed, by group. The
+# groups and the apps in them are shown in this order. Each line is a
+# Flathub application ID and the name to show when Flathub cannot be
+# reached; online, the name and the summary come from Flathub, and an ID
+# that Flathub does not list is left out. Keep to this shape: a [group]
+# line, then one "id" = "name" line for each app.
+
+[Browsers]
+"org.mozilla.firefox" = "Firefox"
+"org.chromium.Chromium" = "Chromium"
+
+[Office]
+"org.libreoffice.LibreOffice" = "LibreOffice"
+
+[Media]
+"org.videolan.VLC" = "VLC"
+"io.mpv.Mpv" = "mpv"
+
+[Graphics]
+"org.gimp.GIMP" = "GIMP"
+"org.inkscape.Inkscape" = "Inkscape"
+"org.kde.krita" = "Krita"
+
+[Communication]
+"org.mozilla.Thunderbird" = "Thunderbird"
+
+[Utilities]
+"com.bitwarden.desktop" = "Bitwarden"
+"org.keepassxc.KeePassXC" = "KeePassXC"
+
+[Development]
+"com.visualstudio.code" = "Visual Studio Code"
+
+["Screen recording"]
+"com.obsproject.Studio" = "OBS Studio"
+"io.github.seadve.Kooha" = "Kooha"
+
+[Notes]
+"md.obsidian.Obsidian" = "Obsidian"
