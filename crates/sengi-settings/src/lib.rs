@@ -21,6 +21,7 @@ pub mod network;
 pub mod notifications;
 pub mod pointer;
 pub mod power;
+pub mod printers;
 pub mod screen;
 pub mod services;
 pub mod settings;

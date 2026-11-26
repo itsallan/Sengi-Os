@@ -22,7 +22,7 @@ mkdir -p "$work/iso/live" "$work/iso/boot/grub" "$out"
 # Our own programs, built against the same Debian the image is made of.
 export CARGO_HOME="$work/cargo" CARGO_TARGET_DIR="$work/target"
 export RUSTFLAGS="--remap-path-prefix=$src=. --remap-path-prefix=$work=/build"
-programs="sengi-bar sengi-brightness sengi-desktop sengi-dock sengi-focus sengi-greeter sengi-install sengi-launcher sengi-lock sengi-notify sengi-open sengi-osd sengi-quick sengi-shot sengi-snip sengi-calendar sengi-update"
+programs="sengi-bar sengi-brightness sengi-desktop sengi-dock sengi-focus sengi-greeter sengi-install sengi-launcher sengi-lock sengi-notify sengi-open sengi-osd sengi-quick sengi-shot sengi-snip sengi-calendar sengi-update sengi-print"
 set --
 for program in $programs; do
 	set -- "$@" -p "$program"
@@ -45,13 +45,16 @@ for program in sengi-launcher sengi-osd sengi-desktop; do
 		fi
 	done
 done
-# The update helper runs as root. It runs apt-get and nothing else, and has
-# no bus and no image decoder to be misused.
-for marker in zbus resvg; do
-	if grep -a -q -e "$marker" "$work/target/release/sengi-update"; then
-		echo "sengi-update has $marker linked in, which it must not" >&2
-		exit 1
-	fi
+# The update helper and the printer helper run as root. The first runs apt-get
+# and nothing else, the second lpadmin and lpinfo, and neither has
+# a bus or an image decoder to be misused.
+for helper in sengi-update sengi-print; do
+	for marker in zbus resvg; do
+		if grep -a -q -e "$marker" "$work/target/release/$helper"; then
+			echo "$helper has $marker linked in, which it must not" >&2
+			exit 1
+		fi
+	done
 done
 # The lock screen holds a password and talks to PAM and to nothing else.
 # A D-Bus stack in it would be code it has no use for, next to a secret.

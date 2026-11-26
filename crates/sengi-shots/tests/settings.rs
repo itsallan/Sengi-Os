@@ -41,6 +41,7 @@ fn pages() -> ModelRc<PageEntry> {
         ("date-time", "Date & Time", "clock"),
         ("keyboard", "Keyboard", "keyboard"),
         ("mouse", "Mouse & Touchpad", "mouse"),
+        ("printers", "Printers", "printer"),
         ("notifications", "Notifications", "bell"),
         ("updates", "Updates", "arrows-clockwise"),
         ("accessibility", "Accessibility", "person-simple-circle"),
@@ -392,6 +393,128 @@ fn pointer(w: &SettingsWindow) {
     d.set_touchpad_speed(30);
 }
 
+fn printers(w: &SettingsWindow, variant: &str) {
+    let d = w.global::<PrintersData>();
+    d.set_available(true);
+    if variant == "missing" || variant == "missing-live" || variant == "installing" {
+        d.set_available(false);
+        d.set_can_install(true);
+        d.set_install_blocked(variant == "missing-live");
+        d.set_install_detail(
+            if variant == "missing-live" {
+                "Printing can be installed after Sengi OS is installed on this computer. This live system runs from memory and has no room for it."
+            } else {
+                "Adds CUPS, the print system: about 87 MB on disk and 25 MB to download. It needs an internet connection and your password, and nothing of it runs until something prints."
+            }
+            .into(),
+        );
+        if variant == "installing" {
+            d.set_busy(true);
+            d.set_busy_text(
+                "Installing printing support. This can take a few minutes\u{2026}".into(),
+            );
+        }
+        return;
+    }
+    if variant == "none" {
+        d.set_summary("No printers added yet".into());
+        return;
+    }
+    d.set_summary("2 printers \u{b7} Office Laser is the default".into());
+    let mut rows = vec![
+        item(
+            "Office_Laser",
+            "Office Laser",
+            "Idle \u{b7} 192.168.1.50",
+            "printer",
+            0,
+        ),
+        item(
+            "Garage_Brother_HL-L2350DW_series_with_a_very_long_name",
+            "Garage Brother HL-L2350DW series with a very long name",
+            "Offline, unable to connect to printer \u{b7} On the network",
+            "printer",
+            0,
+        ),
+    ];
+    for row in &mut rows {
+        row.action = "Manage".into();
+    }
+    rows[0].status = "Default".into();
+    rows[0].checked = true;
+    d.set_printers(list(rows));
+    d.set_has_chosen(true);
+    d.set_chosen_title("Office Laser".into());
+    d.set_chosen_detail("Idle \u{b7} 192.168.1.50".into());
+    d.set_chosen_default(true);
+    if variant == "queue" {
+        let mut jobs = vec![
+            item(
+                "Office_Laser-12",
+                "Job 12 on Office Laser",
+                "allan \u{b7} 2 KB \u{b7} Thu 26 Nov 2026 10:00:00 AM CET",
+                "file",
+                0,
+            ),
+            item(
+                "Office_Laser-13",
+                "Job 13 on Office Laser",
+                "allan \u{b7} 1.4 MB \u{b7} Thu 26 Nov 2026 10:02:10 AM CET",
+                "file",
+                0,
+            ),
+        ];
+        for job in &mut jobs {
+            job.remove = "Cancel".into();
+        }
+        d.set_jobs(list(jobs));
+        d.set_note("A test page was sent to Office Laser.".into());
+        d.set_note_warning(false);
+    }
+    if variant == "busy" {
+        d.set_busy(true);
+        d.set_busy_text("Adding Office Laser\u{2026}".into());
+    }
+    if variant == "offline-chosen" {
+        d.set_chosen_title("Garage Brother HL-L2350DW series with a very long name".into());
+        d.set_chosen_detail("Offline, unable to connect to printer \u{b7} On the network".into());
+        d.set_chosen_default(false);
+    }
+    if variant.starts_with("add") {
+        d.set_adding(true);
+        d.set_searching(variant == "add-searching");
+        d.set_searched(variant != "add-searching");
+        if variant == "add-found" {
+            let mut found = vec![
+                item(
+                    "0",
+                    "Brother HL-L2350DW series",
+                    "On the network",
+                    "printer",
+                    0,
+                ),
+                item(
+                    "1",
+                    "EPSON ET-2850 Series",
+                    "epson-et2850.local",
+                    "printer",
+                    0,
+                ),
+            ];
+            for row in &mut found {
+                row.action = "Add".into();
+            }
+            d.set_found(list(found));
+        }
+        if variant == "add-problem" {
+            d.set_address_problem(
+                "That is not a printer address. Use a name or a number such as 192.168.1.50."
+                    .into(),
+            );
+        }
+    }
+}
+
 fn updates(w: &SettingsWindow, variant: &str) {
     let d = w.global::<UpdatesData>();
     let row = |title: &str, detail: &str, tag: &str| UpdateRow {
@@ -559,6 +682,46 @@ fn every_page() {
         ("keyboard", "one", Box::new(|w| keyboard(w, "one"))),
         ("keyboard", "several", Box::new(|w| keyboard(w, "several"))),
         ("mouse", "on", Box::new(pointer)),
+        ("printers", "none", Box::new(|w| printers(w, "none"))),
+        ("printers", "list", Box::new(|w| printers(w, "list"))),
+        (
+            "printers",
+            "offline-chosen",
+            Box::new(|w| printers(w, "offline-chosen")),
+        ),
+        ("printers", "queue", Box::new(|w| printers(w, "queue"))),
+        ("printers", "busy", Box::new(|w| printers(w, "busy"))),
+        (
+            "printers",
+            "add-searching",
+            Box::new(|w| printers(w, "add-searching")),
+        ),
+        (
+            "printers",
+            "add-found",
+            Box::new(|w| printers(w, "add-found")),
+        ),
+        (
+            "printers",
+            "add-none",
+            Box::new(|w| printers(w, "add-none")),
+        ),
+        (
+            "printers",
+            "add-problem",
+            Box::new(|w| printers(w, "add-problem")),
+        ),
+        ("printers", "missing", Box::new(|w| printers(w, "missing"))),
+        (
+            "printers",
+            "missing-live",
+            Box::new(|w| printers(w, "missing-live")),
+        ),
+        (
+            "printers",
+            "installing",
+            Box::new(|w| printers(w, "installing")),
+        ),
         (
             "notifications",
             "on",

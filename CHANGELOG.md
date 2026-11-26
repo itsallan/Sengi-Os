@@ -12,6 +12,19 @@ and the measured idle RAM and boot time.
   notes) with chips to filter by group, and still lists them by name, with a
   "Not connected" note, when Flathub cannot be reached. The list is
   `crates/sengi-store/featured.toml`.
+- Printing (sengi-print): Settings has a Printers page that lists the
+  printers with their state, picks your default, prints a test page, shows the
+  print queue with Cancel, removes printers, and adds them by searching the
+  network for printers that need no driver or by typing an address. Adding,
+  removing and searching ask for your password (pkexec, polkit action
+  `org.sengi.os.printer`, every name and address checked again as root); the
+  rest needs none. CUPS is not in the ISO (87 MB installed with what it pulls
+  in, 25 MB to download): a fresh install shows Install printing support on
+  the page, which installs it through the update helper
+  (`sengi-update install-package cups`, an allow-list of one name) and sets it
+  up to start only when something asks: not at boot, no web page, no network
+  port, no printer sharing, no `cups-browsed`. Flatpak apps print through the
+  portal and other apps through CUPS, with nothing more to set up.
 - Settings, Updates (sengi-update): looks for updates to the system's packages
   and to Flatpak apps, lists them with their versions and marks the security
   ones, and updates both with **Update all** with a real progress bar, a step

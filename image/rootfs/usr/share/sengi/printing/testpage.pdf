@@ -1,0 +1,60 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 1051 >>
+stream
+0.75 w
+40 40 515 762 re S
+BT /F2 28 Tf 72 740 Td (Sengi OS) Tj ET
+BT /F1 16 Tf 72 706 Td (Printer test page) Tj ET
+BT /F1 11 Tf 72 660 Td (If you can read this, the printer is set up and Sengi OS can print to it.) Tj ET
+BT /F1 11 Tf 72 640 Td (Check that nothing is cut off at the edges of the paper.) Tj ET
+72 600 m 523 600 l S
+BT /F1 10 Tf 72 580 Td (Text sizes) Tj ET
+BT /F1 8 Tf 72 562 Td (The quick brown fox jumps over the lazy dog. 0123456789) Tj ET
+BT /F1 10 Tf 72 546 Td (The quick brown fox jumps over the lazy dog. 0123456789) Tj ET
+BT /F1 12 Tf 72 528 Td (The quick brown fox jumps over the lazy dog. 0123456789) Tj ET
+BT /F2 14 Tf 72 506 Td (The quick brown fox jumps over the lazy dog. 0123456789) Tj ET
+BT /F1 10 Tf 72 470 Td (Grey scale) Tj ET
+0.0 g 72 430 50 30 re f
+0.25 g 122 430 50 30 re f
+0.5 g 172 430 50 30 re f
+0.75 g 222 430 50 30 re f
+0.9 g 272 430 50 30 re f
+0 g
+72 430 250 30 re S
+BT /F1 10 Tf 72 390 Td (Lines) Tj ET
+0.25 w 72 375 m 322 375 l S
+0.5 w 72 365 m 322 365 l S
+1 w 72 355 m 322 355 l S
+2 w 72 343 m 322 343 l S
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000251 00000 n 
+0000001353 00000 n 
+0000001423 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R >>
+startxref
+1498
+%%EOF

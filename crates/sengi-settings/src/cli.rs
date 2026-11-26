@@ -13,7 +13,7 @@ Open Sengi OS Settings, at PAGE if one is named. If Settings is already
 open, that window is brought to the page instead.
 
 Pages: network, bluetooth, sound, display, wallpaper, power, date-time,
-       keyboard, mouse, notifications, updates, accessibility, about
+       keyboard, mouse, printers, notifications, updates, accessibility, about
 
   --get SECTION.KEY  print the setting in effect, for scripts
   --set SECTION.KEY VALUE
@@ -41,6 +41,7 @@ pub enum Page {
     DateTime,
     Keyboard,
     Mouse,
+    Printers,
     Notifications,
     Updates,
     Accessibility,
@@ -58,6 +59,7 @@ impl Page {
         Page::DateTime,
         Page::Keyboard,
         Page::Mouse,
+        Page::Printers,
         Page::Notifications,
         Page::Updates,
         Page::Accessibility,
@@ -75,6 +77,7 @@ impl Page {
             Page::DateTime => "date-time",
             Page::Keyboard => "keyboard",
             Page::Mouse => "mouse",
+            Page::Printers => "printers",
             Page::Notifications => "notifications",
             Page::Accessibility => "accessibility",
             Page::Wallpaper => "wallpaper",
@@ -93,6 +96,7 @@ impl Page {
             Page::DateTime => "Date & Time",
             Page::Keyboard => "Keyboard",
             Page::Mouse => "Mouse & Touchpad",
+            Page::Printers => "Printers",
             Page::Notifications => "Notifications",
             Page::Accessibility => "Accessibility",
             Page::Wallpaper => "Appearance",
@@ -114,6 +118,7 @@ impl Page {
                 "battery" => Some(Page::Power),
                 "datetime" | "date" | "time" | "clock" => Some(Page::DateTime),
                 "touchpad" | "pointer" => Some(Page::Mouse),
+                "printer" | "printing" | "print" => Some(Page::Printers),
                 "notification" => Some(Page::Notifications),
                 "update" | "software-update" | "upgrade" => Some(Page::Updates),
                 "a11y" | "access" => Some(Page::Accessibility),

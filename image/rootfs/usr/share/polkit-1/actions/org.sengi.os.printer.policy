@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
+<policyconfig>
+  <vendor>Sengi OS</vendor>
+  <vendor_url>https://github.com/itsallan/Sengi-Os</vendor_url>
+
+  <!-- Settings, Printers runs sengi-print through pkexec. The helper takes
+       one of three words (add, remove or discover) and runs lpadmin or
+       lpinfo with options of its own, after checking the printer name and
+       address against strict patterns; it takes nothing else. Only the
+       person at the keyboard of a local session may ask, and has to sign
+       in; the answer is kept for a few minutes so that searching for a
+       printer and then adding it asks once. -->
+  <action id="org.sengi.os.printer">
+    <description>Add, remove and search for printers</description>
+    <message>Authentication is required to change the printers</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/sengi-print</annotate>
+  </action>
+</policyconfig>

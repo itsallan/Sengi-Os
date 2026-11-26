@@ -1,0 +1,304 @@
+// The Printers page: the printers there are, which is the default, what
+// is waiting to print, and adding one.
+
+import { Tokens, SengiText, SengiLabel, SengiButton } from "components.slint";
+import { Item, ItemList, Page, PageColumn, Card, Divider, SettingRow, SectionLabel, Gap, Note, Metrics, TextField, BusyBar } from "../kit.slint";
+
+export global PrintersData {
+    // False when printing is not on this system: the note says so and
+    // nothing else is shown.
+    in property <bool> available: true;
+    in property <string> note;
+    in property <bool> note-warning: true;
+    // CUPS is being asked what there is.
+    in property <bool> loading: false;
+    // Something is being changed (adding, removing, a test page): what,
+    // in words.
+    in property <bool> busy: false;
+    in property <string> busy-text;
+    in property <string> summary;
+    // Printing is not on this computer and could be put there: the page
+    // offers to, in words that say what it costs.
+    in property <bool> can-install: false;
+    in property <string> install-detail;
+    // The live system cannot install anything.
+    in property <bool> install-blocked: false;
+
+    in property <[Item]> printers;
+    in property <[Item]> jobs;
+    // The printer the buttons below the list are for, if there is one.
+    in property <bool> has-chosen: false;
+    in property <string> chosen-title;
+    in property <string> chosen-detail;
+    in property <bool> chosen-default: false;
+
+    // The add panel.
+    in property <bool> adding: false;
+    in property <bool> searching: false;
+    // A search has finished at least once since the panel was opened.
+    in property <bool> searched: false;
+    in property <[Item]> found;
+    in property <string> address-problem;
+
+    callback refresh();
+    callback install-support();
+    callback select(string);
+    callback make-default();
+    callback test-page();
+    callback remove();
+    callback cancel-job(string);
+    callback open-add();
+    callback close-add();
+    callback search();
+    callback add-found(string);
+    callback add-address(string);
+}
+
+export component PrintersPage inherits Page {
+    title: "Printers";
+    content-height: column.preferred-height;
+
+    column := PageColumn {
+        if PrintersData.note != "": Note {
+            text: PrintersData.note;
+            warning: PrintersData.note-warning;
+        }
+
+        if PrintersData.available: Card {
+            SettingRow {
+                title: PrintersData.loading ? "Looking for printers\u{2026}" : "Printers";
+                detail: PrintersData.summary;
+
+                VerticalLayout {
+                    alignment: center;
+
+                    HorizontalLayout {
+                        spacing: Tokens.space-sm;
+
+                        SengiButton {
+                            text: "Refresh";
+                            enabled: !PrintersData.loading && !PrintersData.busy;
+                            clicked => { PrintersData.refresh(); }
+                        }
+
+                        SengiButton {
+                            text: "Add printer\u{2026}";
+                            primary: !PrintersData.adding;
+                            enabled: !PrintersData.adding && !PrintersData.busy;
+                            clicked => { PrintersData.open-add(); }
+                        }
+                    }
+                }
+            }
+        }
+
+        if !PrintersData.available && PrintersData.can-install: Card {
+            SettingRow {
+                title: "Printing is not installed";
+                detail: PrintersData.install-detail;
+
+                VerticalLayout {
+                    alignment: center;
+
+                    SengiButton {
+                        text: "Install printing support";
+                        primary: true;
+                        enabled: !PrintersData.install-blocked && !PrintersData.busy;
+                        clicked => { PrintersData.install-support(); }
+                    }
+                }
+            }
+        }
+
+        if PrintersData.busy: Card {
+            VerticalLayout {
+                padding: Tokens.space-md;
+                spacing: Tokens.space-sm;
+
+                SengiText {
+                    text: PrintersData.busy-text;
+                    overflow: elide;
+                }
+
+                BusyBar { }
+            }
+        }
+
+        if PrintersData.available && PrintersData.adding: VerticalLayout {
+            spacing: Tokens.space-sm;
+
+            Gap { }
+
+            SectionLabel {
+                text: "Add a printer";
+            }
+
+            Card {
+                SettingRow {
+                    title: "Search the network";
+                    detail: "Finds printers that need no driver. This can take up to 20 seconds, and asks for your password.";
+
+                    VerticalLayout {
+                        alignment: center;
+
+                        SengiButton {
+                            text: PrintersData.searching ? "Searching\u{2026}" : "Search";
+                            primary: true;
+                            enabled: !PrintersData.searching && !PrintersData.busy;
+                            clicked => { PrintersData.search(); }
+                        }
+                    }
+                }
+
+                if PrintersData.searching: VerticalLayout {
+                    padding-left: Tokens.space-md;
+                    padding-right: Tokens.space-md;
+                    padding-bottom: Tokens.space-md;
+
+                    BusyBar { }
+                }
+
+                if PrintersData.found.length > 0: Divider { }
+
+                ItemList {
+                    items: PrintersData.found;
+                    activated(id) => { PrintersData.add-found(id); }
+                }
+
+                if PrintersData.searched && PrintersData.found.length == 0 && !PrintersData.searching: VerticalLayout {
+                    Divider { }
+
+                    SettingRow {
+                        title: "No printers found";
+                        detail: "Turn the printer on and connect it to the same network, or type its address below.";
+                        enabled: false;
+                    }
+                }
+
+                Divider { }
+
+                SettingRow {
+                    title: "Enter an address";
+                    detail: "A name or number such as 192.168.1.50, or a full ipp:// address.";
+
+                    HorizontalLayout {
+                        spacing: Tokens.space-sm;
+                        alignment: end;
+
+                        VerticalLayout {
+                            alignment: center;
+
+                            field := TextField {
+                                width: Metrics.control;
+                                placeholder: "192.168.1.50";
+                                enabled: !PrintersData.busy;
+                                accepted(text) => { PrintersData.add-address(text); }
+                            }
+                        }
+
+                        VerticalLayout {
+                            alignment: center;
+
+                            SengiButton {
+                                text: "Add";
+                                enabled: !PrintersData.busy;
+                                clicked => { PrintersData.add-address(field.text); }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if PrintersData.address-problem != "": Note {
+                text: PrintersData.address-problem;
+                warning: true;
+            }
+
+            HorizontalLayout {
+                alignment: end;
+
+                SengiButton {
+                    text: "Close";
+                    clicked => { PrintersData.close-add(); }
+                }
+            }
+        }
+
+        if PrintersData.available: VerticalLayout {
+            spacing: Tokens.space-sm;
+
+            Gap { }
+
+            SectionLabel {
+                text: "Your printers";
+            }
+
+            Card {
+                if PrintersData.printers.length == 0: SettingRow {
+                    title: PrintersData.loading ? "Looking for printers\u{2026}" : "No printers added";
+                    detail: PrintersData.loading ? "" : "Use Add printer to set one up.";
+                    enabled: false;
+                }
+
+                ItemList {
+                    items: PrintersData.printers;
+                    activated(id) => { PrintersData.select(id); }
+                }
+            }
+
+            if PrintersData.has-chosen: Card {
+                VerticalLayout {
+                    SettingRow {
+                        title: PrintersData.chosen-title;
+                        detail: PrintersData.chosen-detail;
+                    }
+
+                    Divider { }
+
+                    HorizontalLayout {
+                        padding: Tokens.space-md;
+                        spacing: Tokens.space-sm;
+                        alignment: end;
+
+                        if !PrintersData.chosen-default: SengiButton {
+                            text: "Make default";
+                            enabled: !PrintersData.busy;
+                            clicked => { PrintersData.make-default(); }
+                        }
+
+                        SengiButton {
+                            text: "Print test page";
+                            enabled: !PrintersData.busy;
+                            clicked => { PrintersData.test-page(); }
+                        }
+
+                        SengiButton {
+                            text: "Remove";
+                            danger: true;
+                            enabled: !PrintersData.busy;
+                            clicked => { PrintersData.remove(); }
+                        }
+                    }
+                }
+            }
+
+            Gap { }
+
+            SectionLabel {
+                text: "Print queue";
+            }
+
+            Card {
+                if PrintersData.jobs.length == 0: SettingRow {
+                    title: "Nothing is waiting to print";
+                    enabled: false;
+                }
+
+                ItemList {
+                    items: PrintersData.jobs;
+                    removed(id) => { PrintersData.cancel-job(id); }
+                }
+            }
+        }
+    }
+}

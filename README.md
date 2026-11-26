@@ -44,7 +44,7 @@ menu), sengi-launcher, sengi-notify (notifications) and sengi-quick (quick
 settings), all drawn through a shared library, sengi-layer. sengi-focus gives
 the focused app priority. sengi-settings is the settings application: network,
 Bluetooth, sound, display, power, date and time, keyboard, mouse and touchpad,
-notifications, and a page about the machine. It is an ordinary window that
+notifications, printers, and a page about the machine. It is an ordinary window that
 runs only while it is open. sengi-files is the file manager, an ordinary
 window too: the home folder and its places, the Trash, copy, move and rename.
 sengi-open opens a file in the program for it: sengi-edit (a plain text
@@ -173,6 +173,18 @@ Realtek, MediaTek, Atheros, Broadcom); see `THIRD-PARTY-NOTICES.md`.
 for updates in the background: the timers Debian uses for that are switched
 off. Until Sengi OS has its own way of offering updates, they come when you
 ask for them, in a terminal: `sudo apt update && sudo apt upgrade`.
+
+**Printing.** Settings, Printers lists your printers, sets the default, prints a
+test page, shows and cancels print jobs, and adds a printer by searching the
+network or by its address (it asks for your password to add, remove or search).
+Only printers that need no driver (IPP Everywhere, which most recent network
+printers speak) are offered; a printer that needs its maker's
+driver is not supported yet. CUPS is 87 MB with what it pulls in, so the image
+does not carry it: Settings, Printers offers to install it (about 25 MB to
+download, with your password), and once installed it starts only when something
+asks, never at boot. Flatpak apps print through the portal, and other apps
+through CUPS, with nothing more to set up. Details and measurements are in
+[crates/sengi-print](crates/sengi-print/README.md).
 
 **Installing apps.** The Store, the last icon on the dock, finds apps on
 Flathub by name and installs them for your user, with no password. From a terminal, `sudo apt install <package>` for Debian's

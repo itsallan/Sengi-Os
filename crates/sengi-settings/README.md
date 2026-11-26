@@ -7,7 +7,7 @@ down the left and the chosen one's page at the right.
     sengi-settings sound      open it at a page
 
 The pages are `network`, `bluetooth`, `sound`, `display`, `wallpaper`,
-`power`, `date-time`, `keyboard`, `mouse`, `notifications`, `updates` and
+`power`, `date-time`, `keyboard`, `mouse`, `printers`, `notifications`, `updates` and
 `about`. If Settings is already open, a second invocation brings that window to the page it
 was asked for and exits; the two meet on a socket in `$XDG_RUNTIME_DIR`.
 
@@ -345,6 +345,24 @@ speed, natural scrolling, tap to click and ignoring the touchpad while
 typing for touchpads. They are written as two `<libinput>` device
 categories, `non-touch` and `touchpad`, in the generated `rc.xml`, which
 labwc applies to the devices present when it reconfigures.
+
+### Printers
+
+The printers CUPS has, with each one's state (idle, printing, offline,
+paused) and where it is connected; which is your default (`lpoptions -d`, kept
+in your own `~/.cups/lpoptions`); Make default, Print test page and Remove for
+the printer picked in the list; and the print queue with a Cancel for each
+job. Add printer searches the network for printers that need no driver (up to
+20 seconds, with a bar and a way to stop it by closing the panel) or takes a
+name or address such as `192.168.1.50` or `ipp://printer.local/ipp/print`.
+Looking, the default, the test page and cancelling need no password; adding,
+removing and searching ask for yours, in a dialog, through pkexec. CUPS is
+asked when the page is shown and when Refresh is pressed, and never on a
+timer. The image does not carry CUPS (87 MB installed with what it pulls in),
+so on a fresh install the page offers **Install printing support**, which
+installs it through the update helper with the same password dialog, and is
+off on the live system. The work, the polkit action, the numbers and the
+patterns every name and address must match are in `crates/sengi-print`.
 
 ### Notifications
 
