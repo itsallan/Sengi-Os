@@ -570,10 +570,18 @@ enum Apps {
     Failed(String),
 }
 
-/// Keeps the last few kilobytes of a stream.
-fn keep_tail(mut stream: impl Read + Send + 'static) -> Arc<Mutex<Vec<u8>>> {
-    let tail = Arc::new(Mutex::new(Vec::new()));
-    let theirs = tail.clone();
+/// The last few kilobytes of a stream, kept by a thread that reads it.
+struct Tail {
+    bytes: Arc<Mutex<Vec<u8>>>,
+    done: Arc<AtomicBool>,
+}
+
+fn keep_tail(mut stream: impl Read + Send + 'static) -> Tail {
+    let tail = Tail {
+        bytes: Arc::new(Mutex::new(Vec::new())),
+        done: Arc::new(AtomicBool::new(false)),
+    };
+    let (theirs, done) = (tail.bytes.clone(), tail.done.clone());
     thread::spawn(move || {
         let mut buffer = [0u8; 4096];
         loop {
@@ -589,12 +597,26 @@ fn keep_tail(mut stream: impl Read + Send + 'static) -> Arc<Mutex<Vec<u8>>> {
                 }
             }
         }
+        done.store(true, Ordering::SeqCst);
     });
     tail
 }
 
-fn snapshot(tail: &Arc<Mutex<Vec<u8>>>) -> Vec<u8> {
-    tail.lock().unwrap_or_else(|e| e.into_inner()).clone()
+fn snapshot(tail: &Tail) -> Vec<u8> {
+    tail.bytes.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// After the tool has ended, waits (not for long) for what it wrote to
+/// be read, so that its last words are not missed.
+fn settle(tails: &[&Option<Tail>]) {
+    let waited = Instant::now();
+    while waited.elapsed() < Duration::from_secs(2)
+        && tails
+            .iter()
+            .any(|t| t.as_ref().is_some_and(|t| !t.done.load(Ordering::SeqCst)))
+    {
+        thread::sleep(Duration::from_millis(5));
+    }
 }
 
 fn flatpak_update(tools: &Tools, control: &Control, emit: &mut dyn FnMut(Note)) -> Apps {
@@ -648,6 +670,7 @@ fn flatpak_update(tools: &Tools, control: &Control, emit: &mut dyn FnMut(Note)) 
         thread::sleep(Duration::from_millis(150));
     };
     run::signal_group(child.id(), libc::SIGKILL);
+    settle(&[&out, &err]);
     if stopped_at.is_some() {
         return Apps::Cancelled;
     }
