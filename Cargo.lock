@@ -3796,6 +3796,7 @@ dependencies = [
  "libc",
  "png",
  "wayland-client",
+ "wayland-protocols",
  "wayland-protocols-wlr",
 ]
 

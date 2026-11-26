@@ -2,6 +2,8 @@
 //! line, the name of the file, and turning the compositor's pixels into a
 //! picture.
 
+pub mod clipboard;
+
 use std::path::{Path, PathBuf};
 
 pub const USAGE: &str = "\
@@ -15,7 +17,8 @@ the output.
   --select         dim the screen and drag a rectangle to keep; Enter or
                    letting go takes it, Escape cancels (needs sengi-snip)
   --delay N        wait N seconds first (1 to 60), counting down on screen
-  --clipboard      also copy the picture to the clipboard (needs wl-copy)
+  --clipboard      also copy the picture to the clipboard; a background copy of
+                   this program keeps it there until something else is copied
   --output NAME    one output only
   --region X,Y,W,H a part of the output, in its logical coordinates; this
                    is what the compositor passes for Alt+Print
@@ -102,10 +105,6 @@ pub fn parse_choice(line: &str) -> Option<(Option<String>, Region)> {
     let region = parse_region(region).ok()?;
     Some(((name != "-").then(|| name.to_string()), region))
 }
-
-/// Where a screenshot is copied to the clipboard from: the program that
-/// does it, and how it is told the kind of picture.
-pub const CLIPBOARD_COMMAND: (&str, &[&str]) = ("wl-copy", &["--type", "image/png"]);
 
 fn parse_region(text: &str) -> Result<Region, String> {
     let bad = || format!("'{text}' is not X,Y,WIDTH,HEIGHT");

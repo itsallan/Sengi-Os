@@ -35,13 +35,18 @@ program links no D-Bus stack.
   the countdown.
 - The time limit of 15 seconds applies to the copy from the compositor, not
   to choosing or counting.
-- `--clipboard` copies the first picture with `wl-copy --type image/png`. The
-  compositor (smithay's data device only) offers no wlr-data-control or
-  ext-data-control, which is what a program needs to set the clipboard
-  without a window and a keyboard focus of its own, and wl-clipboard is not in
-  the image. So with wl-copy installed it copies, and without it the
-  notification says "Not copied to the clipboard: wl-copy is not installed"
-  and the file is saved all the same.
+- `--clipboard` puts the first picture on the clipboard as `image/png`,
+  through ext-data-control (or wlr-data-control on a compositor that has only
+  that), which sengi-compositor offers; nothing else needs to be installed.
+  The clipboard is only as good as the program that owns it, so after
+  taking it the program forks, starts a session of its own, closes its
+  terminal and pipes and goes on in the background, handing the picture to
+  whatever pastes, so that the shortcut returns at once. It ends when
+  another program copies something, when the compositor goes, or after an
+  hour. A paste that the reader does not take within ten seconds is given
+  up on. If the compositor offers neither protocol (labwc does offer wlr's)
+  the notification says "Not copied to the clipboard: ..." and the file is
+  saved all the same.
 - The notification gives the path. `sengi-notify --post` has no actions, so
   there is no Open button.
 

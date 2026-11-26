@@ -247,28 +247,13 @@ fn fail(message: &str) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// Puts the first picture on the clipboard. Our compositor offers no
-/// data-control protocol, which is what a program needs to set the
-/// clipboard without a window of its own, so this asks wl-copy, if it is
-/// installed, and says so if not.
+/// Puts the first picture on the clipboard through the compositor's
+/// data-control protocol, see `clipboard`. A copy of this program stays
+/// behind to hand the picture to whoever pastes it.
 fn copy_to_clipboard(saved: &[PathBuf]) -> Result<(), String> {
     let path = saved.first().ok_or("there is no picture")?;
-    let file = File::open(path).map_err(|e| format!("cannot read the picture: {e}"))?;
-    let (program, arguments) = sengi_shot::CLIPBOARD_COMMAND;
-    let status = Command::new(program)
-        .args(arguments)
-        .stdin(file)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    match status {
-        Ok(status) if status.success() => Ok(()),
-        Ok(status) => Err(format!("{program} failed ({status})")),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            Err(format!("{program} is not installed"))
-        }
-        Err(error) => Err(format!("cannot run {program}: {error}")),
-    }
+    let bytes = std::fs::read(path).map_err(|e| format!("cannot read the picture: {e}"))?;
+    sengi_shot::clipboard::copy(bytes)
 }
 
 fn take(wanted: Option<&str>, region: Option<Region>) -> Result<Vec<PathBuf>, String> {
