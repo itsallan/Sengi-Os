@@ -39,7 +39,9 @@ export global Welcome {
     callback next();
     callback back();
     callback skip();
-    callback choose-theme(bool);
+    callback choose-theme(string);
+    // Set from sengi-config's LIGHT_THEME_ENABLED.
+    in property <bool> offer-light;
     callback choose-wallpaper(int);
     callback filter-layouts(string);
     callback choose-layout(string);
@@ -49,11 +51,16 @@ export global Welcome {
     callback open-settings();
 }
 
-// One of the two themes, with a small picture of it. Return and Space
+// One of the themes, with a small picture of it. Return and Space
 // choose it.
 component ThemeCard inherits Rectangle {
     in property <string> text;
-    in property <bool> dark;
+    in property <color> c-bg;
+    in property <color> c-surface;
+    in property <color> c-text;
+    in property <color> c-muted;
+    in property <color> c-accent;
+    in property <color> c-border;
     in property <bool> selected;
     callback clicked();
 
@@ -74,8 +81,8 @@ component ThemeCard inherits Rectangle {
             height: Tokens.list-row-height * 2;
             border-radius: Tokens.radius;
             border-width: Tokens.border-width;
-            border-color: root.dark ? Tokens.dark-border : Tokens.light-border;
-            background: root.dark ? Tokens.dark-bg : Tokens.light-bg;
+            border-color: root.c-border;
+            background: root.c-bg;
 
             Rectangle {
                 x: Tokens.space-md;
@@ -83,9 +90,9 @@ component ThemeCard inherits Rectangle {
                 width: parent.width * 55%;
                 height: parent.height - Tokens.space-md * 2;
                 border-radius: Tokens.radius;
-                background: root.dark ? Tokens.dark-surface : Tokens.light-surface;
+                background: root.c-surface;
                 border-width: Tokens.border-width;
-                border-color: root.dark ? Tokens.dark-border : Tokens.light-border;
+                border-color: root.c-border;
 
                 Rectangle {
                     x: Tokens.space-sm;
@@ -93,7 +100,7 @@ component ThemeCard inherits Rectangle {
                     width: parent.width * 50%;
                     height: Tokens.space-xs;
                     border-radius: Tokens.space-xxs;
-                    background: root.dark ? Tokens.dark-text : Tokens.light-text;
+                    background: root.c-text;
                 }
 
                 Rectangle {
@@ -102,7 +109,7 @@ component ThemeCard inherits Rectangle {
                     width: parent.width * 75%;
                     height: Tokens.space-xs;
                     border-radius: Tokens.space-xxs;
-                    background: root.dark ? Tokens.dark-text-muted : Tokens.light-text-muted;
+                    background: root.c-muted;
                 }
 
                 Rectangle {
@@ -111,7 +118,7 @@ component ThemeCard inherits Rectangle {
                     width: Tokens.space-xl;
                     height: Tokens.space-md;
                     border-radius: Tokens.space-xs;
-                    background: root.dark ? Tokens.dark-accent : Tokens.light-accent;
+                    background: root.c-accent;
                 }
             }
         }
@@ -303,7 +310,7 @@ export component WelcomeWindow inherits Window {
 
                         Heading {
                             title: "Choose how it looks";
-                            lead: "Dark or light, and the picture behind your windows.";
+                            lead: "The theme, and the picture behind your windows.";
                         }
 
                         HorizontalLayout {
@@ -312,17 +319,40 @@ export component WelcomeWindow inherits Window {
                             ThemeCard {
                                 horizontal-stretch: 1;
                                 text: "Dark";
-                                dark: true;
-                                selected: !ThemeSwitch.light;
-                                clicked => { Welcome.choose-theme(false); }
+                                c-bg: Tokens.dark-bg;
+                                c-surface: Tokens.dark-surface;
+                                c-text: Tokens.dark-text;
+                                c-muted: Tokens.dark-text-muted;
+                                c-accent: Tokens.dark-accent;
+                                c-border: Tokens.dark-border;
+                                selected: !ThemeSwitch.light && !ThemeSwitch.high-contrast;
+                                clicked => { Welcome.choose-theme("dark"); }
+                            }
+
+                            if Welcome.offer-light: ThemeCard {
+                                horizontal-stretch: 1;
+                                text: "Light";
+                                c-bg: Tokens.light-bg;
+                                c-surface: Tokens.light-surface;
+                                c-text: Tokens.light-text;
+                                c-muted: Tokens.light-text-muted;
+                                c-accent: Tokens.light-accent;
+                                c-border: Tokens.light-border;
+                                selected: ThemeSwitch.light;
+                                clicked => { Welcome.choose-theme("light"); }
                             }
 
                             ThemeCard {
                                 horizontal-stretch: 1;
-                                text: "Light";
-                                dark: false;
-                                selected: ThemeSwitch.light;
-                                clicked => { Welcome.choose-theme(true); }
+                                text: "High contrast";
+                                c-bg: Tokens.hc-bg;
+                                c-surface: Tokens.hc-surface;
+                                c-text: Tokens.hc-text;
+                                c-muted: Tokens.hc-text-muted;
+                                c-accent: Tokens.hc-accent;
+                                c-border: Tokens.hc-border;
+                                selected: ThemeSwitch.high-contrast;
+                                clicked => { Welcome.choose-theme("high-contrast"); }
                             }
                         }
 

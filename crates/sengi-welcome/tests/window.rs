@@ -178,9 +178,13 @@ fn the_choices_are_run_as_settings_changes() {
     assert!(welcome.get_can_back());
 
     // The theme applies in this window at once and is asked of Settings.
-    welcome.invoke_choose_theme(true);
-    assert!(w.global::<ThemeSwitch>().get_light());
-    welcome.invoke_choose_theme(false);
+    assert!(!welcome.get_offer_light());
+    welcome.invoke_choose_theme("high-contrast".into());
+    assert!(w.global::<ThemeSwitch>().get_high_contrast());
+    welcome.invoke_choose_theme("dark".into());
+    assert!(!w.global::<ThemeSwitch>().get_high_contrast());
+    // The light theme is not offered: asking for it does nothing.
+    welcome.invoke_choose_theme("light".into());
     assert!(!w.global::<ThemeSwitch>().get_light());
 
     // The plain colour and the pictures, in order.
@@ -192,7 +196,12 @@ fn the_choices_are_run_as_settings_changes() {
         let changes = recorder.changes.borrow();
         assert_eq!(
             changes[0],
-            ["sengi-settings", "--set", "appearance.theme", "light"]
+            [
+                "sengi-settings",
+                "--set",
+                "appearance.theme",
+                "high-contrast"
+            ]
         );
         assert_eq!(changes[1][3], "dark");
         assert_eq!(changes[2][2], "appearance.wallpaper");

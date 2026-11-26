@@ -35,8 +35,8 @@ chosen, `XCURSOR_SIZE` in the compositor's own environment is still honoured.
 Programs it starts get `XCURSOR_SIZE` set to the same size, and a new size
 is taken up on SIGHUP. Without a theme an arrow is drawn, scaled to match.
 
-The title bars, menus and switcher follow `appearance.theme` (dark, light or
-high-contrast, which has 2 px lines) and `appearance.text-size`, which scales
+The title bars, menus and switcher follow `appearance.theme` (dark or
+high-contrast, which has 2 px lines; light is not offered yet) and `appearance.text-size`, which scales
 the type and the heights of title bars and rows. The compositor has no
 animations of its own, so `appearance.reduce-motion` has nothing to stop in it.
 Sticky keys and slow keys are not implemented.

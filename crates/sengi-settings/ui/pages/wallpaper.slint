@@ -40,6 +40,8 @@ export global WallpaperData {
     callback choose(string);
     // The name of the theme to use.
     callback choose-theme(string);
+    // Set from sengi-config's LIGHT_THEME_ENABLED.
+    in property <bool> offer-light;
 }
 
 // A thumbnail with its name under it. The one in use has a ring in the
@@ -240,7 +242,7 @@ export component WallpaperPage inherits Page {
                 clicked => { WallpaperData.choose-theme("dark"); }
             }
 
-            ThemeTile {
+            if WallpaperData.offer-light: ThemeTile {
                 x: root.tile-width + root.gap;
                 width: root.tile-width;
                 height: root.tile-height;
@@ -256,7 +258,7 @@ export component WallpaperPage inherits Page {
             }
 
             ThemeTile {
-                x: (root.tile-width + root.gap) * 2;
+                x: (root.tile-width + root.gap) * (WallpaperData.offer-light ? 2 : 1);
                 width: root.tile-width;
                 height: root.tile-height;
                 title: "High contrast";

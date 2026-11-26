@@ -6,7 +6,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
-use sengi_config::settings::Layout;
+use sengi_config::settings::{Layout, THEME_HIGH_CONTRAST, THEME_LIGHT};
+use sengi_config::LIGHT_THEME_ENABLED;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use crate::marker;
@@ -83,6 +84,9 @@ pub fn attach(window: &WelcomeWindow, start: Start) -> Rc<App> {
         state: RefCell::new(state),
         timer: slint::Timer::default(),
     });
+    window
+        .global::<Welcome>()
+        .set_offer_light(LIGHT_THEME_ENABLED);
     wire(window, &app);
     app.show();
     app
@@ -204,13 +208,16 @@ impl App {
         });
     }
 
-    fn choose_theme(&self, light: bool) {
+    fn choose_theme(&self, name: &str) {
+        if name == THEME_LIGHT && !LIGHT_THEME_ENABLED {
+            return;
+        }
         if let Some(window) = self.window.upgrade() {
             let switch = window.global::<ThemeSwitch>();
-            switch.set_light(light);
-            switch.set_high_contrast(false);
+            switch.set_light(name == THEME_LIGHT);
+            switch.set_high_contrast(name == THEME_HIGH_CONTRAST);
         }
-        self.start.runner.change(system::theme_command(light));
+        self.start.runner.change(system::theme_command(name));
     }
 
     fn choose_wallpaper(&self, index: usize) {
@@ -293,7 +300,7 @@ fn wire(window: &WelcomeWindow, app: &Rc<App>) {
     });
     welcome.on_choose_theme({
         let app = app.clone();
-        move |light| app.choose_theme(light)
+        move |name| app.choose_theme(&name)
     });
     welcome.on_choose_wallpaper({
         let app = app.clone();

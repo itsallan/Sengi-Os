@@ -10,7 +10,7 @@
 pub mod settings;
 pub mod store;
 
-pub use settings::Settings;
+pub use settings::{Settings, LIGHT_THEME_ENABLED};
 pub use store::{Dirs, Document, Value};
 
 /// How a program looks, read once as it starts.
@@ -45,7 +45,8 @@ pub fn appearance_of(
         })
         .map_or(settings.text_percent(), |(_, percent)| *percent);
     Appearance {
-        light: theme.map_or(settings.light(), |name| name == settings::THEME_LIGHT),
+        light: LIGHT_THEME_ENABLED
+            && theme.map_or(settings.light(), |name| name == settings::THEME_LIGHT),
         high_contrast: theme.map_or(settings.high_contrast(), |name| {
             name == settings::THEME_HIGH_CONTRAST
         }),
@@ -72,8 +73,8 @@ fn appearance() -> Appearance {
     })
 }
 
-/// Whether the light theme is chosen, read from the settings files as this
-/// process sees them. Every program with a window gives its answer to the
+/// Whether the light theme is chosen (never while [`LIGHT_THEME_ENABLED`]
+/// is off), read from the settings files as this process sees them. Every program with a window gives its answer to the
 /// `ThemeSwitch` global once at start, by way of `apply_theme!`.
 ///
 /// `SENGI_THEME=light`, `dark` or `high-contrast` in the environment wins
@@ -155,7 +156,7 @@ mod tests {
         assert!(!found.light && !found.high_contrast);
         assert_eq!(found.text_scale, 1.2);
         let found = appearance_of(&chosen, Some("purple"), Some("huge"), Some("maybe"));
-        assert!(found.light);
+        assert_eq!(found.light, LIGHT_THEME_ENABLED);
         assert_eq!(found.text_scale, 1.2);
     }
 }

@@ -226,13 +226,8 @@ fn words(list: &[&str]) -> Vec<String> {
     list.iter().map(|word| word.to_string()).collect()
 }
 
-pub fn theme_command(light: bool) -> Vec<String> {
-    words(&[
-        "sengi-settings",
-        "--set",
-        "appearance.theme",
-        if light { "light" } else { "dark" },
-    ])
+pub fn theme_command(name: &str) -> Vec<String> {
+    words(&["sengi-settings", "--set", "appearance.theme", name])
 }
 
 /// `None` is the plain desktop colour.
@@ -413,10 +408,15 @@ mod tests {
     #[test]
     fn the_commands_are_settings_changes() {
         assert_eq!(
-            theme_command(true),
-            ["sengi-settings", "--set", "appearance.theme", "light"]
+            theme_command("high-contrast"),
+            [
+                "sengi-settings",
+                "--set",
+                "appearance.theme",
+                "high-contrast"
+            ]
         );
-        assert_eq!(theme_command(false)[3], "dark");
+        assert_eq!(theme_command("dark")[3], "dark");
         assert_eq!(wallpaper_command(None)[3], "solid");
         assert_eq!(
             wallpaper_command(Some(Path::new("/usr/share/backgrounds/sengi/01-a.png")))[3],

@@ -5,6 +5,13 @@ and the measured idle RAM and boot time.
 
 ## Unreleased
 
+### Changed
+
+- The light theme is not offered yet. Settings, Appearance and the Welcome
+  wizard offer Dark and High contrast, and a saved
+  `appearance.theme = "light"` shows as dark. The light palette and its tests
+  stay in the source behind `LIGHT_THEME_ENABLED` in sengi-config.
+
 ### Added
 
 - A live boot entry without the NVIDIA driver, "Sengi OS (NVIDIA graphics
@@ -104,8 +111,8 @@ and the measured idle RAM and boot time.
   the same table the compositor binds the keys with. Settings, Keyboard has
   a Keyboard shortcuts button for it.
 
-- A light theme next to the dark one. Settings, Appearance has Dark and Light
-  with a preview of each, and it applies at once: the bar, dock and desktop
+- Themes: Settings, Appearance shows a preview of each (a light palette is
+  built too, but not offered yet), and a change applies at once: the bar, dock and desktop
   restart in the new colours, window frames and menus are repainted, and
   anything opened later starts in it. Saved as `appearance.theme`. The
   palettes are in `tokens/sengi.toml` with their WCAG contrast numbers, which

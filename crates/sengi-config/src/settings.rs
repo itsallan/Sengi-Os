@@ -19,6 +19,10 @@ pub const WALLPAPER_SOLID: &str = "solid";
 /// The values of `appearance.theme`.
 pub const THEME_DARK: &str = "dark";
 pub const THEME_LIGHT: &str = "light";
+/// THE LIGHT THEME SWITCH. The light theme is not offered yet: a saved
+/// `appearance.theme = "light"` reads as dark and no window offers it.
+/// The palette and its tests stay. Set this to `true` to bring it back.
+pub const LIGHT_THEME_ENABLED: bool = false;
 pub const THEME_HIGH_CONTRAST: &str = "high-contrast";
 /// The values of `appearance.text-size` with the percent each scales the
 /// type by. The same steps are in `[text-scale]` of the tokens.
@@ -161,7 +165,10 @@ pub fn check(section: &str, key: &str, value: &Value) -> Result<Value, String> {
             {
                 Ok(value.clone())
             }
-            _ => Err("must be \"dark\", \"light\" or \"high-contrast\"".to_string()),
+            _ if LIGHT_THEME_ENABLED => {
+                Err("must be \"dark\", \"light\" or \"high-contrast\"".to_string())
+            }
+            _ => Err("must be \"dark\" or \"high-contrast\"".to_string()),
         },
         ("appearance", "text-size") => match value {
             Value::Text(name) if TEXT_SIZES.iter().any(|(known, _)| known == name) => {
@@ -356,11 +363,18 @@ impl Settings {
                 .get(section, key)
                 .and_then(|value| check(section, key, value).ok())
         };
-        Some(
-            valid(&self.user)
-                .or_else(|| valid(&self.system))
-                .unwrap_or(default),
-        )
+        let value = valid(&self.user)
+            .or_else(|| valid(&self.system))
+            .unwrap_or(default);
+        // The file keeps the word, so it counts again once the theme does.
+        let hidden = !LIGHT_THEME_ENABLED
+            && (section, key) == ("appearance", "theme")
+            && value == Value::text(THEME_LIGHT);
+        Some(if hidden {
+            Value::text(THEME_DARK)
+        } else {
+            value
+        })
     }
 
     pub fn number(&self, section: &str, key: &str) -> i64 {
@@ -381,7 +395,8 @@ impl Settings {
         }
     }
 
-    /// Whether the light theme is chosen. The user's file decides, then the
+    /// Whether the light theme is chosen, never while
+    /// [`LIGHT_THEME_ENABLED`] is off. The user's file decides, then the
     /// system's, which is all a program that runs as another user, such as
     /// the login screen, can see.
     pub fn light(&self) -> bool {
@@ -643,9 +658,12 @@ mod tests {
     #[test]
     fn the_theme_is_dark_unless_light_is_chosen() {
         assert!(!settings("", "").light());
-        assert!(settings("", "[appearance]\ntheme = \"light\"\n").light());
+        let on = LIGHT_THEME_ENABLED;
+        let saved = settings("", "[appearance]\ntheme = \"light\"\n");
+        assert_eq!(saved.light(), on);
         // The login screen cannot read the user's file: the system's counts.
-        assert!(settings("[appearance]\ntheme = \"light\"\n", "").light());
+        let system = settings("[appearance]\ntheme = \"light\"\n", "");
+        assert_eq!(system.light(), on);
         assert!(!settings(
             "[appearance]\ntheme = \"light\"\n",
             "[appearance]\ntheme = \"dark\"\n"
@@ -655,6 +673,20 @@ mod tests {
         assert!(!settings("", "[appearance]\ntheme = \"blue\"\n").light());
         assert!(check("appearance", "theme", &Value::text("blue")).is_err());
         assert!(check("appearance", "theme", &Value::Flag(true)).is_err());
+    }
+
+    #[test]
+    fn a_saved_light_theme_reads_as_dark_while_it_is_not_offered() {
+        let saved = settings("", "[appearance]\ntheme = \"light\"\n");
+        let shown = if LIGHT_THEME_ENABLED {
+            THEME_LIGHT
+        } else {
+            THEME_DARK
+        };
+        assert_eq!(saved.text("appearance", "theme"), shown);
+        assert!(!saved.high_contrast());
+        // The word is still accepted, so an old file draws no complaint.
+        assert!(check("appearance", "theme", &Value::text("light")).is_ok());
     }
 
     #[test]

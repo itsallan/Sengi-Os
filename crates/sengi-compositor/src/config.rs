@@ -444,7 +444,11 @@ mod tests {
     #[test]
     fn the_theme_is_dark_unless_light_is_chosen() {
         assert!(!config("").appearance.light);
-        assert!(config("[appearance]\ntheme = \"light\"\n").appearance.light);
+        // Dark while the light theme is not offered.
+        assert_eq!(
+            config("[appearance]\ntheme = \"light\"\n").appearance.light,
+            sengi_config::LIGHT_THEME_ENABLED
+        );
     }
 
     #[test]
