@@ -57,7 +57,7 @@ ignored in favour of the system's value or the default.
 | `touchpad.natural-scroll` | `false` | As for mice. |
 | `touchpad.tap-to-click` | `true` | A tap is a click. |
 | `touchpad.disable-while-typing` | `true` | Ignore the touchpad while keys are being pressed. |
-| `touchpad.click-method` | `"clickfinger"` | `"clickfinger"` (one finger left click, two fingers right click) or `"areas"` (the bottom corners are the buttons). |
+| `touchpad.click-method` | `"areas"` | `"areas"` (the bottom corners are the buttons) or `"clickfinger"` (one finger left click, two fingers right click). With tap to click on, a two-finger tap is a right click either way. |
 | `touchpad.scroll-method` | `"two-finger"` | `"two-finger"` or `"edge"` (one finger along the right or bottom edge). |
 | `touchpad.gestures` | `true` | Three-finger swipes: left and right switch windows, up shows the switcher (sengi-compositor). |
 | `display.primary` | `""` | The output the bar and the dock go to, such as `"eDP-1"`. Empty is the one the pointer is on (sengi-compositor). |

@@ -41,14 +41,14 @@ pub fn methods(key: &str) -> Option<(&'static str, Methods)> {
             "Click",
             [
                 (
-                    "clickfinger",
-                    "Number of fingers",
-                    "One finger is a left click, two a right click",
-                ),
-                (
                     "areas",
                     "Bottom corners",
                     "The lower left and right of the pad are the buttons",
+                ),
+                (
+                    "clickfinger",
+                    "Number of fingers",
+                    "One finger is a left click, two a right click",
                 ),
             ],
         )),

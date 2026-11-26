@@ -60,7 +60,7 @@ pub const KEYS: &[(&str, &str, Default)] = &[
     ("touchpad", "natural-scroll", Default::Flag(false)),
     ("touchpad", "tap-to-click", Default::Flag(true)),
     ("touchpad", "disable-while-typing", Default::Flag(true)),
-    ("touchpad", "click-method", Default::Text(CLICK_CLICKFINGER)),
+    ("touchpad", "click-method", Default::Text(CLICK_AREAS)),
     (
         "touchpad",
         "scroll-method",
@@ -624,6 +624,20 @@ mod tests {
         assert!(!bad("touchpad", "scroll-method", Value::text("edge")));
         assert_eq!(parse_clock("07:30"), Some(450));
         assert_eq!(parse_clock("7:30"), None);
+    }
+
+    #[test]
+    fn a_clickpad_has_its_buttons_in_the_corners_unless_told_otherwise() {
+        let method = |system, user| settings(system, user).text("touchpad", "click-method");
+        assert_eq!(method("", ""), CLICK_AREAS);
+        assert!(settings("", "").flag("touchpad", "tap-to-click"));
+        let chosen = "[touchpad]\nclick-method = \"clickfinger\"\n";
+        assert_eq!(method("", chosen), CLICK_CLICKFINGER);
+        assert_eq!(method(chosen, ""), CLICK_CLICKFINGER);
+        assert_eq!(
+            method(chosen, "[touchpad]\nclick-method = \"areas\"\n"),
+            CLICK_AREAS
+        );
     }
 
     #[test]

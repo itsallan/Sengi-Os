@@ -256,8 +256,8 @@ impl Config {
                 tap: settings.flag("touchpad", "tap-to-click"),
                 disable_while_typing: settings.flag("touchpad", "disable-while-typing"),
                 click_method: match settings.text("touchpad", "click-method").as_str() {
-                    "areas" => ClickMethod::Areas,
-                    _ => ClickMethod::Clickfinger,
+                    "clickfinger" => ClickMethod::Clickfinger,
+                    _ => ClickMethod::Areas,
                 },
                 scroll_method: match settings.text("touchpad", "scroll-method").as_str() {
                     "edge" => ScrollMethod::Edge,
@@ -499,16 +499,18 @@ mod tests {
     }
 
     #[test]
-    fn the_touchpad_defaults_are_clickfinger_and_two_finger_scrolling() {
+    fn the_touchpad_defaults_are_button_areas_and_two_finger_scrolling() {
         let touchpad = config("").touchpad;
-        assert_eq!(touchpad.click_method, ClickMethod::Clickfinger);
+        assert_eq!(touchpad.click_method, ClickMethod::Areas);
+        // A tap with two fingers is a right click too.
+        assert!(touchpad.tap);
         assert_eq!(touchpad.scroll_method, ScrollMethod::TwoFinger);
         assert!(touchpad.gestures);
         let set = config(
-            "[touchpad]\nclick-method = \"areas\"\nscroll-method = \"edge\"\ngestures = false\n",
+            "[touchpad]\nclick-method = \"clickfinger\"\nscroll-method = \"edge\"\ngestures = false\n",
         )
         .touchpad;
-        assert_eq!(set.click_method, ClickMethod::Areas);
+        assert_eq!(set.click_method, ClickMethod::Clickfinger);
         assert_eq!(set.scroll_method, ScrollMethod::Edge);
         assert!(!set.gestures);
         // A mouse has neither.
