@@ -45,6 +45,7 @@ mod shell;
 mod snap;
 mod state;
 mod text;
+mod watchdog;
 mod window;
 #[cfg(feature = "winit")]
 mod winit;

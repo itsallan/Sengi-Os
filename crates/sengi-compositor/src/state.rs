@@ -673,6 +673,7 @@ impl State {
 
     /// Runs until a backend stops the loop.
     pub fn run(mut self, mut event_loop: EventLoop<'static, Self>) -> Result<(), Box<dyn Error>> {
+        let watchdog = crate::watchdog::start(&self.loop_handle);
         event_loop.run(None, &mut self, |state| {
             state.space.refresh();
             state.popups.cleanup();
@@ -688,6 +689,7 @@ impl State {
             state.watch_locker();
             let _ = state.display_handle.flush_clients();
         })?;
+        drop(watchdog);
 
         self.flush_output_layout();
         if self.failed {

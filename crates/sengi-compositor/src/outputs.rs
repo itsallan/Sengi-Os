@@ -947,6 +947,12 @@ impl State {
                 }
                 return "ok\n".into();
             }
+            // Keeps the main loop busy for this many milliseconds.
+            Some("stall") => {
+                let time = words.next().and_then(|word| word.parse().ok()).unwrap_or(0);
+                std::thread::sleep(std::time::Duration::from_millis(time));
+                return "ok\n".into();
+            }
             // How many clients are counted as having set up security contexts.
             Some("contexts") => return format!("ok {}\n", self.security_contexts.len()),
             // Minimises every window on the desktop, as the dock would.
