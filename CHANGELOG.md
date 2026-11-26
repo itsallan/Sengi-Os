@@ -16,6 +16,16 @@ and the measured idle RAM and boot time.
   changes the Debian release, refuses on a low battery or while another apt
   runs, says "Restart needed" when the system asks for it, and shows a count on
   the sidebar. The live system says updates are available after installing.
+- Settings, Accessibility: Text size (Small, Default, Large, Extra large), High
+  contrast, Reduce motion and Cursor size (Normal, Large, Extra large). Text
+  size scales every type size and the heights of rows, buttons, the bar and
+  title bars in all programs; high contrast is a third theme beside Dark and
+  Light (Settings, Appearance too) with white text on black at 7:1 or better
+  and 2 px lines; reduced motion turns every animation off; a larger cursor
+  applies to the compositor and to programs it starts afterwards. The
+  settings are `appearance.text-size`, `appearance.theme = "high-contrast"`,
+  `appearance.reduce-motion` and `appearance.cursor-size`. Sticky keys, slow
+  keys and an on-screen keyboard are not built yet.
 - Settings, Display: the displays drawn where they are, a Position choice for
   each (left of, right of, above, below or mirroring another), and a Main
   display, which is where the bar and the dock go. Positions and scales are
