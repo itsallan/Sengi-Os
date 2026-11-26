@@ -49,7 +49,7 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Page; 13] = [
+    pub const ALL: [Page; 14] = [
         Page::Network,
         Page::Bluetooth,
         Page::Sound,
