@@ -10,6 +10,7 @@
 pub mod apt;
 pub mod cache;
 pub mod client;
+pub mod elevate;
 pub mod event;
 pub mod flatpak;
 pub mod guard;

@@ -293,14 +293,14 @@ enum Sys {
     NoPassword,
 }
 
-enum Item {
+pub(crate) enum Item {
     Line(String),
     Prompt,
     Closed,
 }
 
 /// A pseudo-terminal: (master, slave), with echo off on the slave.
-fn open_pty() -> io::Result<(File, File)> {
+pub(crate) fn open_pty() -> io::Result<(File, File)> {
     // SAFETY: each call is given descriptors and buffers of its own, and
     // every descriptor is wrapped in a File as soon as it exists, so that
     // it is closed on every way out.
@@ -345,7 +345,7 @@ pub fn is_password_prompt(shown: &str) -> bool {
 
 /// Reads what pkexec writes to its terminal, only to know when it asks
 /// for a password. What it reads is kept for no longer than that.
-fn watch_prompts(mut master: File, tx: Sender<Item>) {
+pub(crate) fn watch_prompts(mut master: File, tx: Sender<Item>) {
     thread::spawn(move || {
         let mut buffer = [0u8; 512];
         let mut shown = String::new();
@@ -370,7 +370,7 @@ fn watch_prompts(mut master: File, tx: Sender<Item>) {
     });
 }
 
-fn wait_reply(control: &Control) -> Reply {
+pub(crate) fn wait_reply(control: &Control) -> Reply {
     loop {
         match control.replies.recv_timeout(Duration::from_millis(100)) {
             Ok(reply) => return reply,
@@ -385,7 +385,7 @@ fn wait_reply(control: &Control) -> Reply {
 }
 
 /// The password and a line feed, to the terminal, and nothing kept.
-fn send_password(master: &mut File, pass: &Pass) -> io::Result<()> {
+pub(crate) fn send_password(master: &mut File, pass: &Pass) -> io::Result<()> {
     let mut line = pass.bytes().to_vec();
     line.push(b'\n');
     let written = master.write_all(&line).and_then(|()| master.flush());
