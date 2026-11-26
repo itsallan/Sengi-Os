@@ -79,6 +79,7 @@ pub const KEYS: &[(&str, &str, Default)] = &[
     ("appearance", "cursor-size", Default::Text("normal")),
     ("appearance", "wallpaper", Default::Text(WALLPAPER_SOLID)),
     ("appearance", "week-start", Default::Text("monday")),
+    ("clipboard", "history", Default::Flag(false)),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

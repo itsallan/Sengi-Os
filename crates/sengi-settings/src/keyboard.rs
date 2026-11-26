@@ -261,6 +261,12 @@ impl KeyboardPage {
                 page.store(&app, &key, Value::Number(i64::from(value)));
             }
         });
+        let (weak, weak_app) = (Rc::downgrade(&page), Rc::downgrade(app));
+        data.on_set_clipboard_history(move |on| {
+            if let (Some(page), Some(app)) = (weak.upgrade(), weak_app.upgrade()) {
+                page.store_in(&app, "clipboard", "history", Value::Flag(on));
+            }
+        });
         // The sheet is the compositor's own, and shown by asking it.
         data.set_can_show_shortcuts(std::env::var_os(SHORTCUTS_UNDER).is_some());
         data.on_show_shortcuts(|| {
@@ -276,7 +282,11 @@ impl KeyboardPage {
     }
 
     fn store(&self, app: &Rc<App>, key: &str, value: Value) {
-        if app.set("keyboard", key, value) {
+        self.store_in(app, "keyboard", key, value);
+    }
+
+    fn store_in(&self, app: &Rc<App>, section: &str, key: &str, value: Value) {
+        if app.set(section, key, value) {
             app.apply_to_session();
         }
         self.render(app);
@@ -390,6 +400,7 @@ impl KeyboardPage {
         data.set_switch(switch_words(&settings.text("keyboard", "switch")).into());
         data.set_delay(settings.number("keyboard", "repeat-delay") as i32);
         data.set_rate(settings.number("keyboard", "repeat-rate") as i32);
+        data.set_clipboard_history(settings.flag("clipboard", "history"));
     }
 }
 

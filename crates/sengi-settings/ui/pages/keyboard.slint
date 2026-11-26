@@ -1,7 +1,7 @@
 // The Keyboard page: layouts, the shortcut that switches between them,
 // and how keys repeat.
 
-import { Tokens, SengiButton } from "components.slint";
+import { Tokens, SengiButton, SengiToggle } from "components.slint";
 import { Item, ItemList, Page, PageColumn, Card, Divider, SettingRow, RowValue, SectionLabel, Note, Gap, Metrics, ChoiceButton, Slider } from "../kit.slint";
 
 export global KeyboardData {
@@ -17,7 +17,11 @@ export global KeyboardData {
     // sengi-compositor.
     in property <bool> can-show-shortcuts: false;
 
+    // Whether the compositor keeps the history of what was copied.
+    in property <bool> clipboard-history: false;
+
     callback show-shortcuts();
+    callback set-clipboard-history(bool);
     callback add();
     callback remove(string);
     callback choose-switch();
@@ -133,6 +137,27 @@ export component KeyboardPage inherits Page {
                     SengiButton {
                         text: "Keyboard shortcuts…";
                         clicked => { KeyboardData.show-shortcuts(); }
+                    }
+                }
+            }
+        }
+
+        if KeyboardData.can-show-shortcuts: Gap { }
+
+        if KeyboardData.can-show-shortcuts: SectionLabel {
+            text: "Privacy";
+        }
+
+        if KeyboardData.can-show-shortcuts: Card {
+            SettingRow {
+                title: "Clipboard history";
+                detail: "Keeps the last 20 texts you copy, in memory only, so Super+V can paste them again. Passwords from password managers are skipped, and it is cleared when the screen locks.";
+
+                VerticalLayout {
+                    alignment: center;
+                    SengiToggle {
+                        checked: KeyboardData.clipboard-history;
+                        toggled(on) => { KeyboardData.set-clipboard-history(on); }
                     }
                 }
             }

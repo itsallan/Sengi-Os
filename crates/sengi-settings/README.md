@@ -68,6 +68,7 @@ ignored in favour of the system's value or the default.
 | `appearance.window-shadows` | `true` | Whether framed windows have a shadow (sengi-compositor). |
 | `appearance.wallpaper` | `"solid"` | `"solid"` for the desktop colour, or the full path of a PNG or JPEG to show behind the desktop. |
 | `appearance.week-start` | `"monday"` | `"monday"`, `"sunday"` or `"saturday"`: the first column of the calendar under the clock. Edit the file; Settings has no control for it yet. |
+| `clipboard.history` | `false` | Keep the last 20 text copies in memory, never on disk, to paste again with Super+V (sengi-compositor). Off by default: what you copy can be private. |
 
 Two options are for the session's start-up scripts, which should not have
 to read TOML:
@@ -328,6 +329,11 @@ given only until it exits; a kept mode is not written to a file yet).
 - Keyboard shortcuts…, under sengi-compositor only: runs
   `sengi-compositor --shortcuts`, which shows the compositor's sheet of
   its key bindings (also Super+/ anywhere).
+- Privacy, under sengi-compositor only: a switch for the clipboard
+  history (`clipboard.history`, off by default). Turning it on keeps the
+  last 20 texts copied, in the compositor's memory only, for Super+V;
+  turning it off forgets them. The compositor reads the setting again
+  when it is told to, as for the other keyboard settings.
 
 All of it is written for labwc as described under "Files written for
 other programs", and labwc is told to read its files again.
