@@ -7,6 +7,8 @@
 #
 # Each file is one filled path on a 256 unit grid, which is all this reads.
 set -eu
+# The order of the glob below decides the order of the output, so pin it.
+export LC_ALL=C
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 dir=$root/ui/icons/phosphor/bold
