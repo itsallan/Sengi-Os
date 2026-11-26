@@ -32,6 +32,33 @@ pub struct Rgba {
     pub a: u8,
 }
 
+/// Which set of colours is in use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Palette {
+    Dark,
+    Light,
+    HighContrast,
+}
+
+/// The sizes that follow the text size setting: the type, and the heights
+/// of what holds a line of it. The Slint `Tokens` does the same sums for
+/// the same names, see ui/tokens.slint.in.
+pub const SCALED: [&str; 13] = [
+    "type.size-sm",
+    "type.size-md",
+    "type.size-lg",
+    "type.size-xl",
+    "type.size-display",
+    "size.titlebar-height",
+    "size.list-row-height",
+    "size.bar-height",
+    "size.button",
+    "menu.row",
+    "size.menu-width",
+    "size.snip-countdown-width",
+    "size.snip-countdown-height",
+];
+
 #[derive(Debug, Default)]
 pub struct Tokens {
     values: BTreeMap<String, String>,
@@ -89,25 +116,62 @@ impl Tokens {
     /// The tokens with one of the two palettes in place of `color.*`: the
     /// light one, from `color-light.*`, or the dark one as it is.
     pub fn themed(light: bool) -> Self {
+        Self::palette(if light { Palette::Light } else { Palette::Dark })
+    }
+
+    /// The tokens with `palette` in place of `color.*`. The high contrast
+    /// palette also brings its thicker lines.
+    pub fn palette(palette: Palette) -> Self {
         let mut tokens = Self::builtin();
-        if light {
-            tokens.use_light();
+        match palette {
+            Palette::Dark => {}
+            Palette::Light => tokens.use_light(),
+            Palette::HighContrast => {
+                tokens.use_prefix("color-hc.", "color.");
+                tokens.use_prefix("border.width-hc", "border.width");
+                tokens.use_prefix("border.focus-ring-hc", "border.focus-ring");
+            }
         }
+        tokens
+    }
+
+    /// The tokens as a program with these settings shows them: a palette
+    /// and the text scale in percent, see `scaled`.
+    pub fn for_appearance(palette: Palette, text_percent: u32) -> Self {
+        let mut tokens = Self::palette(palette);
+        tokens.scaled(text_percent);
         tokens
     }
 
     /// Replaces each `color.X` with `color-light.X`, so everything that
     /// reads `color.*` shows the light theme.
     pub fn use_light(&mut self) {
-        let light: Vec<(String, String)> = self
+        self.use_prefix("color-light.", "color.");
+    }
+
+    /// Every token named `from...` also under `to...`, replacing what is
+    /// there. A `from` that is a whole name moves just that token.
+    fn use_prefix(&mut self, from: &str, to: &str) {
+        let moved: Vec<(String, String)> = self
             .values
             .iter()
             .filter_map(|(name, value)| {
-                let rest = name.strip_prefix("color-light.")?;
-                Some((format!("color.{rest}"), value.clone()))
+                let rest = name.strip_prefix(from)?;
+                Some((format!("{to}{rest}"), value.clone()))
             })
             .collect();
-        self.values.extend(light);
+        self.values.extend(moved);
+    }
+
+    /// Multiplies the type sizes and the heights that hold a line of text
+    /// by `percent` / 100, rounded to whole pixels. See `SCALED`.
+    pub fn scaled(&mut self, percent: u32) {
+        for name in SCALED {
+            if let Some(px) = self.px(name) {
+                let value = (px * percent + 50) / 100;
+                self.values.insert((*name).to_string(), value.to_string());
+            }
+        }
     }
 
     pub fn get(&self, name: &str) -> Option<&str> {
@@ -245,11 +309,30 @@ mod themes {
         }
     }
 
-    fn both() -> [(&'static str, Tokens); 2] {
+    fn both() -> [(&'static str, Tokens); 3] {
         [
             ("dark", Tokens::themed(false)),
             ("light", Tokens::themed(true)),
+            ("high-contrast", Tokens::palette(Palette::HighContrast)),
         ]
+    }
+
+    /// The lowest contrast of text on its surface: high contrast asks for 7.
+    fn text_min(theme: &str) -> f64 {
+        if theme == "high-contrast" {
+            7.0
+        } else {
+            4.5
+        }
+    }
+
+    /// The lowest contrast of the parts of a control.
+    fn part_min(theme: &str) -> f64 {
+        if theme == "high-contrast" {
+            4.5
+        } else {
+            3.0
+        }
     }
 
     fn colour(tokens: &Tokens, name: &str) -> Rgba {
@@ -268,6 +351,10 @@ mod themes {
                 .collect()
         };
         assert_eq!(names("color."), names("color-light."));
+        assert_eq!(names("color."), names("color-hc."));
+        for name in tokens.names().filter(|n| n.starts_with("color-hc.")) {
+            assert!(tokens.color(name).is_some(), "{name} is not a colour");
+        }
         for name in tokens.names().filter(|n| n.starts_with("color-light.")) {
             assert!(tokens.color(name).is_some(), "{name} is not a colour");
         }
@@ -300,7 +387,10 @@ mod themes {
             for text in ["text", "text-muted"] {
                 for surface in surfaces {
                     let r = ratio(colour(&tokens, text), colour(&tokens, surface));
-                    assert!(r >= 4.5, "{theme}: {text} on {surface} is {r:.2}");
+                    assert!(
+                        r >= text_min(theme),
+                        "{theme}: {text} on {surface} is {r:.2}"
+                    );
                 }
             }
             // The words on the bar and the dock, over what shows through.
@@ -308,20 +398,29 @@ mod themes {
                 let under = over(colour(&tokens, panel), colour(&tokens, "desktop"));
                 for text in ["text", "text-muted"] {
                     let r = ratio(colour(&tokens, text), under);
-                    assert!(r >= 4.5, "{theme}: {text} on the {panel} is {r:.2}");
+                    assert!(
+                        r >= text_min(theme),
+                        "{theme}: {text} on the {panel} is {r:.2}"
+                    );
                 }
             }
             // Coloured words: the accent as text, and the status colours.
             for text in ["accent-strong", "danger", "warning", "success"] {
                 for surface in ["bg", "surface"] {
                     let r = ratio(colour(&tokens, text), colour(&tokens, surface));
-                    assert!(r >= 4.5, "{theme}: {text} on {surface} is {r:.2}");
+                    assert!(
+                        r >= text_min(theme),
+                        "{theme}: {text} on {surface} is {r:.2}"
+                    );
                 }
             }
             // The label on a filled accent button, at rest and hovered.
             for fill in ["accent", "accent-hover"] {
                 let r = ratio(colour(&tokens, "accent-text"), colour(&tokens, fill));
-                assert!(r >= 4.5, "{theme}: accent-text on {fill} is {r:.2}");
+                assert!(
+                    r >= text_min(theme),
+                    "{theme}: accent-text on {fill} is {r:.2}"
+                );
             }
         }
     }
@@ -332,7 +431,10 @@ mod themes {
             for part in ["accent", "focus-ring", "text-muted"] {
                 for surface in ["bg", "surface"] {
                     let r = ratio(colour(&tokens, part), colour(&tokens, surface));
-                    assert!(r >= 3.0, "{theme}: {part} on {surface} is {r:.2}");
+                    assert!(
+                        r >= part_min(theme),
+                        "{theme}: {part} on {surface} is {r:.2}"
+                    );
                 }
             }
         }
@@ -352,6 +454,178 @@ mod themes {
                 assert!(r >= 1.3, "{theme}: outline-disabled on {surface} is {r:.2}");
             }
         }
+    }
+
+    #[test]
+    fn high_contrast_is_white_on_black_with_thick_lines() {
+        let hc = Tokens::palette(Palette::HighContrast);
+        let white = Rgba {
+            r: 255,
+            g: 255,
+            b: 255,
+            a: 255,
+        };
+        let black = Rgba {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 255,
+        };
+        assert_eq!(colour(&hc, "text"), white);
+        assert_eq!(colour(&hc, "bg"), black);
+        assert_eq!(colour(&hc, "desktop"), black);
+        assert_eq!(hc.px("border.width"), Some(2));
+        assert_eq!(hc.px("border.focus-ring"), Some(3));
+        // The other two keep their one pixel lines.
+        assert_eq!(Tokens::themed(false).px("border.width"), Some(1));
+        assert_eq!(Tokens::themed(true).px("border.focus-ring"), Some(2));
+        // Everything but colours and lines is the same.
+        assert_eq!(hc.px("radius.base"), Some(6));
+        assert_eq!(hc.get("type.family"), Some("Inter"));
+    }
+
+    #[test]
+    fn high_contrast_lines_and_state_colours_show_on_every_surface() {
+        let hc = Tokens::palette(Palette::HighContrast);
+        for surface in ["bg", "surface", "surface-raised", "surface-hover"] {
+            for part in ["border", "focus-ring", "accent"] {
+                let r = ratio(colour(&hc, part), colour(&hc, surface));
+                assert!(r >= 4.5, "{part} on {surface} is {r:.2}");
+            }
+            // Disabled things are dimmer but not gone.
+            let r = ratio(colour(&hc, "outline-disabled"), colour(&hc, surface));
+            assert!(r >= 3.0, "outline-disabled on {surface} is {r:.2}");
+            let r = ratio(colour(&hc, "text-disabled"), colour(&hc, surface));
+            assert!(r >= 3.0, "text-disabled on {surface} is {r:.2}");
+        }
+        // The bar and the dock over the desktop.
+        for panel in ["bar", "dock"] {
+            let under = over(colour(&hc, panel), colour(&hc, "desktop"));
+            let r = ratio(colour(&hc, "text"), under);
+            assert!(r >= 7.0, "text on the {panel} is {r:.2}");
+        }
+        for text in ["accent-strong", "danger", "warning", "success"] {
+            let r = ratio(colour(&hc, text), colour(&hc, "surface-hover"));
+            assert!(r >= 4.5, "{text} on surface-hover is {r:.2}");
+        }
+    }
+
+    #[test]
+    fn the_text_scale_steps_are_the_ones_in_the_tokens() {
+        let tokens = Tokens::builtin();
+        let steps: Vec<u32> = ["small", "default", "large", "extra-large"]
+            .iter()
+            .map(|name| tokens.px(&format!("text-scale.{name}")).unwrap())
+            .collect();
+        assert_eq!(steps, [90, 100, 120, 140]);
+    }
+
+    #[test]
+    fn scaling_changes_the_type_and_the_text_heights_only() {
+        let plain = Tokens::for_appearance(Palette::Dark, 100);
+        assert_eq!(plain.px("type.size-md"), Some(13));
+        let big = Tokens::for_appearance(Palette::Dark, 140);
+        assert_eq!(big.px("type.size-md"), Some(18));
+        assert_eq!(big.px("type.size-sm"), Some(15));
+        assert_eq!(big.px("type.size-lg"), Some(22));
+        assert_eq!(big.px("type.size-xl"), Some(31));
+        assert_eq!(big.px("size.titlebar-height"), Some(42));
+        assert_eq!(big.px("size.list-row-height"), Some(59));
+        let small = Tokens::for_appearance(Palette::Dark, 90);
+        assert_eq!(small.px("type.size-md"), Some(12));
+        assert_eq!(small.px("type.size-sm"), Some(10));
+        // Not text: spacing, radius, icons stay.
+        for name in ["radius.base", "space.md", "size.bar-icon", "dock.icon"] {
+            assert_eq!(big.px(name), plain.px(name), "{name}");
+        }
+        // The pt sizes of programs that do not take px are not scaled.
+        assert_eq!(big.px("type.pt-md"), plain.px("type.pt-md"));
+    }
+
+    #[test]
+    fn slint_scales_the_same_tokens_as_this_crate() {
+        let template = include_str!("../../../ui/tokens.slint.in");
+        let mut in_slint: Vec<&str> = template
+            .lines()
+            .filter(|line| line.trim_end().ends_with("* ThemeSwitch.text-scale;"))
+            .filter_map(|line| {
+                let start = line.find("@{")? + 2;
+                Some(&line[start..start + line[start..].find('}')?])
+            })
+            .collect();
+        in_slint.sort_unstable();
+        let mut here = SCALED.to_vec();
+        here.sort_unstable();
+        assert_eq!(in_slint, here);
+    }
+
+    #[test]
+    fn reduced_motion_zeroes_the_motion_durations_and_only_those() {
+        let template = include_str!("../../../ui/tokens.slint.in");
+        let mut motion = 0;
+        for line in template.lines().filter(|l| l.contains("property <duration>")) {
+            let name = line.split("property <duration>").nth(1).unwrap();
+            if name.trim_start().starts_with("motion-") {
+                motion += 1;
+                assert!(
+                    line.contains("ThemeSwitch.reduce-motion ? 0ms :"),
+                    "{line}"
+                );
+            } else {
+                // Timeouts and delays are not animations.
+                assert!(!line.contains("reduce-motion"), "{line}");
+            }
+        }
+        assert!(motion >= 4, "{motion} motion durations");
+    }
+
+    #[test]
+    fn every_animation_in_the_interface_takes_its_time_from_the_tokens() {
+        fn slint_files(dir: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if !path.ends_with("target") {
+                        slint_files(&path, found);
+                    }
+                } else if path.extension().is_some_and(|e| e == "slint") {
+                    found.push(path);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut files = Vec::new();
+        slint_files(&root.join("crates"), &mut files);
+        slint_files(&root.join("ui"), &mut files);
+        assert!(files.len() > 10);
+        let mut animations = 0;
+        for file in files {
+            let text = std::fs::read_to_string(&file).unwrap();
+            for line in text.lines().map(str::trim) {
+                if line.starts_with("//") {
+                    continue;
+                }
+                if let Some((_, rest)) = line.split_once("duration:") {
+                    animations += 1;
+                    assert!(
+                        rest.trim_start().starts_with("Tokens.motion-"),
+                        "{}: {line}",
+                        file.display()
+                    );
+                }
+            }
+        }
+        assert!(animations > 10, "{animations} animations");
+    }
+
+    #[test]
+    fn a_scale_of_one_hundred_changes_nothing() {
+        let a = Tokens::themed(true);
+        let b = Tokens::for_appearance(Palette::Light, 100);
+        assert!(a.names().all(|n| a.get(n) == b.get(n)));
     }
 
     /// Prints the numbers quoted in tokens/sengi.toml:

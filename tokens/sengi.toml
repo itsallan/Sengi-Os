@@ -4,11 +4,14 @@
 #
 # Colours are #rrggbb or #rrggbbaa. Sizes are in px, durations in ms.
 
-# Two palettes with the same names: [color] is the dark theme and
-# [color-light] the light one. Programs pick one at start from the
-# setting appearance.theme; a name has to be in both. Contrast ratios
-# (WCAG 2.x, text over every surface it sits on) are checked by the
-# tests of crates/sengi-tokens: 4.5 for text, 3 for parts of controls.
+# Three palettes with the same names: [color] is the dark theme,
+# [color-light] the light one and [color-hc] the high contrast one.
+# Programs pick one at start from the setting appearance.theme; a name has
+# to be in all three. Contrast ratios (WCAG 2.x, text over every surface it
+# sits on) are checked by the tests of crates/sengi-tokens: 4.5 for text,
+# 3 for parts of controls in dark and light; 7 and 4.5 in high contrast.
+# High contrast text is white or near it on black, text-muted is 10:1 or
+# better on every surface and white on black is 21:1.
 # Measured ratios, dark / light:
 #   text on surface 13.9 / 16.9, muted text on surface 6.1 / 6.8,
 #   muted text on surface-hover 4.6 / 5.1,
@@ -93,6 +96,43 @@ window-maximise-ring = "#1aab29"
 window-maximise-glyph = "#006500"
 window-inactive = "#c9ccd2"
 
+[color-hc]
+# The high contrast theme: pure white text on black, borders that are drawn
+# in white and a brighter accent. Same names as [color]. Text keeps 7:1 over
+# every surface it sits on, parts of controls 4.5:1. Lines are thicker, see
+# border.width-hc.
+desktop = "#000000"
+bg = "#000000"
+surface = "#0a0a0a"
+surface-raised = "#1a1a1a"
+surface-hover = "#2e2e2e"
+border = "#ffffff"
+text = "#ffffff"
+text-muted = "#e0e0e0"
+text-disabled = "#8c8c8c"
+accent = "#4de0a0"
+accent-strong = "#6df2b4"
+accent-hover = "#8cffc8"
+accent-text = "#000000"
+danger = "#ff9a92"
+warning = "#ffd666"
+success = "#6df2a0"
+bar = "#000000f2"
+dock = "#0a0a0af2"
+scrim = "#000000b3"
+focus-ring = "#ffe066"
+outline-disabled = "#8c8c8c"
+window-close = "#ff5f57"
+window-close-ring = "#ffffff"
+window-close-glyph = "#000000"
+window-minimise = "#febc2e"
+window-minimise-ring = "#ffffff"
+window-minimise-glyph = "#000000"
+window-maximise = "#28c840"
+window-maximise-ring = "#ffffff"
+window-maximise-glyph = "#000000"
+window-inactive = "#6b6b6b"
+
 [radius]
 base = 6
 
@@ -107,10 +147,13 @@ xxl = 48
 
 [border]
 width = 1
+# The same in the high contrast theme, which draws every line thicker.
+width-hc = 2
 # Line weight of drawn icons.
 icon-stroke = 1.5
 # Outline on the control that has keyboard focus.
 focus-ring = 2
+focus-ring-hc = 3
 
 [type]
 family = "Inter"
@@ -298,3 +341,19 @@ lock-prompt-hide = 30000
 # How long Restart and Shut down on the login screen wait, after a first
 # press, for the second press that carries them out.
 power-confirm = 5000
+
+[text-scale]
+# What the type sizes, and the heights of things that hold a line of text,
+# are multiplied by for each choice of Settings > Accessibility > Text size,
+# in percent. The names are the values of appearance.text-size.
+small = 90
+default = 100
+large = 120
+extra-large = 140
+
+[cursor]
+# The pointer in pixels for each choice of Settings > Accessibility >
+# Cursor size: the values of appearance.cursor-size.
+normal = 24
+large = 36
+extra-large = 48

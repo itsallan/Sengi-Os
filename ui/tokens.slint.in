@@ -6,30 +6,37 @@
 // a global of its own so that this is all a program exports.
 export global ThemeSwitch {
     in property <bool> light: false;
+    // The high contrast palette, which wins over `light`, with thicker lines.
+    in property <bool> high-contrast: false;
+    // What the type sizes and the heights of text are multiplied by:
+    // 0.9, 1.0, 1.2 or 1.4, from appearance.text-size.
+    in property <float> text-scale: 1.0;
+    // Every duration of Tokens is zero, from appearance.reduce-motion.
+    in property <bool> reduce-motion: false;
 }
 
 export global Tokens {
-    out property <color> color-desktop: ThemeSwitch.light ? @{color-light.desktop} : @{color.desktop};
-    out property <color> color-bg: ThemeSwitch.light ? @{color-light.bg} : @{color.bg};
-    out property <color> color-surface: ThemeSwitch.light ? @{color-light.surface} : @{color.surface};
-    out property <color> color-surface-raised: ThemeSwitch.light ? @{color-light.surface-raised} : @{color.surface-raised};
-    out property <color> color-surface-hover: ThemeSwitch.light ? @{color-light.surface-hover} : @{color.surface-hover};
-    out property <color> color-border: ThemeSwitch.light ? @{color-light.border} : @{color.border};
-    out property <color> color-text: ThemeSwitch.light ? @{color-light.text} : @{color.text};
-    out property <color> color-text-muted: ThemeSwitch.light ? @{color-light.text-muted} : @{color.text-muted};
-    out property <color> color-text-disabled: ThemeSwitch.light ? @{color-light.text-disabled} : @{color.text-disabled};
-    out property <color> color-accent: ThemeSwitch.light ? @{color-light.accent} : @{color.accent};
-    out property <color> color-accent-strong: ThemeSwitch.light ? @{color-light.accent-strong} : @{color.accent-strong};
-    out property <color> color-accent-hover: ThemeSwitch.light ? @{color-light.accent-hover} : @{color.accent-hover};
-    out property <color> color-accent-text: ThemeSwitch.light ? @{color-light.accent-text} : @{color.accent-text};
-    out property <color> color-danger: ThemeSwitch.light ? @{color-light.danger} : @{color.danger};
-    out property <color> color-warning: ThemeSwitch.light ? @{color-light.warning} : @{color.warning};
-    out property <color> color-success: ThemeSwitch.light ? @{color-light.success} : @{color.success};
-    out property <color> color-bar: ThemeSwitch.light ? @{color-light.bar} : @{color.bar};
-    out property <color> color-dock: ThemeSwitch.light ? @{color-light.dock} : @{color.dock};
-    out property <color> color-scrim: ThemeSwitch.light ? @{color-light.scrim} : @{color.scrim};
-    out property <color> color-focus-ring: ThemeSwitch.light ? @{color-light.focus-ring} : @{color.focus-ring};
-    out property <color> color-outline-disabled: ThemeSwitch.light ? @{color-light.outline-disabled} : @{color.outline-disabled};
+    out property <color> color-desktop: ThemeSwitch.high-contrast ? @{color-hc.desktop} : ThemeSwitch.light ? @{color-light.desktop} : @{color.desktop};
+    out property <color> color-bg: ThemeSwitch.high-contrast ? @{color-hc.bg} : ThemeSwitch.light ? @{color-light.bg} : @{color.bg};
+    out property <color> color-surface: ThemeSwitch.high-contrast ? @{color-hc.surface} : ThemeSwitch.light ? @{color-light.surface} : @{color.surface};
+    out property <color> color-surface-raised: ThemeSwitch.high-contrast ? @{color-hc.surface-raised} : ThemeSwitch.light ? @{color-light.surface-raised} : @{color.surface-raised};
+    out property <color> color-surface-hover: ThemeSwitch.high-contrast ? @{color-hc.surface-hover} : ThemeSwitch.light ? @{color-light.surface-hover} : @{color.surface-hover};
+    out property <color> color-border: ThemeSwitch.high-contrast ? @{color-hc.border} : ThemeSwitch.light ? @{color-light.border} : @{color.border};
+    out property <color> color-text: ThemeSwitch.high-contrast ? @{color-hc.text} : ThemeSwitch.light ? @{color-light.text} : @{color.text};
+    out property <color> color-text-muted: ThemeSwitch.high-contrast ? @{color-hc.text-muted} : ThemeSwitch.light ? @{color-light.text-muted} : @{color.text-muted};
+    out property <color> color-text-disabled: ThemeSwitch.high-contrast ? @{color-hc.text-disabled} : ThemeSwitch.light ? @{color-light.text-disabled} : @{color.text-disabled};
+    out property <color> color-accent: ThemeSwitch.high-contrast ? @{color-hc.accent} : ThemeSwitch.light ? @{color-light.accent} : @{color.accent};
+    out property <color> color-accent-strong: ThemeSwitch.high-contrast ? @{color-hc.accent-strong} : ThemeSwitch.light ? @{color-light.accent-strong} : @{color.accent-strong};
+    out property <color> color-accent-hover: ThemeSwitch.high-contrast ? @{color-hc.accent-hover} : ThemeSwitch.light ? @{color-light.accent-hover} : @{color.accent-hover};
+    out property <color> color-accent-text: ThemeSwitch.high-contrast ? @{color-hc.accent-text} : ThemeSwitch.light ? @{color-light.accent-text} : @{color.accent-text};
+    out property <color> color-danger: ThemeSwitch.high-contrast ? @{color-hc.danger} : ThemeSwitch.light ? @{color-light.danger} : @{color.danger};
+    out property <color> color-warning: ThemeSwitch.high-contrast ? @{color-hc.warning} : ThemeSwitch.light ? @{color-light.warning} : @{color.warning};
+    out property <color> color-success: ThemeSwitch.high-contrast ? @{color-hc.success} : ThemeSwitch.light ? @{color-light.success} : @{color.success};
+    out property <color> color-bar: ThemeSwitch.high-contrast ? @{color-hc.bar} : ThemeSwitch.light ? @{color-light.bar} : @{color.bar};
+    out property <color> color-dock: ThemeSwitch.high-contrast ? @{color-hc.dock} : ThemeSwitch.light ? @{color-light.dock} : @{color.dock};
+    out property <color> color-scrim: ThemeSwitch.high-contrast ? @{color-hc.scrim} : ThemeSwitch.light ? @{color-light.scrim} : @{color.scrim};
+    out property <color> color-focus-ring: ThemeSwitch.high-contrast ? @{color-hc.focus-ring} : ThemeSwitch.light ? @{color-light.focus-ring} : @{color.focus-ring};
+    out property <color> color-outline-disabled: ThemeSwitch.high-contrast ? @{color-hc.outline-disabled} : ThemeSwitch.light ? @{color-light.outline-disabled} : @{color.outline-disabled};
 
     // Both palettes side by side, for the theme preview in Settings.
     out property <color> dark-bg: @{color.bg};
@@ -44,11 +51,17 @@ export global Tokens {
     out property <color> light-text-muted: @{color-light.text-muted};
     out property <color> light-accent: @{color-light.accent};
     out property <color> light-border: @{color-light.border};
+    out property <color> hc-bg: @{color-hc.bg};
+    out property <color> hc-surface: @{color-hc.surface};
+    out property <color> hc-text: @{color-hc.text};
+    out property <color> hc-text-muted: @{color-hc.text-muted};
+    out property <color> hc-accent: @{color-hc.accent};
+    out property <color> hc-border: @{color-hc.border};
 
     out property <length> radius: @{radius.base}px;
-    out property <length> border-width: @{border.width}px;
+    out property <length> border-width: ThemeSwitch.high-contrast ? @{border.width-hc}px : @{border.width}px;
     out property <length> icon-stroke: @{border.icon-stroke}px;
-    out property <length> focus-ring-width: @{border.focus-ring}px;
+    out property <length> focus-ring-width: ThemeSwitch.high-contrast ? @{border.focus-ring-hc}px : @{border.focus-ring}px;
 
     out property <length> space-xxs: @{space.xxs}px;
     out property <length> space-xs: @{space.xs}px;
@@ -60,18 +73,18 @@ export global Tokens {
 
     out property <string> font-family: "@{type.family}";
     out property <string> font-mono: "@{type.mono}";
-    out property <length> font-size-sm: @{type.size-sm}px;
-    out property <length> font-size-md: @{type.size-md}px;
-    out property <length> font-size-lg: @{type.size-lg}px;
-    out property <length> font-size-xl: @{type.size-xl}px;
-    out property <length> font-size-display: @{type.size-display}px;
+    out property <length> font-size-sm: @{type.size-sm}px * ThemeSwitch.text-scale;
+    out property <length> font-size-md: @{type.size-md}px * ThemeSwitch.text-scale;
+    out property <length> font-size-lg: @{type.size-lg}px * ThemeSwitch.text-scale;
+    out property <length> font-size-xl: @{type.size-xl}px * ThemeSwitch.text-scale;
+    out property <length> font-size-display: @{type.size-display}px * ThemeSwitch.text-scale;
     out property <float> font-descent: @{type.descent-percent} / 100;
     out property <int> font-weight-regular: @{type.weight-regular};
     out property <int> font-weight-medium: @{type.weight-medium};
     out property <int> font-weight-bold: @{type.weight-bold};
 
-    out property <length> bar-height: @{size.bar-height}px;
-    out property <length> menu-row: @{menu.row}px;
+    out property <length> bar-height: @{size.bar-height}px * ThemeSwitch.text-scale;
+    out property <length> menu-row: @{menu.row}px * ThemeSwitch.text-scale;
     out property <length> menu-padding: @{menu.padding}px;
     out property <length> menu-separator-inset: @{menu.separator-inset}px;
     out property <length> dock-icon: @{size.dock-icon}px;
@@ -87,9 +100,9 @@ export global Tokens {
     out property <length> desktop-cell-height: @{desktop.cell-height}px;
     out property <length> desktop-icon: @{desktop.icon}px;
     out property <length> desktop-label-height: @{desktop.label-height}px;
-    out property <length> titlebar-height: @{size.titlebar-height}px;
+    out property <length> titlebar-height: @{size.titlebar-height}px * ThemeSwitch.text-scale;
     out property <length> launcher-width: @{size.launcher-width}px;
-    out property <length> menu-width: @{size.menu-width}px;
+    out property <length> menu-width: @{size.menu-width}px * ThemeSwitch.text-scale;
     out property <length> osd-width: @{osd.width}px;
     out property <length> osd-height: @{osd.height}px;
     out property <length> osd-icon: @{osd.icon}px;
@@ -103,12 +116,12 @@ export global Tokens {
     out property <length> launcher-row-icon: @{size.launcher-row-icon}px;
     out property <length> notification-width: @{size.notification-width}px;
     out property <length> bar-icon: @{size.bar-icon}px;
-    out property <length> button: @{size.button}px;
+    out property <length> button: @{size.button}px * ThemeSwitch.text-scale;
     out property <length> password-field-width: @{size.password-field-width}px;
     out property <length> password-field-height: @{size.password-field-height}px;
     out property <length> password-dot: @{size.password-dot}px;
     out property <length> password-note-height: @{size.password-note-height}px;
-    out property <length> list-row-height: @{size.list-row-height}px;
+    out property <length> list-row-height: @{size.list-row-height}px * ThemeSwitch.text-scale;
     out property <length> dialog-width: @{size.dialog-width}px;
     out property <length> chooser-width: @{size.chooser-width}px;
     out property <int> chooser-lines: @{size.chooser-lines};
@@ -117,8 +130,8 @@ export global Tokens {
     out property <length> calc-display-height: @{size.calc-display-height}px;
     out property <length> calendar-cell: @{size.calendar-cell}px;
     out property <length> calendar-cell-height: @{size.calendar-cell-height}px;
-    out property <length> snip-countdown-width: @{size.snip-countdown-width}px;
-    out property <length> snip-countdown-height: @{size.snip-countdown-height}px;
+    out property <length> snip-countdown-width: @{size.snip-countdown-width}px * ThemeSwitch.text-scale;
+    out property <length> snip-countdown-height: @{size.snip-countdown-height}px * ThemeSwitch.text-scale;
     out property <length> value-column-sm: @{size.value-column-sm}px;
     out property <length> value-column-md: @{size.value-column-md}px;
     out property <length> value-column-lg: @{size.value-column-lg}px;
@@ -127,18 +140,18 @@ export global Tokens {
     out property <length> settings-window-height: @{size.settings-window-height}px;
     out property <length> settings-window-min-width: @{size.settings-window-min-width}px;
     out property <length> settings-window-min-height: @{size.settings-window-min-height}px;
-    out property <length> settings-sidebar-width: @{size.settings-sidebar-width}px;
+    out property <length> settings-sidebar-width: @{size.settings-sidebar-width}px * (1 + (ThemeSwitch.text-scale - 1) / 2);
     out property <length> settings-page-width: @{size.settings-page-width}px;
     out property <length> settings-control-width: @{size.settings-control-width}px;
     out property <length> settings-control-wide: @{size.settings-control-wide}px;
     out property <length> settings-wallpaper-preview: @{size.settings-wallpaper-preview}px;
     out property <length> settings-wallpaper-label: @{size.settings-wallpaper-label}px;
 
-    out property <duration> motion-fast: @{motion.fast}ms;
-    out property <duration> motion-base: @{motion.base}ms;
-    out property <duration> motion-slow: @{motion.slow}ms;
+    out property <duration> motion-fast: ThemeSwitch.reduce-motion ? 0ms : @{motion.fast}ms;
+    out property <duration> motion-base: ThemeSwitch.reduce-motion ? 0ms : @{motion.base}ms;
+    out property <duration> motion-slow: ThemeSwitch.reduce-motion ? 0ms : @{motion.slow}ms;
     out property <easing> motion-easing: @{motion.easing};
-    out property <duration> motion-bounce: @{motion.bounce-duration}ms;
+    out property <duration> motion-bounce: ThemeSwitch.reduce-motion ? 0ms : @{motion.bounce-duration}ms;
     out property <easing> motion-bounce-easing: @{motion.bounce-easing};
     out property <duration> click-guard: @{timing.click-guard}ms;
     out property <duration> screenshot-delay: @{timing.screenshot-delay}ms;
