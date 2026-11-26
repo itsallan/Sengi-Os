@@ -29,8 +29,17 @@ driver at run time (Mesa's llvmpipe is enough). Title bar text needs the
 typeface named by `type.family` (Inter, Debian package `fonts-inter`) under
 `/usr/share/fonts`, `/usr/local/share/fonts` or the user's fonts directory;
 without it title bars are drawn with no title. The cursor comes from the
-XCursor theme named by `XCURSOR_THEME` (default `default`) at `XCURSOR_SIZE`
-(default 24); without a theme an arrow is drawn.
+XCursor theme named by `XCURSOR_THEME` (default `default`) at the size of
+`appearance.cursor-size` in the settings: 24, 36 or 48 pixels. With Normal
+chosen, `XCURSOR_SIZE` in the compositor's own environment is still honoured.
+Programs it starts get `XCURSOR_SIZE` set to the same size, and a new size
+is taken up on SIGHUP. Without a theme an arrow is drawn, scaled to match.
+
+The title bars, menus and switcher follow `appearance.theme` (dark, light or
+high-contrast, which has 2 px lines) and `appearance.text-size`, which scales
+the type and the heights of title bars and rows. The compositor has no
+animations of its own, so `appearance.reduce-motion` has nothing to stop in it.
+Sticky keys and slow keys are not implemented.
 
     # In a window on your desktop, with a terminal inside it
     sengi-compositor -s foot

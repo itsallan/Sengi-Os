@@ -7,6 +7,7 @@
 //! those. The file is read at start and again on SIGHUP.
 
 use sengi_config::{Dirs, Settings};
+use sengi_tokens::{Palette, Tokens};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -60,6 +61,52 @@ pub struct Appearance {
     pub window_shadows: bool,
     /// Whether frames, title bars and menus use the light palette.
     pub light: bool,
+    /// Whether they use the high contrast palette, which wins over light.
+    pub high_contrast: bool,
+    /// How big the type of title bars and menus is, in percent.
+    pub text_percent: u32,
+    /// Whether animations are off. The compositor has none of its own to
+    /// stop yet; this is where one that is added looks.
+    pub reduce_motion: bool,
+    /// The pointer's size in pixels, for the compositor's own cursor and
+    /// for the programs it starts.
+    pub cursor: u32,
+}
+
+impl Appearance {
+    /// The palette in use.
+    pub fn palette(&self) -> Palette {
+        if self.high_contrast {
+            Palette::HighContrast
+        } else if self.light {
+            Palette::Light
+        } else {
+            Palette::Dark
+        }
+    }
+
+    /// The design tokens as these settings have them: the palette and
+    /// the text size applied.
+    pub fn tokens(&self) -> Tokens {
+        Tokens::for_appearance(self.palette(), self.text_percent)
+    }
+
+    /// Whether `other` changes what the tokens say.
+    pub fn tokens_differ(&self, other: &Appearance) -> bool {
+        (self.light, self.high_contrast, self.text_percent)
+            != (other.light, other.high_contrast, other.text_percent)
+    }
+}
+
+/// The pointer's size: what the setting says, except that Normal leaves
+/// the size the environment was started with, `XCURSOR_SIZE`, alone.
+pub fn cursor_size(settings: &Settings, environment: Option<&str>) -> u32 {
+    let chosen = settings.cursor_px();
+    let normal = sengi_config::settings::CURSOR_SIZES[0].1;
+    match environment.and_then(|size| size.parse::<u32>().ok()) {
+        Some(size) if chosen == normal && (1..=512).contains(&size) => size,
+        _ => chosen,
+    }
 }
 
 /// The layouts as XKB takes them: names, variants and options, each a
@@ -222,6 +269,10 @@ impl Config {
             appearance: Appearance {
                 window_shadows: settings.flag("appearance", "window-shadows"),
                 light: settings.light(),
+                high_contrast: settings.high_contrast(),
+                text_percent: settings.text_percent(),
+                reduce_motion: settings.reduce_motion(),
+                cursor: cursor_size(settings, std::env::var("XCURSOR_SIZE").ok().as_deref()),
             },
             power: Power {
                 dim_after: settings.number("power", "dim-after"),
@@ -383,6 +434,50 @@ mod tests {
     fn the_theme_is_dark_unless_light_is_chosen() {
         assert!(!config("").appearance.light);
         assert!(config("[appearance]\ntheme = \"light\"\n").appearance.light);
+    }
+
+    #[test]
+    fn high_contrast_text_size_and_motion_come_from_the_settings() {
+        let plain = config("").appearance;
+        assert_eq!(plain.palette(), Palette::Dark);
+        assert_eq!((plain.text_percent, plain.reduce_motion), (100, false));
+        let chosen = config(
+            "[appearance]\ntheme = \"high-contrast\"\ntext-size = \"extra-large\"\nreduce-motion = true\ncursor-size = \"large\"\n",
+        )
+        .appearance;
+        assert_eq!(chosen.palette(), Palette::HighContrast);
+        assert!(!chosen.light);
+        assert_eq!(chosen.text_percent, 140);
+        assert!(chosen.reduce_motion);
+        assert_eq!(chosen.cursor, 36);
+        // Title bars follow: bigger type, thicker border.
+        let (big, small) = (chosen.tokens(), plain.tokens());
+        assert_eq!(big.px("type.size-md"), Some(18));
+        assert_eq!(small.px("type.size-md"), Some(13));
+        assert_eq!(big.px("border.width"), Some(2));
+        assert!(chosen.tokens_differ(&plain));
+        assert!(!plain.tokens_differ(&config("").appearance));
+        // A new pointer size alone leaves the tokens as they are.
+        let cursor = config("[appearance]\ncursor-size = \"extra-large\"\n").appearance;
+        assert!(!cursor.tokens_differ(&plain));
+        assert_ne!(cursor, plain);
+    }
+
+    #[test]
+    fn the_pointer_size_follows_the_setting_and_the_environment_only_for_normal() {
+        let normal = Settings::default();
+        assert_eq!(cursor_size(&normal, None), 24);
+        assert_eq!(cursor_size(&normal, Some("32")), 32);
+        assert_eq!(cursor_size(&normal, Some("junk")), 24);
+        assert_eq!(cursor_size(&normal, Some("0")), 24);
+        let large = config("[appearance]\ncursor-size = \"large\"\n");
+        assert_eq!(large.appearance.cursor, 36);
+        let settings = {
+            let (user, _) =
+                sengi_config::Document::parse("[appearance]\ncursor-size = \"extra-large\"\n");
+            Settings::from_documents(sengi_config::Document::parse("").0, user, None)
+        };
+        assert_eq!(cursor_size(&settings, Some("32")), 48);
     }
 
     #[test]

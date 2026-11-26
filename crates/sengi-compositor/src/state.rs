@@ -493,7 +493,7 @@ impl State {
             },
         )?;
 
-        let tokens = Tokens::themed(config.appearance.light);
+        let tokens = config.appearance.tokens();
         let theme = Theme::from_tokens(&tokens);
         if crate::text::Font::load(&theme.font_family, theme.font_weight, theme.font_px).is_none() {
             crate::say!(
@@ -835,7 +835,10 @@ impl State {
     /// Gives `command` the DISPLAY of Xwayland when it is running or starting.
     /// Without it the DISPLAY it inherited would name some other server, so
     /// it is removed.
+    /// It also gets the pointer size of the settings as `XCURSOR_SIZE`, so
+    /// that what it starts draws its own cursors as large as ours.
     fn give_display(&self, command: &mut Command) {
+        command.env("XCURSOR_SIZE", self.config.appearance.cursor.to_string());
         match self.display_name() {
             Some(display) => {
                 command.env("DISPLAY", display);
@@ -1202,13 +1205,14 @@ impl State {
             configure(&config);
         }
         let shadows_changed = self.config.appearance != config.appearance;
-        let theme_changed = self.config.appearance.light != config.appearance.light;
+        let theme_changed = self.config.appearance.tokens_differ(&config.appearance)
+            || self.config.appearance.cursor != config.appearance.cursor;
         self.config = config;
         self.apply_power_config();
         if theme_changed {
             // Frames, menus and the colour behind the windows are painted
             // from the palette; the painters are made again from it.
-            self.tokens = Tokens::themed(self.config.appearance.light);
+            self.tokens = self.config.appearance.tokens();
             self.theme = Theme::from_tokens(&self.tokens);
             self.painters.clear();
             self.refresh_painters();

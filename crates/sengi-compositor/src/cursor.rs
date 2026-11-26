@@ -14,7 +14,8 @@ use crate::{
     frame::Edges,
 };
 
-/// Used when `XCURSOR_SIZE` is not set; the usual desktop default.
+/// The pointer size the built-in arrow is sized for as the theme draws it;
+/// a larger pointer scales the arrow up in proportion.
 const DEFAULT_SIZE: u32 = 24;
 
 pub struct Sprite {
@@ -104,17 +105,22 @@ fn buffer(pixels: &[u8], width: i32, height: i32) -> MemoryRenderBuffer {
     )
 }
 
+/// The height of the built-in arrow for a pointer of `base` pixels, from
+/// its height at the normal size.
+pub fn fallback_height(normal: i32, base: u32) -> i32 {
+    (normal * base as i32 + DEFAULT_SIZE as i32 / 2) / DEFAULT_SIZE as i32
+}
+
 impl Cursors {
-    /// The cursors at `scale` times the theme's size, as the screen needs.
-    pub fn new(theme: &Theme, scale: f64) -> Self {
+    /// The cursors at `scale` times `base` pixels, as the screen needs;
+    /// `base` is the pointer size of the settings.
+    pub fn new(theme: &Theme, scale: f64, base: u32) -> Self {
         let name = env::var("XCURSOR_THEME").unwrap_or_else(|_| "default".into());
-        let base: u32 = env::var("XCURSOR_SIZE")
-            .ok()
-            .and_then(|size| size.parse().ok())
-            .unwrap_or(DEFAULT_SIZE);
         let size = (f64::from(base) * scale).round().max(1.0) as u32;
 
-        let arrow = draw_fallback(theme);
+        let mut arrow_theme = theme.clone();
+        arrow_theme.fallback_cursor = fallback_height(theme.fallback_cursor, base);
+        let arrow = draw_fallback(&arrow_theme);
         let side = arrow.width() as i32;
         let border = theme.metrics.border.max(1);
         let fallback = Rc::new(Sprite {
@@ -226,6 +232,17 @@ mod tests {
         assert_eq!(nearest_size(&[24, 32, 48], 28), Some(1));
         assert_eq!(nearest_size(&[24, 32, 48], 200), Some(2));
         assert_eq!(nearest_size(&[], 24), None);
+    }
+
+    #[test]
+    fn a_larger_pointer_scales_the_built_in_arrow_with_it() {
+        assert_eq!(fallback_height(16, 24), 16);
+        assert_eq!(fallback_height(16, 36), 24);
+        assert_eq!(fallback_height(16, 48), 32);
+        let theme = Theme::from_tokens(&Tokens::builtin());
+        let mut big = theme.clone();
+        big.fallback_cursor = fallback_height(theme.fallback_cursor, 48);
+        assert!(draw_fallback(&big).width() > 2 * draw_fallback(&theme).width() - 8);
     }
 
     #[test]

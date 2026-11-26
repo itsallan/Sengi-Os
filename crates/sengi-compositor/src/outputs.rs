@@ -311,7 +311,8 @@ impl State {
                         theme.font_px,
                         font.as_ref(),
                     );
-                    let cursors = crate::cursor::Cursors::new(&theme, scale);
+                    let cursors =
+                        crate::cursor::Cursors::new(&theme, scale, self.config.appearance.cursor);
                     let shadows = theme.shadow.visible().then(|| {
                         crate::shadow::ShadowSet::new(
                             &self.theme.shadow,
