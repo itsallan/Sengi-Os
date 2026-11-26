@@ -6,7 +6,7 @@
 // Focus is shown the way SengiButton and SengiToggle show it: a border in
 // the focus colour, inside the control.
 
-import { Tokens, SengiText, SengiLabel, SengiSurface, SengiButton } from "components.slint";
+import { Tokens, ThemeSwitch, SengiText, SengiLabel, SengiSurface, SengiButton } from "components.slint";
 import { NamedIcon } from "icons.slint";
 
 // The tokens this window is laid out with, under the names the kit and
@@ -592,6 +592,10 @@ export component Segmented inherits Rectangle {
         for label[index] in root.labels: Rectangle {
             min-width: text.preferred-width + Tokens.space-md * 2;
             border-radius: Tokens.radius - Tokens.space-xxs;
+            // In high contrast a fill is not enough to tell the chosen one.
+            border-width: index == root.current && ThemeSwitch.high-contrast
+                ? Tokens.border-width : 0;
+            border-color: Tokens.color-accent;
             background: index == root.current
                 ? (root.enabled ? Tokens.color-surface-hover : Tokens.color-surface)
                 : touch.has-hover && root.enabled ? Tokens.color-surface : transparent;

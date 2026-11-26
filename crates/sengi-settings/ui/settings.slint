@@ -18,8 +18,9 @@ import { NotificationsData, NotificationsPage } from "pages/notifications.slint"
 import { PointerData, PointerSide, PointerPage } from "pages/pointer.slint";
 import { UpdateRow, UpdatesData, UpdatesPage } from "pages/updates.slint";
 import { WallpaperData, WallpaperTile, PictureRow, WallpaperPage } from "pages/wallpaper.slint";
+import { AccessibilityData, AccessibilityPage } from "pages/accessibility.slint";
 
-export { UpdateRow, UpdatesData, Item, InfoRow, DialogSpec, WallpaperData, WallpaperTile, PictureRow, AboutData, NotificationsData, PointerData, PointerSide, KeyboardData, PowerData, DateTimeData, NetworkData, BluetoothData, SoundData, SoundSide, DisplayData, DisplayOutput }
+export { UpdateRow, UpdatesData, AccessibilityData, Item, InfoRow, DialogSpec, WallpaperData, WallpaperTile, PictureRow, AboutData, NotificationsData, PointerData, PointerSide, KeyboardData, PowerData, DateTimeData, NetworkData, BluetoothData, SoundData, SoundSide, DisplayData, DisplayOutput }
 
 export struct PageEntry {
     name: string,
@@ -254,6 +255,7 @@ export component SettingsWindow inherits Window {
         if root.page == "mouse": PointerPage { }
         if root.page == "notifications": NotificationsPage { }
         if root.page == "updates": UpdatesPage { }
+        if root.page == "accessibility": AccessibilityPage { }
         if root.page == "about": AboutPage { }
     }
 

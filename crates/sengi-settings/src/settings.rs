@@ -11,8 +11,9 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 pub use sengi_config::settings::{
-    check, wallpaper_is_plain, xkb_word, zone_is_plain, Default, Layout, KEYS, MAX_IDLE_SECONDS,
-    MAX_LAYOUTS, THEME_DARK, THEME_LIGHT, WALLPAPER_SOLID,
+    check, wallpaper_is_plain, xkb_word, zone_is_plain, Default, Layout, CURSOR_SIZES, KEYS,
+    MAX_IDLE_SECONDS, MAX_LAYOUTS, TEXT_SIZES, THEME_DARK, THEME_HIGH_CONTRAST, THEME_LIGHT,
+    WALLPAPER_SOLID,
 };
 
 use crate::store::{self, Dirs, Document, Value};

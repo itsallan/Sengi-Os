@@ -23,9 +23,9 @@ use slint::{ComponentHandle, Image, Rgb8Pixel, SharedPixelBuffer};
 
 use crate::app::{self, model, App, Controller};
 use crate::settings::{Settings, WALLPAPER_SOLID};
-use crate::settings::{THEME_DARK, THEME_LIGHT};
+use crate::settings::{THEME_DARK, THEME_HIGH_CONTRAST, THEME_LIGHT};
 use crate::store::Value;
-use crate::ui::{PictureRow, ThemeSwitch, WallpaperData, WallpaperTile};
+use crate::ui::{PictureRow, WallpaperData, WallpaperTile};
 
 /// Where the pictures Sengi OS ships are, and their thumbnails under
 /// `thumbs/`.
@@ -526,25 +526,27 @@ impl WallpaperPage {
             }
         });
         let (weak_app, weak_page) = (Rc::downgrade(app), Rc::downgrade(&page));
-        data.on_choose_theme(move |light| {
+        data.on_choose_theme(move |name| {
             if let (Some(app), Some(page)) = (weak_app.upgrade(), weak_page.upgrade()) {
-                page.choose_theme(&app, light);
+                page.choose_theme(&app, name.as_str());
             }
         });
         page
     }
 
-    /// Switch to the dark or the light theme. This window changes at once;
-    /// the rest of the session follows when the setting has been saved.
-    fn choose_theme(&self, app: &Rc<App>, light: bool) {
+    /// Switch to the dark, the light or the high contrast theme. This window
+    /// changes at once; the rest of the session follows when the setting
+    /// has been saved.
+    fn choose_theme(&self, app: &Rc<App>, name: &str) {
         let data = app.window.global::<WallpaperData>();
-        if data.get_theme_light() == light {
+        if ![THEME_DARK, THEME_LIGHT, THEME_HIGH_CONTRAST].contains(&name)
+            || data.get_theme() == name
+        {
             return;
         }
-        let name = if light { THEME_LIGHT } else { THEME_DARK };
         if app.set("appearance", "theme", Value::text(name)) {
-            data.set_theme_light(light);
-            app.window.global::<ThemeSwitch>().set_light(light);
+            data.set_theme(name.into());
+            crate::theme::follow(&app.window, &app.settings.borrow());
             app.after_saved(crate::theme::apply_to_session);
         }
     }
@@ -614,7 +616,7 @@ impl WallpaperPage {
 
     fn render(&self, app: &Rc<App>) {
         let data = app.window.global::<WallpaperData>();
-        data.set_theme_light(app.settings.borrow().light());
+        data.set_theme(app.settings.borrow().text("appearance", "theme").into());
         let setting = app.settings.borrow().text("appearance", "wallpaper");
         let scan = self.scan.borrow();
         let Some(scan) = scan.as_ref() else {

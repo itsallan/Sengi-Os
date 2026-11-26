@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use slint::ComponentHandle;
 
 use sengi_settings::about::AboutPage;
+use sengi_settings::accessibility::AccessibilityPage;
 use sengi_settings::app::{self, App};
 use sengi_settings::bluetooth::page::BluetoothPage;
 use sengi_settings::cli::{self, Action, Page};
@@ -273,8 +274,9 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    slint::ComponentHandle::global::<sengi_settings::ui::ThemeSwitch>(&window)
-        .set_light(sengi_config::theme_is_light());
+    sengi_config::apply_theme!(slint::ComponentHandle::global::<
+        sengi_settings::ui::ThemeSwitch,
+    >(&window));
     // After the first component, which is what brings the backend up, and
     // before the window is shown.
     if let Err(error) = slint::set_xdg_app_id(APP_ID) {
@@ -367,5 +369,6 @@ fn register_pages(app: &std::rc::Rc<App>, services: Services) {
     app.register(Page::Mouse, PointerPage::attach(app));
     app.register(Page::Notifications, NotificationsPage::attach(app));
     app.register(Page::Updates, UpdatesPage::attach(app));
+    app.register(Page::Accessibility, AccessibilityPage::attach(app));
     app.register(Page::About, AboutPage::attach(app));
 }

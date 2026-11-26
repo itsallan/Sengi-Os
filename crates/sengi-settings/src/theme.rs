@@ -43,6 +43,23 @@ pub fn restarts(uid: u32) -> Vec<Vec<String>> {
     commands
 }
 
+/// The type scale for a percent: 120 is 1.2.
+pub fn scale_of(percent: u32) -> f32 {
+    percent as f32 / 100.0
+}
+
+/// Show this window as `settings` say: the palette, the type size and the
+/// motion, at once. The rest of the session follows with
+/// [`apply_to_session`].
+pub fn follow(window: &crate::ui::SettingsWindow, settings: &crate::settings::Settings) {
+    use slint::ComponentHandle;
+    let switch = window.global::<crate::ui::ThemeSwitch>();
+    switch.set_light(settings.light());
+    switch.set_high_contrast(settings.high_contrast());
+    switch.set_text_scale(scale_of(settings.text_percent()));
+    switch.set_reduce_motion(settings.reduce_motion());
+}
+
 /// Have the running session take up the theme as it is now in the file.
 /// Blocks until done; call it off the UI thread.
 pub fn apply_to_session() {
@@ -63,6 +80,13 @@ pub fn apply_to_session() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_scale_is_the_percent_over_a_hundred() {
+        assert_eq!(scale_of(100), 1.0);
+        assert_eq!(scale_of(90), 0.9);
+        assert_eq!(scale_of(140), 1.4);
+    }
 
     #[test]
     fn only_the_supervised_programs_of_this_user_are_ended_by_exact_name() {

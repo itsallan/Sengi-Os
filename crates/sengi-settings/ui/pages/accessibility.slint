@@ -1,0 +1,120 @@
+// The Accessibility page: text size, high contrast, reduced motion and the
+// size of the pointer.
+
+import { Tokens, SengiText, SengiToggle } from "components.slint";
+import { Page, PageColumn, Card, Divider, SettingRow, SectionLabel, Note, Gap, Segmented } from "../kit.slint";
+
+export global AccessibilityData {
+    // Which of Small, Default, Large and Extra large is chosen, from 0.
+    in property <int> text-size: 1;
+    in property <bool> high-contrast: false;
+    in property <bool> reduce-motion: false;
+    // Which of Normal, Large and Extra large, from 0.
+    in property <int> cursor-size: 0;
+
+    callback set-text-size(int);
+    callback set-high-contrast(bool);
+    callback set-reduce-motion(bool);
+    callback set-cursor-size(int);
+}
+
+export component AccessibilityPage inherits Page {
+    title: "Accessibility";
+    content-height: column.preferred-height;
+
+    column := PageColumn {
+        SectionLabel {
+            text: "Text size";
+        }
+
+        Card {
+            VerticalLayout {
+                padding: Tokens.space-md;
+                spacing: Tokens.space-md;
+
+                Segmented {
+                    labels: ["Small", "Default", "Large", "Extra large"];
+                    current: AccessibilityData.text-size;
+                    selected(index) => { AccessibilityData.set-text-size(index); }
+                }
+
+                SengiText {
+                    text: "The quick brown fox jumps over the lazy dog.";
+                    color: Tokens.color-text-muted;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        Gap { }
+
+        SectionLabel {
+            text: "Display";
+        }
+
+        Card {
+            SettingRow {
+                title: "High contrast";
+                detail: "White text on black, thicker outlines and a brighter accent";
+
+                VerticalLayout {
+                    alignment: center;
+                    SengiToggle {
+                        checked: AccessibilityData.high-contrast;
+                        toggled(on) => { AccessibilityData.set-high-contrast(on); }
+                    }
+                }
+            }
+
+            Divider { }
+
+            SettingRow {
+                title: "Reduce motion";
+                detail: "Things appear and change at once instead of fading or sliding";
+
+                VerticalLayout {
+                    alignment: center;
+                    SengiToggle {
+                        checked: AccessibilityData.reduce-motion;
+                        toggled(on) => { AccessibilityData.set-reduce-motion(on); }
+                    }
+                }
+            }
+        }
+
+        Gap { }
+
+        SectionLabel {
+            text: "Pointer";
+        }
+
+        Card {
+            VerticalLayout {
+                padding: Tokens.space-md;
+                spacing: Tokens.space-sm;
+
+                SengiText {
+                    text: "Cursor size";
+                }
+
+                Segmented {
+                    labels: ["Normal", "Large", "Extra large"];
+                    current: AccessibilityData.cursor-size;
+                    selected(index) => { AccessibilityData.set-cursor-size(index); }
+                }
+
+                SengiText {
+                    text: "Programs that are already open keep their cursor until they are opened again.";
+                    color: Tokens.color-text-muted;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        Gap { }
+
+        Note {
+            text: "Sticky keys, slow keys and an on-screen keyboard are not part of Sengi OS yet.";
+        }
+    }
+}

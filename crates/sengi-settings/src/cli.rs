@@ -13,7 +13,7 @@ Open Sengi OS Settings, at PAGE if one is named. If Settings is already
 open, that window is brought to the page instead.
 
 Pages: network, bluetooth, sound, display, wallpaper, power, date-time,
-       keyboard, mouse, notifications, updates, about
+       keyboard, mouse, notifications, updates, accessibility, about
 
   --get SECTION.KEY  print the setting in effect, for scripts
   --set SECTION.KEY VALUE
@@ -43,11 +43,12 @@ pub enum Page {
     Mouse,
     Notifications,
     Updates,
+    Accessibility,
     About,
 }
 
 impl Page {
-    pub const ALL: [Page; 12] = [
+    pub const ALL: [Page; 13] = [
         Page::Network,
         Page::Bluetooth,
         Page::Sound,
@@ -59,6 +60,7 @@ impl Page {
         Page::Mouse,
         Page::Notifications,
         Page::Updates,
+        Page::Accessibility,
         Page::About,
     ];
 
@@ -74,6 +76,7 @@ impl Page {
             Page::Keyboard => "keyboard",
             Page::Mouse => "mouse",
             Page::Notifications => "notifications",
+            Page::Accessibility => "accessibility",
             Page::Wallpaper => "wallpaper",
             Page::Updates => "updates",
             Page::About => "about",
@@ -91,6 +94,7 @@ impl Page {
             Page::Keyboard => "Keyboard",
             Page::Mouse => "Mouse & Touchpad",
             Page::Notifications => "Notifications",
+            Page::Accessibility => "Accessibility",
             Page::Wallpaper => "Appearance",
             Page::Updates => "Updates",
             Page::About => "About",
@@ -112,6 +116,7 @@ impl Page {
                 "touchpad" | "pointer" => Some(Page::Mouse),
                 "notification" => Some(Page::Notifications),
                 "update" | "software-update" | "upgrade" => Some(Page::Updates),
+                "a11y" | "access" => Some(Page::Accessibility),
                 "background" | "desktop-background" | "appearance" | "theme" => {
                     Some(Page::Wallpaper)
                 }

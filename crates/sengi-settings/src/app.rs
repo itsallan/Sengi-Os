@@ -966,6 +966,7 @@ fn icon(page: Page) -> &'static str {
         Page::Mouse => "mouse",
         Page::Notifications => "bell",
         Page::Updates => "arrows-clockwise",
+        Page::Accessibility => "person-simple-circle",
         Page::About => "info",
     }
 }
