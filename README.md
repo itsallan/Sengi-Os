@@ -25,6 +25,8 @@ Sengi OS is in early development. There is no stable release yet.
   they need a layer of the compositor between the keyboard and every program
   that has to be tested with real people before it is trusted, and an on-screen
   keyboard also needs a text-input protocol the compositor does not have yet.
+  Icons keep their size at every text size. The settings apply to
+  sengi-compositor; the labwc fallback does not follow them.
 
 Both budgets are measured on every release. A release that misses them does
 not ship.

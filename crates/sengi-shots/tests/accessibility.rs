@@ -168,7 +168,6 @@ fn reduced_motion_puts_things_where_they_are_going_at_once() {
     assert_eq!((start, underway, end), (100.0, 100.0, 100.0));
 }
 
-
 /// The programs of the desktop at the largest text size, drawn so that
 /// they can be looked at; each one is checked to have kept inside its
 /// window by the size of the picture and by being drawn at all.

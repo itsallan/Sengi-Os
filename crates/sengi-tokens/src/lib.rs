@@ -563,14 +563,14 @@ mod themes {
     fn reduced_motion_zeroes_the_motion_durations_and_only_those() {
         let template = include_str!("../../../ui/tokens.slint.in");
         let mut motion = 0;
-        for line in template.lines().filter(|l| l.contains("property <duration>")) {
+        for line in template
+            .lines()
+            .filter(|l| l.contains("property <duration>"))
+        {
             let name = line.split("property <duration>").nth(1).unwrap();
             if name.trim_start().starts_with("motion-") {
                 motion += 1;
-                assert!(
-                    line.contains("ThemeSwitch.reduce-motion ? 0ms :"),
-                    "{line}"
-                );
+                assert!(line.contains("ThemeSwitch.reduce-motion ? 0ms :"), "{line}");
             } else {
                 // Timeouts and delays are not animations.
                 assert!(!line.contains("reduce-motion"), "{line}");
