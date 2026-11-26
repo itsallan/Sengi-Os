@@ -321,7 +321,8 @@ mod tests {
                 levels.push(level);
             }
         }
-        assert!(levels[0] > 100, "dark at the frame: {levels:?}");
+        assert!(levels[0] > 25, "there at the frame: {levels:?}");
+        assert!(levels[0] < 50, "faint: {levels:?}");
         assert_eq!(*levels.last().unwrap(), 0, "ends: {levels:?}");
         assert!(levels.len() >= 8, "stepped: {levels:?}");
     }
@@ -363,7 +364,7 @@ mod tests {
             let (w, h, pixels) = paint(&style, style.focused, 6, part);
             let most = pixels.chunks(4).map(|p| p[3]).max().unwrap();
             eprintln!("{part:?} {w}x{h} most {most}");
-            assert!(most > 50, "{part:?}");
+            assert!(most > 20, "{part:?}");
         }
     }
 

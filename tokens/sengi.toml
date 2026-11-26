@@ -264,16 +264,16 @@ button-glyph-stroke = 1.5
 button-pressed-darken = 15
 
 [shadow]
-# The soft shadow around a framed window, drawn as flat translucent rounded
+# The faint shadow around a framed window, drawn as flat translucent rounded
 # rectangles stacked outwards, no gradient: how many, how far the outermost
 # reaches past the frame, how far down the whole shadow is moved, and how
 # dark the nearest one is (in percent) for the focused window and for the
 # others. Zero steps turn shadows off.
 steps = 8
-spread = 20
-offset = 8
-alpha-focused = 55
-alpha-unfocused = 30
+spread = 12
+offset = 4
+alpha-focused = 16
+alpha-unfocused = 8
 color = "#000000"
 
 [snap]
