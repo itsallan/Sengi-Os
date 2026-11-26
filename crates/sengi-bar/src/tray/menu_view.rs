@@ -468,8 +468,9 @@ fn show(output: &str, anchor: f32) -> Result<(), sengi_layer::Error> {
 
     app.run(config, move |context| {
         let window = TrayMenu::new()?;
-        slint::ComponentHandle::global::<crate::ThemeSwitch>(&window)
-            .set_light(sengi_config::theme_is_light());
+        sengi_config::apply_theme!(slint::ComponentHandle::global::<crate::ThemeSwitch>(
+            &window
+        ));
         window.set_panels(ModelRc::from(model.clone()));
 
         let handle = context.handle();

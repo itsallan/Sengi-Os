@@ -120,8 +120,7 @@ fn show(level: Level) -> Result<(), Box<dyn std::error::Error>> {
         .keyboard(KeyboardMode::None);
     app.run(config, move |context| {
         let osd = OsdWindow::new()?;
-        slint::ComponentHandle::global::<ui::ThemeSwitch>(&osd)
-            .set_light(sengi_config::theme_is_light());
+        sengi_config::apply_theme!(slint::ComponentHandle::global::<ui::ThemeSwitch>(&osd));
         ui::apply(&osd, &level);
         // Nothing here is for the pointer: clicks go to what is behind.
         context.surface().set_input_region(Some(&[]));

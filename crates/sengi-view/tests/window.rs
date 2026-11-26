@@ -65,7 +65,7 @@ fn pattern_png(width: u32, height: u32) -> Vec<u8> {
 
 fn open_window(path: Option<&Path>) -> (ViewWindow, std::rc::Rc<App>) {
     let window = ViewWindow::new().unwrap();
-    window.global::<ThemeSwitch>().set_light(harness::light());
+    sengi_shots::apply_look!(window.global::<ThemeSwitch>());
     window.show().unwrap();
     harness::resize(&harness::window(), 888, 600);
     let app = app::attach(&window, path.map(Path::to_path_buf), true);

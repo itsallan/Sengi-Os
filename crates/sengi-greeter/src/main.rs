@@ -382,8 +382,7 @@ fn greet(
         let greeter = greeter.clone();
         move |_: &sengi_layer::Context| {
             let window = GreeterWindow::new()?;
-            slint::ComponentHandle::global::<ThemeSwitch>(&window)
-                .set_light(sengi_config::theme_is_light());
+            sengi_config::apply_theme!(slint::ComponentHandle::global::<ThemeSwitch>(&window));
             greeter.rest_after.set(Duration::from_millis(
                 window.get_hide_after().max(1000) as u64
             ));

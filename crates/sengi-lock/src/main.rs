@@ -320,8 +320,7 @@ fn lock(app: App, ready: Ready) -> Result<(), sengi_layer::Error> {
         let lock = lock.clone();
         move |_: &sengi_layer::Context| {
             let window = LockWindow::new()?;
-            slint::ComponentHandle::global::<ThemeSwitch>(&window)
-                .set_light(sengi_config::theme_is_light());
+            sengi_config::apply_theme!(slint::ComponentHandle::global::<ThemeSwitch>(&window));
             window.set_user(lock.user.shown.as_str().into());
             lock.rest_after.set(Duration::from_millis(
                 window.get_hide_after().max(1000) as u64

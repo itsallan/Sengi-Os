@@ -201,8 +201,7 @@ fn open(
         move |context| {
             let (panel, workers, staging) = parts.take().ok_or("the panel has a single surface")?;
             let window = QuickWindow::new()?;
-            slint::ComponentHandle::global::<ui::ThemeSwitch>(&window)
-                .set_light(sengi_config::theme_is_light());
+            sengi_config::apply_theme!(slint::ComponentHandle::global::<ui::ThemeSwitch>(&window));
             let handle = context.handle();
             // The first reason to close is the one that counts: closing
             // after a click on Lock also loses the keyboard.

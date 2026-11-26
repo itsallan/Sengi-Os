@@ -16,7 +16,7 @@ fn picture(name: &str) {
 fn calendar_popup() {
     harness::install();
     let window = CalendarWindow::new().unwrap();
-    window.global::<ThemeSwitch>().set_light(harness::light());
+    sengi_shots::apply_look!(window.global::<ThemeSwitch>());
     window.show().unwrap();
     harness::resize(&harness::window(), 888, 600);
     view::attach(&window, View::new((2026, 11, 26), WeekStart::Monday), || {});
@@ -55,7 +55,7 @@ fn calendar_popup() {
 fn a_week_that_starts_on_sunday() {
     harness::install();
     let window = CalendarWindow::new().unwrap();
-    window.global::<ThemeSwitch>().set_light(harness::light());
+    sengi_shots::apply_look!(window.global::<ThemeSwitch>());
     window.show().unwrap();
     harness::resize(&harness::window(), 888, 600);
     view::attach(&window, View::new((2024, 2, 29), WeekStart::Sunday), || {});

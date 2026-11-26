@@ -36,7 +36,7 @@ fn button(x: f32, y: f32, down: bool) {
 
 fn open() -> (SnipWindow, Rc<Cell<Option<Option<Rect>>>>) {
     let window = SnipWindow::new().unwrap();
-    window.global::<ThemeSwitch>().set_light(harness::light());
+    sengi_shots::apply_look!(window.global::<ThemeSwitch>());
     window.show().unwrap();
     harness::resize(&harness::window(), 888, 600);
     let result = Rc::new(Cell::new(None));
@@ -132,7 +132,7 @@ fn a_click_is_not_a_selection() {
 fn the_countdown() {
     harness::install();
     let window = CountdownWindow::new().unwrap();
-    window.global::<ThemeSwitch>().set_light(harness::light());
+    sengi_shots::apply_look!(window.global::<ThemeSwitch>());
     window.show().unwrap();
     harness::resize(&harness::window(), 168, 72);
     let outcome = Rc::new(Cell::new(None));

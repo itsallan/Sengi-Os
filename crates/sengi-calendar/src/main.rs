@@ -68,9 +68,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(sengi_layer::run(config, move |context| {
         let view = view.take().ok_or("the popup has a single surface")?;
         let window = CalendarWindow::new()?;
-        window
-            .global::<ThemeSwitch>()
-            .set_light(sengi_config::theme_is_light());
+        sengi_config::apply_theme!(window.global::<ThemeSwitch>());
         let handle = context.handle();
         view::attach(&window, view, {
             let handle = handle.clone();

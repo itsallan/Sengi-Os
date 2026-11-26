@@ -51,8 +51,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     layer.run(config, move |context| {
         let ui = ui::Dock::new()?;
-        slint::ComponentHandle::global::<ui::ThemeSwitch>(&ui)
-            .set_light(sengi_config::theme_is_light());
+        sengi_config::apply_theme!(slint::ComponentHandle::global::<ui::ThemeSwitch>(&ui));
         // The name of the app under the pointer, shown above the panel. Set
         // this to false for a surface that is exactly the panel.
         ui.set_show_labels(true);

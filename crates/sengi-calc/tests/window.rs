@@ -28,7 +28,7 @@ fn picture(name: &str) {
 fn calculator_window() {
     harness::install();
     let window = CalcWindow::new().unwrap();
-    window.global::<ThemeSwitch>().set_light(harness::light());
+    sengi_shots::apply_look!(window.global::<ThemeSwitch>());
     window.show().unwrap();
     harness::resize(&harness::window(), 320, 480);
     let app = app::attach(&window);

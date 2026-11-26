@@ -57,9 +57,7 @@ fn select_area() -> Result<bool, sengi_layer::Error> {
         let (output, choice) = (output.clone(), choice.clone());
         move |context| {
             let window = SnipWindow::new()?;
-            window
-                .global::<ThemeSwitch>()
-                .set_light(sengi_config::theme_is_light());
+            sengi_config::apply_theme!(window.global::<ThemeSwitch>());
             *output.borrow_mut() = context.output().and_then(|o| o.name);
             let output = output.clone();
             context.surface().on_output_changed(move |now| {
@@ -109,9 +107,7 @@ fn countdown(seconds: u32) -> Result<bool, sengi_layer::Error> {
         let (timer, ran_out) = (timer.clone(), ran_out.clone());
         move |context| {
             let window = CountdownWindow::new()?;
-            window
-                .global::<ThemeSwitch>()
-                .set_light(sengi_config::theme_is_light());
+            sengi_config::apply_theme!(window.global::<ThemeSwitch>());
             let handle = context.handle();
             handle.set_size(
                 window.get_wanted_width().round() as u32,

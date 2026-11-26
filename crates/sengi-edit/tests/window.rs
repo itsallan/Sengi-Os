@@ -37,7 +37,7 @@ impl Drop for Dir {
 
 fn open_window(dir: &Dir, path: Option<&Path>) -> (EditWindow, std::rc::Rc<App>) {
     let window = EditWindow::new().unwrap();
-    window.global::<ThemeSwitch>().set_light(harness::light());
+    sengi_shots::apply_look!(window.global::<ThemeSwitch>());
     window.show().unwrap();
     harness::resize(&harness::window(), 888, 600);
     let app = app::attach(

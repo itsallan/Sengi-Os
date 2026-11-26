@@ -16,9 +16,21 @@ pub const MAX_LAYOUTS: usize = 4;
 
 /// The value of `appearance.wallpaper` that means the plain desktop colour.
 pub const WALLPAPER_SOLID: &str = "solid";
-/// The two values of `appearance.theme`.
+/// The values of `appearance.theme`.
 pub const THEME_DARK: &str = "dark";
 pub const THEME_LIGHT: &str = "light";
+pub const THEME_HIGH_CONTRAST: &str = "high-contrast";
+/// The values of `appearance.text-size` with the percent each scales the
+/// type by. The same steps are in `[text-scale]` of the tokens.
+pub const TEXT_SIZES: [(&str, u32); 4] = [
+    ("small", 90),
+    ("default", 100),
+    ("large", 120),
+    ("extra-large", 140),
+];
+/// The values of `appearance.cursor-size` with the pointer size in pixels.
+/// The same sizes are in `[cursor]` of the tokens.
+pub const CURSOR_SIZES: [(&str, u32); 3] = [("normal", 24), ("large", 36), ("extra-large", 48)];
 /// The values of `touchpad.click-method` and `touchpad.scroll-method`.
 pub const CLICK_AREAS: &str = "areas";
 pub const CLICK_CLICKFINGER: &str = "clickfinger";
@@ -62,6 +74,9 @@ pub const KEYS: &[(&str, &str, Default)] = &[
     ("display", "night-strength", Default::Number(50)),
     ("appearance", "window-shadows", Default::Flag(true)),
     ("appearance", "theme", Default::Text(THEME_DARK)),
+    ("appearance", "text-size", Default::Text("default")),
+    ("appearance", "reduce-motion", Default::Flag(false)),
+    ("appearance", "cursor-size", Default::Text("normal")),
     ("appearance", "wallpaper", Default::Text(WALLPAPER_SOLID)),
     ("appearance", "week-start", Default::Text("monday")),
 ];
@@ -140,8 +155,24 @@ pub fn check(section: &str, key: &str, value: &Value) -> Result<Value, String> {
             _ => Err("must be an output name such as \"eDP-1\", or empty".to_string()),
         },
         ("appearance", "theme") => match value {
-            Value::Text(theme) if theme == THEME_DARK || theme == THEME_LIGHT => Ok(value.clone()),
-            _ => Err("must be \"dark\" or \"light\"".to_string()),
+            Value::Text(theme)
+                if theme == THEME_DARK || theme == THEME_LIGHT || theme == THEME_HIGH_CONTRAST =>
+            {
+                Ok(value.clone())
+            }
+            _ => Err("must be \"dark\", \"light\" or \"high-contrast\"".to_string()),
+        },
+        ("appearance", "text-size") => match value {
+            Value::Text(name) if TEXT_SIZES.iter().any(|(known, _)| known == name) => {
+                Ok(value.clone())
+            }
+            _ => Err("must be \"small\", \"default\", \"large\" or \"extra-large\"".to_string()),
+        },
+        ("appearance", "cursor-size") => match value {
+            Value::Text(name) if CURSOR_SIZES.iter().any(|(known, _)| known == name) => {
+                Ok(value.clone())
+            }
+            _ => Err("must be \"normal\", \"large\" or \"extra-large\"".to_string()),
         },
         ("appearance", "week-start") => match value {
             Value::Text(day) if matches!(day.as_str(), "monday" | "sunday" | "saturday") => {
@@ -354,6 +385,36 @@ impl Settings {
     /// the login screen, can see.
     pub fn light(&self) -> bool {
         self.text("appearance", "theme") == THEME_LIGHT
+    }
+
+    /// Whether the high contrast theme is chosen. It is a palette of its
+    /// own: `light` is false then.
+    pub fn high_contrast(&self) -> bool {
+        self.text("appearance", "theme") == THEME_HIGH_CONTRAST
+    }
+
+    /// The type size as a percent of the design size: 90, 100, 120 or 140.
+    /// A name nobody knows is the default size.
+    pub fn text_percent(&self) -> u32 {
+        let name = self.text("appearance", "text-size");
+        TEXT_SIZES
+            .iter()
+            .find(|(known, _)| *known == name)
+            .map_or(100, |(_, percent)| *percent)
+    }
+
+    /// Whether animations are turned off.
+    pub fn reduce_motion(&self) -> bool {
+        self.flag("appearance", "reduce-motion")
+    }
+
+    /// The pointer's size in pixels, 24, 36 or 48.
+    pub fn cursor_px(&self) -> u32 {
+        let name = self.text("appearance", "cursor-size");
+        CURSOR_SIZES
+            .iter()
+            .find(|(known, _)| *known == name)
+            .map_or(24, |(_, px)| *px)
     }
 
     pub fn layouts(&self) -> Vec<Layout> {
@@ -579,6 +640,79 @@ mod tests {
         assert!(!settings("", "[appearance]\ntheme = \"blue\"\n").light());
         assert!(check("appearance", "theme", &Value::text("blue")).is_err());
         assert!(check("appearance", "theme", &Value::Flag(true)).is_err());
+    }
+
+    #[test]
+    fn high_contrast_is_a_palette_of_its_own() {
+        let hc = settings("", "[appearance]\ntheme = \"high-contrast\"\n");
+        assert!(hc.high_contrast());
+        assert!(!hc.light());
+        assert!(!settings("", "").high_contrast());
+        assert!(!settings("", "[appearance]\ntheme = \"light\"\n").high_contrast());
+        assert!(check("appearance", "theme", &Value::text("high-contrast")).is_ok());
+    }
+
+    #[test]
+    fn text_size_maps_to_a_percent_and_round_trips() {
+        assert_eq!(settings("", "").text_percent(), 100);
+        for (name, percent) in TEXT_SIZES {
+            let user = format!("[appearance]\ntext-size = \"{name}\"\n");
+            assert_eq!(settings("", &user).text_percent(), percent, "{name}");
+            assert!(check("appearance", "text-size", &Value::text(name)).is_ok());
+        }
+        // The system's file counts when the user has not chosen.
+        let system = "[appearance]\ntext-size = \"large\"\n";
+        assert_eq!(settings(system, "").text_percent(), 120);
+        assert!(check("appearance", "text-size", &Value::text("huge")).is_err());
+        assert!(check("appearance", "text-size", &Value::Number(2)).is_err());
+        assert_eq!(
+            settings("", "[appearance]\ntext-size = \"huge\"\n").text_percent(),
+            100
+        );
+    }
+
+    #[test]
+    fn cursor_size_maps_to_pixels() {
+        assert_eq!(settings("", "").cursor_px(), 24);
+        for (name, px) in CURSOR_SIZES {
+            let user = format!("[appearance]\ncursor-size = \"{name}\"\n");
+            assert_eq!(settings("", &user).cursor_px(), px, "{name}");
+        }
+        assert!(check("appearance", "cursor-size", &Value::text("giant")).is_err());
+    }
+
+    #[test]
+    fn reduced_motion_is_a_flag_that_is_off_by_default() {
+        assert!(!settings("", "").reduce_motion());
+        assert!(settings("", "[appearance]\nreduce-motion = true\n").reduce_motion());
+        assert!(check("appearance", "reduce-motion", &Value::Flag(true)).is_ok());
+        assert!(check("appearance", "reduce-motion", &Value::text("yes")).is_err());
+    }
+
+    /// The numbers of `[section]` in the tokens file, in order.
+    fn token_numbers(section: &str) -> Vec<(String, u32)> {
+        let source = include_str!("../../../tokens/sengi.toml");
+        let mut inside = false;
+        let mut found = Vec::new();
+        for line in source.lines().map(str::trim) {
+            if let Some(name) = line.strip_prefix('[') {
+                inside = name.strip_suffix(']') == Some(section);
+            } else if inside && !line.starts_with('#') {
+                if let Some((key, value)) = line.split_once('=') {
+                    found.push((key.trim().to_string(), value.trim().parse().unwrap()));
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn the_steps_here_are_the_ones_in_the_tokens() {
+        let own = |steps: &[(&str, u32)]| -> Vec<(String, u32)> {
+            steps.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+        };
+        assert_eq!(token_numbers("text-scale"), own(&TEXT_SIZES));
+        assert_eq!(token_numbers("cursor"), own(&CURSOR_SIZES));
     }
 
     #[test]
