@@ -13,7 +13,8 @@ use slint::{
 
 use sengi_apps::icons::{Decoder, Pixels, DECODE_TIMEOUT};
 
-use crate::catalog::{self, App};
+use crate::catalog::App;
+use crate::featured::{self, Chip, Featured, Item};
 use crate::flatpak::{Error, Flatpak};
 use crate::icons;
 use crate::progress::Progress;
@@ -54,6 +55,11 @@ impl Message {
 #[derive(Default)]
 struct Data {
     catalog: Vec<App>,
+    featured: Featured,
+    chip: Chip,
+    /// Flathub was asked for and did not answer, and there is no list
+    /// from an earlier time to go by.
+    unreachable: bool,
     loading: bool,
     query: String,
     rows: Rows,
@@ -94,13 +100,20 @@ struct RowData {
     icon: Option<Pixels>,
     state: State,
     progress: Option<Progress>,
+    /// A group's name, not an app.
+    heading: bool,
+    /// Shown by name only and not to be installed: Flathub is not there.
+    unavailable: bool,
 }
 
 struct View {
     rows: Vec<RowData>,
     hint: String,
+    notice: String,
     message: Message,
     reset: bool,
+    /// The row the keys start on when `reset`.
+    first: usize,
 }
 
 fn to_image(pixels: &Pixels) -> Image {
@@ -133,6 +146,8 @@ fn apply(window: &StoreWindow, view: View) {
                 .map(Progress::detail)
                 .unwrap_or_default()
                 .into(),
+            heading: row.heading,
+            unavailable: row.unavailable,
             state: match row.state {
                 State::Available => RowState::Available,
                 State::Installing => RowState::Installing,
@@ -144,17 +159,21 @@ fn apply(window: &StoreWindow, view: View) {
     let store = window.global::<Store>();
     store.set_rows(ModelRc::new(VecModel::from(rows)));
     store.set_hint(view.hint.into());
+    store.set_notice(view.notice.into());
     store.set_message(view.message.text.into());
     store.set_message_is_error(view.message.error);
     if view.reset {
-        store.set_current(0);
+        store.set_current(i32::try_from(view.first).unwrap_or(0));
     }
 }
 
 impl Context {
     fn new(flatpak: Flatpak, data_home: PathBuf, window: Option<slint::Weak<StoreWindow>>) -> Self {
         Self {
-            data: Mutex::new(Data::default()),
+            data: Mutex::new(Data {
+                featured: Featured::builtin(),
+                ..Data::default()
+            }),
             flatpak,
             decoder: Decoder::default(),
             data_home,
@@ -182,28 +201,65 @@ impl Context {
     }
 }
 
+/// What the list shows now.
+fn items(data: &Data) -> Vec<Item> {
+    featured::browse(&data.featured, &data.catalog, &data.query, data.chip, SHOWN)
+}
+
+/// The IDs of the apps on show.
+fn shown_ids(data: &Data) -> Vec<String> {
+    items(data)
+        .into_iter()
+        .filter_map(|item| match item {
+            Item::App(index) => Some(data.catalog[index].id.clone()),
+            Item::Offline { id, .. } => Some(id),
+            Item::Heading(_) => None,
+        })
+        .collect()
+}
+
 fn view(data: &Data, reset: bool) -> View {
-    let found = catalog::search(&data.catalog, &data.query, SHOWN);
-    let rows: Vec<RowData> = found
+    let items = items(data);
+    let row = |id: &str, name: &str, summary: &str, unavailable: bool| {
+        let state = data.rows.state(id);
+        RowData {
+            id: id.to_string(),
+            name: name.to_string(),
+            summary: summary.to_string(),
+            letter: sengi_text::initial(name),
+            icon: data.icons.get(id).cloned().flatten(),
+            state,
+            progress: if state == State::Installing {
+                data.progress.clone()
+            } else {
+                None
+            },
+            heading: false,
+            unavailable,
+        }
+    };
+    let rows: Vec<RowData> = items
         .iter()
-        .map(|&index| {
-            let app = &data.catalog[index];
-            RowData {
-                id: app.id.clone(),
-                name: app.name.clone(),
-                summary: app.summary.clone(),
-                letter: sengi_text::initial(&app.name),
-                icon: data.icons.get(&app.id).cloned().flatten(),
-                state: data.rows.state(&app.id),
-                progress: if data.rows.state(&app.id) == State::Installing {
-                    data.progress.clone()
-                } else {
-                    None
-                },
+        .map(|item| match item {
+            Item::Heading(name) => RowData {
+                id: String::new(),
+                name: name.clone(),
+                summary: String::new(),
+                letter: String::new(),
+                icon: None,
+                state: State::Available,
+                progress: None,
+                heading: true,
+                unavailable: true,
+            },
+            Item::App(index) => {
+                let app = &data.catalog[*index];
+                row(&app.id, &app.name, &app.summary, false)
             }
+            Item::Offline { id, name } => row(id, name, "", true),
         })
         .collect();
-    let hint = if data.catalog.is_empty() {
+    let hint = if data.catalog.is_empty() && data.featured.groups.is_empty() {
         if data.loading {
             "Getting the list of apps".to_string()
         } else {
@@ -211,12 +267,24 @@ fn view(data: &Data, reset: bool) -> View {
         }
     } else if data.query.trim().is_empty() {
         "Type the name of an app".to_string()
-    } else {
+    } else if data.chip == Chip::All {
         format!("No app is named \u{201c}{}\u{201d}", data.query.trim())
+    } else {
+        format!(
+            "No recommended app is named \u{201c}{}\u{201d}. Choose All to look at every app.",
+            data.query.trim()
+        )
+    };
+    let notice = if data.unreachable && data.catalog.is_empty() && !data.loading {
+        "Not connected to Flathub. These apps can be installed once you are online.".to_string()
+    } else {
+        String::new()
     };
     View {
+        first: featured::first(&items),
         rows,
         hint,
+        notice,
         message: data.message.clone(),
         reset,
     }
@@ -252,10 +320,8 @@ fn decode_icons(shared: &Shared) {
             move || loop {
                 let wanted: Vec<String> = {
                     let mut data = shared.lock();
-                    let found = catalog::search(&data.catalog, &data.query, SHOWN);
-                    let wanted: Vec<String> = found
-                        .iter()
-                        .map(|&i| data.catalog[i].id.clone())
+                    let wanted: Vec<String> = shown_ids(&data)
+                        .into_iter()
                         .filter(|id| !data.icons.contains_key(id))
                         .take(8)
                         .collect();
@@ -295,7 +361,9 @@ fn explain(error: &Error) -> String {
         Error::TimedOut => {
             "Flatpak did not answer in time. Check the network connection.".to_string()
         }
-        Error::Failed(text) => format!("Could not get the list of apps: {text}"),
+        Error::Failed(text) | Error::Refused(text) => {
+            format!("Could not get the list of apps: {text}")
+        }
     }
 }
 
@@ -373,6 +441,7 @@ fn load(shared: Shared) {
             Message::info("Could not tell which apps are installed yet"),
         );
         data.loading = false;
+        data.unreachable = false;
         drop(data);
         render(&shared, false);
         return;
@@ -384,6 +453,7 @@ fn finish_load(shared: &Shared, failure: Option<Error>) {
     {
         let mut data = shared.lock();
         data.loading = false;
+        data.unreachable = matches!(failure, Some(Error::TimedOut | Error::Failed(_)));
         let message = match failure {
             None => Message::default(),
             Some(error) if data.catalog.is_empty() => Message::error(explain(&error)),
@@ -433,6 +503,33 @@ fn search(shared: &Shared, text: &str) {
         start_load(shared);
     }
     render(shared, true);
+}
+
+/// A chip was chosen: 0 is All, 1 Featured, then the groups. Like typing,
+/// it asks for the list again if there is none, but no sooner than a
+/// search would.
+fn choose_chip(shared: &Shared, index: usize) {
+    let retry = {
+        let mut data = shared.lock();
+        data.chip = Chip::from_index(index);
+        data.sticky = false;
+        data.catalog.is_empty()
+            && !data.loading
+            && data
+                .last_attempt
+                .is_none_or(|at| at.elapsed() >= RETRY_AFTER)
+    };
+    if retry {
+        start_load(shared);
+    }
+    render(shared, true);
+}
+
+/// The row an arrow key moves to from `current`, never a heading.
+fn step_row(shared: &Shared, current: i32, by: i32) -> i32 {
+    let items = items(&shared.lock());
+    let current = usize::try_from(current).unwrap_or(0);
+    i32::try_from(featured::step(&items, current, by.signum())).unwrap_or(0)
 }
 
 fn install(shared: &Shared, id: &str) {
@@ -575,6 +672,22 @@ pub fn run_with_query(
         let shared = shared.clone();
         move |text| search(&shared, &text)
     });
+    store.on_chip_selected({
+        let shared = shared.clone();
+        move |index| choose_chip(&shared, usize::try_from(index).unwrap_or(0))
+    });
+    store.on_step_row({
+        let shared = shared.clone();
+        move |current, by| step_row(&shared, current, by)
+    });
+    let labels: Vec<SharedString> = Chip::labels(&shared.lock().featured)
+        .iter()
+        .map(|l| l.as_str().into())
+        .collect();
+    let half = labels.len().div_ceil(2);
+    store.set_chips_first(ModelRc::new(VecModel::from(labels[..half].to_vec())));
+    store.set_chips_second(ModelRc::new(VecModel::from(labels[half..].to_vec())));
+    store.set_chips(ModelRc::new(VecModel::from(labels)));
     store.on_install({
         let shared = shared.clone();
         move |id| install(&shared, &id)
@@ -774,6 +887,128 @@ mod tests {
         wait_until(&shared, |d| !d.loading);
         let asked = fake.calls().len() - calls;
         assert!(asked <= 1, "{asked} more calls");
+    }
+
+    /// A flatpak that lists Firefox, GIMP (named as Flathub names it) and
+    /// something that is not recommended.
+    fn flathub_fake(tag: &str) -> Fake {
+        Fake::new(
+            tag,
+            "case \"$*\" in\n\
+             *remotes*) printf 'flathub\\thttps://dl.flathub.org/repo/\\tuser\\n';;\n\
+             *remote-ls*) printf 'org.mozilla.firefox\\tFirefox\\tWeb browser\\n\
+             org.gimp.GIMP\\tGNU Image Manipulation Program\\tImages\\n\
+             org.x.Other\\tOther\\t\\n';;\n\
+             esac",
+        )
+    }
+
+    fn names_shown(data: &Data) -> Vec<String> {
+        view(data, false)
+            .rows
+            .iter()
+            .map(|r| {
+                if r.heading {
+                    format!("# {}", r.name)
+                } else {
+                    r.name.clone()
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_start_page_shows_only_what_flathub_has() {
+        let fake = flathub_fake("app-featured");
+        let shared = context(&fake);
+        load(shared.clone());
+        let data = shared.lock();
+        let v = view(&data, true);
+        assert_eq!(
+            names_shown(&data),
+            [
+                "# Browsers",
+                "Firefox",
+                "# Graphics",
+                "GNU Image Manipulation Program"
+            ]
+        );
+        assert_eq!(v.first, 1);
+        assert_eq!(v.rows[1].summary, "Web browser");
+        assert!(v.rows.iter().all(|r| !r.unavailable || r.heading));
+        assert!(v.notice.is_empty());
+    }
+
+    #[test]
+    fn chips_and_typing_filter_the_start_page() {
+        let fake = flathub_fake("app-chips");
+        let shared = context(&fake);
+        load(shared.clone());
+        // Office has nothing on this list of apps.
+        choose_chip(&shared, 3);
+        assert!(names_shown(&shared.lock()).is_empty());
+        choose_chip(&shared, 2);
+        assert_eq!(names_shown(&shared.lock()), ["# Browsers", "Firefox"]);
+        search(&shared, "gimp");
+        assert!(names_shown(&shared.lock()).is_empty());
+        choose_chip(&shared, 0);
+        // The welcome wizard's word finds GIMP by its ID.
+        assert_eq!(
+            names_shown(&shared.lock()),
+            ["GNU Image Manipulation Program"]
+        );
+        for word in ["firefox", "gimp"] {
+            search(&shared, word);
+            assert_eq!(names_shown(&shared.lock()).len(), 1, "{word}");
+        }
+    }
+
+    #[test]
+    fn offline_the_recommended_names_are_shown_and_not_installable() {
+        let fake = Fake::new(
+            "app-offline-start",
+            "echo 'error: could not connect' >&2; exit 1",
+        );
+        let shared = context(&fake);
+        load(shared.clone());
+        let data = shared.lock();
+        let v = view(&data, true);
+        assert!(v.notice.starts_with("Not connected"));
+        let apps: Vec<&RowData> = v.rows.iter().filter(|r| !r.heading).collect();
+        assert!(apps.len() >= 10);
+        assert!(apps.iter().all(|r| r.unavailable && r.summary.is_empty()));
+        assert!(apps.iter().any(|r| r.name == "Firefox"));
+        assert_eq!(v.rows[0].name, "Browsers");
+        drop(data);
+        install(&shared, "org.mozilla.firefox");
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!fake.calls().iter().any(|c| c.contains(" install ")));
+        assert_eq!(
+            shared.lock().rows.state("org.mozilla.firefox"),
+            State::Available
+        );
+    }
+
+    #[test]
+    fn a_refused_source_is_not_called_not_connected() {
+        let fake = Fake::new(
+            "app-bad-remote-start",
+            "case \"$*\" in *remotes*) printf 'flathub\\thttp://evil/\\tuser\\n';; esac",
+        );
+        let shared = context(&fake);
+        load(shared.clone());
+        assert!(view(&shared.lock(), false).notice.is_empty());
+    }
+
+    #[test]
+    fn the_arrow_keys_skip_the_headings() {
+        let fake = flathub_fake("app-keys");
+        let shared = context(&fake);
+        load(shared.clone());
+        // # Browsers, Firefox, # Graphics, GIMP
+        assert_eq!(step_row(&shared, 1, 1), 3);
+        assert_eq!(step_row(&shared, 3, -1), 1);
+        assert_eq!(step_row(&shared, 3, 1), 3);
     }
 
     #[test]

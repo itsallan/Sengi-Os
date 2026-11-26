@@ -24,6 +24,11 @@ export struct Row {
     detail: string,
     letter: string,
     state: RowState,
+    // A group's name (in `name`) and not an app: no button, no stop for
+    // the keys.
+    heading: bool,
+    // Shown by name only, because Flathub is not there: no button.
+    unavailable: bool,
 }
 
 // What the window shows and what it reports. Rust fills the one and hears
@@ -32,12 +37,24 @@ export global Store {
     in property <[Row]> rows;
     // Said in place of the list when it has nothing to show.
     in property <string> hint;
+    // A note over the list, such as that Flathub cannot be reached.
+    in property <string> notice;
     // What the search field holds when the window opens (--search).
     in property <string> start-query;
     // The line under the list.
     in property <string> message;
     in property <bool> message-is-error: false;
     in-out property <int> current: 0;
+    // The chips under the search field, and the one that is chosen.
+    // All of them in order, and the same in two rows, because they do
+    // not fit in one.
+    in property <[string]> chips;
+    in property <[string]> chips-first;
+    in property <[string]> chips-second;
+    in-out property <int> chip: 0;
+    callback chip-selected(int);
+    // The row `by` (1 or -1) from `current` that is not a heading.
+    callback step-row(int, int) -> int;
     callback search(string);
     callback install(string);
     callback open(string);
@@ -64,6 +81,32 @@ component Busy inherits Rectangle {
             iteration-count: -1;
             direction: alternate;
         }
+    }
+}
+
+// One choice among the groups of apps.
+component Chip inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected;
+    callback clicked();
+
+    height: Tokens.button;
+    preferred-width: label.preferred-width + Tokens.space-md * 2;
+    border-radius: Tokens.radius;
+    background: root.selected ? Tokens.color-accent
+        : touch.has-hover ? Tokens.color-surface-hover : Tokens.color-surface-raised;
+    animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+
+    label := SengiText {
+        text: root.text;
+        color: root.selected ? Tokens.color-accent-text : Tokens.color-text;
+        font-weight: Tokens.font-weight-medium;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
     }
 }
 
@@ -124,18 +167,33 @@ export component StoreWindow inherits Window {
 
     function step(by: int) {
         if Store.rows.length > 0 {
-            Store.current = Math.clamp(Store.current + by, 0, Store.rows.length - 1);
-            list.reveal(Store.current * root.line, root.line);
+            Store.current = Store.step-row(Store.current, by);
+            // The heading above the first app of a group comes into
+            // view with it.
+            if Store.current > 0 && Store.rows[Store.current - 1].heading {
+                list.reveal((Store.current - 1) * root.line, root.line * 2);
+            } else {
+                list.reveal(Store.current * root.line, root.line);
+            }
         }
     }
 
     function use-current() {
-        if Store.current >= 0 && Store.current < Store.rows.length {
+        if Store.current >= 0 && Store.current < Store.rows.length
+            && !Store.rows[Store.current].heading {
             if Store.rows[Store.current].state == RowState.installed {
                 Store.open(Store.rows[Store.current].id);
-            } else {
+            } else if !Store.rows[Store.current].unavailable {
                 Store.install(Store.rows[Store.current].id);
             }
+        }
+    }
+
+    function pick-chip(index: int) {
+        if index >= 0 && index < Store.chips.length {
+            Store.chip = index;
+            Store.chip-selected(index);
+            list.reveal(0, root.line);
         }
     }
 
@@ -162,6 +220,23 @@ export component StoreWindow inherits Window {
         background: Math.mod(root.sheet, 2) == 0 ? transparent : Tokens.color-bg.transparentize(1);
     }
 
+    // Sees Tab before the field does: it moves along the chips, and
+    // Shift+Tab back, so the keyboard never leaves the search field.
+    FocusScope {
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        capture-key-pressed(event) => {
+            if event.text == Key.Backtab || (event.text == Key.Tab && event.modifiers.shift) {
+                root.pick-chip(Math.mod(Store.chip - 1 + Store.chips.length, Store.chips.length));
+                return accept;
+            }
+            if event.text == Key.Tab {
+                root.pick-chip(Math.mod(Store.chip + 1, Store.chips.length));
+                return accept;
+            }
+            return reject;
+        }
+
     Rectangle {
         width: Math.min(parent.width, root.widest);
         x: (parent.width - self.width) / 2;
@@ -185,6 +260,49 @@ export component StoreWindow inherits Window {
                 stepped(by) => { root.step(by); }
             }
 
+            // The chips in two rows, because all of them do not fit in one.
+            VerticalLayout {
+                spacing: Tokens.space-sm;
+                HorizontalLayout {
+                    spacing: Tokens.space-sm;
+                    alignment: start;
+                    for label[index] in Store.chips-first: Chip {
+                        text: label;
+                        selected: Store.chip == index;
+                        clicked => {
+                            root.pick-chip(index);
+                            field.take-focus();
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: Tokens.space-sm;
+                    alignment: start;
+                    for label[index] in Store.chips-second: Chip {
+                        text: label;
+                        selected: Store.chip == index + Store.chips-first.length;
+                        clicked => {
+                            root.pick-chip(index + Store.chips-first.length);
+                            field.take-focus();
+                        }
+                    }
+                }
+            }
+
+            if Store.notice != "": Rectangle {
+                height: notice-text.preferred-height + Tokens.space-sm * 2;
+                border-radius: Tokens.radius;
+                background: Tokens.color-surface-raised;
+                notice-text := SengiText {
+                    x: Tokens.space-md;
+                    y: Tokens.space-sm;
+                    width: parent.width - Tokens.space-md * 2;
+                    text: Store.notice;
+                    color: Tokens.color-text;
+                    wrap: word-wrap;
+                }
+            }
+
             Rectangle {
                 vertical-stretch: 1;
 
@@ -192,7 +310,8 @@ export component StoreWindow inherits Window {
                     content-height: Store.rows.length * root.line;
 
                     for app[index] in Store.rows: Rectangle {
-                        private property <bool> lit: root.hovered == index || Store.current == index;
+                        private property <bool> lit: !app.heading
+                            && (root.hovered == index || Store.current == index);
 
                         y: index * root.line;
                         height: root.line;
@@ -200,7 +319,20 @@ export component StoreWindow inherits Window {
                         background: self.lit ? Tokens.color-surface-hover : transparent;
                         animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
 
+                        if app.heading: SengiText {
+                            x: Tokens.space-sm;
+                            width: parent.width - Tokens.space-sm * 2;
+                            height: parent.height - Tokens.space-xs;
+                            text: app.name;
+                            color: Tokens.color-text-muted;
+                            font-weight: Tokens.font-weight-medium;
+                            vertical-alignment: bottom;
+                            overflow: elide;
+                        }
+
                         TouchArea {
+                            enabled: !app.heading;
+                            visible: !app.heading;
                             changed has-hover => {
                                 if self.has-hover {
                                     root.hovered = index;
@@ -299,7 +431,7 @@ export component StoreWindow inherits Window {
                                     }
                                 }
 
-                                if app.state == RowState.available || app.state == RowState.failed: VerticalLayout {
+                                if (app.state == RowState.available || app.state == RowState.failed) && !app.unavailable: VerticalLayout {
                                     alignment: center;
                                     SengiButton {
                                         text: app.state == RowState.failed ? "Try again" : "Install";
@@ -339,5 +471,6 @@ export component StoreWindow inherits Window {
                 overflow: elide;
             }
         }
+    }
     }
 }

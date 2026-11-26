@@ -70,6 +70,8 @@ pub enum Error {
     TimedOut,
     /// It ended with an error; this is what it said, on one line.
     Failed(String),
+    /// The user's Flathub source is not the real one: nothing is fetched.
+    Refused(String),
 }
 
 impl std::fmt::Display for Error {
@@ -77,7 +79,7 @@ impl std::fmt::Display for Error {
         match self {
             Error::Missing => f.write_str("Flatpak is not installed"),
             Error::TimedOut => f.write_str("Flatpak took too long and was stopped"),
-            Error::Failed(text) => f.write_str(text),
+            Error::Failed(text) | Error::Refused(text) => f.write_str(text),
         }
     }
 }
@@ -342,7 +344,7 @@ impl Flatpak {
             &["--user", "remotes", "--columns=name,url,options"],
             self.limits.quick,
         )?;
-        check_remote(&remotes).map_err(Error::Failed)
+        check_remote(&remotes).map_err(Error::Refused)
     }
 
     /// Fetches the newest descriptions and icons of the apps.

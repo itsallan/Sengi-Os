@@ -476,6 +476,8 @@ fn stores() {
             state,
             percent: -1,
             detail: "".into(),
+            heading: false,
+            unavailable: false,
         };
     use store::RowState::*;
     for variant in ["results", "empty", "error", "many"] {
@@ -514,6 +516,158 @@ fn stores() {
                     g.set_message("Installing Inkscape failed: no network".into());
                     g.set_message_is_error(true);
                 }
+            }
+            show(
+                &w,
+                width,
+                height,
+                &format!("store-{variant}-{width}x{height}.png"),
+                BACKDROP,
+            );
+        }
+    }
+}
+
+/// The start page: the recommended apps by group, with Flathub reached
+/// and without it.
+fn featured_stores() {
+    let labels: Vec<slint::SharedString> = {
+        [
+            "All",
+            "Featured",
+            "Browsers",
+            "Office",
+            "Media",
+            "Graphics",
+            "Communication",
+            "Utilities",
+            "Development",
+            "Screen recording",
+            "Notes",
+        ]
+        .iter()
+        .map(|c| c.to_string().into())
+        .collect()
+    };
+    use store::RowState::*;
+    let row =
+        |name: &str, summary: &str, state: store::RowState, rgb: Option<[u8; 3]>| store::Row {
+            id: name.into(),
+            name: name.into(),
+            summary: summary.into(),
+            icon: rgb.map(|c| swatch(40, c)).unwrap_or_default(),
+            has_icon: rgb.is_some(),
+            letter: name.chars().next().unwrap().to_string().into(),
+            state,
+            percent: -1,
+            detail: "".into(),
+            heading: false,
+            unavailable: false,
+        };
+    let heading = |name: &str| store::Row {
+        heading: true,
+        unavailable: true,
+        ..row(name, "", Available, None)
+    };
+    for variant in ["featured", "offline", "group"] {
+        for (width, height) in [(888u32, 600u32), (720, 480)] {
+            let w = store::themed(store::StoreWindow::new().unwrap());
+            let g = w.global::<store::Store>();
+            g.set_chips(list(labels.clone()));
+            g.set_chips_first(list(labels[..6].to_vec()));
+            g.set_chips_second(list(labels[6..].to_vec()));
+            let mut rows = match variant {
+                "featured" => vec![
+                    heading("Browsers"),
+                    row(
+                        "Firefox",
+                        "Fast, Private & Safe Web Browser",
+                        Available,
+                        Some([220, 100, 40]),
+                    ),
+                    row(
+                        "Chromium",
+                        "The open-source web browser behind Chrome",
+                        Installed,
+                        Some([70, 110, 200]),
+                    ),
+                    heading("Office"),
+                    row(
+                        "LibreOffice",
+                        "Comprehensive, professional-quality productivity suite",
+                        Available,
+                        Some([60, 160, 90]),
+                    ),
+                    heading("Media"),
+                    row(
+                        "VLC",
+                        "Play any video or audio file",
+                        Installing,
+                        Some([230, 140, 30]),
+                    ),
+                    row(
+                        "mpv",
+                        "A free, open source, and cross-platform media player",
+                        Available,
+                        None,
+                    ),
+                    heading("Graphics"),
+                    row(
+                        "GIMP",
+                        "Create images and edit photographs",
+                        Available,
+                        Some([150, 120, 90]),
+                    ),
+                    row(
+                        "Inkscape",
+                        "Vector graphics editor",
+                        Available,
+                        Some([90, 90, 90]),
+                    ),
+                    row("Krita", "Digital painting", Failed, None),
+                ],
+                "group" => vec![
+                    heading("Screen recording"),
+                    row(
+                        "OBS Studio",
+                        "Live streaming and screen recording",
+                        Available,
+                        Some([60, 60, 70]),
+                    ),
+                    row("Kooha", "Elegantly record your screen", Available, None),
+                ],
+                _ => {
+                    let mut rows = vec![heading("Browsers")];
+                    for name in ["Firefox", "Chromium"] {
+                        rows.push(row(name, "", Available, None));
+                    }
+                    rows.push(heading("Office"));
+                    rows.push(row("LibreOffice", "", Available, None));
+                    rows.push(heading("Media"));
+                    for name in ["VLC", "mpv"] {
+                        rows.push(row(name, "", Available, None));
+                    }
+                    for r in &mut rows {
+                        r.unavailable = true;
+                    }
+                    rows
+                }
+            };
+            if variant == "featured" {
+                rows[6].percent = 45;
+                rows[6].detail = "Installing 2 of 4 \u{b7} 12.3 MB".into();
+                g.set_message("Installing VLC".into());
+            }
+            g.set_current(1);
+            g.set_rows(list(rows));
+            if variant == "offline" {
+                g.set_notice(
+                    "Not connected to Flathub. These apps can be installed once you are online."
+                        .into(),
+                );
+            }
+            if variant == "group" {
+                g.set_chip(9);
             }
             show(
                 &w,
@@ -608,5 +762,6 @@ fn desktop() {
     notifications();
     quicks();
     stores();
+    featured_stores();
     launchers();
 }
