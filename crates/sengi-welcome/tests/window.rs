@@ -100,7 +100,7 @@ fn setup(tag: &str, net: Option<(&str, bool)>) -> (Dir, Rc<Recorder>, Start) {
 
 fn open_window(start: Start, size: (u32, u32)) -> (WelcomeWindow, Rc<App>) {
     let window = WelcomeWindow::new().unwrap();
-    window.global::<ThemeSwitch>().set_light(harness::light());
+    sengi_shots::apply_look!(window.global::<ThemeSwitch>());
     window.show().unwrap();
     harness::resize(&harness::window(), size.0, size.1);
     let app = app::attach(&window, start);

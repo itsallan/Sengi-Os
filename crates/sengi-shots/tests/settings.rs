@@ -215,7 +215,6 @@ fn display(w: &SettingsWindow, variant: &str) {
         can_position: false,
         can_resolution: true,
         can_refresh: true,
-        ..Default::default()
     }];
     if variant == "two" {
         outs.push(DisplayOutput {
@@ -230,7 +229,6 @@ fn display(w: &SettingsWindow, variant: &str) {
             can_position: false,
             can_resolution: true,
             can_refresh: false,
-            ..Default::default()
         });
     }
     d.set_outputs(list(outs));

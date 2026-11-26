@@ -206,7 +206,9 @@ impl App {
 
     fn choose_theme(&self, light: bool) {
         if let Some(window) = self.window.upgrade() {
-            window.global::<ThemeSwitch>().set_light(light);
+            let switch = window.global::<ThemeSwitch>();
+            switch.set_light(light);
+            switch.set_high_contrast(false);
         }
         self.start.runner.change(system::theme_command(light));
     }

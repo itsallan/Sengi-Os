@@ -52,8 +52,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    slint::ComponentHandle::global::<ThemeSwitch>(&window)
-        .set_light(sengi_config::theme_is_light());
+    sengi_config::apply_theme!(slint::ComponentHandle::global::<ThemeSwitch>(&window));
     // After the first component, which is what brings the backend up, and
     // before the window is shown.
     if let Err(error) = slint::set_xdg_app_id(APP_ID) {
