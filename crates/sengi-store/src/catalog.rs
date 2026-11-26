@@ -9,6 +9,8 @@ pub struct App {
     pub name: String,
     pub summary: String,
     lower: String,
+    /// The last part of the ID, in lower case: `gimp` for `org.gimp.GIMP`.
+    tail: String,
 }
 
 impl App {
@@ -17,10 +19,28 @@ impl App {
         Self {
             id: id.to_string(),
             lower: name.to_lowercase(),
+            tail: id.rsplit('.').next().unwrap_or("").to_lowercase(),
             name,
             summary: sengi_text::line(summary, 200),
         }
     }
+
+    /// Whether `query` finds this app, as `search` would.
+    pub fn matches(&self, query: &str) -> bool {
+        let words = words(query);
+        !words.is_empty() && rank(&self.lower, &self.tail, &words).is_some()
+    }
+}
+
+/// Whether a bare name has every word of `query` in it.
+pub fn name_matches(name: &str, query: &str) -> bool {
+    let words = words(query);
+    let lower = name.to_lowercase();
+    !words.is_empty() && words.iter().all(|w| lower.contains(w.as_str()))
+}
+
+fn words(query: &str) -> Vec<String> {
+    query.split_whitespace().map(str::to_lowercase).collect()
 }
 
 /// Whether `id` is an application ID as Flatpak has them: dotted names
@@ -75,9 +95,12 @@ pub fn parse_installed(text: &str) -> HashSet<String> {
 }
 
 /// How well a name fits what was typed. Lower is better.
-fn rank(name: &str, words: &[String]) -> Option<u8> {
+fn rank(name: &str, tail: &str, words: &[String]) -> Option<u8> {
     if words.iter().any(|word| !name.contains(word.as_str())) {
-        return None;
+        // Some apps are known by a word their name does not have: GIMP
+        // is "GNU Image Manipulation Program". The end of the ID is
+        // taken for a name, but only from its start, and last.
+        return tail.starts_with(&words.concat()).then_some(4);
     }
     let whole = words.join(" ");
     Some(if name == whole {
@@ -98,7 +121,7 @@ fn rank(name: &str, words: &[String]) -> Option<u8> {
 /// case, best first, at most `limit` of them. Only the name is looked at,
 /// not the summary. A query with nothing in it finds nothing.
 pub fn search(apps: &[App], query: &str, limit: usize) -> Vec<usize> {
-    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    let words = words(query);
     if words.is_empty() {
         return Vec::new();
     }
@@ -106,7 +129,7 @@ pub fn search(apps: &[App], query: &str, limit: usize) -> Vec<usize> {
         .iter()
         .enumerate()
         .filter_map(|(index, app)| {
-            rank(&app.lower, &words).map(|rank| (rank, app.lower.chars().count(), index))
+            rank(&app.lower, &app.tail, &words).map(|rank| (rank, app.lower.chars().count(), index))
         })
         .collect();
     found.sort_by(|a, b| {
@@ -189,6 +212,21 @@ mod tests {
         let found = names(&apps, &search(&apps, "firefox", 10));
         assert!(!found.contains(&"Add Water".to_string()));
         assert!(search(&apps, "browser", 10).is_empty());
+    }
+
+    #[test]
+    fn an_app_is_found_by_the_end_of_its_id_after_its_name() {
+        let apps = vec![
+            App::new("org.gimp.GIMP", "GNU Image Manipulation Program", ""),
+            App::new("a.b.Other", "Gimp Helper", ""),
+            App::new("a.b.Thing", "Image Thing", ""),
+        ];
+        let found = names(&apps, &search(&apps, "gimp", 10));
+        assert_eq!(found, ["Gimp Helper", "GNU Image Manipulation Program"]);
+        assert!(apps[0].matches("GIMP"));
+        assert!(!apps[2].matches("gimp"));
+        // Only from its start, so that a short word does not match all.
+        assert!(search(&apps, "org", 10).is_empty());
     }
 
     #[test]
