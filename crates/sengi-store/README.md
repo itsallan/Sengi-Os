@@ -2,7 +2,8 @@
 
 The Sengi OS app store: an ordinary window with a search field on top and,
 under it, the apps of Flathub whose names match what was typed. Each has its
-icon, its name and a line about it, and an Install button.
+icon, its name and a line about it, and an Install button. Before anything
+is typed it shows recommended apps (see Featured below).
 
     sengi-store               open the Store
     sengi-store --search TEXT open it with TEXT already searched for
@@ -29,6 +30,39 @@ closed, and leaves nothing running. The window's application id is
 directory; the image installs that as
 `/usr/share/applications/sengi-store.desktop`, and the dock pins it after
 Settings.
+
+## Featured
+
+Sengi OS ships no browser, office suite or media player, so the Store opens
+on a page of recommended apps instead of an empty list. They are listed in
+[`featured.toml`](featured.toml), in groups (Browsers, Office, Media,
+Graphics, Communication, Utilities, Development, Screen recording, Notes):
+a `[group]` line, then one `"flathub.application.Id" = "Name"` line for each
+app. To add or remove one, edit that file; the tests check that every ID is
+valid and used once and that no group is empty.
+
+Under the search field are chips: All, Featured, and one for each group.
+With nothing typed, All and Featured show every recommended app under its
+group's heading, and a group's chip shows that group. Typing with a group
+or Featured chosen looks only at those apps; typing with All chosen looks at
+every app of Flathub. Tab and Shift+Tab move along the chips without leaving
+the search field, and Up and Down move over the apps, skipping the headings.
+An app shows what any other does: Install, Open, or the progress of its
+install. Nothing is installed without its button or Return.
+
+The name and the summary of a recommended app are Flathub's. An ID that
+the appstream data of Flathub does not list is left out, so the page never
+offers an app that cannot be installed.
+
+Without Flathub (no network and no list from an earlier time) the page still
+shows the names from `featured.toml`, no summaries and no buttons, with a
+note that the Store is not connected. Typing or choosing a chip tries again,
+no sooner than every 30 seconds.
+
+An app is also found by the last part of its ID when its name does not
+have the word: `gimp` finds GIMP, which Flathub names "GNU Image
+Manipulation Program". This is how the Welcome wizard's suggestions
+(`sengi-store --search firefox`, `libreoffice`, `vlc`, `gimp`) find their apps.
 
 ## What it runs
 

@@ -7,6 +7,11 @@ and the measured idle RAM and boot time.
 
 ### Added
 
+- Store: opens on a Featured page of recommended apps (browsers, office,
+  media, graphics, communication, utilities, development, screen recording,
+  notes) with chips to filter by group, and still lists them by name, with a
+  "Not connected" note, when Flathub cannot be reached. The list is
+  `crates/sengi-store/featured.toml`.
 - Settings, Updates (sengi-update): looks for updates to the system's packages
   and to Flatpak apps, lists them with their versions and marks the security
   ones, and updates both with **Update all** with a real progress bar, a step
