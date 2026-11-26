@@ -199,7 +199,7 @@ sengi-notify and sengi-lock included):
   centred title in Inter, rounded top corners, 1 px border, separate looks
   for the focused and unfocused window, hover highlight on buttons. All
   sizes and colours are read from `tokens/sengi.toml`.
-- A soft shadow around framed windows, moved down a little, darker for the
+- A faint shadow around framed windows, moved down a little, darker for the
   focused window than for the others, none for a window that fills the
   screen or is maximised; a snapped one keeps it. It is a stack of flat
   translucent rounded rectangles of growing size and falling opacity, no gradient and no
@@ -638,8 +638,8 @@ tells the compositor it is running under: `labwc --reconfigure` there,
 - `[mouse]`: `speed`, `natural-scroll`, `left-handed`, for every pointing
   device that cannot be tapped.
 - `[touchpad]`: `speed`, `natural-scroll`, `tap-to-click`,
-  `disable-while-typing`, `click-method` (`clickfinger`, one finger left
-  and two right, or `areas`, the bottom corners) and `scroll-method`
+  `disable-while-typing`, `click-method` (`areas`, the bottom corners,
+  unless set, or `clickfinger`, one finger left and two right) and `scroll-method`
   (`two-finger` or `edge`), for those that can. A pad with real buttons
   has no click method, and one without an edge has no edge scrolling: the
   setting is left alone there. `gestures` switches the swipes off.
@@ -873,6 +873,42 @@ journal: `N page flips, N with the cursor on its own plane, N dmabufs
 imported, pointer at X,Y` and `session unlocked` or `session locked, locker
 alive, N lock surface(s), locker told yes`. Equal flip counts ten seconds
 apart are the idle check.
+
+### When the screen freezes
+
+A compositor whose main loop is stuck draws no cursor, reads no keys and
+cannot switch terminals, so it looks like a frozen machine. A small thread
+asks the loop for an answer every 3 seconds and, if none came within 2,
+writes `watchdog: the main loop has not answered for N s (main thread state
+X, waiting in F)` to the journal, again each time the stall has doubled, and
+`answered again` if it comes back. State S in `futex_wait_queue` is a
+deadlock, R a loop that spins, D a wait on a disk or a driver. The line
+does not appear if the kernel itself has stopped. It costs the idle
+compositor one wake-up every 3 seconds and draws nothing.
+
+The journal is kept in memory, on an installed system too, so a restart
+loses it. To keep it through a freeze, have it written to a USB stick that
+Files has opened (here one labelled `LOGS`) and leave that running while
+reproducing:
+
+    sudo journalctl -b -f -o short-precise | while IFS= read -r line; do
+      printf '%s\n' "$line" >>/media/$USER/LOGS/freeze.log
+      sync -d /media/$USER/LOGS/freeze.log
+    done
+
+On an installed system the journal can instead be kept on disk, after which
+`journalctl -b -1` shows the start before this one:
+
+    printf '[Journal]\nStorage=persistent\nSystemMaxUse=64M\n' |
+      sudo tee /etc/systemd/journald.conf.d/99-keep.conf
+    sudo systemctl restart systemd-journald
+
+Two things tell the cases apart without a log. If Alt+SysRq+B (SysRq is on
+Print Screen) restarts the machine, the kernel was still running. If the
+boot menu's "NVIDIA graphics off" entry (press N while the machine starts)
+makes a freeze go away on a laptop with two graphics chips, nouveau was
+the cause. The compositor opens only the display chip the firmware booted
+on; it never opens a second one.
 
 ### A client that commits without damage
 

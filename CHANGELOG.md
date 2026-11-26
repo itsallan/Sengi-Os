@@ -7,6 +7,11 @@ and the measured idle RAM and boot time.
 
 ### Added
 
+- A live boot entry without the NVIDIA driver, "Sengi OS (NVIDIA graphics
+  off)", picked with N while the machine starts, for hybrid laptops that
+  freeze with nouveau loaded.
+- sengi-compositor writes a watchdog line to the journal when its main loop
+  stalls for more than 2 seconds.
 - Store: opens on a grid of categories (browsers, office, media, graphics,
   communication, utilities, development, screen recording, notes) and a grid
   of featured apps as cards, in two to four columns by the window's width,
@@ -213,12 +218,22 @@ and the measured idle RAM and boot time.
 
 ### Changed
 
+- Window shadows are much fainter, narrower and sit closer to the window.
 - The accent colour is green (#2f9e6b), not orange.
 - The Installer and Settings app icons are Phosphor Bold glyphs, like the
   Store's.
 
 ### Fixed
 
+- The whole desktop froze, pointer and all, when a window was minimised with
+  its yellow button while another window was open. The compositor took a
+  lock it already held while handing the keyboard to the next window. The
+  same happened when a click outside closed a program's menu, and when the
+  screen locked with such a menu open.
+- Right click on a clickpad: pressing the bottom right corner is a right
+  click again. The default of `touchpad.click-method` is now `areas`; a
+  two-finger tap is a right click as before, and a choice made in Settings
+  is kept.
 - Settings > About: rows of facts are placed by hand so a value cannot land
   beside the wrong label, the live system's disk line says it is held in
   memory, and a test guards the layout.
