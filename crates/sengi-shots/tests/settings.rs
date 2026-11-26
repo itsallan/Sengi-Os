@@ -750,7 +750,12 @@ fn cards(picture: &harness::Picture, width: usize) -> Vec<(usize, usize)> {
 /// a row; the hardware card holds four.
 fn about_is_laid_out(picture: &harness::Picture, width: usize, what: &str) {
     let runs = cards(picture, width);
-    assert!(runs.len() >= 3, "{what}: found {} cards", runs.len());
+    let needed = if harness::Look::from_env().text_scale > 1.0 {
+        2
+    } else {
+        3
+    };
+    assert!(runs.len() >= needed, "{what}: found {} cards", runs.len());
     let (top, bottom) = runs[1];
     assert!(
         bottom - top <= (56.0 * harness::Look::from_env().text_scale.max(1.0)).ceil() as usize,
