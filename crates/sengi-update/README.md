@@ -5,9 +5,12 @@ System and app updates for Sengi OS, from Settings, Updates.
     sengi-update check     list what could be updated, one JSON line each
     sengi-update apply     update the system's packages (needs root)
     sengi-update status    say what would stop an update, as one JSON line
+    sengi-update install-package cups
+                           install the print system (needs root)
 
-Nothing else is accepted: no options, no package names, and any other
-argument is refused before anything runs. The crate is also a library, which
+Nothing else is accepted: no options, and the only package name is one from
+a short list built into the program (see "Installing a package" below).
+Any other argument is refused before anything runs. The crate is also a library, which
 Settings links: it looks for updates as the user, runs the helper through
 `pkexec`, runs Flatpak, and reads what they print.
 
@@ -111,6 +114,36 @@ no bar.
 Apps are updated as the user with `flatpak --user update --noninteractive
 -y`; the list comes from `flatpak --user remote-ls --updates`.
 
+## Installing a package
+
+`install-package NAME` is for the few things the image leaves out because they
+are large and not everyone wants them. It takes a name and looks it up in a
+list in `helper.rs` (`INSTALLABLE`); a name that is not on it, a second name, a
+list, an option, another case, are all refused with the usage before anything
+runs, and what is given to apt-get is what the list says for the name, never
+the caller's text. The list has one entry: `cups` installs `cups`,
+`cups-client` and `avahi-daemon`, which is the print system and what it finds
+network printers through (Settings, Printers offers it; see
+`crates/sengi-print`).
+
+It does what an update does, with the same checks (not on the live system, not
+on a low battery, not while apt or dpkg runs): `apt-get update`, then
+`apt-get -y -d --no-install-recommends --no-remove install PACKAGES`, which
+can be cancelled, then the same without `-d`, which cannot. Nothing is
+removed, Recommends are not installed, and the files in `/etc` that are
+changed on the system are kept. Then, for `cups`, what the image would have
+done had it carried CUPS: Debian enables `cups.service` for boot, which keeps
+cupsd in memory from the first second, so it is disabled and its socket is
+enabled instead (cupsd starts when something asks; its path unit stays off,
+because that starts cupsd at every boot once cupsd has run), and
+`/etc/cups/cupsd.conf` is changed to listen on no network port, not announce
+or look for printers, and serve no web page. Avahi, which CUPS asks over the
+bus to find printers on the network and which would otherwise announce this
+computer on every network at boot, is enabled and then has the one link that
+starts it at boot removed: what stays is the alias the bus starts it by, so
+the first search starts it, and it stays up until the next boot. It uses the
+update's polkit action and its password.
+
 ## Tests
 
 `cargo test -p sengi-update`: the apt and Flatpak formats against samples
@@ -120,7 +153,12 @@ plan, not root); cancel before the install and no cancel in it; the order and
 the exact arguments of every command the helper runs, with a fake `apt-get`;
 the whole pkexec path with a fake `pkexec` that asks for a password on its
 controlling terminal, including the right, the wrong and no password; Flatpak
-with a fake `flatpak`. The fakes are shell scripts in a temporary directory.
+with a fake `flatpak`; `install-package`: every name that is not on the list
+and every malformed argument list (nothing is run), the exact commands with a
+fake `apt-get` and `systemctl`, the cups configuration before and after, a
+failed download that sets nothing up, and the live system. `elevate.rs`, the
+part of the pkexec path that Settings, Printers shares, is tested with the
+same fake `pkexec`. The fakes are shell scripts in a temporary directory.
 The helper only takes a made-up system (`SENGI_UPDATE_TEST_DIR`) when it is
 not root.
 

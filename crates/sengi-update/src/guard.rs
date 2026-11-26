@@ -19,6 +19,13 @@ pub struct Paths {
     pub locks: Vec<PathBuf>,
     pub reboot_required: PathBuf,
     pub mounts: PathBuf,
+    /// What `install-package` sets up after a package that needs it: the
+    /// CUPS configuration, and systemctl to say which of its units start
+    /// at boot.
+    pub cupsd_conf: PathBuf,
+    pub systemctl: PathBuf,
+    /// Where `systemctl enable` links the units wanted by multi-user.target.
+    pub boot_wants: PathBuf,
 }
 
 impl Paths {
@@ -36,6 +43,9 @@ impl Paths {
             .collect(),
             reboot_required: PathBuf::from("/run/reboot-required"),
             mounts: PathBuf::from("/proc/mounts"),
+            cupsd_conf: PathBuf::from("/etc/cups/cupsd.conf"),
+            systemctl: PathBuf::from("/usr/bin/systemctl"),
+            boot_wants: PathBuf::from("/etc/systemd/system/multi-user.target.wants"),
         }
     }
 
@@ -46,6 +56,9 @@ impl Paths {
             locks: vec![root.join("var/lib/dpkg/lock-frontend")],
             reboot_required: root.join("run/reboot-required"),
             mounts: root.join("proc/mounts"),
+            cupsd_conf: root.join("etc/cups/cupsd.conf"),
+            systemctl: root.join("systemctl"),
+            boot_wants: root.join("etc/systemd/system/multi-user.target.wants"),
         }
     }
 }

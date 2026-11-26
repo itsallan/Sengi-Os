@@ -35,11 +35,14 @@ pub const CANCELLED: i32 = 3;
 pub const REFUSED: i32 = 4;
 
 pub const HELP: &str = "\
-Usage: sengi-update check | apply | status
+Usage: sengi-update check | apply | status | install-package cups
 
   check    list what could be updated, as JSON lines
   apply    update the system's packages (needs root)
   status   say what would stop an update, as one JSON line
+  install-package cups
+           install the print system (needs root). Only the names in a
+           short list built into the program are accepted
   -h, --help
   -V, --version
 ";
@@ -321,6 +324,270 @@ pub fn apply_system(
     finish(end, emit)
 }
 
+/// What `install-package` accepts: a name, and the packages it installs.
+/// The name that was typed is only looked up here; what apt-get is given
+/// is the right-hand side, never anything of the caller's.
+///
+/// `avahi-daemon` is there because CUPS finds network printers through it
+/// (`lpinfo -v` lists nothing under `dnssd` without it).
+pub const INSTALLABLE: [(&str, &[&str]); 1] = [("cups", &["cups", "cups-client", "avahi-daemon"])];
+
+/// The packages for an allowed name.
+pub fn installable(name: &str) -> Option<&'static [&'static str]> {
+    INSTALLABLE
+        .iter()
+        .find(|(allowed, _)| *allowed == name)
+        .map(|(_, packages)| *packages)
+}
+
+/// What the CUPS configuration is changed to: no listening on the
+/// network, no announcing or looking for printers, no web page. Anything
+/// else in the file is left as it was.
+pub fn harden_cupsd_conf(text: &str) -> String {
+    let mut out = String::new();
+    for line in text.lines() {
+        let words = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        match words.as_str() {
+            "Listen localhost:631" => continue,
+            "Browsing Yes" => out.push_str("Browsing No"),
+            "BrowseLocalProtocols dnssd" => out.push_str("BrowseLocalProtocols none"),
+            "WebInterface Yes" => out.push_str("WebInterface No"),
+            _ => out.push_str(line),
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// A systemctl command with an environment of our own.
+fn systemctl(paths: &Paths, args: &[&str]) -> Result<(), String> {
+    let mut command = std::process::Command::new(&paths.systemctl);
+    command
+        .env_clear()
+        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
+        .env("LC_ALL", "C")
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    let mut child =
+        run::spawn_group(&mut command).map_err(|e| format!("Could not run systemctl: {e}"))?;
+    let errors = child.stderr.take().map(run::collect);
+    let status = child
+        .wait()
+        .map_err(|e| format!("Could not run systemctl: {e}"))?;
+    let errors = errors.and_then(|t| t.join().ok()).unwrap_or_default();
+    if status.success() {
+        Ok(())
+    } else {
+        let said = crate::last_line(&errors);
+        Err(if said.is_empty() {
+            format!("systemctl {} failed", args.join(" "))
+        } else {
+            said
+        })
+    }
+}
+
+/// What is done after CUPS is installed, so that it is as it would be if
+/// the image had been made with it: Debian enables `cups.service` for
+/// boot, which would keep cupsd in memory from the first second; what
+/// should be enabled is its socket, which starts it when something asks.
+/// Disabling the service takes the socket and the path unit with it, so
+/// the socket is enabled again. The path unit stays off: it starts cupsd
+/// whenever `/var/cache/cups/org.cups.cupsd` exists, and cupsd leaves that
+/// file behind, so with it every boot after the first print would start
+/// cupsd. (Jobs left over wait until something asks.)
+fn set_up_cups(paths: &Paths) -> Result<(), String> {
+    match std::fs::read_to_string(&paths.cupsd_conf) {
+        Ok(text) => {
+            let hardened = harden_cupsd_conf(&text);
+            if hardened != text {
+                let mut tmp = paths.cupsd_conf.clone().into_os_string();
+                tmp.push(".sengi-new");
+                let tmp = PathBuf::from(tmp);
+                let written = std::fs::write(&tmp, hardened).and_then(|()| {
+                    let mode = std::fs::metadata(&paths.cupsd_conf)?.permissions();
+                    std::fs::set_permissions(&tmp, mode)?;
+                    std::fs::rename(&tmp, &paths.cupsd_conf)
+                });
+                if let Err(e) = written {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(format!("Could not set up the print service: {e}"));
+                }
+            }
+        }
+        Err(e) => return Err(format!("Could not read the print service's settings: {e}")),
+    }
+    systemctl(paths, &["disable", "cups.service"])?;
+    systemctl(paths, &["enable", "cups.socket"])?;
+    set_up_avahi(paths)?;
+    // So that the settings are in effect now. Fine if it is not running.
+    systemctl(paths, &["try-restart", "cups.service"])
+}
+
+/// Avahi, which CUPS asks over the bus when it looks for printers on the
+/// network, is not to run at boot either: it would announce this computer
+/// on every network it joins, for something that is used now and then.
+/// The bus starts a service by an alias that `enable` links
+/// (`dbus-org.freedesktop.Avahi.service`), so the service is enabled and then
+/// only the link that makes it start at boot is taken away. The socket unit
+/// is off, and what the install started is stopped, so that the system is as
+/// it is after a boot.
+fn set_up_avahi(paths: &Paths) -> Result<(), String> {
+    systemctl(paths, &["enable", "avahi-daemon.service"])?;
+    match std::fs::remove_file(paths.boot_wants.join("avahi-daemon.service")) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(format!(
+                "Could not set up the network discovery service: {e}"
+            ))
+        }
+    }
+    systemctl(paths, &["disable", "avahi-daemon.socket"])?;
+    systemctl(paths, &["daemon-reload"])?;
+    // Not running is the state wanted, and a failure to get there is not
+    // worth failing the install for.
+    let _ = systemctl(
+        paths,
+        &["stop", "avahi-daemon.service", "avahi-daemon.socket"],
+    );
+    Ok(())
+}
+
+/// `install-package NAME`: installs what [`INSTALLABLE`] says for the name,
+/// and nothing else. The checks are the update's (not on the live
+/// system, not on a low battery, not while apt runs), and so is the way
+/// of working: refresh the lists, fetch, which can be cancelled, then
+/// install, which cannot. Nothing is removed.
+pub fn install_package(
+    tools: &Tools,
+    paths: &Paths,
+    name: &str,
+    stop: &AtomicBool,
+    emit: &mut dyn FnMut(Event),
+) -> i32 {
+    let Some(packages) = installable(name) else {
+        emit(Event::Failed {
+            message: format!("{name} is not a package that can be installed from here."),
+        });
+        return USAGE;
+    };
+    if let Err(refusal) = guard::allow_apply(paths) {
+        emit(refused(&refusal));
+        return REFUSED;
+    }
+    emit(Event::Phase(Phase::Refresh));
+    let mut mapper = Mapper::new(Phase::Refresh, None, 0);
+    let ran = run::apt_watch(tools, &strings(&["update"]), stop, |status| {
+        if let Some(progress) = mapper.map(status) {
+            emit(Event::Progress(progress));
+        }
+    });
+    match ran {
+        Err(e) => {
+            return finish(
+                Event::Failed {
+                    message: format!("Could not run apt-get: {e}"),
+                },
+                emit,
+            )
+        }
+        Ok(ran) if ran.stopped => return finish(Event::Cancelled, emit),
+        Ok(ran) if !ran.success() => {
+            return finish(
+                Event::Failed {
+                    message: ran.problem(),
+                },
+                emit,
+            )
+        }
+        Ok(_) => {}
+    }
+    let count = packages.len() as u32;
+    let install = |download_only: bool| {
+        let mut args = strings(&["-y"]);
+        if download_only {
+            args.push("-d".to_string());
+        }
+        args.extend(strings(&[
+            "--no-install-recommends",
+            "--no-remove",
+            "-o",
+            "Dpkg::Options::=--force-confdef",
+            "-o",
+            "Dpkg::Options::=--force-confold",
+            "install",
+        ]));
+        args.extend(packages.iter().map(|p| p.to_string()));
+        args
+    };
+
+    emit(Event::Phase(Phase::Download));
+    let mut mapper = Mapper::new(Phase::Download, None, count);
+    let ran = run::apt_watch(tools, &install(true), stop, |status| {
+        if let Some(progress) = mapper.map(status) {
+            emit(Event::Progress(progress));
+        }
+    });
+    match ran {
+        Err(e) => {
+            return finish(
+                Event::Failed {
+                    message: format!("Could not run apt-get: {e}"),
+                },
+                emit,
+            )
+        }
+        Ok(ran) if ran.stopped => return finish(Event::Cancelled, emit),
+        Ok(ran) if !ran.success() => {
+            return finish(
+                Event::Failed {
+                    message: ran.problem(),
+                },
+                emit,
+            )
+        }
+        Ok(_) => {}
+    }
+    if stop.load(Ordering::SeqCst) {
+        return finish(Event::Cancelled, emit);
+    }
+
+    // From here nothing the caller does ends it.
+    emit(Event::Phase(Phase::Install));
+    let never = AtomicBool::new(false);
+    let mut mapper = Mapper::new(Phase::Install, None, count);
+    let ran = run::apt_watch(tools, &install(false), &never, |status| {
+        if let Some(progress) = mapper.map(status) {
+            emit(Event::Progress(progress));
+        }
+    });
+    let end = match ran {
+        Err(e) => Event::Failed {
+            message: format!("Could not run apt-get: {e}"),
+        },
+        Ok(ran) if !ran.success() => Event::Failed {
+            message: ran.problem(),
+        },
+        Ok(_) => match name {
+            "cups" => match set_up_cups(paths) {
+                Ok(()) => Event::Done {
+                    upgraded: count,
+                    reboot_required: false,
+                },
+                Err(message) => Event::Failed { message },
+            },
+            _ => Event::Done {
+                upgraded: count,
+                reboot_required: false,
+            },
+        },
+    };
+    finish(end, emit)
+}
+
 /// Says how it ended and gives the exit status that goes with it.
 fn finish(event: Event, emit: &mut dyn FnMut(Event)) -> i32 {
     let code = match &event {
@@ -342,6 +609,7 @@ pub fn main_with(args: &[String]) -> i32 {
         let _ = writeln!(out, "{}", event.to_line());
         let _ = out.flush();
     };
+    let mut package: Option<&str> = None;
     let command = match args {
         [one] if one == "-h" || one == "--help" => {
             print!("{HELP}");
@@ -352,6 +620,12 @@ pub fn main_with(args: &[String]) -> i32 {
             return OK;
         }
         [one] if matches!(one.as_str(), "check" | "apply" | "status") => one.as_str(),
+        // The one name that is looked up before anything runs. Any other
+        // is refused here, with the usage.
+        [one, name] if one == "install-package" && installable(name).is_some() => {
+            package = Some(name.as_str());
+            "install-package"
+        }
         _ => {
             eprint!("{HELP}");
             return USAGE;
@@ -409,6 +683,14 @@ pub fn main_with(args: &[String]) -> i32 {
                 }
                 Err(event) => finish(event, &mut emit),
             }
+        }
+        "install-package" => {
+            if !root && test_dir.is_none() {
+                emit(refused(&Refusal::NotRoot));
+                return REFUSED;
+            }
+            watch_for_cancel();
+            install_package(&tools, &paths, package.unwrap_or(""), &STOP, &mut emit)
         }
         _ => {
             if !root && test_dir.is_none() {
@@ -813,9 +1095,222 @@ esac
             vec!["install", "vim"],
             vec!["check", "apply"],
             vec!["APPLY"],
+            vec!["install-package"],
+            vec!["install-package", "vim"],
+            vec!["install-package", "cups", "vim"],
+            vec!["install-package", "cups;vim"],
+            vec!["install-package", "cups,vim"],
+            vec!["install-package", "CUPS"],
+            vec!["install-package", "-y"],
+            vec!["install-package", ""],
+            vec!["install-package", "cups-client"],
         ] {
             let args: Vec<String> = bad.iter().map(|a| a.to_string()).collect();
             assert_eq!(main_with(&args), USAGE, "{bad:?}");
         }
+    }
+
+    const CUPSD: &str = "\
+LogLevel warn
+Listen localhost:631
+Listen /run/cups/cups.sock
+Browsing Yes
+BrowseLocalProtocols dnssd
+WebInterface Yes
+IdleExitTimeout 60
+<Location />
+  Order allow,deny
+</Location>
+";
+
+    /// A system with the print system's settings and a fake systemctl.
+    fn cups_setup() -> (PathBuf, Tools, Paths) {
+        let (dir, tools, paths) = setup("");
+        std::fs::create_dir_all(dir.join("etc/cups")).unwrap();
+        std::fs::write(dir.join("etc/cups/cupsd.conf"), CUPSD).unwrap();
+        // What `systemctl enable avahi-daemon` leaves behind.
+        let units = dir.join("etc/systemd/system");
+        std::fs::create_dir_all(units.join("multi-user.target.wants")).unwrap();
+        std::fs::write(
+            units.join("multi-user.target.wants/avahi-daemon.service"),
+            "",
+        )
+        .unwrap();
+        std::fs::write(units.join("dbus-org.freedesktop.Avahi.service"), "").unwrap();
+        script(
+            &dir,
+            "systemctl",
+            "echo \"$*\" >>\"$(dirname \"$0\")/systemctl.log\"",
+        );
+        (dir, tools, paths)
+    }
+
+    fn run_install(
+        tools: &Tools,
+        paths: &Paths,
+        name: &str,
+        stop: &AtomicBool,
+    ) -> (i32, Vec<Event>) {
+        let mut events = Vec::new();
+        let code = install_package(tools, paths, name, stop, &mut |e| events.push(e));
+        (code, events)
+    }
+
+    #[test]
+    fn the_print_system_is_installed_with_the_packages_on_the_list_only() {
+        let (dir, tools, paths) = cups_setup();
+        let (code, events) = run_install(&tools, &paths, "cups", &AtomicBool::new(false));
+        assert_eq!(code, OK, "{events:?}");
+        assert_eq!(
+            events.last(),
+            Some(&Event::Done {
+                upgraded: 3,
+                reboot_required: false
+            })
+        );
+        let phases: Vec<Phase> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Phase(p) => Some(*p),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(phases, [Phase::Refresh, Phase::Download, Phase::Install]);
+        let log = calls(&dir);
+        assert_eq!(log.len(), 3, "{log:?}");
+        assert!(log[0].contains(" update"), "{}", log[0]);
+        assert!(log[1].contains(" -y -d --no-install-recommends --no-remove "));
+        assert!(
+            log[1].contains(" install cups cups-client avahi-daemon"),
+            "{}",
+            log[1]
+        );
+        assert!(log[2].contains(" -y --no-install-recommends --no-remove "));
+        assert!(log[2].contains("Dpkg::Options::=--force-confold"));
+        assert!(
+            log[2].contains(" install cups cups-client avahi-daemon"),
+            "{}",
+            log[2]
+        );
+        for line in &log {
+            let words: Vec<&str> = line.split_whitespace().collect();
+            for banned in ["dist-upgrade", "full-upgrade", "upgrade", "remove", "purge"] {
+                assert!(!words.contains(&banned), "{line}");
+            }
+        }
+    }
+
+    #[test]
+    fn after_the_install_cups_starts_on_demand_and_not_at_boot() {
+        let (dir, tools, paths) = cups_setup();
+        let (code, _) = run_install(&tools, &paths, "cups", &AtomicBool::new(false));
+        assert_eq!(code, OK);
+        let systemctl = std::fs::read_to_string(dir.join("systemctl.log")).unwrap();
+        assert_eq!(
+            systemctl.lines().collect::<Vec<_>>(),
+            [
+                "disable cups.service",
+                "enable cups.socket",
+                "enable avahi-daemon.service",
+                "disable avahi-daemon.socket",
+                "daemon-reload",
+                "stop avahi-daemon.service avahi-daemon.socket",
+                "try-restart cups.service"
+            ]
+        );
+        // The link that would start Avahi at boot is gone, and the one that
+        // lets the bus start it was not touched.
+        assert!(!dir
+            .join("etc/systemd/system/multi-user.target.wants/avahi-daemon.service")
+            .exists());
+        assert!(dir
+            .join("etc/systemd/system/dbus-org.freedesktop.Avahi.service")
+            .exists());
+        let conf = std::fs::read_to_string(dir.join("etc/cups/cupsd.conf")).unwrap();
+        assert!(conf.contains("Browsing No\n"));
+        assert!(conf.contains("BrowseLocalProtocols none\n"));
+        assert!(conf.contains("WebInterface No\n"));
+        assert!(!conf.contains("Listen localhost"));
+        assert!(conf.contains("Listen /run/cups/cups.sock\n"));
+        assert!(!dir.join("etc/cups/cupsd.conf.sengi-new").exists());
+    }
+
+    #[test]
+    fn the_configuration_changes_only_what_it_means_to() {
+        assert_eq!(
+            harden_cupsd_conf(CUPSD),
+            "LogLevel warn\nListen /run/cups/cups.sock\nBrowsing No\n\
+             BrowseLocalProtocols none\nWebInterface No\nIdleExitTimeout 60\n\
+             <Location />\n  Order allow,deny\n</Location>\n"
+        );
+        // Already as wanted: nothing changes.
+        let once = harden_cupsd_conf(CUPSD);
+        assert_eq!(harden_cupsd_conf(&once), once);
+        // A comment that mentions a setting is not the setting.
+        assert_eq!(harden_cupsd_conf("# Browsing Yes\n"), "# Browsing Yes\n");
+    }
+
+    #[test]
+    fn a_failure_to_set_up_is_a_failure_of_the_install() {
+        let (dir, tools, paths) = cups_setup();
+        script(
+            &dir,
+            "systemctl",
+            "echo 'Failed to enable unit' >&2; exit 1",
+        );
+        let (code, events) = run_install(&tools, &paths, "cups", &AtomicBool::new(false));
+        assert_eq!(code, FAILED);
+        match events.last() {
+            Some(Event::Failed { message }) => {
+                assert!(message.contains("Failed to enable unit"), "{message}")
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_name_that_is_not_on_the_list_installs_nothing() {
+        let (dir, tools, paths) = cups_setup();
+        for name in ["vim", "cups-client", "cups cups-client", "-y", "", "CUPS"] {
+            let (code, events) = run_install(&tools, &paths, name, &AtomicBool::new(false));
+            assert_eq!(code, USAGE, "{name:?}");
+            assert!(matches!(events.last(), Some(Event::Failed { .. })));
+        }
+        assert!(calls(&dir).is_empty(), "apt-get was run");
+        assert!(!dir.join("systemctl.log").exists());
+    }
+
+    #[test]
+    fn the_live_system_and_a_busy_apt_stop_the_install_before_it_starts() {
+        let (dir, tools, paths) = cups_setup();
+        std::fs::create_dir_all(dir.join("proc")).unwrap();
+        std::fs::write(dir.join("proc/mounts"), "overlay / overlay rw 0 0\n").unwrap();
+        let (code, events) = run_install(&tools, &paths, "cups", &AtomicBool::new(false));
+        assert_eq!(code, REFUSED);
+        assert!(matches!(events.last(), Some(Event::Refused { code, .. }) if code == "live"));
+        assert!(calls(&dir).is_empty());
+    }
+
+    #[test]
+    fn a_failed_download_installs_nothing_and_sets_nothing_up() {
+        let (dir, _, paths) = cups_setup();
+        let tools = Tools {
+            apt_get: script(
+                &dir,
+                "apt-get",
+                "echo \"$*\" >>\"$(dirname \"$0\")/calls.log\"; \
+                 case \" $* \" in *\" -d \"*) echo 'E: Failed to fetch' >&2; exit 100;; esac",
+            ),
+            ..Tools::system()
+        };
+        let (code, events) = run_install(&tools, &paths, "cups", &AtomicBool::new(false));
+        assert_eq!(code, FAILED);
+        assert!(
+            matches!(events.last(), Some(Event::Failed { message }) if message.contains("Failed to fetch"))
+        );
+        assert_eq!(calls(&dir).len(), 2);
+        assert!(!dir.join("systemctl.log").exists());
+        let conf = std::fs::read_to_string(dir.join("etc/cups/cupsd.conf")).unwrap();
+        assert_eq!(conf, CUPSD);
     }
 }
