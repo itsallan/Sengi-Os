@@ -211,6 +211,9 @@ pub struct State {
     pub keyboard_client: Option<ClientId>,
     /// The surface whose pointer constraint is in force.
     pub constrained: Option<WlSurface>,
+    /// The keyboard moved: the constraint is looked at again at the end of
+    /// this turn of the loop.
+    constraint_stale: bool,
     /// What a drag carries along under the pointer.
     pub drag_icon: Option<WlSurface>,
     /// The surfaces that ask for the session not to go idle.
@@ -288,6 +291,9 @@ pub struct State {
     pub hovered_group: Option<Window>,
     /// A move, resize or button press the pointer is in the middle of.
     pub drag: Option<Drag>,
+    /// A drag whose button came up, and where, until it has been carried
+    /// out. See `release_drag`.
+    pub released_drag: Option<(Drag, Point<f64, Logical>)>,
     /// The last press on a title bar: a second one right after maximises.
     pub titlebar_press: Option<(Window, Instant, (i32, i32))>,
     /// The pointer may be over something else than its focus says, and
@@ -569,6 +575,7 @@ impl State {
             output_scale: 1.0,
             keyboard_client: None,
             constrained: None,
+            constraint_stale: false,
             drag_icon: None,
             idle_inhibitors: Vec::new(),
             _idle_inhibit_state: idle_inhibit_state,
@@ -608,6 +615,7 @@ impl State {
             hovered_button: None,
             hovered_group: None,
             drag: None,
+            released_drag: None,
             titlebar_press: None,
             pointer_stale: false,
             swallowed_keys: Swallowed::default(),
@@ -668,6 +676,9 @@ impl State {
         event_loop.run(None, &mut self, |state| {
             state.space.refresh();
             state.popups.cleanup();
+            if std::mem::take(&mut state.constraint_stale) {
+                state.settle_pointer_constraint();
+            }
             state.sync_pointer_focus();
             state.refresh_foreign_toplevels();
             state.refresh_idle_inhibit();
@@ -1466,9 +1477,13 @@ impl SeatHandler for State {
         let client = focused.and_then(|surface| self.display_handle.get_client(surface.id()).ok());
         set_data_device_focus(&self.display_handle, seat, client.clone());
         set_primary_focus(&self.display_handle, seat, client.clone());
-        // And so does the right to hold the pointer.
+        // And so does the right to hold the pointer. Not settled here: the
+        // keyboard also moves while a pointer grab is handling an event (a
+        // title bar button, a click that closes a menu, the lock taking a
+        // grab away), when the pointer is locked and asking it anything
+        // stops the compositor for good.
         self.keyboard_client = client.map(|client| client.id());
-        self.settle_pointer_constraint();
+        self.constraint_stale = true;
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {

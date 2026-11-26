@@ -91,7 +91,10 @@ impl PointerGrab<State> for FrameGrab {
     ) {
         handle.button(data, event);
         if event.state == ButtonState::Released && event.button == self.start.button {
-            data.finish_drag(handle.current_location());
+            // What the release does is left until the pointer is free again,
+            // see `release_drag`.
+            let at = handle.current_location();
+            data.released_drag = data.drag.take().map(|drag| (drag, at));
             handle.unset_grab(self, data, event.serial, event.time, true);
         }
     }
@@ -554,6 +557,7 @@ impl State {
                 time,
             },
         );
+        self.release_drag();
         pointer.frame(self);
     }
 
@@ -800,24 +804,27 @@ impl State {
         }
     }
 
-    /// The button that started the drag came up. Called by the grab, so
-    /// nothing in here may use the pointer handle.
-    fn finish_drag(&mut self, location: Point<f64, Logical>) {
+    /// Does what letting go of the button of a drag asks for. Not from
+    /// inside the grab: the pointer is locked there, and minimising a window
+    /// moves the keyboard and with it much else.
+    fn release_drag(&mut self) {
+        let Some((drag, location)) = self.released_drag.take() else {
+            return;
+        };
         let (x, y) = cell(location);
         self.clear_snap_hint();
-        match self.drag.take() {
-            Some(Drag::Resize { window, .. }) => window::finish_resize(&window),
-            Some(Drag::Press { window, button }) => {
+        match drag {
+            Drag::Resize { window, .. } => window::finish_resize(&window),
+            Drag::Press { window, button } => {
                 if self.button_at(&window, x, y) == Some(button) {
                     self.press_button(&window, button);
                 }
             }
             // Nothing is snapped or maximised under the lock.
-            Some(Drag::Move { window, .. }) if !self.is_locked() => {
+            Drag::Move { window, .. } if !self.is_locked() => {
                 self.snap_after_move(&window, (location.x, location.y));
             }
-            Some(Drag::Move { .. }) => {}
-            None => {}
+            Drag::Move { .. } => {}
         }
     }
 
