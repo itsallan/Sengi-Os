@@ -7,6 +7,7 @@ const SPACE: u32 = 0x0020;
 pub const RETURN: u32 = 0xff0d;
 pub const KP_ENTER: u32 = 0xff8d;
 pub const ESCAPE: u32 = 0xff1b;
+pub const DELETE: u32 = 0xffff;
 const TAB: u32 = 0xff09;
 const F4: u32 = 0xffc1;
 pub const LEFT: u32 = 0xff51;
@@ -48,6 +49,8 @@ pub enum Action {
     Launcher,
     Terminal,
     Lock,
+    /// Super+V: the history of what was copied.
+    ClipboardHistory,
     /// Super+/: the cheat sheet of these bindings.
     Shortcuts,
     CloseWindow,
@@ -77,6 +80,8 @@ pub enum Step {
     Down,
     Activate,
     Cancel,
+    /// Delete: drops the entry of the clipboard history that is selected.
+    Remove,
 }
 
 /// A side of a screen, for snapping and moving windows to it.
@@ -136,6 +141,7 @@ pub fn binding_symbol(keysym: u32, keycode: u32) -> u32 {
     match keycode.wrapping_sub(8) {
         16 => u32::from(b'q'),
         38 => u32::from(b'l'),
+        47 => u32::from(b'v'),
         _ => keysym,
     }
 }
@@ -266,6 +272,7 @@ const fn unlisted(mut bind: Bind) -> Bind {
 const LETTER_A: u32 = b'a' as u32;
 const LETTER_L: u32 = b'l' as u32;
 const LETTER_Q: u32 = b'q' as u32;
+const LETTER_V: u32 = b'v' as u32;
 const SLASH: u32 = b'/' as u32;
 const F1: u32 = 0xffbe;
 
@@ -274,6 +281,7 @@ pub const BINDINGS: &[Bind] = &[
     bind(Section::Apps, "Space", LOGO, &[SPACE], only_logo, Action::Launcher, "Search and open apps"),
     bind(Section::Apps, "Return", LOGO, &[RETURN], only_logo, Action::Terminal, "Open a terminal"),
     bind(Section::Apps, "L", LOGO, &[LETTER_L], only_logo, Action::Lock, "Lock the screen"),
+    bind(Section::Apps, "V", LOGO, &[LETTER_V], only_logo, Action::ClipboardHistory, "Clipboard history (turn it on in Settings)"),
     bind(Section::Apps, "/", LOGO, &[SLASH, F1], only_logo, Action::Shortcuts, "Show these shortcuts (also Super+F1)"),
     bind(Section::Windows, "Q", LOGO, &[LETTER_Q], only_logo, Action::CloseWindow, "Close the window"),
     bind(Section::Windows, "F4", ALT, &[F4], only_alt, Action::CloseWindow, "Close the window"),
@@ -419,6 +427,7 @@ pub fn command(action: Action) -> Option<&'static str> {
         | Action::PreviousWindow
         | Action::Overlay(_)
         | Action::Shortcuts
+        | Action::ClipboardHistory
         | Action::Maximise
         | Action::Snap(_)
         | Action::MoveToEdge(_)
@@ -744,6 +753,29 @@ mod tests {
         assert_eq!(binding(ALT, u32::from(b'/')), None);
         assert_eq!(command(Action::Shortcuts), None);
         assert!(!works_when_locked(Action::Shortcuts));
+    }
+
+    #[test]
+    fn super_v_opens_the_clipboard_history_and_the_sheet_says_so() {
+        assert_eq!(
+            binding(LOGO, u32::from(b'v')),
+            Some(Action::ClipboardHistory)
+        );
+        assert_eq!(
+            binding(LOGO, u32::from(b'V')),
+            Some(Action::ClipboardHistory)
+        );
+        assert_eq!(binding(Mods::default(), u32::from(b'v')), None);
+        assert_eq!(binding(Mods { ctrl: true, ..LOGO }, u32::from(b'v')), None);
+        assert_eq!(command(Action::ClipboardHistory), None);
+        assert!(!works_when_locked(Action::ClipboardHistory));
+        // The Cyrillic key where V is.
+        assert_eq!(binding_symbol(0x06cd, 47 + 8), u32::from(b'v'));
+        let sheet = cheat_sheet();
+        assert!(sheet
+            .iter()
+            .flat_map(|(_, lines)| lines)
+            .any(|line| line.0 == "Super+V" && line.1.contains("Clipboard history")));
     }
 
     #[test]

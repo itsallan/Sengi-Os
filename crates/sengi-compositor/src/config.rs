@@ -17,6 +17,14 @@ pub struct Config {
     pub appearance: Appearance,
     pub power: Power,
     pub display: Display,
+    pub clipboard: Clipboard,
+}
+
+/// What `clipboard.*` says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Clipboard {
+    /// Whether the last texts copied are kept, in memory, to paste again.
+    pub history: bool,
 }
 
 /// What `display.*` says: which output the bar and dock go to, and the
@@ -266,6 +274,9 @@ impl Config {
                     strength: settings.number("display", "night-strength").clamp(0, 100) as u32,
                 },
             },
+            clipboard: Clipboard {
+                history: settings.flag("clipboard", "history"),
+            },
             appearance: Appearance {
                 window_shadows: settings.flag("appearance", "window-shadows"),
                 light: settings.light(),
@@ -505,6 +516,12 @@ mod tests {
         assert_eq!((mouse.click_method, mouse.scroll_method), (None, None));
         let pad = config("[touchpad]\nscroll-method = \"edge\"\n").pointing(Kind::Touchpad);
         assert_eq!(pad.scroll_method, Some(ScrollMethod::Edge));
+    }
+
+    #[test]
+    fn the_clipboard_history_is_off_unless_asked_for() {
+        assert!(!config("").clipboard.history);
+        assert!(config("[clipboard]\nhistory = true\n").clipboard.history);
     }
 
     #[test]

@@ -5,6 +5,7 @@
 mod apps;
 mod card;
 mod cli;
+mod clipboard;
 mod config;
 mod cursor;
 mod decoration;

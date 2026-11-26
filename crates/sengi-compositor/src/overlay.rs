@@ -17,6 +17,7 @@ use smithay::{
 
 use crate::{
     card::{self, Layout, Row, Sheet, Tile},
+    clipboard,
     keys::{self, Action},
     outputs::scale_key,
     render::OutputElement,
@@ -35,6 +36,12 @@ pub enum Overlay {
     },
     /// Super+/: the keyboard shortcuts, on the screen that was active.
     Shortcuts { output: Output },
+    /// Super+V: the clipboard history, as a list in the middle of the
+    /// screen that was active. `selected` is a row of the list.
+    Clipboard {
+        selected: Option<usize>,
+        output: Output,
+    },
     /// A menu, at the pointer where it was opened (logical, on the desktop).
     Menu {
         kind: MenuKind,
@@ -117,6 +124,7 @@ impl State {
             Some(Overlay::Switcher { .. }) => "overlay: switcher",
             Some(Overlay::Menu { .. }) => "overlay: menu",
             Some(Overlay::Shortcuts { .. }) => "overlay: shortcuts",
+            Some(Overlay::Clipboard { .. }) => "overlay: clipboard",
         }
     }
 
@@ -220,6 +228,10 @@ impl State {
 
     /// The arrow keys in a menu: moves the selection, skipping lines.
     pub fn move_menu(&mut self, step: i32) {
+        if matches!(self.overlay, Some(Overlay::Clipboard { .. })) {
+            self.move_clipboard(step);
+            return;
+        }
         let Some(Overlay::Menu {
             kind,
             selected,
@@ -272,6 +284,10 @@ impl State {
                     self.run_item(item, &kind);
                 }
             }
+            Some(Overlay::Clipboard {
+                selected: Some(index),
+                ..
+            }) => self.run_clipboard_row(index),
             _ => {}
         }
         self.request_redraw();
@@ -333,6 +349,11 @@ impl State {
                     }
                 }
             }
+            Some(Overlay::Clipboard { .. }) => {
+                if let Some(index) = hit {
+                    self.run_clipboard_row(index);
+                }
+            }
             // Any press closes the sheet, whatever is under it.
             Some(Overlay::Shortcuts { .. }) | None => {}
         }
@@ -341,14 +362,19 @@ impl State {
 
     /// The pointer moved: a menu selects the item under it.
     pub fn overlay_motion(&mut self, location: (f64, f64)) {
-        if !matches!(self.overlay, Some(Overlay::Menu { .. })) {
+        if !matches!(
+            self.overlay,
+            Some(Overlay::Menu { .. } | Overlay::Clipboard { .. })
+        ) {
             return;
         }
         let Some(output) = self.overlay_output() else {
             return;
         };
         let hit = self.overlay_part_at(&output, location);
-        if let Some(Overlay::Menu { selected, .. }) = self.overlay.as_mut() {
+        if let Some(Overlay::Menu { selected, .. } | Overlay::Clipboard { selected, .. }) =
+            self.overlay.as_mut()
+        {
             if *selected != hit {
                 *selected = hit;
                 self.request_redraw();
@@ -362,6 +388,7 @@ impl State {
             Some(
                 Overlay::Switcher { output: on, .. }
                 | Overlay::Menu { output: on, .. }
+                | Overlay::Clipboard { output: on, .. }
                 | Overlay::Shortcuts { output: on },
             ) => on == output,
             None => false,
@@ -373,6 +400,7 @@ impl State {
         let output = match self.overlay.as_ref()? {
             Overlay::Switcher { output, .. }
             | Overlay::Menu { output, .. }
+            | Overlay::Clipboard { output, .. }
             | Overlay::Shortcuts { output } => output,
         };
         self.head(output)
@@ -428,6 +456,23 @@ impl State {
                 let layout = card::switcher(theme, font, &tiles, screen_w);
                 let left = (screen_w - layout.width) / 2;
                 let top = (screen_h - layout.height) / 2;
+                Some((layout, (left, top)))
+            }
+            Overlay::Clipboard { .. } => {
+                let labels = self.clipboard_labels();
+                let rows: Vec<Row> = labels
+                    .iter()
+                    .map(|label| match label {
+                        Some(text) => Row::Item(text),
+                        None => Row::Separator,
+                    })
+                    .collect();
+                let width = (theme.card.menu_width * 3 / 2)
+                    .min(screen_w - 2 * theme.card.margin)
+                    .max(1);
+                let layout = card::list(theme, font, &rows, width);
+                let left = ((screen_w - layout.width) / 2).max(0);
+                let top = ((screen_h - layout.height) / 2).max(0);
                 Some((layout, (left, top)))
             }
             Overlay::Menu { kind, at, .. } => {
@@ -492,6 +537,116 @@ impl State {
         self.request_redraw();
     }
 
+    /// Super+V: shows the clipboard history, or takes it away.
+    pub fn toggle_clipboard_history(&mut self) {
+        if matches!(self.overlay, Some(Overlay::Clipboard { .. })) {
+            self.close_overlay();
+            return;
+        }
+        if self.overlay.is_some() || !self.may_open_overlay() {
+            return;
+        }
+        let Some(output) = self.active_output() else {
+            return;
+        };
+        let selected = (self.config.clipboard.history && !self.clipboard.is_empty()).then_some(0);
+        self.overlay = Some(Overlay::Clipboard { selected, output });
+        self.request_redraw();
+    }
+
+    /// The lines of the clipboard list, in order; `None` is a separator.
+    /// Texts are cut to one line here; nothing else is ever shown of them.
+    fn clipboard_labels(&self) -> Vec<Option<String>> {
+        if !self.config.clipboard.history {
+            return vec![Some(
+                "Clipboard history is off. Turn it on in Settings.".to_string(),
+            )];
+        }
+        if self.clipboard.is_empty() {
+            return vec![Some("Nothing copied yet".to_string())];
+        }
+        let mut labels: Vec<Option<String>> = self
+            .clipboard
+            .iter()
+            .map(|text| {
+                let line = clipboard::preview(text);
+                Some(if line.is_empty() {
+                    "(no visible text)".to_string()
+                } else {
+                    line
+                })
+            })
+            .collect();
+        labels.push(None);
+        labels.push(Some("Clear history".to_string()));
+        labels
+    }
+
+    /// What a row of the clipboard list does: an entry is pasted, the last
+    /// line clears. The note lines of an empty list do nothing.
+    fn run_clipboard_row(&mut self, row: usize) {
+        if !self.config.clipboard.history {
+            return;
+        }
+        let count = self.clipboard.len();
+        if row < count {
+            self.clipboard_paste(row);
+        } else if count > 0 && row == count + 1 {
+            self.clipboard_clear();
+        }
+    }
+
+    /// Up and Down in the clipboard list.
+    fn move_clipboard(&mut self, step: i32) {
+        let Some(output) = self.overlay_output() else {
+            return;
+        };
+        let Some((layout, _)) = self.card_on(&output) else {
+            return;
+        };
+        if let Some(Overlay::Clipboard { selected, .. }) = self.overlay.as_mut() {
+            *selected = layout.step(*selected, step);
+            self.request_redraw();
+        }
+    }
+
+    /// Delete in the clipboard list: the selected entry is forgotten.
+    pub fn remove_clipboard_entry(&mut self) {
+        let Some(Overlay::Clipboard {
+            selected: Some(row),
+            ..
+        }) = self.overlay
+        else {
+            return;
+        };
+        if self.config.clipboard.history && row < self.clipboard.len() {
+            self.clipboard.remove(row);
+            self.clamp_clipboard_selection();
+            self.request_redraw();
+        }
+    }
+
+    /// Keeps the selected row of the clipboard list on an entry that is
+    /// still there, after the list changed under it.
+    pub fn clamp_clipboard_selection(&mut self) {
+        let count = self.clipboard.len();
+        let listed = self.config.clipboard.history && count > 0;
+        if let Some(Overlay::Clipboard { selected, .. }) = self.overlay.as_mut() {
+            *selected = listed.then(|| selected.unwrap_or(0).min(count - 1));
+        }
+    }
+
+    /// The setting may have changed: off means nothing is kept, and a list
+    /// that is open closes.
+    pub fn apply_clipboard_config(&mut self) {
+        if !self.config.clipboard.history {
+            self.clipboard_clear();
+            if matches!(self.overlay, Some(Overlay::Clipboard { .. })) {
+                self.close_overlay();
+            }
+        }
+    }
+
     /// The open card as a render element on `output`, drawn in the screen's
     /// pixels: nothing when no card is open there.
     pub fn overlay_element<R>(&self, output: &Output, renderer: &mut R) -> Option<OutputElement<R>>
@@ -507,7 +662,7 @@ impl State {
             let (layout, place) = self.card_on(output)?;
             let selected = match self.overlay.as_ref()? {
                 Overlay::Switcher { selected, .. } => Some(*selected),
-                Overlay::Menu { selected, .. } => *selected,
+                Overlay::Menu { selected, .. } | Overlay::Clipboard { selected, .. } => *selected,
                 Overlay::Shortcuts { .. } => None,
             };
             (layout.draw(theme, selected), place)

@@ -6,7 +6,7 @@ use std::{
     ffi::OsString,
     io::{Read, Write},
     os::{
-        fd::AsRawFd,
+        fd::{AsRawFd, OwnedFd},
         unix::{
             fs::PermissionsExt,
             net::{UnixListener, UnixStream},
@@ -29,7 +29,8 @@ use smithay::{
         allocator::dmabuf::Dmabuf,
         renderer::{utils::with_renderer_surface_state, Color32F},
     },
-    delegate_cursor_shape, delegate_data_device, delegate_output, delegate_seat, delegate_shm,
+    delegate_cursor_shape, delegate_data_control, delegate_data_device,
+    delegate_ext_data_control, delegate_output, delegate_seat, delegate_shm,
     desktop::{layer_map_for_output, PopupManager, Space, Window, WindowSurfaceType},
     input::{
         keyboard::XkbConfig,
@@ -73,7 +74,13 @@ use smithay::{
         selection::{
             data_device::{set_data_device_focus, DataDeviceHandler, DataDeviceState},
             primary_selection::{set_primary_focus, PrimarySelectionState},
-            SelectionHandler,
+            ext_data_control::{
+                DataControlHandler as ExtDataControlHandler, DataControlState as ExtDataControlState,
+            },
+            wlr_data_control::{
+                DataControlHandler as WlrDataControlHandler, DataControlState as WlrDataControlState,
+            },
+            SelectionHandler, SelectionSource, SelectionTarget,
         },
         session_lock::SessionLockManagerState,
         shell::{
@@ -291,6 +298,12 @@ pub struct State {
     /// started, and which one is selected.
     /// The window switcher or a menu, when one is open.
     pub overlay: Option<crate::overlay::Overlay>,
+    /// The texts copied last, when `clipboard.history` is on. Memory only.
+    pub clipboard: crate::clipboard::History,
+    /// The read of a text that was just copied, while it is under way.
+    pub clipboard_reading: Option<crate::clipboard::Reading>,
+    /// A read of the clipboard is waiting for the loop to be idle.
+    pub clipboard_scheduled: bool,
     /// A three-finger swipe on a touchpad, while the fingers are down.
     pub swipe: Option<crate::gesture::Active>,
     /// The bar and dock surfaces that asked for no output: they follow
@@ -340,6 +353,10 @@ pub struct State {
     pub shm_state: ShmState,
     pub seat_state: SeatState<Self>,
     pub data_device_state: DataDeviceState,
+    /// Held so the data-control globals stay alive: what clipboard managers
+    /// and tools without a window use. Not offered to sandboxed clients.
+    pub ext_data_control_state: ExtDataControlState,
+    pub wlr_data_control_state: WlrDataControlState,
     // Held so the xdg-output global stays alive.
     _output_manager_state: OutputManagerState,
     /// Every screen there is, switched on or not. See `outputs.rs`.
@@ -387,6 +404,17 @@ impl State {
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
         let data_device_state = DataDeviceState::new::<Self>(&dh);
+        let primary_selection_state = PrimarySelectionState::new::<Self>(&dh);
+        let ext_data_control_state = ExtDataControlState::new::<Self, _>(
+            &dh,
+            Some(&primary_selection_state),
+            security::trusted,
+        );
+        let wlr_data_control_state = WlrDataControlState::new::<Self, _>(
+            &dh,
+            Some(&primary_selection_state),
+            security::trusted,
+        );
 
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
@@ -440,6 +468,7 @@ impl State {
                     crate::say!("{}", state.night_status());
                     crate::say!("{}", state.snap_status());
                     crate::say!("{}", state.overlay_status());
+                    crate::say!("{}", state.clipboard_status());
                     let inputs = state.describe_inputs.as_ref().map(|describe| describe());
                     for line in inputs.unwrap_or_default() {
                         crate::say!("{line}");
@@ -531,7 +560,7 @@ impl State {
             overlay_buttons: Vec::new(),
             capture: None,
             _screencopy_state: crate::screencopy::ScreencopyState::new(&dh2),
-            primary_selection_state: PrimarySelectionState::new::<Self>(&dh2),
+            primary_selection_state,
             xdg_activation_state: XdgActivationState::new::<Self>(&dh2),
             _viewporter_state: ViewporterState::new::<Self>(&dh2),
             _fractional_scale_state: FractionalScaleManagerState::new::<Self>(&dh2),
@@ -583,6 +612,9 @@ impl State {
             pointer_stale: false,
             swallowed_keys: Swallowed::default(),
             overlay: None,
+            clipboard: Default::default(),
+            clipboard_reading: None,
+            clipboard_scheduled: false,
             swipe: None,
             primary_layers: Vec::new(),
             snap_hint: None,
@@ -614,6 +646,8 @@ impl State {
             shm_state,
             seat_state,
             data_device_state,
+            ext_data_control_state,
+            wlr_data_control_state,
             _output_manager_state: output_manager_state,
             heads: Vec::new(),
             scales_dirty: false,
@@ -1058,6 +1092,7 @@ impl State {
         keyboard.change_repeat_info(config.keyboard.repeat_rate, config.keyboard.repeat_delay);
         self.config = config;
         self.apply_power_config();
+        self.apply_clipboard_config();
     }
 
     /// Takes up the times and the lid setting of the settings in effect.
@@ -1209,6 +1244,7 @@ impl State {
             || self.config.appearance.cursor != config.appearance.cursor;
         self.config = config;
         self.apply_power_config();
+        self.apply_clipboard_config();
         if theme_changed {
             // Frames, menus and the colour behind the windows are painted
             // from the palette; the painters are made again from it.
@@ -1451,8 +1487,53 @@ impl IdleNotifierHandler for State {
 }
 
 impl SelectionHandler for State {
-    type SelectionUserData = ();
+    /// What the compositor itself puts on the clipboard: a text of the
+    /// history, chosen with Super+V.
+    type SelectionUserData = Arc<str>;
+
+    fn new_selection(
+        &mut self,
+        ty: SelectionTarget,
+        source: Option<SelectionSource>,
+        _seat: Seat<Self>,
+    ) {
+        if ty != SelectionTarget::Clipboard {
+            return;
+        }
+        match source {
+            Some(source) => self.clipboard_changed(&source.mime_types()),
+            None => self.clipboard_cleared(),
+        }
+    }
+
+    fn send_selection(
+        &mut self,
+        ty: SelectionTarget,
+        mime_type: String,
+        fd: OwnedFd,
+        _seat: Seat<Self>,
+        text: &Arc<str>,
+    ) {
+        if ty == SelectionTarget::Clipboard && crate::clipboard::is_offered(&mime_type) {
+            crate::clipboard::send_text(text, fd);
+        }
+    }
 }
+
+impl ExtDataControlHandler for State {
+    fn data_control_state(&self) -> &ExtDataControlState {
+        &self.ext_data_control_state
+    }
+}
+
+impl WlrDataControlHandler for State {
+    fn data_control_state(&self) -> &WlrDataControlState {
+        &self.wlr_data_control_state
+    }
+}
+
+delegate_ext_data_control!(State);
+delegate_data_control!(State);
 
 impl DataDeviceHandler for State {
     fn data_device_state(&self) -> &DataDeviceState {

@@ -70,6 +70,7 @@ use wayland_protocols_wlr::output_power_management::v1::client::{
 };
 
 pub mod apps;
+pub mod clipboard;
 pub mod heads;
 
 pub const LOCK_MANAGER: &str = "ext_session_lock_manager_v1";
@@ -100,6 +101,9 @@ pub struct Seen {
     pub enter_serial: Option<u32>,
     pub more: apps::More,
     pub heads: heads::HeadsSeen,
+    pub clip: clipboard::Clip,
+    pub clip_ext: std::collections::HashMap<String, wayland_protocols::ext::data_control::v1::client::ext_data_control_offer_v1::ExtDataControlOfferV1>,
+    pub clip_wlr: std::collections::HashMap<String, wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_offer_v1::ZwlrDataControlOfferV1>,
 }
 
 pub struct Client {

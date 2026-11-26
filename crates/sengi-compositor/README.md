@@ -327,6 +327,12 @@ wlr-screencopy and looks at the pixels.
 
 - Primary selection: what one program selects is offered to whichever
   has the keyboard.
+- Data control, both ext-data-control-v1 and wlr-data-control (smithay 0.7
+  has both): a program with no window, such as wl-copy and wl-paste, a
+  clipboard manager or sengi-shot, sets and reads the clipboard and the
+  primary selection without the keyboard focus. Not offered to sandboxed
+  clients or to Xwayland, which could otherwise read what the user copies
+  from any program.
 - xdg-activation: a program that has the keyboard, and shows it with the
   serial of that focus, gets a token that brings a window forward within
   ten seconds; a launcher does that for what it starts. A token asked for
@@ -639,6 +645,8 @@ tells the compositor it is running under: `labwc --reconfigure` there,
   setting is left alone there. `gestures` switches the swipes off.
 - `[display]`: `primary`, the output the bar and the dock go to, and the
   night light, see "Display: scale, arrangement and night light".
+- `[clipboard]`: `history`, whether the last 20 texts copied are kept in
+  memory for Super+V (off unless set).
 - `[appearance]`: `window-shadows`, whether framed windows have a shadow
   (on unless set).
 - `[power]`: `dim-after`, `blank-after` and `lock-after`, in seconds (zero
@@ -805,6 +813,50 @@ the keys are looked up in, so it lists exactly what is bound; a test tries
 every key with every combination of modifiers and fails for an action the
 sheet does not list. Its two columns fit a 1280-pixel screen.
 
+### Clipboard history
+
+Off unless `[clipboard] history = true` in the settings file, which
+Settings' Keyboard page, under Privacy, switches; it is off by default
+because what people copy is often private. When it is on, the compositor
+keeps the last 20 texts that were copied, newest first, and Super+V
+shows them in a list in the middle of the screen that is active, drawn
+like the menus from the tokens (the same code, a wider card). Each row
+is one line: the first 60 characters, with new lines and tabs squeezed
+to a space and an ellipsis where the text goes on. The last row is
+Clear history.
+
+- Up and Down move, Return puts the chosen text on the clipboard (as
+  `text/plain;charset=utf-8`, `text/plain` and `UTF8_STRING`) and closes
+  the list, Delete forgets the selected entry, Escape or Super+V again
+  closes. A click on a row does what Return does, a click anywhere else
+  only closes. Nothing is typed for the user: the program in front gets
+  the text when the user pastes, with Ctrl+V as always.
+- A copy is recorded only if it offers `text/plain;charset=utf-8`, does
+  not offer `x-kde-passwordManagerHint` (what KeePassXC, Bitwarden and
+  other password managers add, whatever its value), and is at most
+  100 KiB. A longer text is not cut, it is skipped. Pictures, files and
+  texts offered only as plain `text/plain` are skipped. The same text
+  twice is one entry, moved to the front.
+- Memory only: nothing is written to disk and nothing is logged; the
+  SIGUSR1 report says `clipboard: on 3`, a count and never a text. The
+  list is emptied when the session locks (the lock screen is not a place
+  for it either: Super+V does nothing there), when the setting is turned
+  off and the settings are read again, and by Clear history. The most it
+  can hold is 20 times 100 KiB, 2 MB.
+- The text is read from the program that owns the clipboard as soon as it
+  is offered, through the same request a paste makes, on the event loop
+  with no thread. A program that does not hand its text over within two
+  seconds is given up on. Nothing runs while the clipboard is not
+  changing, so an idle desktop still makes no wake-ups for it.
+- Sending a chosen text to a program that pastes it takes a short thread
+  that gives up after ten seconds, so one program that stops reading
+  holds up nothing but its own paste.
+
+Tests are in `tests/clipboard.rs` (a client with no window sets and reads
+the clipboard through data control; the history, Super+V, Return, the
+pointer, Delete, Clear history, the lock, the password hint, the size limit
+and the setting being turned off) and in `src/clipboard.rs`.
+
 ### The boot test
 
 `scripts/boot-test.sh` boots the default entry and expects
@@ -851,7 +903,7 @@ around it, so this is spelled out.
 A client that connects through a security context, which is how Flatpak
 apps arrive once the portal sees a compositor that supports it, is not
 offered session lock, layer shell, foreign-toplevel management, idle
-notification, idle inhibit or the security context manager, and cannot bind them by
+notification, idle inhibit, data control or the security context manager, and cannot bind them by
 number either. It can still do what any window can: open windows, read
 the clipboard while it has keyboard focus, and offer drags.
 
@@ -889,6 +941,7 @@ untrusted programs in a sandbox is what protects against them.
 - `src/decoration.rs`: theme from the tokens and the title bar painter. Pure,
   unit-tested.
 - `src/text.rs`: finding the typeface and rasterising a line of text.
+- `src/clipboard.rs`: the clipboard history, and reading what was copied.
 - `src/keys.rs`: the key binding table, and the shortcut sheet made from
   it. Pure, unit-tested.
 - `src/cli.rs`, `src/script.rs`: arguments and input scripts, unit-tested.

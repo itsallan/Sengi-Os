@@ -40,8 +40,12 @@ pub struct Part {
 
 /// A menu: one row for each item, a line for each separator.
 pub fn menu(theme: &Theme, font: Option<&Font>, rows: &[Row]) -> Layout {
+    list(theme, font, rows, theme.card.menu_width)
+}
+
+/// A list of rows like a menu's, `width` pixels wide: the clipboard history.
+pub fn list(theme: &Theme, font: Option<&Font>, rows: &[Row], width: i32) -> Layout {
     let card = theme.card;
-    let width = card.menu_width;
     let mut parts = Vec::new();
     let pad = card.menu_pad;
     let mut y = pad;

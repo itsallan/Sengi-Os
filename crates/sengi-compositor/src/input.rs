@@ -250,7 +250,8 @@ impl State {
                             Some(
                                 action @ (Action::NextWindow
                                 | Action::PreviousWindow
-                                | Action::Shortcuts),
+                                | Action::Shortcuts
+                                | Action::ClipboardHistory),
                             ),
                             _,
                         ) => Some(action),
@@ -258,6 +259,7 @@ impl State {
                         (_, keys::RETURN | keys::KP_ENTER) => Some(Action::Overlay(Step::Activate)),
                         (_, keys::UP) => Some(Action::Overlay(Step::Up)),
                         (_, keys::DOWN) => Some(Action::Overlay(Step::Down)),
+                        (_, keys::DELETE) => Some(Action::Overlay(Step::Remove)),
                         (_, keys::LEFT) => Some(Action::Overlay(Step::Previous)),
                         (_, keys::RIGHT) => Some(Action::Overlay(Step::Next)),
                         _ => None,
@@ -347,12 +349,17 @@ impl State {
                 }
             }
             Action::Shortcuts => self.toggle_shortcuts(),
+            Action::ClipboardHistory => self.toggle_clipboard_history(),
             Action::NextWindow | Action::PreviousWindow => {
                 let forward = action == Action::NextWindow;
                 match self.overlay {
                     Some(Overlay::Switcher { .. }) => self.step_switcher(forward),
                     // A menu or the sheet is open: Alt+Tab is not for it.
-                    Some(Overlay::Menu { .. } | Overlay::Shortcuts { .. }) => {}
+                    Some(
+                        Overlay::Menu { .. }
+                        | Overlay::Shortcuts { .. }
+                        | Overlay::Clipboard { .. },
+                    ) => {}
                     None => self.open_switcher(forward),
                 }
             }
@@ -363,6 +370,7 @@ impl State {
                 Step::Down => self.move_menu(1),
                 Step::Activate => self.activate_overlay(),
                 Step::Cancel => self.close_overlay(),
+                Step::Remove => self.remove_clipboard_entry(),
             },
             Action::Lock => self.spawn_locker(),
             Action::Maximise => {

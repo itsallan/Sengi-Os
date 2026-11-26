@@ -73,6 +73,7 @@ const KEY_LEFTSHIFT: u32 = 42;
 const NAMED_KEYS: &[(&str, u32)] = &[
     ("esc", 1),
     ("backspace", 14),
+    ("delete", 111),
     ("tab", 15),
     ("enter", 28),
     ("ctrl", 29),

@@ -519,6 +519,8 @@ impl SessionLockHandler for State {
         self.hovered_group = None;
         self.frame_cursor = None;
         self.overlay = None;
+        // What was copied stays behind the lock, not on it.
+        self.clipboard_clear();
         self.layer_focus = None;
 
         self.lock_count += 1;

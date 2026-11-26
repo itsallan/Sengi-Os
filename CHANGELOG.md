@@ -48,8 +48,8 @@ and the measured idle RAM and boot time.
 - Screenshots: Quick settings has Screen, Area and In 5 s. `sengi-shot --select`
   dims the screen and you drag a rectangle (live size label, Enter or letting
   go takes it, Escape cancels); `--delay N` counts down in a corner before the
-  shot; `--clipboard` copies the picture with wl-copy when it is installed and
-  says so in the notification when it is not. The two screens are the new
+  shot; `--clipboard` copies the picture to the clipboard itself (see data
+  control below), with no wl-copy. The two screens are the new
   sengi-snip, so a plain screenshot still links no toolkit.
 - Calculator (sengi-calc): decimal arithmetic by hand with the usual
   precedence, brackets and percent, so 0.1 + 0.2 is 0.3; keyboard or keys,
@@ -182,6 +182,18 @@ and the measured idle RAM and boot time.
   of the dock to remove it. The order is saved to dock.toml.
 - Right-click an app in the launcher for Open, and Keep in Dock or Remove from
   Dock. The dock picks up the change within a couple of seconds.
+- sengi-compositor offers data control (ext-data-control and wlr-data-control,
+  not to sandboxed programs), so wl-copy, wl-paste, clipboard managers and
+  sengi-shot can set and read the clipboard without a window. `sengi-shot
+  --clipboard` now does it natively: it takes the clipboard, goes on in the
+  background to hand over the picture, and the shortcut returns at once.
+- Clipboard history (sengi-compositor, off by default): Settings, Keyboard,
+  Privacy turns on a memory-only list of the last 20 texts you copied. Super+V
+  shows it, Up and Down or the pointer choose, Return or a click puts the text
+  back on the clipboard (nothing is typed for you), Delete forgets one entry,
+  Clear history forgets all. Texts over 100 KiB and anything a password
+  manager marks are never kept; it is emptied when the screen locks. Nothing
+  is written to disk.
 
 ### Changed
 
