@@ -3762,6 +3762,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sengi-print"
+version = "0.8.0"
+dependencies = [
+ "libc",
+ "sengi-text",
+ "sengi-update",
+]
+
+[[package]]
 name = "sengi-quick"
 version = "0.8.0"
 dependencies = [
@@ -3780,6 +3789,7 @@ dependencies = [
  "libc",
  "png",
  "sengi-config",
+ "sengi-print",
  "sengi-system",
  "sengi-text",
  "sengi-update",

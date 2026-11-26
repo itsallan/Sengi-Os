@@ -1,0 +1,25 @@
+[package]
+name = "sengi-print"
+description = "Printing for Sengi OS: what Settings, Printers reads from CUPS, and the helper that adds and removes printers as root"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[lib]
+name = "sengi_print"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sengi-print"
+path = "src/main.rs"
+
+[dependencies]
+# Process groups and signals, and the effective user id the helper checks
+# before it takes a made-up system.
+libc = "0.2"
+# Names of printers and jobs come from outside and are shown in a window.
+sengi-text = { path = "../sengi-text" }
+# Running the helper through pkexec with the password asked in a dialog,
+# and running tools in groups of their own.
+sengi-update = { path = "../sengi-update" }
