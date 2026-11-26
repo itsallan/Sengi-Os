@@ -30,6 +30,9 @@ use crate::app::{self, App, Controller};
 use crate::secret::Secret;
 use crate::ui::{DialogSpec, UpdateRow, UpdatesData};
 
+/// What the live system says: it has no disk to update.
+pub const LIVE_NOTE: &str = "Updates are available after Sengi OS is installed. This live system runs from memory and has nothing on a disk to update.";
+
 /// A list longer than this says how many more there are.
 const MAX_ROWS: usize = 60;
 
@@ -304,10 +307,9 @@ impl UpdatesPage {
         data.set_checking(state.checking);
         data.set_working(state.working);
         if state.live {
-            data.set_headline("Updates are available after Sengi OS is installed".into());
-            data.set_subline(
-                "This live system runs from memory and has nothing on a disk to update".into(),
-            );
+            // The sentence is in the note, which wraps; a title is cut.
+            data.set_headline("Not on the live system".into());
+            data.set_subline("".into());
         } else if state.checking {
             data.set_headline("Looking for updates".into());
             data.set_subline(state.looking.clone().into());
@@ -315,7 +317,11 @@ impl UpdatesPage {
             data.set_headline(headline(snapshot).into());
             data.set_subline(subline(snapshot, now).into());
         }
-        let (note, warning) = state.note.clone().unwrap_or_default();
+        let (note, warning) = if state.live {
+            (LIVE_NOTE.to_string(), false)
+        } else {
+            state.note.clone().unwrap_or_default()
+        };
         data.set_note(note.into());
         data.set_note_warning(warning);
         let shown = !state.live;
@@ -793,6 +799,11 @@ mod tests {
         assert!(words.contains("E: disk full") && warning);
         // Cancelling is not a fault.
         assert!(!outcome_note(&Outcome::Cancelled).unwrap().1);
+    }
+
+    #[test]
+    fn the_live_system_says_updates_come_with_an_install() {
+        assert!(LIVE_NOTE.starts_with("Updates are available after Sengi OS is installed"));
     }
 
     #[test]

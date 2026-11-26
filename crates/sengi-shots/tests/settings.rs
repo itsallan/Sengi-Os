@@ -1,7 +1,7 @@
 //! Every Settings page, drawn at three window sizes with made-up data.
 //! SENGI_RENDER_DIR names where the pictures go.
 
-use sengi_shots::harness::{self, BACKDROP};
+use sengi_shots::harness::{self, Look, BACKDROP};
 use sengi_shots::settings::*;
 use slint::{
     ComponentHandle, Image, ModelRc, Rgb8Pixel, SharedPixelBuffer, SharedString, VecModel,
@@ -468,9 +468,11 @@ fn updates(w: &SettingsWindow, variant: &str) {
         }
         _ => {
             d.set_live(true);
-            d.set_headline("Updates are available after Sengi OS is installed".into());
-            d.set_subline(
-                "This live system runs from memory and has nothing on a disk to update".into(),
+            d.set_headline("Not on the live system".into());
+            d.set_note_warning(false);
+            d.set_note(
+                "Updates are available after Sengi OS is installed. This live system runs from memory and has nothing on a disk to update."
+                    .into(),
             );
         }
     }
@@ -490,6 +492,37 @@ fn about(w: &SettingsWindow) {
         info("Disk", "Live system, held in memory: 5.1 GB free of 7.8 GB"),
     ]));
     d.set_memory_used("312 MB in use".into());
+}
+
+/// The Updates page at the largest text, dark and light, where its top
+/// row has least room: the title and the buttons must not share a line.
+#[test]
+fn updates_at_extra_large_text() {
+    harness::install();
+    for light in [false, true] {
+        let look = Look {
+            light,
+            ..Look::PLAIN.scaled(1.4)
+        };
+        for variant in ["idle", "list", "progress", "live"] {
+            for (width, height) in [(720u32, 480u32), (888, 600)] {
+                let w = themed_look(SettingsWindow::new().unwrap(), look);
+                w.set_pages(pages());
+                w.set_page(SharedString::from("updates"));
+                updates(&w, variant);
+                w.show().unwrap();
+                let win = harness::window();
+                harness::resize(&win, width, height);
+                harness::advance(300);
+                let picture = harness::draw(&win, BACKDROP);
+                let mode = if light { "-light" } else { "" };
+                picture.save_as(&format!(
+                    "settings-updates-{variant}-extra-large{mode}-{width}x{height}.png"
+                ));
+                w.hide().unwrap();
+            }
+        }
+    }
 }
 
 #[test]

@@ -55,31 +55,33 @@ export component UpdatesPage inherits Page {
             warning: UpdatesData.note-warning;
         }
 
+        // The words above and the buttons under them, so that large text
+        // and a narrow window never squeeze the title between them.
         Card {
             SettingRow {
                 title: UpdatesData.headline;
                 detail: UpdatesData.subline;
                 enabled: !UpdatesData.live;
+            }
 
-                VerticalLayout {
-                    alignment: center;
+            Divider { }
 
-                    HorizontalLayout {
-                        spacing: Tokens.space-sm;
+            HorizontalLayout {
+                padding: Tokens.space-md;
+                spacing: Tokens.space-sm;
+                alignment: end;
 
-                        SengiButton {
-                            text: UpdatesData.checking ? "Checking\u{2026}" : "Check for updates";
-                            enabled: !UpdatesData.live && !UpdatesData.checking && !UpdatesData.working;
-                            clicked => { UpdatesData.check(); }
-                        }
+                SengiButton {
+                    text: UpdatesData.checking ? "Checking\u{2026}" : "Check for updates";
+                    enabled: !UpdatesData.live && !UpdatesData.checking && !UpdatesData.working;
+                    clicked => { UpdatesData.check(); }
+                }
 
-                        if UpdatesData.can-update: SengiButton {
-                            text: "Update all";
-                            primary: true;
-                            enabled: !UpdatesData.live && !UpdatesData.checking && !UpdatesData.working;
-                            clicked => { UpdatesData.update-all(); }
-                        }
-                    }
+                if UpdatesData.can-update: SengiButton {
+                    text: "Update all";
+                    primary: true;
+                    enabled: !UpdatesData.live && !UpdatesData.checking && !UpdatesData.working;
+                    clicked => { UpdatesData.update-all(); }
                 }
             }
         }
