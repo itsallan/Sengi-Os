@@ -1,0 +1,32 @@
+// A square that moves with the timing tokens, so that a test can see
+// whether motion is on: with reduced motion it is where it is going at once.
+
+import { Tokens, ThemeSwitch } from "tokens.slint";
+export { ThemeSwitch }
+
+export component MotionWindow inherits Window {
+    in property <bool> moved: false;
+    out property <length> position: square.x;
+    out property <color> shade: patch.background;
+
+    width: 200px;
+    height: 100px;
+
+    square := Rectangle {
+        x: root.moved ? 100px : 0px;
+        width: 10px;
+        height: 10px;
+        animate x {
+            duration: Tokens.motion-base;
+            easing: Tokens.motion-easing;
+        }
+    }
+
+    patch := Rectangle {
+        background: root.moved ? Tokens.color-accent : Tokens.color-bg;
+        animate background {
+            duration: Tokens.motion-fast;
+            easing: Tokens.motion-easing;
+        }
+    }
+}

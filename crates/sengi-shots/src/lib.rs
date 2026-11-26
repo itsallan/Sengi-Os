@@ -7,6 +7,21 @@
 
 pub mod harness;
 
+/// Gives a window's `ThemeSwitch` the palette, text size and motion the
+/// environment asks for, as `apply_theme!` does from the settings in the
+/// programs themselves: `apply_look!(window.global::<ThemeSwitch>())`.
+#[macro_export]
+macro_rules! apply_look {
+    ($switch:expr) => {{
+        let look = $crate::harness::Look::from_env();
+        let switch = $switch;
+        switch.set_light(look.light);
+        switch.set_high_contrast(look.high_contrast);
+        switch.set_text_scale(look.text_scale);
+        switch.set_reduce_motion(look.reduce_motion);
+    }};
+}
+
 macro_rules! window {
     ($name:ident) => {
         #[allow(clippy::all, unused)]
@@ -19,16 +34,38 @@ macro_rules! window {
                 T: slint::ComponentHandle,
                 for<'a> ThemeSwitch<'a>: slint::Global<'a, T>,
             {
-                themed_as(window, $crate::harness::light())
+                themed_look(window, $crate::harness::Look::from_env())
             }
 
-            /// The window with one palette or the other.
+            /// The window with one palette or the other, and the type
+            /// size and motion the environment asks for.
             pub fn themed_as<T>(window: T, light: bool) -> T
             where
                 T: slint::ComponentHandle,
                 for<'a> ThemeSwitch<'a>: slint::Global<'a, T>,
             {
-                window.global::<ThemeSwitch>().set_light(light);
+                let look = $crate::harness::Look::from_env();
+                themed_look(
+                    window,
+                    $crate::harness::Look {
+                        light,
+                        high_contrast: false,
+                        ..look
+                    },
+                )
+            }
+
+            /// The window as `look` says.
+            pub fn themed_look<T>(window: T, look: $crate::harness::Look) -> T
+            where
+                T: slint::ComponentHandle,
+                for<'a> ThemeSwitch<'a>: slint::Global<'a, T>,
+            {
+                let switch = window.global::<ThemeSwitch>();
+                switch.set_light(look.light);
+                switch.set_high_contrast(look.high_contrast);
+                switch.set_text_scale(look.text_scale);
+                switch.set_reduce_motion(look.reduce_motion);
                 window
             }
         }
@@ -48,3 +85,4 @@ window!(launcher);
 window!(files);
 window!(desktop);
 window!(osd);
+window!(motion);

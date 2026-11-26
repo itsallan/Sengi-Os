@@ -35,10 +35,64 @@ pub fn light() -> bool {
     std::env::var("SENGI_THEME").is_ok_and(|theme| theme == "light")
 }
 
+/// How a window is drawn: the palette, the type scale and the motion.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Look {
+    pub light: bool,
+    pub high_contrast: bool,
+    pub text_scale: f32,
+    pub reduce_motion: bool,
+}
+
+impl Look {
+    /// The dark theme at the design size, with every animation.
+    pub const PLAIN: Look = Look {
+        light: false,
+        high_contrast: false,
+        text_scale: 1.0,
+        reduce_motion: false,
+    };
+
+    pub const HIGH_CONTRAST: Look = Look {
+        high_contrast: true,
+        ..Look::PLAIN
+    };
+
+    /// The type at a scale: 1.4 is Extra large.
+    pub const fn scaled(self, text_scale: f32) -> Look {
+        Look { text_scale, ..self }
+    }
+
+    /// What `SENGI_THEME` (`light`, `high-contrast`), `SENGI_TEXT_SIZE`
+    /// (`small`, `large`, `extra-large`) and `SENGI_REDUCE_MOTION=1` ask for.
+    pub fn from_env() -> Look {
+        let theme = std::env::var("SENGI_THEME").unwrap_or_default();
+        let text_scale = match std::env::var("SENGI_TEXT_SIZE").as_deref() {
+            Ok("small") => 0.9,
+            Ok("large") => 1.2,
+            Ok("extra-large") => 1.4,
+            _ => 1.0,
+        };
+        Look {
+            light: theme == "light",
+            high_contrast: theme == "high-contrast",
+            text_scale,
+            reduce_motion: std::env::var("SENGI_REDUCE_MOTION").is_ok_and(|v| v == "1"),
+        }
+    }
+}
+
 /// The colour of a page of Settings, which the layout checks look for
 /// around the cards: `color.bg` of the theme in use.
 pub fn page_colour() -> [u8; 3] {
-    if light() {
+    page_colour_of(Look::from_env())
+}
+
+/// The same for a look named outright.
+pub fn page_colour_of(look: Look) -> [u8; 3] {
+    if look.high_contrast {
+        [0x00, 0x00, 0x00]
+    } else if look.light {
         [0xf3, 0xf4, 0xf6]
     } else {
         [0x16, 0x17, 0x1b]
@@ -121,16 +175,33 @@ impl Picture {
     }
 
     /// Writes a PNG into SENGI_RENDER_DIR, when that is set. In the light
-    /// theme the name gets `-light` before the extension.
+    /// theme the name gets `-light` before the extension, in high contrast
+    /// `-hc`, and at another text size `-large` and so on.
     pub fn save(&self, name: &str) {
+        let look = Look::from_env();
+        let mut suffix = String::new();
+        if look.light {
+            suffix.push_str("-light");
+        }
+        if look.high_contrast {
+            suffix.push_str("-hc");
+        }
+        if let Ok(size) = std::env::var("SENGI_TEXT_SIZE") {
+            suffix.push('-');
+            suffix.push_str(&size);
+        }
+        match name.strip_suffix(".png") {
+            Some(stem) => self.save_as(&format!("{stem}{suffix}.png")),
+            None => self.save_as(name),
+        }
+    }
+
+    /// Writes a PNG under exactly this name into SENGI_RENDER_DIR, when
+    /// that is set.
+    pub fn save_as(&self, name: &str) {
         let Some(dir) = std::env::var_os("SENGI_RENDER_DIR") else {
             return;
         };
-        let name = match name.strip_suffix(".png") {
-            Some(stem) if light() => format!("{stem}-light.png"),
-            _ => name.to_string(),
-        };
-        let name = name.as_str();
         let _ = std::fs::create_dir_all(&dir);
         let file = std::fs::File::create(std::path::Path::new(&dir).join(name)).unwrap();
         let mut encoder = png::Encoder::new(file, self.width as u32, self.height as u32);

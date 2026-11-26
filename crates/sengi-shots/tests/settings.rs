@@ -43,6 +43,7 @@ fn pages() -> ModelRc<PageEntry> {
         ("mouse", "Mouse & Touchpad", "mouse"),
         ("notifications", "Notifications", "bell"),
         ("updates", "Updates", "arrows-clockwise"),
+        ("accessibility", "Accessibility", "person-simple-circle"),
         ("about", "About", "info"),
     ];
     list(
@@ -61,7 +62,10 @@ fn page_fill() -> [u8; 3] {
     harness::page_colour()
 }
 // The sidebar and the widest column of a page, in tokens.
-const SIDEBAR: usize = 200;
+// It grows by half of the text scale beyond 1.
+fn sidebar() -> usize {
+    (200.0 * (1.0 + (harness::Look::from_env().text_scale - 1.0) / 2.0)).round() as usize
+}
 const COLUMN: usize = 640;
 const MARGIN: usize = 24;
 const SCROLLBAR: usize = 10;
@@ -69,13 +73,13 @@ const SCROLLBAR: usize = 10;
 /// Nothing is drawn in the margins either side of the column of cards: a
 /// row or a control that is wider than its card would show there.
 fn keeps_to_its_column(picture: &harness::Picture, page: &str, variant: &str, width: usize) {
-    let area = width - SIDEBAR;
+    let area = width - sidebar();
     let column = (area - MARGIN * 2).min(COLUMN);
-    let left = SIDEBAR + (area - column) / 2;
+    let left = sidebar() + (area - column) / 2;
     let right = left + column;
     let name = format!("{page}/{variant} at {width}");
     // One pixel of slack for the border of a card.
-    if let Some(at) = picture.first_other(SIDEBAR + 2, left - 1, 0, picture.height, page_fill()) {
+    if let Some(at) = picture.first_other(sidebar() + 2, left - 1, 0, picture.height, page_fill()) {
         panic!("{name}: something is drawn left of the column at {at:?}");
     }
     if let Some(at) =
@@ -211,6 +215,7 @@ fn display(w: &SettingsWindow, variant: &str) {
         can_position: false,
         can_resolution: true,
         can_refresh: true,
+        ..Default::default()
     }];
     if variant == "two" {
         outs.push(DisplayOutput {
@@ -225,6 +230,7 @@ fn display(w: &SettingsWindow, variant: &str) {
             can_position: false,
             can_resolution: true,
             can_refresh: false,
+            ..Default::default()
         });
     }
     d.set_outputs(list(outs));
@@ -545,6 +551,34 @@ fn every_page() {
         ("updates", "restart", Box::new(|w| updates(w, "restart"))),
         ("updates", "failed", Box::new(|w| updates(w, "failed"))),
         ("updates", "live", Box::new(|w| updates(w, "live"))),
+        (
+            "accessibility",
+            "default",
+            Box::new(|w| {
+                let d = w.global::<AccessibilityData>();
+                d.set_text_size(1);
+            }),
+        ),
+        (
+            "accessibility",
+            "all-on",
+            Box::new(|w| {
+                let d = w.global::<AccessibilityData>();
+                d.set_text_size(3);
+                d.set_high_contrast(true);
+                d.set_reduce_motion(true);
+                d.set_cursor_size(2);
+            }),
+        ),
+        (
+            "wallpaper",
+            "high-contrast",
+            Box::new(|w| {
+                wallpaper(w, "picture");
+                w.global::<WallpaperData>()
+                    .set_theme("high-contrast".into());
+            }),
+        ),
         ("about", "on", Box::new(about)),
     ];
     for (page, variant, fill) in &scenes {
@@ -693,9 +727,9 @@ fn focus_hover_dialog_chooser() {
 /// The runs of rows, top to bottom, that are not page background just
 /// inside the left edge of the column: one per card.
 fn cards(picture: &harness::Picture, width: usize) -> Vec<(usize, usize)> {
-    let area = width - SIDEBAR;
+    let area = width - sidebar();
     let column = (area - MARGIN * 2).min(COLUMN);
-    let x = SIDEBAR + (area - column) / 2 + 3;
+    let x = sidebar() + (area - column) / 2 + 3;
     let mut runs = Vec::new();
     let mut start = None;
     for y in 0..picture.height {
@@ -721,13 +755,13 @@ fn about_is_laid_out(picture: &harness::Picture, width: usize, what: &str) {
     assert!(runs.len() >= 3, "{what}: found {} cards", runs.len());
     let (top, bottom) = runs[1];
     assert!(
-        bottom - top <= 56,
+        bottom - top <= (56.0 * harness::Look::from_env().text_scale.max(1.0)).ceil() as usize,
         "{what}: the kernel card is {} px tall",
         bottom - top
     );
-    let area = width - SIDEBAR;
+    let area = width - sidebar();
     let column = (area - MARGIN * 2).min(COLUMN);
-    let right = SIDEBAR + (area - column) / 2 + column;
+    let right = sidebar() + (area - column) / 2 + column;
     let card = picture.at(right - 4, top + 3);
     assert!(
         picture

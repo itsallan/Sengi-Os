@@ -16,6 +16,7 @@ const WINDOWS: &[(&str, &str)] = &[
     ("files", "../sengi-files/ui/files.slint"),
     ("desktop", "../sengi-desktop/ui/desktop.slint"),
     ("osd", "../sengi-osd/ui/osd.slint"),
+    ("motion", "ui/motion.slint"),
 ];
 
 fn main() {
@@ -34,6 +35,7 @@ fn main() {
         .unwrap_or_else(|error| panic!("{path} compiles: {error}"));
     }
     println!("cargo:rerun-if-changed=../../ui");
+    println!("cargo:rerun-if-changed=ui");
     for crate_dir in [
         "settings",
         "installer",
