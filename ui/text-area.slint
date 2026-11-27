@@ -1,29 +1,118 @@
-// A multi-line text area: wrapped plain text that scrolls, with the caret,
-// selection, clipboard and undo that Slint's TextInput brings. Built from
-// the tokens alone, like the rest of the component library, and kept out of
+// A multi-line text area for a whole window or pane: plain text that scrolls,
+// with the caret, selection, clipboard and undo that Slint's TextInput
+// brings, and an optional column of line numbers. It has no frame of its
+// own, so it can run to the edges of whatever holds it. Built from the tokens
+// alone, like the rest of the component library, and kept out of
 // components.slint so programs that have no use for it do not compile it.
 
 import { Tokens } from "components.slint";
+
+// A bar that shows where the view is along one side, and moves it when it is
+// dragged or when the track is pressed.
+component ScrollThumb inherits Rectangle {
+    in property <bool> vertical: true;
+    // How far the content is scrolled, how much of it is seen, and its size.
+    in property <length> offset;
+    in property <length> view;
+    in property <length> content;
+    // Asks for this offset.
+    callback moved(length);
+
+    private property <length> track: (root.vertical ? self.height : self.width) - Tokens.space-xs;
+    private property <length> overflow: Math.max(root.content - root.view, 1px);
+    private property <length> thumb: Math.min(root.track,
+        Math.max(root.track * root.view / Math.max(root.content, 1px), Tokens.space-xl));
+    private property <length> travel: Math.max(root.track - root.thumb, 1px);
+    private property <length> at: Tokens.space-xxs
+        + root.travel * Math.clamp(root.offset / root.overflow, 0, 1);
+    private property <bool> lit: touch.has-hover || touch.pressed;
+    private property <length> thickness: root.lit ? Tokens.space-sm : Tokens.space-xs;
+    // Where in the thumb it was taken hold of.
+    private property <length> grip;
+
+    function drag(pointer: length) {
+        root.moved(Math.clamp((pointer - root.grip - Tokens.space-xxs) / root.travel, 0, 1)
+            * root.overflow);
+    }
+
+    touch := TouchArea {
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                let pointer = root.vertical ? self.mouse-y : self.mouse-x;
+                if pointer >= root.at && pointer <= root.at + root.thumb {
+                    root.grip = pointer - root.at;
+                } else {
+                    root.grip = root.thumb / 2;
+                    root.drag(pointer);
+                }
+            }
+        }
+        moved => {
+            if self.pressed {
+                root.drag(root.vertical ? self.mouse-y : self.mouse-x);
+            }
+        }
+    }
+
+    Rectangle {
+        x: root.vertical ? parent.width - self.width - Tokens.space-xxs : root.at;
+        y: root.vertical ? root.at : parent.height - self.height - Tokens.space-xxs;
+        width: root.vertical ? root.thickness : root.thumb;
+        height: root.vertical ? root.thumb : root.thickness;
+        border-radius: Math.min(self.width, self.height) / 2;
+        background: root.lit ? Tokens.color-text-muted : Tokens.color-border;
+    }
+}
 
 export component SengiTextArea inherits Rectangle {
     in-out property <string> text <=> input.text;
     // Shows the text and lets it be selected and copied, nothing more.
     in property <bool> read-only: false;
     in property <bool> mono: true;
+    // Numbers beside the lines. Lines are then not wrapped: each keeps to one
+    // row, and the area scrolls sideways instead.
+    in property <bool> line-numbers: false;
+    // How many lines the text has, one more than its newlines, and the line
+    // the caret is on, from 1. Only the numbers need them.
+    in property <int> lines: 1;
+    in property <int> current-line: 1;
     out property <bool> has-focus: input.has-focus;
     // Where the caret is, in bytes from the start of the text.
     out property <int> cursor: input.cursor-position-byte-offset;
     // The other end of the selection; the same as `cursor` when nothing is
     // selected.
     out property <int> anchor: input.anchor-position-byte-offset;
+    // The room around the text.
+    out property <length> pad-x: root.line-numbers ? Tokens.space-sm : Tokens.space-xl;
+    out property <length> pad-y: Tokens.space-lg;
     // The text was changed by the person typing.
     callback edited();
     // The caret moved, by key, by click or by `select`.
     callback moved();
+    // Tab was pressed. A TextInput cannot type one, so the program decides
+    // what goes in.
+    callback tab();
+    // Something undone was done again; `before` is the text as it was. Slint
+    // leaves the caret in front of what came back, so the program may move it.
+    callback redone(string);
 
-    private property <length> pad: Tokens.space-sm;
-    private property <length> bar: Tokens.space-xs;
-    private property <length> overflow: Math.max(input.height + root.pad * 2 - flick.height, 0);
+    private property <string> family: root.mono ? Tokens.font-mono : Tokens.font-family;
+    // A little more than one line, for keeping the caret clear of the edge.
+    private property <length> line: Tokens.font-size-md * 2;
+    private property <int> digits: root.lines < 100 ? 2 : root.lines < 1000 ? 3
+        : root.lines < 10000 ? 4 : root.lines < 100000 ? 5 : root.lines < 1000000 ? 6 : 7;
+    private property <length> gutter: root.line-numbers
+        ? Math.ceil(digit.preferred-width / 1px) * 1px * root.digits + Tokens.space-lg + Tokens.space-sm
+        : 0px;
+    private property <length> content-width: !root.line-numbers ? flick.width
+        : Math.max(flick.width, input.width + root.pad-x + Tokens.space-xl);
+    private property <length> content-height: input.height + root.pad-y * 2;
+    private property <length> overflow-x: Math.max(root.content-width - flick.width, 0px);
+    private property <length> overflow-y: Math.max(root.content-height - flick.height, 0px);
+    // The distance from one line to the next, when lines are not wrapped.
+    private property <length> pitch: Math.max(input.preferred-height / Math.max(root.lines, 1), 1px);
+    private property <int> first: Math.max(0,
+        Math.floor((-flick.content-y - root.pad-y) / root.pitch));
 
     // Selects bytes `start` to `end`, the caret at the end.
     public function select(start: int, end: int) {
@@ -34,32 +123,126 @@ export component SengiTextArea inherits Rectangle {
         input.focus();
     }
 
+    public function undo() {
+        if !root.read-only {
+            input.undo();
+            root.edited();
+        }
+    }
+
+    public function redo() {
+        if !root.read-only {
+            let before = input.text;
+            input.redo();
+            root.edited();
+            root.redone(before);
+        }
+    }
+
+    // Back to the start of the text, as for a file just opened.
+    public function reset() {
+        input.set-selection-offsets(0, 0);
+        flick.content-x = 0;
+        flick.content-y = 0;
+    }
+
+    function clamp-view() {
+        flick.content-x = Math.clamp(flick.content-x, -root.overflow-x, 0px);
+        flick.content-y = Math.clamp(flick.content-y, -root.overflow-y, 0px);
+    }
+
+    // Scrolls as little as it takes to show the caret, whose top left corner
+    // is at (x, y) in the text.
+    function follow(x: length, y: length) {
+        if y + flick.content-y < 0px {
+            flick.content-y = -y;
+        } else if y + root.pad-y + root.line + flick.content-y > flick.height {
+            flick.content-y = -Math.min(y + root.pad-y + root.line - flick.height, root.overflow-y);
+        }
+        if !root.line-numbers {
+            flick.content-x = 0;
+        } else if x + flick.content-x < 0px {
+            flick.content-x = -Math.max(x - Tokens.space-xl, 0px);
+        } else if x + root.pad-x + Tokens.space-xl + flick.content-x > flick.width {
+            flick.content-x = -Math.min(x + root.pad-x + Tokens.space-xl - flick.width, root.overflow-x);
+        }
+    }
+
+    changed height => { root.clamp-view(); }
+    changed width => { root.clamp-view(); }
+    changed line-numbers => {
+        flick.content-x = 0;
+        root.clamp-view();
+    }
+
     forward-focus: input;
-    background: Tokens.color-bg;
-    border-radius: Tokens.radius;
-    border-width: input.has-focus ? Tokens.focus-ring-width : Tokens.border-width;
-    border-color: input.has-focus ? Tokens.color-focus-ring : Tokens.color-border;
+    background: Tokens.color-surface;
     clip: true;
 
+    digit := Text {
+        visible: false;
+        text: "0";
+        font-family: root.family;
+        font-size: Tokens.font-size-md;
+    }
+
+    if root.line-numbers: Rectangle {
+        x: 0;
+        width: root.gutter;
+        height: parent.height;
+        clip: true;
+
+        for index in Math.ceil(root.height / root.pitch) + 1: Text {
+            private property <int> number: root.first + index + 1;
+
+            visible: self.number <= root.lines;
+            x: Tokens.space-lg;
+            y: root.pad-y + (root.first + index) * root.pitch + flick.content-y;
+            width: parent.width - Tokens.space-lg - Tokens.space-sm;
+            height: root.pitch;
+            text: self.number;
+            color: self.number == root.current-line ? Tokens.color-text : Tokens.color-text-disabled;
+            font-family: root.family;
+            font-size: Tokens.font-size-md;
+            line-height-factor: Tokens.editor-line-height;
+            horizontal-alignment: right;
+            vertical-alignment: top;
+        }
+    }
+
     flick := Flickable {
-        x: Tokens.border-width;
-        y: Tokens.border-width;
-        width: parent.width - Tokens.border-width * 2;
-        height: parent.height - Tokens.border-width * 2;
-        content-width: self.width;
-        content-height: input.height + root.pad * 2;
+        x: root.gutter;
+        width: parent.width - root.gutter;
+        height: parent.height;
+        content-width: root.content-width;
+        content-height: root.content-height;
+        // A drag with the pointer selects text. A Flickable that pans on one
+        // would take it for itself; the wheel scrolls either way.
+        interactive: false;
+
+        // A press in the margins puts the keyboard in the text.
+        TouchArea {
+            width: root.content-width;
+            height: root.content-height;
+            mouse-cursor: MouseCursor.text;
+            clicked => { input.focus(); }
+        }
 
         input := TextInput {
-            x: root.pad;
-            y: root.pad;
-            width: flick.width - root.pad * 2 - root.bar;
-            height: Math.max(self.preferred-height, flick.height - root.pad * 2);
-            wrap: word-wrap;
+            x: root.pad-x;
+            y: root.pad-y;
+            width: root.line-numbers
+                ? Math.max(self.preferred-width + Tokens.space-sm, flick.width - root.pad-x - Tokens.space-xl)
+                : flick.width - root.pad-x * 2;
+            height: Math.max(self.preferred-height, flick.height - root.pad-y * 2);
+            wrap: root.line-numbers ? no-wrap : word-wrap;
             single-line: false;
             read-only: root.read-only;
+            page-height: flick.height;
             color: Tokens.color-text;
-            font-family: root.mono ? Tokens.font-mono : Tokens.font-family;
+            font-family: root.family;
             font-size: Tokens.font-size-md;
+            line-height-factor: Tokens.editor-line-height;
             vertical-alignment: top;
             selection-background-color: Tokens.color-accent;
             selection-foreground-color: Tokens.color-accent-text;
@@ -67,27 +250,48 @@ export component SengiTextArea inherits Rectangle {
 
             edited => { root.edited(); }
 
-            cursor-position-changed(position) => {
-                // Keep the caret in view, a line of margin each way.
-                let margin = Tokens.font-size-lg * 1.5;
-                let top = position.y + root.pad;
-                if top + flick.content-y < 0 {
-                    flick.content-y = -Math.max(top - margin, 0);
-                } else if top + margin + flick.content-y > flick.height {
-                    flick.content-y = -Math.min(top + margin - flick.height, root.overflow);
+            key-pressed(event) => {
+                // Slint knows Ctrl+Shift+Z for redo and not Ctrl+Y. Both
+                // are taken here, so that either ends the same way.
+                if event.modifiers.control
+                    && (event.modifiers.shift ? event.text == "z" || event.text == "Z"
+                        : event.text == "y" || event.text == "Y") {
+                    root.redo();
+                    return EventResult.accept;
                 }
+                if event.text == Key.Tab && !event.modifiers.control && !event.modifiers.alt {
+                    root.tab();
+                    return EventResult.accept;
+                }
+                return EventResult.reject;
+            }
+
+            cursor-position-changed(position) => {
+                root.follow(position.x, position.y);
                 root.moved();
             }
         }
     }
 
-    if root.overflow > 0: Rectangle {
-        x: parent.width - self.width - Tokens.space-xxs;
-        y: Tokens.space-xxs + (parent.height - Tokens.space-xs - self.height)
-            * Math.min(-flick.content-y, root.overflow) / root.overflow;
-        width: root.bar;
-        height: Math.max(parent.height * flick.height / (input.height + root.pad * 2), Tokens.space-xl);
-        border-radius: self.width / 2;
-        background: Tokens.color-border;
+    if root.overflow-y > 0px: ScrollThumb {
+        x: parent.width - self.width;
+        width: Tokens.space-md;
+        height: parent.height - (root.overflow-x > 0px ? Tokens.space-md : 0px);
+        offset: -flick.content-y;
+        view: flick.height;
+        content: root.content-height;
+        moved(offset) => { flick.content-y = -offset; }
+    }
+
+    if root.overflow-x > 0px: ScrollThumb {
+        vertical: false;
+        x: root.gutter;
+        y: parent.height - self.height;
+        width: parent.width - root.gutter - Tokens.space-md;
+        height: Tokens.space-md;
+        offset: -flick.content-x;
+        view: flick.width;
+        content: root.content-width;
+        moved(offset) => { flick.content-x = -offset; }
     }
 }
