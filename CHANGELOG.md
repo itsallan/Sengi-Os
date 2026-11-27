@@ -5,6 +5,11 @@ and the measured idle RAM and boot time.
 
 ## Unreleased
 
+### Added
+
+- The Sengi OS logo in the bar, on the login screen, in Settings' About page,
+  and on the first page of the installer and the welcome wizard.
+
 ### Fixed
 
 - Sound: programs that use PulseAudio, such as browsers, have a sound server
