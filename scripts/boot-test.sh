@@ -173,18 +173,6 @@ key() {
 	echo "sendkey $1" >&3
 	sleep "${2:-2}"
 }
-
-# After the measurements the guest plays its tones (see sengi-boot-report),
-# and then waits for the volume up key.
-wait_for 'SENGI-SOUND keys ready\|SENGI-DONE' || { stop; exit 1; }
-if ! grep -q SENGI-DONE "$out/serial.log"; then
-	key volumeup 0.7
-	shot volume-key
-fi
-wait_for SENGI-DONE || { stop; exit 1; }
-
-# The measurements are in. Now drive the desktop a little so the reviewer has
-# more than an empty screen to look at.
 # Put the pointer on a pixel. QMP wants each axis scaled to 0..32767.
 pointer() {
 	printf '{"execute":"input-send-event","arguments":{"events":[{"type":"abs","data":{"axis":"x","value":%d}},{"type":"abs","data":{"axis":"y","value":%d}}]}}\n' \
@@ -197,6 +185,79 @@ click() {
 	echo "mouse_button 0" >&3
 	sleep 2
 }
+
+# The live image asks whether to install Sengi OS or try it first. The guest
+# says when it has been up and left alone, with what memory is used then. It
+# has to be a window in the middle of the screen that has the keyboard: Tab
+# goes to "Try it first" and Return chooses it. The steps after this need the
+# desktop to themselves.
+dialog_fail=
+# The box around what differs between dumps $1 and $2, clear of the bar's
+# clock and of the dock, as "left right top bottom".
+changed_box() {
+	header=$(($(wc -c <"$out/$1.ppm") - screen_w * screen_h * 3))
+	cmp -l "$out/$1.ppm" "$out/$2.ppm" 2>/dev/null |
+		awk -v h="$header" -v w="$screen_w" -v low=30 -v high=$((screen_h - 100)) '
+		{
+			p = int(($1 - 1 - h) / 3)
+			x = p % w
+			y = int(p / w)
+			if (p < 0 || y < low || y >= high) next
+			if (!n++) { l = r = x; t = b = y }
+			if (x < l) l = x
+			if (x > r) r = x
+			if (y > b) b = y
+		}
+		END { if (n) print l, r, t, b }'
+}
+# "SENGI-DIALOG up", or "missing", in which case the guest has said so.
+wait_for 'SENGI-DIALOG [um]' || { shot live-dialog; stop; exit 1; }
+if grep -q 'SENGI-DIALOG up' "$out/serial.log"; then
+	pointer $((screen_w / 8)) $((screen_h / 2))
+	shot live-dialog
+	echo "screendump $out/asking.ppm" >&3
+	sleep 1
+	key tab 1
+	key ret 1
+	if wait_serial 'SENGI-DIALOG gone' 15; then
+		sleep 2
+		echo "screendump $out/answered.ppm" >&3
+		sleep 1
+		box=$(changed_box asking answered)
+		echo "live question covered (left right top bottom): ${box:-nothing}" >&2
+		# 440 by 192 from the tokens, with a title bar and a shadow, in the
+		# middle across and near the middle down.
+		if ! echo "$box" | awk -v w="$screen_w" -v h="$screen_h" '{
+			wide = $2 - $1
+			tall = $4 - $3
+			across = ($1 + $2) / 2 - w / 2
+			down = ($3 + $4) / 2 - h / 2
+			exit !(NF == 4 && wide >= 400 && wide <= 520 && tall >= 180 && tall <= 320 &&
+				across >= -20 && across <= 20 && down >= -80 && down <= 80)
+		}'; then
+			dialog_fail="the live question is not a window in the middle of the screen (changed box: ${box:-nothing})"
+		fi
+	else
+		dialog_fail="Tab and Return did not close the live question, so it did not have the keyboard"
+		shot live-dialog-stuck
+		key esc 2
+	fi
+else
+	shot live-dialog
+	dialog_fail="the live question did not appear"
+fi
+
+# After the measurements the guest plays its tones (see sengi-boot-report),
+# and then waits for the volume up key.
+wait_for 'SENGI-SOUND keys ready\|SENGI-DONE' || { stop; exit 1; }
+if ! grep -q SENGI-DONE "$out/serial.log"; then
+	key volumeup 0.7
+	shot volume-key
+fi
+wait_for SENGI-DONE || { stop; exit 1; }
+
+# The measurements are in. Now drive the desktop a little so the reviewer has
+# more than an empty screen to look at.
 shot desktop
 
 # Without an absolute pointer the next two shots would quietly show nothing.
@@ -774,8 +835,9 @@ else
 	shot greeter
 	greeter_fail="the login screen did not appear after logging out"
 fi
-# The guest's last lines, on how the display was handed over.
-wait_serial 'SENGI-HANDOVER reported' 10 || true
+# The guest's last lines, on how the display was handed over. Before them it
+# waits to see that the live question is not asked again.
+wait_serial 'SENGI-HANDOVER reported' 20 || true
 # Several windows, each minimised with its yellow button while another is
 # open: this once froze the whole desktop, pointer and all. Only the window
 # in front has coloured buttons, so its yellow one is found by that colour in
@@ -927,6 +989,9 @@ done
 
 guest_s=$(sed -n 's/.*SENGI-BOOT desktop_s=\([0-9.]*\).*/\1/p' "$out/serial.log" | head -1)
 ram_mb=$(sed -n 's/.*SENGI-IDLE ram_mb=\([0-9]*\).*/\1/p' "$out/serial.log" | head -1)
+# The same with the live question still on screen, and what its process costs.
+dialog_ram_mb=$(sed -n 's/.*SENGI-DIALOG up ram_mb=\([0-9]*\).*/\1/p' "$out/serial.log" | head -1)
+dialog_kb=$(sed -n 's/.*SENGI-DIALOG up .*pss_kb=\([0-9]*\).*/\1/p' "$out/serial.log" | head -1)
 got=$(sed -n 's/.*SENGI-INFO compositor: \([a-z-]*\).*/\1/p' "$out/serial.log" | head -1)
 # What two things cost that are not the desktop's own. The login screen
 # and its compositor are there only while nobody is logged in, so they
@@ -939,6 +1004,8 @@ polkit_kb=$(sed -n 's/.*SENGI-POLKIT pss_kb=\([0-9]*\).*/\1/p' "$out/serial.log"
 	echo "boot_s=$boot_s"
 	echo "boot_guest_s=$guest_s"
 	echo "idle_ram_mb=$ram_mb"
+	echo "live_dialog_ram_mb=$dialog_ram_mb"
+	echo "live_dialog_pss_kb=$dialog_kb"
 	echo "greeter_pss_kb=$greeter_kb"
 	echo "polkitd_pss_kb=$polkit_kb"
 	echo "accel=$accel"
@@ -960,6 +1027,10 @@ if grep -q SENGI-FAIL "$out/serial.log"; then
 fi
 if [ -n "$size_fail" ]; then
 	echo "FAIL: $size_fail" >&2
+	fail=1
+fi
+if [ -n "$dialog_fail" ]; then
+	echo "FAIL: $dialog_fail" >&2
 	fail=1
 fi
 if [ -n "$settings_fail" ]; then
@@ -1008,6 +1079,10 @@ if [ -n "$greeter_fail" ]; then
 fi
 if [ "${ram_mb:-9999}" -ge "$budget_ram_mb" ]; then
 	echo "FAIL: idle RAM ${ram_mb} MB is over the ${budget_ram_mb} MB budget" >&2
+	fail=1
+fi
+if [ "${dialog_ram_mb:-9999}" -ge "$budget_ram_mb" ]; then
+	echo "FAIL: idle RAM with the live question open, ${dialog_ram_mb:-not measured} MB, is over the ${budget_ram_mb} MB budget" >&2
 	fail=1
 fi
 if [ "$(echo "${boot_s:-9999} $budget_boot_s" | awk '{print ($1 >= $2)}')" = 1 ]; then

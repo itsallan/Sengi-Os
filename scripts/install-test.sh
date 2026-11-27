@@ -39,6 +39,11 @@
 # the desktop, and the installation that is timed is the one the window
 # started. The guest reports through its serial port (see
 # sengi-install-report).
+#
+# SENGI_INSTALL_FROM=dialog starts the installer with the button of the live
+# image's question (the default when erasing); launcher answers it with
+# Escape, to try first, and then starts the installer from the launcher (the
+# default beside another system).
 set -eu
 # A monitor whose QEMU has gone is a broken pipe; the script says what
 # happened and does not die of it.
@@ -63,10 +68,23 @@ timeout_s=${SENGI_BOOT_TIMEOUT_S:-300}
 install_timeout_s=${SENGI_INSTALL_TIMEOUT_S:-900}
 mode=${SENGI_INSTALL_MODE:-erase}
 case $mode in
-erase) disk_size=${SENGI_INSTALL_DISK_SIZE:-16G} ;;
-beside) disk_size=${SENGI_INSTALL_DISK_SIZE:-14G} ;;
+erase)
+	disk_size=${SENGI_INSTALL_DISK_SIZE:-16G}
+	from=${SENGI_INSTALL_FROM:-dialog}
+	;;
+beside)
+	disk_size=${SENGI_INSTALL_DISK_SIZE:-14G}
+	from=${SENGI_INSTALL_FROM:-launcher}
+	;;
 *)
 	echo "SENGI_INSTALL_MODE is erase or beside" >&2
+	exit 2
+	;;
+esac
+case $from in
+dialog | launcher) ;;
+*)
+	echo "SENGI_INSTALL_FROM is dialog or launcher" >&2
 	exit 2
 	;;
 esac
@@ -284,13 +302,32 @@ start_qemu "$out/serial-install.log" "$out/monitor-install.log" \
 	-device virtio-blk-pci,drive=target,bootindex=2
 wait_serial SENGI-LIVE "$timeout_s" || give_up "the live desktop did not come up" live
 live_s=$(since "$start")
-sleep 3
 
-# Found and started the way a person would, through the launcher.
-key meta_l-spc 2
-type_text install
-key ret 1
-wait_serial 'SENGI-INSTALLER running' 30 || give_up "the installer did not start from the launcher" installer
+# The live image asks whether to install or try it first, and the question
+# has the keyboard, on "Install Sengi OS".
+wait_serial 'SENGI-DIALOG [um]' 90 || give_up "the guest said nothing of the live question" live-dialog
+grep -q 'SENGI-DIALOG up' "$serial" || give_up "the live question did not appear" live-dialog
+sleep 3
+shot installer-live-dialog
+if [ "$from" = dialog ]; then
+	key ret 1
+	wait_serial 'SENGI-INSTALLER running' 30 ||
+		give_up "Install Sengi OS in the live question did not start the installer" installer
+	wait_serial 'SENGI-DIALOG gone' 15 || give_up "the live question stayed after Install Sengi OS" installer
+else
+	# Try it first, and later the installer found and started the way a
+	# person would, through the launcher.
+	key esc 1
+	wait_serial 'SENGI-DIALOG gone' 15 || give_up "Escape did not close the live question" live-dialog
+	sleep 2
+	if grep -q 'SENGI-INSTALLER running' "$serial"; then
+		give_up "choosing to try it first started the installer" installer
+	fi
+	key meta_l-spc 2
+	type_text install
+	key ret 1
+	wait_serial 'SENGI-INSTALLER running' 30 || give_up "the installer did not start from the launcher" installer
+fi
 sleep 4
 shot installer-welcome
 key ret 1.5
@@ -604,6 +641,7 @@ grep SENGI-INFO "$serial" | sed 's/.*SENGI-INFO //' >"$out/guest-info-installed.
 	echo "install_live_boot_s=$live_s"
 	echo "install_firmware=$firmware"
 	echo "install_accel=$accel"
+	echo "install_from=$from"
 	if grep -q sengi-composito "$out/guest-info-installed.txt"; then
 		echo "installed_compositor=sengi-compositor"
 	elif grep -q labwc "$out/guest-info-installed.txt"; then
@@ -657,7 +695,7 @@ else
 	grep -q sengi-composito "$out/guest-info-installed.txt" || { echo "FAIL: the installed system did not run sengi-compositor" >&2; fail=1; }
 	if grep -q labwc "$out/guest-info-installed.txt"; then echo "FAIL: the installed system ran labwc" >&2; fail=1; fi
 fi
-for shot in installer-welcome installer-disk installer-review installer-progress installer-done \
+for shot in installer-live-dialog installer-welcome installer-disk installer-review installer-progress installer-done \
 	installed-login installed-desktop installed-boot-menu; do
 	[ -s "$out/$shot.png" ] || { echo "FAIL: no screenshot $shot.png was saved" >&2; fail=1; }
 done

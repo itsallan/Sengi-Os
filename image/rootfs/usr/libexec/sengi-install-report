@@ -25,6 +25,27 @@ if [ -d /run/sengi/medium/live ]; then
 		sleep 0.1
 	done
 	echo "SENGI-LIVE desktop_s=$(uptime_s)" >$port
+	# The live image's question, install or try first. The test answers
+	# it either way, and the installer comes from that answer or from
+	# the launcher afterwards.
+	n=0
+	until pidof sengi-welcome >/dev/null || [ $n -ge 300 ]; do
+		n=$((n + 1))
+		sleep 0.2
+	done
+	if pidof sengi-welcome >/dev/null; then
+		echo "SENGI-DIALOG up" >$port
+		n=0
+		while pidof sengi-welcome >/dev/null; do
+			n=$((n + 1))
+			[ $n -lt 600 ] || exit 0
+			sleep 0.2
+		done
+		echo "SENGI-DIALOG gone" >$port
+	else
+		echo "SENGI-FAIL the live image did not ask whether to install or try first" >$port
+		echo "SENGI-DIALOG missing" >$port
+	fi
 	n=0
 	until pidof sengi-installer >/dev/null; do
 		n=$((n + 1))
@@ -83,6 +104,9 @@ until greeter sengi-greeter && greeter_compositor >/dev/null; do
 	sleep 0.1
 done
 echo "SENGI-LOGIN ready_s=$(uptime_s)" >$port
+if pidof sengi-welcome >/dev/null; then
+	echo "SENGI-FAIL sengi-welcome is running under the login screen" >$port
+fi
 
 # Then whoever the test logs in as.
 n=0
@@ -144,6 +168,10 @@ esac
 [ "$root_type" = ext4 ] || fail "the root file system is $root_type, not ext4"
 [ ! -e /run/sengi ] || fail "the live medium is mounted"
 if grep -q boot=sengi /proc/cmdline; then fail "the kernel was started as the live image's is"; fi
+# Only the live image asks whether to install. The first login here may
+# well show the welcome, which is the same program run another way.
+if pgrep -f 'sengi-welcome --live' >/dev/null; then fail "the live question is up on the installed system"; fi
+[ ! -e "/home/$user/.local/state/sengi-os/live-asked" ] || fail "the live question was asked on the installed system"
 findmnt -n /boot/efi >/dev/null || fail "the EFI system partition is not mounted at /boot/efi"
 # An identity of its own, and nothing of the installer left.
 case $(cat /etc/machine-id) in

@@ -80,17 +80,28 @@ if [ -z "${SENGI_COMPOSITOR_PID:-}" ]; then
 ) >/dev/null 2>&1 &
 fi
 
-# The welcome, once, on the first login of an installed system: never on the
-# live image, whose kernel line has boot=sengi, and not again once it was
-# seen or skipped. It waits for the desktop to come up and runs at the lowest
-# priority. Nothing stays behind: the waiting shell ends with the program.
+# sengi-welcome, once the desktop is up. Nothing stays behind: the waiting
+# shell ends with the program. On the live image, whose kernel line has
+# boot=sengi, it asks whether to install Sengi OS or try it first; the
+# program sees to it that this is once per start. It is not run at a lower
+# priority, which the installer it can start would inherit. On an installed
+# system it is the welcome, on the first login, at the lowest priority, and
+# not again once it was seen or skipped.
 welcome_state=${XDG_STATE_HOME:-$HOME/.local/state}
-welcome_live=
-case " $(cat /proc/cmdline 2>/dev/null) " in *" boot=sengi "*) welcome_live=1 ;; esac
-if [ -z "$welcome_live" ] && [ ! -e "$welcome_state/sengi-os/welcome-done" ]; then
+case " $(cat /proc/cmdline 2>/dev/null) " in
+*" boot=sengi "*)
 	(
 		sleep 3
-		nice -n 19 sengi-run sengi-welcome --first-run
+		sengi-run sengi-welcome --live
 	) >/dev/null 2>&1 &
-fi
-unset welcome_state welcome_live
+	;;
+*)
+	if [ ! -e "$welcome_state/sengi-os/welcome-done" ]; then
+		(
+			sleep 3
+			nice -n 19 sengi-run sengi-welcome --first-run
+		) >/dev/null 2>&1 &
+	fi
+	;;
+esac
+unset welcome_state

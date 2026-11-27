@@ -16,9 +16,55 @@ echo "SENGI-BOOT desktop_s=$up" >$port
 # it asked for.
 compositor=$(session_compositor)
 
+used_mb() {
+	awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2}
+		END {printf "%d\n", (t - a) / 1024}' /proc/meminfo
+}
+# The live image asks, a few seconds after the desktop is up, whether to
+# install Sengi OS or try it first. Memory is measured twice: with the
+# question on screen, left alone, and again once the test has chosen to try
+# it first and the desktop has settled, which is the idle desktop.
+n=0
+until pidof sengi-welcome >/dev/null || [ $n -ge 150 ]; do
+	n=$((n + 1))
+	sleep 0.2
+done
 sleep "${SENGI_IDLE_WAIT:-30}"
-awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2}
-	END {printf "SENGI-IDLE ram_mb=%d\n", (t - a) / 1024}' /proc/meminfo >$port
+asking=$(pidof -s sengi-welcome)
+if [ -n "$asking" ]; then
+	said=$(tr '\0' ' ' <"/proc/$asking/cmdline")
+	case $said in
+	*" --live "*) ;;
+	*) echo "SENGI-FAIL sengi-welcome runs on the live image, but not to ask: $said" >$port ;;
+	esac
+	echo "SENGI-DIALOG up ram_mb=$(used_mb) pss_kb=$(pss_kb "$asking")" >$port
+	n=0
+	while pidof sengi-welcome >/dev/null && [ $n -lt 600 ]; do
+		n=$((n + 1))
+		sleep 0.2
+	done
+	if pidof sengi-welcome >/dev/null; then
+		echo "SENGI-FAIL the live question did not close when it was answered" >$port
+	else
+		echo "SENGI-DIALOG gone" >$port
+	fi
+	if pidof sengi-installer >/dev/null; then
+		echo "SENGI-FAIL choosing to try it first started the installer" >$port
+	fi
+	# Asking must leave nothing resident behind, the desktop portal an
+	# ordinary window would start included. The kernel keeps fifteen
+	# letters of a program's name.
+	if pgrep -u live -x xdg-desktop-por >/dev/null || pgrep -u live -x xdg-document-po >/dev/null; then
+		echo "SENGI-FAIL the live question started the desktop portal, which stays" >$port
+	fi
+	[ -s /home/live/.local/state/sengi-os/live-asked ] ||
+		echo "SENGI-FAIL the live question was not noted as asked" >$port
+else
+	echo "SENGI-FAIL the live image did not ask whether to install or try first" >$port
+	echo "SENGI-DIALOG missing" >$port
+fi
+sleep "${SENGI_SETTLE_WAIT:-15}"
+echo "SENGI-IDLE ram_mb=$(used_mb)" >$port
 # polkit answers logind's questions and is started by the first of them,
 # which comes when the session starts: swayidle asks logind to hold off
 # sleep until the screen is locked. So it is running by now, and what it
@@ -378,9 +424,10 @@ fi
 sleep 6
 as_live foot --fullscreen --app-id sengi-fullscreen-test sleep 600 >/dev/null 2>&1 &
 sleep 3
-# The welcome is for the first login of an installed system, never this one.
+# The question was answered long ago and nothing of it stays; the welcome
+# itself is for an installed system, never this one.
 if pidof sengi-welcome >/dev/null; then
-	echo "SENGI-FAIL the first-run welcome started on the live image" >$port
+	echo "SENGI-FAIL sengi-welcome is running after the live question was answered" >$port
 fi
 if pgrep -u live -f 'app-id sengi-fullscreen-test' >/dev/null; then
 	echo "SENGI-FULLSCREEN up" >$port
@@ -410,6 +457,9 @@ done
 sleep 3
 if pidof sengi-bar sengi-dock >/dev/null; then
 	echo "SENGI-FAIL the desktop is still running under the login screen" >$port
+fi
+if pidof sengi-welcome >/dev/null; then
+	echo "SENGI-FAIL sengi-welcome is running under the login screen" >$port
 fi
 # shellcheck disable=SC2046
 echo "SENGI-GREETER running pss_kb=$(pss_kb $(greeter_pids)) compositor=$(greeter_compositor)" >$port
@@ -444,6 +494,12 @@ if [ "$(session_compositor)" = "$compositor" ] && [ -n "$(session_compositor_pid
 	desktop=up
 fi
 echo "SENGI-GREETER after desktop=$desktop session=${owner:-nobody} left=${left:-nothing}" >$port
+# The live question is asked once per start, not at every login. By now this
+# session would have shown it again.
+sleep 6
+if pidof sengi-welcome >/dev/null; then
+	echo "SENGI-FAIL the live question came back after logging in again" >$port
+fi
 # What the compositors said as they came and went, with logind's view of
 # the sessions between them: how the display passed from one to the next.
 journalctl -b --no-pager -o short-monotonic -t sengi-compositor -t sengi-session -t systemd-logind |

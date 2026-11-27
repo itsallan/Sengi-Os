@@ -41,6 +41,11 @@ cat <<NOTES
 | Live | $(value idle_ram_mb) MB | $(value boot_s) s |
 NOTES
 
+# The live image starts with a question on screen; what is used then too.
+if [ -n "$(value live_dialog_ram_mb)" ]; then
+	echo "| Live, before the install question is answered | $(value live_dialog_ram_mb) MB | |"
+fi
+
 # One row for each install test, the one that matters most first: the release
 # gives UEFI there, the target machine's way.
 for installed in "$installed" "$also"; do
