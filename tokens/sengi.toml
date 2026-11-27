@@ -202,6 +202,16 @@ password-field-height = 36
 password-dot = 8
 # The line under the field, kept free when it has nothing to say.
 password-note-height = 20
+# The Store: the widest its grids grow, the narrowest a category tile and
+# an app card get before there is a column less, their heights, the glyph in
+# a tile and the app icon on a card.
+store-page-width = 1200
+store-tile-width = 168
+store-tile-height = 52
+store-tile-icon = 24
+store-card-width = 256
+store-card-height = 132
+store-app-icon = 48
 # A row of a list or of a card of settings.
 list-row-height = 42
 # A dialog, and a list to choose from, over a window.

@@ -43,7 +43,7 @@ pub enum Palette {
 /// The sizes that follow the text size setting: the type, and the heights
 /// of what holds a line of it. The Slint `Tokens` does the same sums for
 /// the same names, see ui/tokens.slint.in.
-pub const SCALED: [&str; 13] = [
+pub const SCALED: [&str; 15] = [
     "type.size-sm",
     "type.size-md",
     "type.size-lg",
@@ -57,6 +57,8 @@ pub const SCALED: [&str; 13] = [
     "size.menu-width",
     "size.snip-countdown-width",
     "size.snip-countdown-height",
+    "size.store-tile-height",
+    "size.store-card-height",
 ];
 
 #[derive(Debug, Default)]

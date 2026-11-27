@@ -121,6 +121,13 @@ export global Tokens {
     out property <length> password-field-height: @{size.password-field-height}px;
     out property <length> password-dot: @{size.password-dot}px;
     out property <length> password-note-height: @{size.password-note-height}px;
+    out property <length> store-page-width: @{size.store-page-width}px;
+    out property <length> store-tile-width: @{size.store-tile-width}px;
+    out property <length> store-tile-height: @{size.store-tile-height}px * ThemeSwitch.text-scale;
+    out property <length> store-tile-icon: @{size.store-tile-icon}px;
+    out property <length> store-card-width: @{size.store-card-width}px;
+    out property <length> store-card-height: @{size.store-card-height}px * ThemeSwitch.text-scale;
+    out property <length> store-app-icon: @{size.store-app-icon}px;
     out property <length> list-row-height: @{size.list-row-height}px * ThemeSwitch.text-scale;
     out property <length> dialog-width: @{size.dialog-width}px;
     out property <length> chooser-width: @{size.chooser-width}px;
