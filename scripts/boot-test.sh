@@ -767,6 +767,124 @@ else
 fi
 # The guest's last lines, on how the display was handed over.
 wait_serial 'SENGI-HANDOVER reported' 10 || true
+# Several windows, each minimised with its yellow button while another is
+# open: this once froze the whole desktop, pointer and all. Only the window
+# in front has coloured buttons, so its yellow one is found by that colour in
+# a raw dump. The screen has to follow every click, and a window has to come
+# back from the dock. Our compositor only: labwc draws buttons of its own.
+# It runs last, in the session logged in just now: the guest waits only so
+# long for the lock screen's steps, and takes the first Settings it sees for
+# the one opened from the launcher.
+minimise_fail=
+yellow=$(awk '/^\[/ { in_color = ($0 == "[color]"); next }
+	in_color && $1 == "window-minimise" { gsub(/[#"]/, "", $3); print $3; exit }' \
+	"$(dirname "$0")/../tokens/sengi.toml")
+# Where the yellow button is in the dump $1, as "x y"; nothing if there is none.
+yellow_button() {
+	tail -c $((screen_w * screen_h * 3)) "$out/$1.ppm" | od -An -v -tu1 |
+		awk -v w="$screen_w" -v r="$(printf '%d' "0x$(echo "$yellow" | cut -c1-2)")" \
+			-v g="$(printf '%d' "0x$(echo "$yellow" | cut -c3-4)")" \
+			-v b="$(printf '%d' "0x$(echo "$yellow" | cut -c5-6)")" '
+			{
+				for (i = 1; i <= NF; i++) {
+					c = n % 3
+					if (c == 0) red = $i
+					else if (c == 1) green = $i
+					else if (red == r && green == g && $i == b) {
+						x = int(n / 3) % w
+						y = int(n / 3 / w)
+						if (!found++) { left = right = x; top = bottom = y }
+						if (x < left) left = x
+						if (x > right) right = x
+						if (y > bottom) bottom = y
+					}
+					n++
+				}
+			}
+			END { if (found >= 20) print int((left + right) / 2), int((top + bottom) / 2) }'
+}
+park() {
+	pointer $((screen_w / 8)) $((screen_h / 2))
+}
+# Clicks the dock icon of $1 and waits for the screen to change by at least
+# $2 bytes and show a window in front; $3 says what was being done.
+from_dock() {
+	[ -z "$minimise_fail" ] || return 0
+	dump min-before
+	pointer "$(dock_x_of "$1")" "$dock_y"
+	click
+	park
+	tries=0
+	while :; do
+		sleep 1
+		dump min-after
+		changed=$(differs min-before min-after)
+		if [ "$changed" -ge "$2" ] && [ -n "$(yellow_button min-after)" ]; then
+			break
+		fi
+		tries=$((tries + 1))
+		if [ "$tries" -ge 8 ]; then
+			minimise_fail="$3: the click on the dock icon of $1 brought no window to the front ($changed bytes of the screen changed)"
+			break
+		fi
+	done
+}
+# Minimises the window in front, which is that of $1.
+minimise_front() {
+	[ -z "$minimise_fail" ] || return 0
+	dump min-before
+	at=$(yellow_button min-before)
+	if [ -z "$at" ]; then
+		minimise_fail="no yellow button on the window of $1"
+		return 0
+	fi
+	pointer "${at% *}" "${at#* }"
+	click
+	park
+	dump min-after
+	changed=$(differs min-before min-after)
+	if [ "$changed" -lt 20000 ] || [ "$(yellow_button min-after)" = "$at" ]; then
+		minimise_fail="minimising $1 with its yellow button did nothing ($changed bytes of the screen changed): the desktop may be frozen"
+	fi
+	echo "minimise $1: $changed bytes changed" >&2
+}
+if [ "$want" = sengi-compositor ] && [ -z "$greeter_fail" ]; then
+	park
+	dump min-empty
+	from_dock sengi-settings "$window_bytes" "opening Settings"
+	from_dock sengi-files 50000 "opening Files"
+	from_dock sengi-store 50000 "opening the Store"
+	shot minimise-three-open
+	minimise_front sengi-store
+	minimise_front sengi-files
+	from_dock sengi-store 50000 "restoring the Store"
+	from_dock sengi-settings 20000 "bringing Settings to the front"
+	minimise_front sengi-settings
+	shot minimise-after
+	# Alive after all of that: a minimised window comes back.
+	from_dock sengi-files 50000 "restoring Files after minimising"
+	shot minimise-restored
+	# Close all three; Settings is still minimised.
+	if [ -z "$minimise_fail" ]; then
+		key meta_l-q 2
+		key meta_l-q 2
+		from_dock sengi-settings "$window_bytes" "restoring Settings to close it"
+	fi
+	key meta_l-q 2
+	if [ -n "$minimise_fail" ]; then
+		key meta_l-q 2
+		key meta_l-q 2
+	fi
+	park
+	dump min-after
+	left=$(differs min-empty min-after)
+	echo "minimise: $left bytes differ from the empty desktop afterwards" >&2
+	# The bar's clock may have moved on a minute; nothing else has.
+	if [ -z "$minimise_fail" ] && [ "$left" -ge 20000 ]; then
+		minimise_fail="the desktop did not come back after the minimised windows were closed ($left bytes differ)"
+	fi
+	rm -f "$out"/min-*.ppm
+fi
 rm -f "$out"/*.ppm "$out"/*.band
 stop
 
@@ -821,6 +939,10 @@ if [ -n "$dock_fail" ]; then
 fi
 if [ -n "$store_fail" ]; then
 	echo "FAIL: $store_fail" >&2
+	fail=1
+fi
+if [ -n "$minimise_fail" ]; then
+	echo "FAIL: $minimise_fail" >&2
 	fail=1
 fi
 if [ -n "$lock_fail" ]; then
