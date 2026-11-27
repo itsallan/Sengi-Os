@@ -843,7 +843,10 @@ minimise_front() {
 	park
 	dump min-after
 	changed=$(differs min-before min-after)
-	if [ "$changed" -lt 20000 ] || [ "$(yellow_button min-after)" = "$at" ]; then
+	# A frozen screen does not change at all. On a wide screen the button
+	# must also have moved or gone; on a small one every window fills the
+	# screen, so the window underneath has its button in the same place.
+	if [ "$changed" -lt 20000 ] || { [ "$screen_w" -ge 1024 ] && [ "$(yellow_button min-after)" = "$at" ]; }; then
 		minimise_fail="minimising $1 with its yellow button did nothing ($changed bytes of the screen changed): the desktop may be frozen"
 	fi
 	echo "minimise $1: $changed bytes changed" >&2
