@@ -96,6 +96,9 @@ export global Tokens {
     out property <length> dock-dot: @{dock.dot}px;
     out property <length> dock-dot-gap: @{dock.dot-gap}px;
     out property <length> dock-bounce: @{dock.bounce}px;
+    out property <length> logo-mark: @{logo.mark}px;
+    out property <length> logo-full-min: @{logo.full-min}px;
+    out property <length> logo-page: @{logo.page}px;
     out property <length> desktop-cell-width: @{desktop.cell-width}px;
     out property <length> desktop-cell-height: @{desktop.cell-height}px;
     out property <length> desktop-icon: @{desktop.icon}px;

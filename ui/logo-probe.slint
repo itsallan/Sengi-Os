@@ -1,0 +1,19 @@
+// The logo on its own, for its pixel tests. Not shown to the user.
+
+import { Tokens, SengiLogo } from "components.slint";
+
+export component LogoProbe inherits Window {
+    in property <length> logo-width;
+    out property <bool> small: logo.small;
+    out property <length> logo-height: logo.height;
+
+    width: Tokens.logo-page * 2;
+    height: Tokens.logo-page * 2;
+    background: Tokens.color-bg;
+
+    logo := SengiLogo {
+        x: Tokens.space-lg;
+        y: Tokens.space-lg;
+        width: root.logo-width;
+    }
+}

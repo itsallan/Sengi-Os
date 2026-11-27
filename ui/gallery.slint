@@ -1,8 +1,9 @@
 // Every shared component on one window, for visual review.
 
-import { Tokens, SengiText, SengiLabel, SengiSurface, SengiButton, SengiToggle, SengiClockBlock, SengiPasswordField, SengiProgress, SengiStep, SengiStepState } from "components.slint";
+import { Tokens, SengiText, SengiLabel, SengiSurface, SengiButton, SengiToggle, SengiClockBlock, SengiPasswordField, SengiProgress, SengiStep, SengiStepState, SengiLogo } from "components.slint";
 
 export { IconProbe } from "icon-probe.slint";
+export { LogoProbe } from "logo-probe.slint";
 
 export component Gallery inherits Window {
     title: "Sengi OS components";
@@ -13,6 +14,14 @@ export component Gallery inherits Window {
         padding: Tokens.space-xl;
         spacing: Tokens.space-lg;
         alignment: start;
+
+        SengiLabel { text: "Logo"; }
+        HorizontalLayout {
+            spacing: Tokens.space-xl;
+            alignment: start;
+            SengiLogo { width: Tokens.logo-page; }
+            SengiLogo { }
+        }
 
         SengiLabel { text: "Text"; }
         SengiText { text: "Sengi OS"; }

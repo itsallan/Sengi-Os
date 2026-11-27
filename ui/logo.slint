@@ -1,0 +1,153 @@
+// The Sengi OS logo, a sengi at a sprint, drawn as paths in token colours.
+// It is our own artwork under the project's licence, so it has no entry in
+// THIRD-PARTY-NOTICES.md.
+
+import { Tokens } from "tokens.slint";
+
+// The drawing, in the units of docs/media/logo.svg before that file moves it
+// up. This is the one place in the interface that has it, and
+// crates/sengi-ui/tests/logo.rs fails if the two differ.
+global LogoShape {
+    out property <string> speed: "M6 38 H16 M2 45 H12";
+    out property <string> tail: "M21 52 Q10 54 4 66";
+    out property <string> legs: "M34 62 L22 78 M56 64 L68 78";
+    out property <string> body: "M20 50 C20 38 34 34 48 36 C58 37 64 40 70 44 L93 52 Q95 53.5 93 55 L70 58 C62 63 50 66 38 64 C26 62 20 58 20 50 Z";
+    // Two circles, each as a pair of arcs that run the way the body does,
+    // so that the ear and the body fill as one shape.
+    out property <string> ear: "M56.5 37 A5.5 5.5 0 1 1 67.5 37 A5.5 5.5 0 1 1 56.5 37 Z";
+    out property <string> eye: "M67.6 49 A2.4 2.4 0 1 1 72.4 49 A2.4 2.4 0 1 1 67.6 49 Z";
+    out property <float> thin: 3;
+    out property <float> thick: 6;
+    out property <float> speed-opacity: 0.65;
+    // The part of the drawing the full logo shows.
+    out property <float> left: 0;
+    out property <float> top: 23;
+    out property <float> width: 98;
+    out property <float> height: 67;
+
+    // The small mark: the same body with a larger ear and eye and heavier
+    // legs and tail, and no speed lines, which turn to noise when small.
+    out property <string> mark-tail: "M22 52 Q12 54 8 64";
+    out property <string> mark-legs: "M34 62 L24 76 M56 62 L66 76";
+    out property <string> mark-ear: "M54 36 A7 7 0 1 1 68 36 A7 7 0 1 1 54 36 Z";
+    out property <string> mark-eye: "M64 50.5 A5 5 0 1 1 74 50.5 A5 5 0 1 1 64 50.5 Z";
+    out property <float> mark-thin: 6;
+    out property <float> mark-thick: 9;
+    out property <float> mark-left: 3;
+    out property <float> mark-top: 26.25;
+    out property <float> mark-width: 95;
+    out property <float> mark-height: 57;
+}
+
+// One line or filled shape of the logo. `art-*` is where the drawing goes in
+// the logo, and `weight` the width of a line in the drawing's units.
+component LogoPart inherits Path {
+    in property <length> art-x;
+    in property <length> art-y;
+    in property <length> art-width;
+    in property <length> art-height;
+    in property <float> weight;
+
+    // Slint fits the drawing inside the line width, so the box is that much
+    // larger than the drawing and every part lands in the same place.
+    stroke-width: root.art-width * root.weight / root.viewbox-width;
+    stroke-line-cap: round;
+    x: root.art-x - self.stroke-width / 2;
+    y: root.art-y - self.stroke-width / 2;
+    width: root.art-width + self.stroke-width;
+    height: root.art-height + self.stroke-width;
+}
+
+// The logo at the width it is given, in its own proportions. Under
+// `logo.full-min` wide it is the small mark.
+export component SengiLogo inherits Rectangle {
+    in property <brush> ink: Tokens.color-accent;
+    // The colour of whatever the logo sits on, which the eye shows.
+    in property <brush> eye: Tokens.color-bg;
+    out property <bool> small: self.width < Tokens.logo-full-min;
+
+    private property <float> view-left: self.small ? LogoShape.mark-left : LogoShape.left;
+    private property <float> view-top: self.small ? LogoShape.mark-top : LogoShape.top;
+    private property <float> view-width: self.small ? LogoShape.mark-width : LogoShape.width;
+    private property <float> view-height: self.small ? LogoShape.mark-height : LogoShape.height;
+    private property <length> art-width: Math.min(self.width, self.height * self.view-width / self.view-height);
+    private property <length> art-height: self.art-width * self.view-height / self.view-width;
+    private property <length> art-x: (self.width - self.art-width) / 2;
+    private property <length> art-y: (self.height - self.art-height) / 2;
+
+    width: Tokens.logo-mark;
+    height: self.width * self.view-height / self.view-width;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    accessible-role: image;
+    accessible-label: "Sengi OS logo";
+
+    if !root.small: LogoPart {
+        art-x: root.art-x;
+        art-y: root.art-y;
+        art-width: root.art-width;
+        art-height: root.art-height;
+        viewbox-x: root.view-left;
+        viewbox-y: root.view-top;
+        viewbox-width: root.view-width;
+        viewbox-height: root.view-height;
+        commands: LogoShape.speed;
+        weight: LogoShape.thin;
+        stroke: root.ink;
+        opacity: LogoShape.speed-opacity;
+    }
+
+    LogoPart {
+        art-x: root.art-x;
+        art-y: root.art-y;
+        art-width: root.art-width;
+        art-height: root.art-height;
+        viewbox-x: root.view-left;
+        viewbox-y: root.view-top;
+        viewbox-width: root.view-width;
+        viewbox-height: root.view-height;
+        commands: root.small ? LogoShape.mark-tail : LogoShape.tail;
+        weight: root.small ? LogoShape.mark-thin : LogoShape.thin;
+        stroke: root.ink;
+    }
+
+    LogoPart {
+        art-x: root.art-x;
+        art-y: root.art-y;
+        art-width: root.art-width;
+        art-height: root.art-height;
+        viewbox-x: root.view-left;
+        viewbox-y: root.view-top;
+        viewbox-width: root.view-width;
+        viewbox-height: root.view-height;
+        commands: root.small ? LogoShape.mark-legs : LogoShape.legs;
+        weight: root.small ? LogoShape.mark-thick : LogoShape.thick;
+        stroke: root.ink;
+    }
+
+    LogoPart {
+        art-x: root.art-x;
+        art-y: root.art-y;
+        art-width: root.art-width;
+        art-height: root.art-height;
+        viewbox-x: root.view-left;
+        viewbox-y: root.view-top;
+        viewbox-width: root.view-width;
+        viewbox-height: root.view-height;
+        commands: LogoShape.body + " " + (root.small ? LogoShape.mark-ear : LogoShape.ear);
+        fill: root.ink;
+    }
+
+    LogoPart {
+        art-x: root.art-x;
+        art-y: root.art-y;
+        art-width: root.art-width;
+        art-height: root.art-height;
+        viewbox-x: root.view-left;
+        viewbox-y: root.view-top;
+        viewbox-width: root.view-width;
+        viewbox-height: root.view-height;
+        commands: root.small ? LogoShape.mark-eye : LogoShape.eye;
+        fill: root.eye;
+    }
+}

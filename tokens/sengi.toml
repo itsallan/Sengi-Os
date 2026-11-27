@@ -250,6 +250,14 @@ settings-control-wide = 240
 settings-wallpaper-preview = 144
 settings-wallpaper-label = 28
 
+[logo]
+# How wide the Sengi OS logo is: the small mark in the bar, and the logo at
+# the head of a page. Under full-min wide it is drawn as the small mark,
+# without the speed lines and with heavier details.
+mark = 20
+full-min = 32
+page = 80
+
 [window]
 # The round buttons in the title bar: their diameter, the space between two,
 # the space from the frame edge to the first, the width of the ring around

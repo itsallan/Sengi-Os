@@ -10,5 +10,10 @@ build = "build.rs"
 [dependencies]
 slint.workspace = true
 
+[dev-dependencies]
+# The pixel tests draw paths, which the crate tested on its own cannot do
+# without this.
+slint = { workspace = true, features = ["software-renderer-path"] }
+
 [build-dependencies]
 slint-build.workspace = true
