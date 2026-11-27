@@ -7,11 +7,14 @@ and the measured idle RAM and boot time.
 
 ### Added
 
-- Store: opens on a Featured page of recommended apps (browsers, office,
-  media, graphics, communication, utilities, development, screen recording,
-  notes) with chips to filter by group, and still lists them by name, with a
-  "Not connected" note, when Flathub cannot be reached. The list is
-  `crates/sengi-store/featured.toml`.
+- Store: opens on a grid of categories (browsers, office, media, graphics,
+  communication, utilities, development, screen recording, notes) and a grid
+  of featured apps as cards, in two to four columns by the window's width,
+  with a page for each category, search from anywhere, install progress on the
+  card and the arrow keys, Return and Escape. Offline it shows a banner in
+  plain words with Retry, and tries again by itself when the network comes
+  back. App icons come from Flathub's data and appear when it arrives. The
+  recommended apps are in `crates/sengi-store/featured.toml`.
 - Printing (sengi-print): Settings has a Printers page that lists the
   printers with their state, picks your default, prints a test page, shows the
   print queue with Cancel, removes printers, and adds them by searching the
