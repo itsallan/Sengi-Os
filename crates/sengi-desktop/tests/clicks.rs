@@ -148,9 +148,8 @@ impl Screen {
         self.settle();
         let mut buffer = paint(&self.window, width, height);
         for (pixel, over) in buffer.iter_mut().zip(paint(&menu, width, height)) {
-            let under = |channel: u8| {
-                (u16::from(channel) * u16::from(255 - over.alpha) / 255) as u8
-            };
+            let under =
+                |channel: u8| (u16::from(channel) * u16::from(255 - over.alpha) / 255) as u8;
             *pixel = PremultipliedRgbaColor {
                 red: over.red.saturating_add(under(pixel.red)),
                 green: over.green.saturating_add(under(pixel.green)),
