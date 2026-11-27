@@ -46,5 +46,16 @@
     <keybind key="W-q">
       <action name="Close" />
     </keybind>
+    <!-- The volume keys, doing what they do under sengi-compositor; the
+         default ones above would leave out the indicator. -->
+    <keybind key="XF86AudioRaiseVolume" allowWhenLocked="yes">
+      <action name="Execute" command="sh -c 'wpctl set-mute @DEFAULT_AUDIO_SINK@ 0; wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+; exec sengi-osd volume'" />
+    </keybind>
+    <keybind key="XF86AudioLowerVolume" allowWhenLocked="yes">
+      <action name="Execute" command="sh -c 'wpctl set-mute @DEFAULT_AUDIO_SINK@ 0; wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-; exec sengi-osd volume'" />
+    </keybind>
+    <keybind key="XF86AudioMute" allowWhenLocked="yes">
+      <action name="Execute" command="sh -c 'wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle; exec sengi-osd volume'" />
+    </keybind>
   </keyboard>
 </labwc_config>
