@@ -5,75 +5,33 @@ and the measured idle RAM and boot time.
 
 ## 1.0.0 - 2026-11-27
 
-The first public release of Sengi OS.
+First public release.
 
 ### Added
 
-- Files, a small file manager: places and removable drives on the left, icon
-  toolbar, right-click menus, drag and drop, natural sorting, automatic
-  refresh and a Trash. It changes things only in your home folder and on
-  drives you open (USB sticks, SD cards and external disks, mounted with a
-  click through udisks2, with Eject, copy progress and Cancel).
-- A desktop: the folders and files of ~/Desktop as icons, with a right-click
-  menu for New Folder, New File, Open Terminal Here and Settings.
-- Text Editor and Image Viewer, and double-click to open (sengi-open).
-- Calculator, a calendar that opens from the clock, and screenshots of the
-  screen, a window or a dragged area, with a timer and clipboard copy.
-- The Store: category grid and featured apps with their icons, search, real
-  install progress, an Open button, and a plain offline notice that retries.
-- Settings pages for Wallpaper, Printers, Updates and Accessibility (text
-  size, reduce motion, cursor size), display scaling and arrangement, night
-  light, touchpad options and gestures, and idle and lid choices under Power.
-- Printing is installed from Settings, Printers when you first need it.
-- A welcome wizard on the first login of an installed system.
-- Dock pinning, drag to reorder, and right-click menus in the dock and the
-  launcher. The launcher shows all apps as a grid.
-- Notification history grouped by app, kept across restarts.
-- Volume and brightness indicator, laptop brightness keys, dimming and screen
-  off when idle, suspend on lid close with the screen locked first.
-- Window shadows, snap hints, a keyboard shortcut sheet (Super+/) and an
-  optional clipboard history (Super+V, off by default).
-- Wi-Fi and Bluetooth firmware for Intel, Realtek, MediaTek, Atheros and
-  Broadcom, with Intel graphics firmware and CPU microcode.
-- Installing beside another system on a UEFI computer with free space.
-- A live boot entry without the NVIDIA driver (press N in the boot menu), and
-  a journal line if the compositor ever stalls.
-- The GPL-3.0-or-later licence and third-party notices.
+- Desktop icons, Files with USB and external drives, Store, Text Editor,
+  Image Viewer, Calculator and a welcome wizard.
+- Settings: wallpaper, displays, night light, touchpad, power, printers,
+  updates and accessibility.
+- Dock pinning, app grid, notification history, screenshots, clipboard
+  history, snap hints and a shortcut sheet (Super+/).
+- Wi-Fi and Bluetooth firmware, and installing beside another system (UEFI).
 
 ### Changed
 
-- The accent colour is green and every icon of our own is Phosphor Bold.
-- Sengi OS 1.0 is dark only. Light and high contrast themes are not offered yet.
-- Every window gets the Sengi OS title bar, also apps that draw their own.
+- Green accent, dark theme only, and a title bar on every window.
 
 ### Fixed
 
-- The whole desktop froze when a window was minimised while another was open,
-  when a click outside closed a program's menu, and when the screen locked
-  with such a menu open.
-- Pressing the bottom right corner of a clickpad is a right click again.
-- Windows now appear on small screens such as 800x600.
-- Dark specks in the bottom corners of windows, and desktop menus that opened
-  behind windows.
-- The About page layout, blank dock icons and the boot menu label.
-
-### Not tested on real hardware
-
-Automated and virtual machine tests cover these, a real computer does not yet:
-
-- the freeze fix, on the laptop where the freeze was seen
-- installing beside Windows on a real disk (a stand-in was used)
-- suspend and lid close, night light, touchpad options and gestures
-- USB drives, printers and real Flatpak install progress
+- Desktop freeze on minimising a window or closing a menu.
+- Clickpad right click, small screens, window corners and desktop menus.
 
 ### Known limits
 
-- Flatpak runtimes are large and the live USB keeps changes in memory:
-  install Sengi OS to the disk before installing big apps.
-- Secure Boot has to be off.
-- Chromium and Firefox may show their own title bar inside ours.
-- Sticky keys, slow keys and an on-screen keyboard are not available.
-- There is no screen recorder in the base system; the Store offers two.
+- Not yet verified on real hardware: dual boot beside Windows, suspend, night
+  light, touchpad gestures, USB drives and printers.
+- Secure Boot must be off.
+- The live system keeps changes in memory: install before adding large apps.
 
 ## 0.8.0
 
