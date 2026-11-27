@@ -5,7 +5,7 @@
 // Focus is shown the way SengiButton and SengiToggle show it: a border in
 // the focus colour, inside the control.
 
-import { Tokens, SengiText, SengiLabel } from "components.slint";
+import { Tokens, ThemeSwitch, SengiText, SengiLabel } from "components.slint";
 
 // Sizes the tokens do not name, derived from the ones they do.
 export global Metrics {
@@ -100,8 +100,8 @@ export component Slider inherits Rectangle {
         width: Metrics.slider-knob / 2 + root.travel * root.fraction;
         height: Metrics.slider-track;
         border-radius: self.height / 2;
-        background: !root.enabled ? Tokens.color-border
-            : root.dim ? Tokens.color-text-muted : Tokens.color-accent;
+        background: !root.enabled || root.dim
+            ? Tokens.color-text-disabled : Tokens.color-accent;
         animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
         animate width {
             duration: Tokens.motion-fast * (touch.pressed ? 0 : 1);
@@ -254,6 +254,8 @@ export component ListRow inherits Rectangle {
     border-radius: Tokens.radius;
     background: ((touch.has-hover || root.hovered) && root.enabled) || root.current
         ? Tokens.color-surface-hover : transparent;
+    border-width: ThemeSwitch.high-contrast && root.current ? Tokens.border-width : 0;
+    border-color: Tokens.color-accent;
     animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
 
     SengiText {

@@ -1,7 +1,7 @@
 // The Sengi OS launcher: a search field over a short list of results.
 // Used for both the application search and the menu mode.
 
-import { Tokens, SengiText, SengiSurface } from "components.slint";
+import { Tokens, ThemeSwitch, SengiText, SengiSurface } from "components.slint";
 export { ThemeSwitch } from "components.slint";
 
 // A run of characters in a result name. Matched runs are highlighted.
@@ -110,6 +110,8 @@ component GridCell inherits Rectangle {
 
     border-radius: Tokens.radius;
     background: root.selected ? Tokens.color-surface-hover : transparent;
+    border-width: ThemeSwitch.high-contrast && root.selected ? Tokens.border-width : 0;
+    border-color: Tokens.color-accent;
 
     AppIcon {
         x: (parent.width - self.width) / 2;
@@ -158,6 +160,8 @@ component ResultRow inherits Rectangle {
 
     border-radius: Tokens.radius;
     background: root.selected ? Tokens.color-surface-hover : transparent;
+    border-width: ThemeSwitch.high-contrast && root.selected ? Tokens.border-width : 0;
+    border-color: Tokens.color-accent;
 
     HorizontalLayout {
         padding-left: Tokens.space-md;
