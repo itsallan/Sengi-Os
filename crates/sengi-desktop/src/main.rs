@@ -82,12 +82,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 /// `--menu`: one menu over everything, until something on it is chosen or it
 /// is put away. The word of the choice goes to standard output.
 fn show_menu(request: Request) -> Result<(), Box<dyn std::error::Error>> {
+    let ours = std::env::var_os("SENGI_COMPOSITOR_PID");
+    let keyboard = if menu::takes_keyboard(ours.as_deref()) {
+        KeyboardMode::Exclusive
+    } else {
+        KeyboardMode::None
+    };
     let config = Config::new("sengi-desktop-menu")
         .layer(Layer::Overlay)
         .anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT)
         .size(0, 0)
         .exclusive_zone(-1)
-        .keyboard(KeyboardMode::Exclusive)
+        .keyboard(keyboard)
         .outputs(Outputs::All);
     sengi_layer::run(config, move |context| {
         let window = ui::DesktopMenu::new()?;

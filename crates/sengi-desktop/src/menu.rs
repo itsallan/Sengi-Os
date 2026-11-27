@@ -77,6 +77,15 @@ impl Request {
     }
 }
 
+/// Whether the menu's surface takes the keyboard, given the value of
+/// `SENGI_COMPOSITOR_PID`. sengi-compositor hands the keyboard back to the
+/// desktop when the menu goes. labwc, the fallback, does not, and a new
+/// folder's name would then get no keys; there the desktop keeps the keyboard
+/// all along, and its own Escape puts the menu away.
+pub fn takes_keyboard(compositor: Option<&std::ffi::OsStr>) -> bool {
+    compositor.is_some_and(|pid| !pid.is_empty())
+}
+
 /// A menu that is on screen. Dropping it takes it away.
 pub struct Open {
     child: Child,
@@ -130,6 +139,13 @@ mod tests {
         assert_eq!(Request::parse(&words), Some(request));
         assert_eq!(Request::parse(&["--menu", "other", "1", "2", ""]), None);
         assert_eq!(Request::parse(&["--menu", "item", "x", "2", ""]), None);
+    }
+
+    #[test]
+    fn the_menu_takes_the_keyboard_only_under_our_compositor() {
+        assert!(takes_keyboard(Some("812".as_ref())));
+        assert!(!takes_keyboard(Some("".as_ref())));
+        assert!(!takes_keyboard(None));
     }
 
     #[test]

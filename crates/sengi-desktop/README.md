@@ -18,7 +18,10 @@ It makes `~/Desktop` on the first run.
   every bare part of the desktop, and while a name is being typed (the name is
   kept). The menu is above every window: the desktop itself is below them, so
   each menu is shown on the overlay layer by a second `sengi-desktop --menu`,
-  which lives as long as the menu does.
+  which lives as long as the menu does. Under labwc, the fallback compositor,
+  the menu's surface takes no keyboard: the desktop keeps it, so that a new
+  name can be typed straight away, and Escape reaches the desktop, which puts
+  the menu away.
 - New Folder makes "untitled folder" ("untitled folder 2", ...) and puts it
   straight into rename. Return or a click elsewhere keeps the new name, Escape
   keeps the old one.
