@@ -891,10 +891,14 @@ loses it. To keep it through a freeze, have it written to a USB stick that
 Files has opened (here one labelled `LOGS`) and leave that running while
 reproducing:
 
+    log=$(findmnt -rno TARGET LABEL=LOGS)/freeze.log
     sudo journalctl -b -f -o short-precise | while IFS= read -r line; do
-      printf '%s\n' "$line" >>/media/$USER/LOGS/freeze.log
-      sync -d /media/$USER/LOGS/freeze.log
+      printf '%s\n' "$line" >>"$log"
+      sync -d "$log"
     done
+
+The kernel's messages are in there too, so a graphics driver that stops
+the machine leaves what it said, as far as the last write got.
 
 On an installed system the journal can instead be kept on disk, after which
 `journalctl -b -1` shows the start before this one:
@@ -907,8 +911,14 @@ Two things tell the cases apart without a log. If Alt+SysRq+B (SysRq is on
 Print Screen) restarts the machine, the kernel was still running. If the
 boot menu's "NVIDIA graphics off" entry (press N while the machine starts)
 makes a freeze go away on a laptop with two graphics chips, nouveau was
-the cause. The compositor opens only the display chip the firmware booted
-on; it never opens a second one.
+the cause. An installed system has no such entry: press E on its boot
+entry and add `modprobe.blacklist=nouveau` to the `linux` line. The
+compositor opens only the display chip the firmware booted on; it never
+opens a second one, so an output wired to the other chip stays dark with or
+without the driver. These show which chip each output belongs to:
+
+    grep DRIVER /sys/class/drm/card?/device/uevent
+    grep . /sys/class/drm/card*-*/status
 
 ### A client that commits without damage
 
