@@ -37,8 +37,9 @@ component PadKey inherits SengiButton {
     in property <string> send;
 
     focusable: false;
-    // The same for every key, so the columns are equal whatever the word.
-    preferred-width: Tokens.button;
+    // Nothing from its word: every key takes an equal share of its row.
+    min-width: 0;
+    preferred-width: 0;
     horizontal-stretch: 1;
     vertical-stretch: 1;
     clicked => {
@@ -263,14 +264,15 @@ export component CalcWindow inherits Window {
                         text: "Copy";
                         focusable: false;
                         enabled: Pad.copy-text != "";
-                        preferred-width: Tokens.button;
+                        min-width: 0;
+                        preferred-width: 0;
                         horizontal-stretch: 1;
                         clicked => { root.copy(); }
                     }
 
                     // As wide as three keys and the gaps between them.
                     PadKey {
-                        preferred-width: Tokens.button * 3 + Tokens.space-sm * 2;
+                        preferred-width: Tokens.space-sm * 2;
                         horizontal-stretch: 3;
                         text: "=";
                         primary: true;
