@@ -37,13 +37,7 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Ok(Invocation::Show(level)) => level,
-        Ok(Invocation::Volume) => match cli::read_volume() {
-            Some(level) => level,
-            None => {
-                eprintln!("sengi-osd: could not read the volume");
-                return ExitCode::FAILURE;
-            }
-        },
+        Ok(Invocation::Volume) => cli::read_volume(),
         Err(message) => {
             eprintln!("sengi-osd: {message}\n\n{}", cli::USAGE);
             return ExitCode::from(2);

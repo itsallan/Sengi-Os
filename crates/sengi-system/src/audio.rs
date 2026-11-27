@@ -142,7 +142,9 @@ pub fn parse_status(output: &str) -> Audio {
             List::None => continue,
         };
         if nodes.len() < MAX_NODES {
-            nodes.extend(parse_node(line));
+            // The output PipeWire makes up on a machine with none is not
+            // a device anyone can pick or turn up.
+            nodes.extend(parse_node(line).filter(|node| node.name != volume::STAND_IN_DESCRIPTION));
         }
     }
     audio
@@ -513,7 +515,6 @@ Settings
         assert_eq!(
             outputs,
             [
-                (35, "Dummy Output", 40, false, false),
                 (52, "Built-in Audio Analog Stereo", 75, true, true),
                 (60, "HDMI [Monitor] Output", 150, false, false),
             ]
@@ -523,6 +524,12 @@ Settings
         assert_eq!(inputs, [(53, true), (61, false)]);
         assert_eq!(audio.output().unwrap().id, 52);
         assert_eq!(audio.input().unwrap().id, 53);
+    }
+
+    #[test]
+    fn the_stand_in_output_alone_is_no_output() {
+        let status = "Audio\n ├─ Sinks:\n │  *   46. Dummy Output  [vol: 1.00]\n";
+        assert_eq!(parse_status(status), Audio::default());
     }
 
     #[test]

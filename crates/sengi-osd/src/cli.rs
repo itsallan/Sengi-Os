@@ -49,16 +49,29 @@ pub fn parse<S: AsRef<str>>(arguments: &[S]) -> Result<Invocation, String> {
     }
 }
 
-/// The volume of the default output as `wpctl` reports it.
-pub fn read_volume() -> Option<Level> {
-    let output = std::process::Command::new(commands::WPCTL)
-        .args(["get-volume", commands::SINK])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    let volume = volume::parse(&String::from_utf8_lossy(&output.stdout))?;
-    Some(Level::new(Kind::Volume, volume.percent, volume.muted))
+/// The volume of the default output as `wpctl` reports it. With no sound
+/// device a volume key still shows something: a crossed speaker, empty.
+pub fn read_volume() -> Level {
+    let volume = volume::default_output(|args| {
+        let output = std::process::Command::new(commands::WPCTL)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    });
+    volume_level(volume)
+}
+
+fn volume_level(volume: Option<volume::Volume>) -> Level {
+    match volume {
+        Some(volume) => Level::new(Kind::Volume, volume.percent, volume.muted),
+        None => Level::new(Kind::Volume, 0, true),
+    }
 }
 
 #[cfg(test)]
@@ -76,6 +89,13 @@ mod tests {
             Ok(Invocation::Show(Level::new(Kind::Volume, 30, true)))
         );
         assert_eq!(parse(&["volume"]), Ok(Invocation::Volume));
+    }
+
+    #[test]
+    fn no_sound_device_shows_as_muted_and_empty() {
+        let level = volume_level(None);
+        assert!(level.muted);
+        assert_eq!(level.bar(), 0);
     }
 
     #[test]

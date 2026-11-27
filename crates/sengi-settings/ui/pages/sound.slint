@@ -83,7 +83,8 @@ component DeviceRow inherits SettingRow {
         alignment: center;
         ChoiceButton {
             width: Metrics.control-wide;
-            text: root.side.present ? root.side.device : "None";
+            text: root.side.present ? root.side.device
+                : root.output && !root.side.choice ? "No sound device" : "None";
             // With no device there is nothing to choose, whatever else is said.
             enabled: root.side.present && root.side.choice;
             clicked => { SoundData.choose(root.output); }

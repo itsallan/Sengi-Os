@@ -10,7 +10,8 @@ mute, brightness or keyboard light key.
 
 The compositor runs it after the key's change (sengi-brightness for the
 brightness keys, `wpctl` for the volume keys), so what is shown is what the
-key did.
+key did. On a machine with no sound device a volume key shows the crossed
+speaker and an empty bar.
 
 It is not running at boot. The first run opens the panel; a run while it is
 open hands its level over a datagram socket in `$XDG_RUNTIME_DIR`

@@ -26,6 +26,17 @@ fn side_of(output: bool) -> Side {
     }
 }
 
+/// Why there is nothing to set, if there is not.
+fn note(audio: Option<&Audio>) -> &'static str {
+    match audio {
+        None => "The sound service (PipeWire) is not running, so sound cannot be set here.",
+        Some(audio) if audio.outputs.is_empty() => {
+            "No sound device was found, so nothing can be played."
+        }
+        Some(_) => "",
+    }
+}
+
 /// What the page shows for one direction.
 fn shown(nodes: &[Node]) -> SoundSide {
     let default = nodes.iter().find(|node| node.default);
@@ -128,14 +139,7 @@ impl SoundPage {
 
     fn on_reading(&self, app: &Rc<App>, audio: Option<Audio>, stamp: Stamp) {
         let data = app.window.global::<SoundData>();
-        data.set_note(
-            if audio.is_some() {
-                ""
-            } else {
-                "The sound service (PipeWire) is not running, so sound cannot be set here."
-            }
-            .into(),
-        );
+        data.set_note(note(audio.as_ref()).into());
         let empty = Audio::default();
         let now = audio.as_ref().unwrap_or(&empty);
         data.set_output(shown(&now.outputs));
@@ -207,6 +211,17 @@ impl Controller for SoundPage {
 mod tests {
     use super::*;
     use crate::sound::testing::node;
+
+    #[test]
+    fn a_machine_with_no_output_says_so() {
+        assert!(note(Some(&Audio::default())).starts_with("No sound device"));
+        let heard = Audio {
+            outputs: vec![node(1, "Speakers", 40, true)],
+            inputs: Vec::new(),
+        };
+        assert_eq!(note(Some(&heard)), "");
+        assert!(note(None).contains("PipeWire"));
+    }
 
     #[test]
     fn a_side_shows_its_default_device() {

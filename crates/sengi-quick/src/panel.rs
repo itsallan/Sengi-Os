@@ -591,7 +591,7 @@ impl Panel {
         };
         match &self.volume {
             Reading::Pending => tile(false, ""),
-            Reading::Known(None) => tile(false, "No output"),
+            Reading::Known(None) => tile(false, "No sound device"),
             Reading::Known(Some(volume)) => SliderView {
                 value: volume.percent.min(MAX_PERCENT) as i32,
                 muted: volume.muted,
@@ -1319,7 +1319,7 @@ mod tests {
         });
         let view = panel.view().volume;
         assert!(view.visible && !view.enabled);
-        assert_eq!(view.label, "No output");
+        assert_eq!(view.label, "No sound device");
         assert!(panel.toggle_mute().is_none());
     }
 

@@ -77,17 +77,20 @@ pub fn volume_label(volume: &Volume) -> String {
     }
 }
 
+/// `None` on a machine with no sound device, where the bar shows no volume.
 pub fn read_volume() -> Option<Volume> {
-    let output = Command::new(commands::WPCTL)
-        .args(["get-volume", commands::SINK])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    volume::parse(&String::from_utf8_lossy(&output.stdout))
+    volume::default_output(|args| {
+        let output = Command::new(commands::WPCTL)
+            .args(args)
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    })
 }
 
 pub fn toggle_mute() {

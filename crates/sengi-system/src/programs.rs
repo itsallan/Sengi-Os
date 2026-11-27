@@ -108,7 +108,7 @@ pub struct Wpctl;
 
 impl AudioService for Wpctl {
     fn read(&self) -> Option<Volume> {
-        volume::parse(&output(commands::WPCTL, &["get-volume", commands::SINK])?)
+        volume::default_output(|args| output(commands::WPCTL, args))
     }
 
     fn set_volume(&self, percent: u32) {

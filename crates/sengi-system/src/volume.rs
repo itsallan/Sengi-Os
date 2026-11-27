@@ -28,6 +28,31 @@ pub fn parse(output: &str) -> Option<Volume> {
     })
 }
 
+/// What PipeWire calls the output it makes up while a machine has none, so
+/// that programs have somewhere to play to. Its description is
+/// [`STAND_IN_DESCRIPTION`].
+pub const STAND_IN_NAME: &str = "auto_null";
+/// What `wpctl status` calls that output.
+pub const STAND_IN_DESCRIPTION: &str = "Dummy Output";
+
+/// Whether `wpctl inspect` output describes the stand-in and not a device.
+pub fn is_stand_in(inspect: &str) -> bool {
+    inspect.lines().any(|line| {
+        line.trim_start_matches([' ', '*'])
+            .strip_prefix("node.name = ")
+            .is_some_and(|name| name.trim().trim_matches('"') == STAND_IN_NAME)
+    })
+}
+
+/// The default output's volume, asked of `wpctl` through `run`, which gives
+/// what a command printed if it succeeded. `None` when there is no sound
+/// device: no output at all, or only the stand-in.
+pub fn default_output(run: impl Fn(&[&str]) -> Option<String>) -> Option<Volume> {
+    let volume = parse(&run(&["get-volume", crate::commands::SINK])?)?;
+    let stand_in = run(&["inspect", crate::commands::SINK]).is_some_and(|text| is_stand_in(&text));
+    (!stand_in).then_some(volume)
+}
+
 /// The arguments for `wpctl` that set the volume of `target`, which is a
 /// node's number or one of wpctl's names for a default. `-l 1` holds it at
 /// 100% whatever is asked for.
@@ -134,6 +159,30 @@ mod tests {
         assert_eq!(parse("Volume: inf"), None);
         assert_eq!(parse("Volume: -3").unwrap().percent, 0);
         assert_eq!(parse("Volume: 1e30").unwrap().percent, 1000);
+    }
+
+    #[test]
+    fn the_stand_in_output_is_no_sound_device() {
+        let inspect = |name: &str| {
+            format!("id 46, type PipeWire:Interface:Node\n  * node.name = \"{name}\"\n")
+        };
+        assert!(is_stand_in(&inspect("auto_null")));
+        assert!(!is_stand_in(&inspect(
+            "alsa_output.pci-0000_00_1f.3.analog-stereo"
+        )));
+        assert!(!is_stand_in(""));
+
+        let machine = |name: &'static str| {
+            move |args: &[&str]| match args[0] {
+                "get-volume" => Some("Volume: 0.40\n".to_string()),
+                _ => Some(inspect(name)),
+            }
+        };
+        assert_eq!(default_output(machine("auto_null")), None);
+        assert_eq!(default_output(machine("speakers")).unwrap().percent, 40);
+        // No output at all: wpctl prints nothing to read.
+        assert_eq!(default_output(|_| Some(String::new())), None);
+        assert_eq!(default_output(|_| None), None);
     }
 
     #[test]
