@@ -3,6 +3,15 @@
 All notable changes to Sengi OS. Each release section lists what is in its ISO
 and the measured idle RAM and boot time.
 
+## Unreleased
+
+### Fixed
+
+- Sound: programs that use PulseAudio, such as browsers, have a sound server
+  again; Intel laptops whose audio goes through a DSP get its firmware and
+  mixer profiles; Bluetooth audio and ALSA-only programs work; a machine with
+  no sound device says so.
+
 ## 1.0.0 - 2026-11-27
 
 First public release.

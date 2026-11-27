@@ -61,8 +61,9 @@ choosing or laying out partitions by hand.
 Secure Boot has to be off.
 
 **Firmware.** Wi-Fi and Bluetooth chips usually need firmware that is not free
-software. The image includes Debian's set for the common ones (Intel,
-Realtek, MediaTek, Atheros, Broadcom); see `THIRD-PARTY-NOTICES.md`.
+software, and so does the audio processor in many Intel laptops. The image
+includes Debian's set for the common ones (Intel, Realtek, MediaTek, Atheros,
+Broadcom); see `THIRD-PARTY-NOTICES.md`.
 
 **Updates do not install themselves.** An installed Sengi OS does not look
 for updates in the background: the timers Debian uses for that are switched
@@ -110,6 +111,35 @@ the ISO:
 | Alt+Print | Screenshot of the window in front |
 | Super+/ | Show every keyboard shortcut |
 | Super+V | Clipboard history (turn it on in Settings, Keyboard) |
+
+## Sound
+
+Settings, Sound picks the output and input device and sets their volume; the
+volume keys and quick settings change the output in use. Speakers, headphones,
+HDMI, USB and Bluetooth devices are meant to appear there on their own. "No
+sound device" means that the system found no output at all.
+
+If there is no sound, run these in a terminal and keep what they print. The
+last one asks for your password (on the live system it is `live`).
+
+```sh
+cat /proc/asound/cards
+aplay -l
+wpctl status
+sudo dmesg | grep -i -E 'snd|sof|avs|hdaudio|hda_intel|audio'
+```
+
+To play a test sound on the speakers: `speaker-test -c 2 -t wav -l 1`.
+
+On Intel laptops from Skylake on that have a digital microphone, the sound goes
+through an audio processor. If no card shows up there, or the card is silent,
+try the plain HD Audio driver, which plays through speakers and headphones but
+cannot use a digital microphone. To try it once, press Esc while the machine
+starts, press `e` on the first menu entry, add
+`snd_intel_dspcfg.dsp_driver=1` to the end of the line that starts with
+`linux`, and press Ctrl+X. To keep it on an installed system, put the same
+words between the quotes of `GRUB_CMDLINE_LINUX=""` in `/etc/default/grub`
+and run `sudo update-grub`.
 
 ## Accessibility
 
