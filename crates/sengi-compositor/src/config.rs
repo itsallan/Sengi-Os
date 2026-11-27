@@ -471,11 +471,17 @@ mod tests {
         assert_eq!(chosen.text_percent, 140);
         assert!(chosen.reduce_motion);
         assert_eq!(chosen.cursor, 36);
-        // Title bars follow: bigger type, thicker border.
+        // Title bars follow: bigger type, and a thicker border in high
+        // contrast.
         let (big, small) = (chosen.tokens(), plain.tokens());
         assert_eq!(big.px("type.size-md"), Some(18));
         assert_eq!(small.px("type.size-md"), Some(13));
-        assert_eq!(big.px("border.width"), Some(2));
+        let border = if sengi_config::HIGH_CONTRAST_ENABLED {
+            2
+        } else {
+            1
+        };
+        assert_eq!(big.px("border.width"), Some(border));
         assert!(chosen.tokens_differ(&plain));
         assert!(!plain.tokens_differ(&config("").appearance));
         // A new pointer size alone leaves the tokens as they are.
