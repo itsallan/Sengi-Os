@@ -106,13 +106,15 @@ once the install phase has started.
 downloading and `pmstatus:PACKAGE:PERCENT:message` while installing
 (see apt's `doc/progress-reporting.md`). Downloaded bytes are derived from the
 percentage and the "Need to get" total of the simulation, and the page says
-"12 MB of 36 MB". Flatpak's progress is read with the same reader as the
-Store's (`sengi-store/src/progress.rs`, copied: that crate links a window
-toolkit); what it does not print is not shown, and a missing percentage means
-no bar.
+"12 MB of 36 MB".
 
-Apps are updated as the user with `flatpak --user update --noninteractive
--y`; the list comes from `flatpak --user remote-ls --updates`.
+Apps are updated as the user with `flatpak --user update -y`; the list comes
+from `flatpak --user remote-ls --updates`. Not `--noninteractive`: with it
+Flatpak names each step and nothing more. Their progress is read from its
+standard output by `sengi_text::progress`, as in the Store: the step, the
+percentage of that step, the most it downloads, the speed and the time left.
+Flatpak does not print how much has arrived, so no such number is shown, and
+a missing percentage means no bar.
 
 ## Installing a package
 

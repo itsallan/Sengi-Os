@@ -33,6 +33,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use sengi_text::progress::{self, Reader};
+
 use crate::cache::Snapshot;
 use crate::event::{Event, Phase, Progress};
 use crate::flatpak;
@@ -163,7 +165,11 @@ const LIST_LIMIT: Duration = Duration::from_secs(180);
 
 fn flatpak_command(tools: &Tools, args: &[&str]) -> Command {
     let mut command = Command::new(&tools.flatpak);
-    command.args(args).env("LC_ALL", "C").env("LANG", "C");
+    // English, and in UTF-8, so that names and the progress bar are whole.
+    command
+        .args(args)
+        .env("LC_ALL", "C.UTF-8")
+        .env("LANG", "C.UTF-8");
     command
 }
 
@@ -576,7 +582,7 @@ struct Tail {
     done: Arc<AtomicBool>,
 }
 
-fn keep_tail(mut stream: impl Read + Send + 'static) -> Tail {
+fn keep_tail(mut stream: impl Read + Send + 'static, reader: Option<Arc<Mutex<Reader>>>) -> Tail {
     let tail = Tail {
         bytes: Arc::new(Mutex::new(Vec::new())),
         done: Arc::new(AtomicBool::new(false)),
@@ -588,6 +594,10 @@ fn keep_tail(mut stream: impl Read + Send + 'static) -> Tail {
             match stream.read(&mut buffer) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
+                    if let Some(reader) = &reader {
+                        let mut reader = reader.lock().unwrap_or_else(|e| e.into_inner());
+                        reader.feed(&buffer[..n]);
+                    }
                     let mut kept = theirs.lock().unwrap_or_else(|e| e.into_inner());
                     kept.extend_from_slice(&buffer[..n]);
                     if kept.len() > 8192 {
@@ -619,9 +629,29 @@ fn settle(tails: &[&Option<Tail>]) {
     }
 }
 
+/// Flatpak's last word that says something: an update that failed ends in a
+/// line that only counts the errors, with the reason above it. The address
+/// it was fetching comes before the reason, so the line is allowed to be
+/// longer than apt's.
+fn flatpak_says(output: &[u8]) -> String {
+    let text = String::from_utf8_lossy(output);
+    let mut lines = text
+        .lines()
+        .rev()
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    let last = lines.next().unwrap_or("");
+    let line = match lines.next() {
+        Some(above) if last.ends_with("There were one or more errors") => above,
+        _ => last,
+    };
+    sengi_text::line(line, 400)
+}
+
 fn flatpak_update(tools: &Tools, control: &Control, emit: &mut dyn FnMut(Note)) -> Apps {
     emit(Note::Event(Event::Phase(Phase::Flatpak)));
-    let mut command = flatpak_command(tools, &["--user", "update", "--noninteractive", "-y"]);
+    // Not --noninteractive: with it Flatpak does not say how far it is.
+    let mut command = flatpak_command(tools, &["--user", "update", "-y"]);
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -631,9 +661,13 @@ fn flatpak_update(tools: &Tools, control: &Control, emit: &mut dyn FnMut(Note)) 
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Apps::Done,
         Err(e) => return Apps::Failed(format!("Could not start Flatpak: {e}")),
     };
-    let out = child.stdout.take().map(keep_tail);
-    let err = child.stderr.take().map(keep_tail);
-    let mut shown = flatpak::Progress::default();
+    let reader = Arc::new(Mutex::new(Reader::default()));
+    let out = child
+        .stdout
+        .take()
+        .map(|s| keep_tail(s, Some(reader.clone())));
+    let err = child.stderr.take().map(|s| keep_tail(s, None));
+    let mut shown = progress::Progress::default();
     let mut stopped_at: Option<Instant> = None;
     let status = loop {
         match child.try_wait() {
@@ -648,16 +682,17 @@ fn flatpak_update(tools: &Tools, control: &Control, emit: &mut dyn FnMut(Note)) 
         if stopped_at.is_some_and(|at| at.elapsed() > Duration::from_secs(8)) {
             run::signal_group(child.id(), libc::SIGKILL);
         }
-        let (o, e) = (
-            out.as_ref().map(snapshot).unwrap_or_default(),
-            err.as_ref().map(snapshot).unwrap_or_default(),
-        );
-        let now = flatpak::Progress::from_tails(&[&o, &e]);
+        let now = reader
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .now()
+            .clone();
         if !now.is_empty() && now != shown {
             shown = now.clone();
             let mut detail = now.verb.clone().unwrap_or_else(|| "Updating".to_string());
-            if let Some(speed) = &now.speed {
-                detail = format!("{detail} \u{b7} {speed}");
+            let pace = now.pace();
+            if !pace.is_empty() {
+                detail = format!("{detail} \u{b7} {pace}");
             }
             emit(Note::Event(Event::Progress(Progress {
                 phase: Phase::Flatpak,
@@ -680,9 +715,9 @@ fn flatpak_update(tools: &Tools, control: &Control, emit: &mut dyn FnMut(Note)) 
     let said = {
         let e = err.as_ref().map(snapshot).unwrap_or_default();
         let o = out.as_ref().map(snapshot).unwrap_or_default();
-        let from_err = crate::last_line(&String::from_utf8_lossy(&e));
+        let from_err = flatpak_says(&e);
         if from_err.is_empty() {
-            crate::last_line(&String::from_utf8_lossy(&o))
+            flatpak_says(&o)
         } else {
             from_err
         }
@@ -839,11 +874,15 @@ mod tests {
     #[test]
     fn apps_update_with_real_progress_and_no_password() {
         let dir = scratch("flatpak-update");
+        // What a real flatpak wrote, as far as 52% of the second step.
         let tools = user_tools(
             &dir,
             "exit 1",
-            "echo \"$*\" >\"$(dirname \"$0\")/args\"; \
-             printf 'Updating 1/2\\342\\200\\246\\rUpdating\\342\\200\\246 40%%  5.0 MB  1.0 MB/s\\r'; sleep 0.5",
+            &format!(
+                "echo \"$*\" >\"$(dirname \"$0\")/args\"; \
+                 sed '/2\\/2.* 52%/q' '{}/../sengi-text/tests/fixtures/update.out'; sleep 0.5",
+                env!("CARGO_MANIFEST_DIR")
+            ),
         );
         let (control, _tx) = control();
         let mut notes = Vec::new();
@@ -863,16 +902,17 @@ mod tests {
             }
         );
         let args = std::fs::read_to_string(dir.join("args")).unwrap();
-        assert_eq!(args.trim(), "--user update --noninteractive -y");
+        assert_eq!(args.trim(), "--user update -y");
         assert!(notes.contains(&Note::Event(Event::Phase(Phase::Flatpak))));
-        let progress = notes.iter().find_map(|n| match n {
+        let progress = notes.iter().rev().find_map(|n| match n {
             Note::Event(Event::Progress(p)) => Some(p.clone()),
             _ => None,
         });
         let progress = progress.expect("progress was reported");
-        assert_eq!(progress.percent, Some(40.0));
-        assert_eq!(progress.step, Some((1, 2)));
-        assert_eq!(progress.size.as_deref(), Some("5.0 MB"));
+        assert_eq!(progress.percent, Some(52.0));
+        assert_eq!(progress.step, Some((2, 2)));
+        assert_eq!(progress.size.as_deref(), Some("up to 300.1 MB"));
+        assert_eq!(progress.detail, "Updating \u{b7} 24.9 MB/s");
         // No password was asked for.
         assert!(!notes.contains(&Note::NeedPassword));
     }
@@ -922,6 +962,16 @@ mod tests {
             outcome,
             Outcome::Failed("error: Unable to connect".to_string())
         );
+    }
+
+    /// The two lines a real flatpak ended with when the network went.
+    #[test]
+    fn a_real_failed_update_keeps_the_reason() {
+        let said = flatpak_says(include_bytes!(
+            "../../sengi-text/tests/fixtures/update-network-gone.err"
+        ));
+        assert!(said.starts_with("Error: While pulling "), "{said}");
+        assert!(said.ends_with("Could not connect to server"), "{said}");
     }
 
     #[test]

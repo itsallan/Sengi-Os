@@ -11,6 +11,9 @@ and the measured idle RAM and boot time.
   again; Intel laptops whose audio goes through a DSP get its firmware and
   mixer profiles; Bluetooth audio and ALSA-only programs work; a machine with
   no sound device says so.
+- The Store and app updates show real progress while Flatpak works: a bar with
+  the percentage, the step, the download size, the speed and the time left. A
+  full disk or a lost connection is named again.
 
 ## 1.0.0 - 2026-11-27
 
