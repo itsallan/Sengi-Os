@@ -1,8 +1,8 @@
 # sengi-files
 
 The Sengi OS file manager: an ordinary window with places on the left, the
-folder on the right, a path bar with Back and Up above it and one line of
-status below.
+folder on the right under a toolbar of icons with the path in it, and one line
+of status below.
 
     sengi-files               open Files on your home folder
     sengi-files FOLDER        open it on FOLDER (a path or a file:// address;
@@ -20,8 +20,10 @@ it. `sengi-desktop` opens folders in it.
 - Places: Home, and Desktop, Documents, Downloads and Pictures when they exist,
   and the Trash.
 - The list shows folders first, then files, each by name without regard to
-  case and with numbers in order ("file2" before "file10"). Names that start with a dot are hidden until Ctrl+H or the switch at
-  the bottom. Sizes and times show when the window is wide enough.
+  case and with numbers in order ("file2" before "file10"). Names that start
+  with a dot are hidden until Ctrl+H or the eye in the toolbar. The columns are
+  headed Name, Size and Modified (in the Trash: Name, Original Location and
+  Deleted); sizes and times show when the window is wide enough.
 - Click selects; Ctrl-click adds or removes; Shift-click and Shift with the
   arrow keys extend; Ctrl+A takes all. Up, Down, Home, End, Page Up and Page
   Down move.
@@ -30,8 +32,11 @@ it. `sengi-desktop` opens folders in it.
   no `xdg-open`). With neither, the line at the bottom says so, in red,
   naming the file: nothing fails silently.
 - F2 renames in place (the name is taken as typed, minus spaces at the ends;
-  a name that exists is refused and the field stays open). Ctrl+Shift+N or the
-  New Folder button makes "untitled folder" and starts renaming it.
+  a name that exists is refused and the field stays open). A click anywhere
+  else keeps the name too; if it cannot be taken the old one stays and the line
+  at the bottom says why. Ctrl+Shift+N or the New Folder button makes
+  "untitled folder" and starts renaming it, and Ctrl+Shift+F or New File does
+  the same for an empty "untitled file".
 - Ctrl+C, Ctrl+X, Ctrl+V copy, cut and paste inside Files; the clipboard is
   not shared with other programs. Nothing is ever replaced: a name that is
   taken makes the pasted item "name 2", "name 3" (before the extension), and
@@ -46,14 +51,21 @@ it. `sengi-desktop` opens folders in it.
   both use). In the Trash view, Restore puts items back (a new name if the old
   one is taken, the folder made again if it is gone) and Empty Trash asks first
   and then deletes for good.
-- Back and Up buttons, Alt+Left (back), Alt+Right (forward again), Alt+Up and
-  Backspace (up) and F5 or Ctrl+R to read the folder again. Going somewhere
-  new forgets the way forward.
+- The toolbar is icons only: Back, Forward and Up at the left, the path, then
+  New Folder, New File and the eye for hidden files. In the Trash the two New
+  buttons give way to Restore and Empty Trash. Resting the pointer on a button
+  shows its name. A button that cannot be used is dimmed.
+- Alt+Left (back), Alt+Right (forward again), Alt+Up and Backspace (up) and F5
+  or Ctrl+R to read the folder again. Going somewhere new forgets the way
+  forward.
 - Right-click on an item selects it (unless it is in the selection already) and
   offers Open, Rename, Copy, Cut and Move to Trash; in the Trash, Restore. On
-  the empty space it offers New Folder, New File, Paste and a Show Hidden
-  switch; in the Trash, Empty Trash. What cannot be done now is dimmed. Escape
-  or a click elsewhere closes the menu.
+  any bare part of the folder's side it offers New Folder, New File, Paste and
+  a Show Hidden switch; in the Trash, Empty Trash. Bare means beside and below
+  the rows, the column headings, the status line and the gaps of the toolbar;
+  a row's height is left free after the last row, so a full folder scrolled to
+  its end has room too. What cannot be done now is dimmed. A right-click
+  elsewhere moves the menu there; Escape or a click elsewhere closes it.
 - The list follows the folder: when something is made, removed or renamed in it
   by another program, it is read again about 150 ms after the changes stop,
   with the selection and the scroll kept. A name being typed is left alone
@@ -63,9 +75,9 @@ it. `sengi-desktop` opens folders in it.
   apply: only inside home, protected folders cannot be dragged, a folder cannot
   go into itself, and a name that is taken becomes "name 2". The place under
   the pointer is outlined while dragging. Not in the Trash.
-- The places and the Back, Up, New Folder and Restore buttons carry Phosphor
-  Bold glyphs; a glyph that is missing from `ui/icons/phosphor/bold` is shown
-  as words instead.
+- The places and the toolbar are Phosphor Bold glyphs from
+  `ui/icons/phosphor/bold`. The toolbar button and its tooltip are
+  `SengiToolButton` and `SengiTooltip` in the shared components.
 - The status line says how many items, how many are selected and how much
   space is free; a notice for what just happened replaces it until the next
   click or key.
@@ -130,9 +142,9 @@ home or on a stick that points at `/etc` does not make `/etc` changeable.
 
 Not in this version: thumbnails, tabs, searching, formatting or partitioning a
 drive, unlocking encrypted drives, optical discs, a plugged-in notification
-(Files has to be open to hear of a drive), dragging to another window, and a
-Forward button (the keys work). The drive rows and the Eject button use the
-Phosphor Bold `hard-drives` and `eject` glyphs.
+(Files has to be open to hear of a drive), and dragging to another window. The
+drive rows and the Eject button use the Phosphor Bold `hard-drives` and
+`eject` glyphs.
 
 ## Speed
 
@@ -159,3 +171,4 @@ cannot be closed while one of them is working.
 - `ui/files.slint`: the window, from the shared components and Settings' kit.
 - `tests/window.rs`: the real window driven by keys over a made-up home
   folder; with `SENGI_RENDER_DIR` set it also writes PNGs of it.
+- `tests/clicks.rs`: the right button and the toolbar, with pointer events.

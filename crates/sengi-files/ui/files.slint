@@ -1,5 +1,5 @@
-// The Files window: places on the left, the path and the buttons on top,
-// the folder under them, one line of status at the bottom. Built from the
+// The Files window: places on the left, a toolbar of icons with the path in
+// it on top, the folder under that, one line of status at the bottom. Built from the
 // shared components and Settings' kit; nothing here has a colour or a size
 // of its own.
 //
@@ -7,7 +7,7 @@
 // whole folder and sends the slice that is on screen, so a folder of ten
 // thousand files costs no more to draw than one of thirty.
 
-import { Tokens, SengiText, SengiLabel, SengiButton, SengiToggle, SengiIcon, SengiSurface } from "components.slint";
+import { Tokens, SengiText, SengiLabel, SengiIcon, SengiSurface, SengiToolButton, SengiTooltip } from "components.slint";
 export { ThemeSwitch } from "components.slint";
 import { Scroll, TextField, DialogLayer, DialogSpec } from "kit.slint";
 import { NamedIcon } from "icons.slint";
@@ -77,6 +77,7 @@ export global Files {
     in property <[Crumb]> crumbs;
     in property <bool> in-trash: false;
     in property <bool> can-back: false;
+    in property <bool> can-forward: false;
     in property <bool> can-up: false;
     in property <bool> can-paste: false;
     in property <bool> has-selection: false;
@@ -124,6 +125,8 @@ export global Files {
     callback new-file();
     callback toggle-hidden(bool);
     callback start-rename();
+    // The name being typed, so that a click somewhere else can keep it.
+    callback rename-edited(string);
     // True when the name was taken; false leaves the field open.
     callback rename-accepted(string) -> bool;
     callback rename-cancelled();
@@ -141,61 +144,6 @@ export global Files {
     callback menu-chosen(string);
     // The selection was dropped on a folder row (0), a place (1) or a drive (2).
     callback drop-items(int, int);
-}
-
-// A button that is a glyph when the glyph file is there, and words when it
-// is not. With `show-text` the words stay next to the glyph.
-component IconButton inherits Rectangle {
-    in property <string> icon;
-    in property <string> text;
-    in property <bool> show-text: false;
-    in property <bool> enabled: true;
-    in property <bool> danger: false;
-    callback clicked();
-
-    private property <bool> glyph: IconPaths.path(root.icon) != "";
-    private property <brush> ink: !root.enabled ? Tokens.color-text-disabled
-        : root.danger ? Tokens.color-danger : Tokens.color-text;
-
-    min-height: Tokens.button;
-    horizontal-stretch: 0;
-    border-radius: Tokens.radius;
-    border-width: root.enabled ? 0 : Tokens.border-width;
-    border-color: Tokens.color-outline-disabled;
-    background: !root.enabled ? transparent
-        : touch.has-hover ? Tokens.color-surface-hover : Tokens.color-surface-raised;
-    animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
-    accessible-role: button;
-    accessible-label: root.text;
-
-    HorizontalLayout {
-        padding-left: Tokens.space-md;
-        padding-right: Tokens.space-md;
-        spacing: Tokens.space-sm;
-
-        if root.glyph: VerticalLayout {
-            alignment: center;
-            SengiIcon {
-                name: root.icon;
-                ink: root.ink;
-            }
-        }
-
-        if !root.glyph || root.show-text: Text {
-            text: root.text;
-            color: root.ink;
-            font-family: Tokens.font-family;
-            font-size: Tokens.font-size-md;
-            font-weight: Tokens.font-weight-medium;
-            vertical-alignment: center;
-            overflow: elide;
-        }
-    }
-
-    touch := TouchArea {
-        enabled: root.enabled;
-        clicked => { root.clicked(); }
-    }
 }
 
 component MenuItem inherits Rectangle {
@@ -243,11 +191,13 @@ component Sidebar inherits Rectangle {
     in property <int> drop-place: -1;
     // The drive a drag is over, or -1.
     in property <int> drop-device: -1;
-    // Where the drives start, under a heading, and how far apart they are.
-    out property <length> devices-top: Tokens.space-sm
-        + Files.places.length * (Tokens.button + Tokens.space-sm + Tokens.space-xxs)
+    // Places and drives are rows of one height, this far apart.
+    out property <length> row-height: Tokens.button + Tokens.space-sm;
+    out property <length> step: root.row-height + Tokens.space-xxs;
+    // Where the drives start, under their heading.
+    out property <length> devices-top: Tokens.space-sm + Files.places.length * root.step
         + Tokens.space-sm + Tokens.space-xl;
-    out property <length> dev-step: Tokens.button + Tokens.space-md + Tokens.space-xxs;
+    callback tip(bool, string, length, length, length);
 
     background: Tokens.color-surface;
 
@@ -256,9 +206,9 @@ component Sidebar inherits Rectangle {
         private property <bool> target: index == root.drop-place;
 
         x: Tokens.space-sm;
-        y: Tokens.space-sm + index * (Tokens.button + Tokens.space-sm + Tokens.space-xxs);
+        y: Tokens.space-sm + index * root.step;
         width: parent.width - Tokens.space-sm * 2;
-        height: Tokens.button + Tokens.space-sm;
+        height: root.row-height;
         border-radius: Tokens.radius;
         border-width: self.target ? Tokens.focus-ring-width : 0;
         border-color: Tokens.color-accent;
@@ -303,9 +253,9 @@ component Sidebar inherits Rectangle {
         private property <bool> target: index == root.drop-device;
 
         x: Tokens.space-sm;
-        y: root.devices-top + index * root.dev-step;
+        y: root.devices-top + index * root.step;
         width: parent.width - Tokens.space-sm * 2;
-        height: root.dev-step - Tokens.space-xxs;
+        height: root.row-height;
         border-radius: Tokens.radius;
         border-width: self.target ? Tokens.focus-ring-width : 0;
         border-color: Tokens.color-accent;
@@ -327,7 +277,7 @@ component Sidebar inherits Rectangle {
 
         VerticalLayout {
             x: Tokens.space-md * 2 + Tokens.bar-icon;
-            width: parent.width - self.x - (device.mounted ? eject.width + Tokens.space-md : Tokens.space-sm);
+            width: parent.width - self.x - (device.mounted ? eject.width + Tokens.space-xs : Tokens.space-sm);
             height: parent.height;
             alignment: center;
 
@@ -347,30 +297,15 @@ component Sidebar inherits Rectangle {
 
         // Eject: unmount, then power the drive off. Over the row's own
         // touch area, so a click here is not a click on the row.
-        eject := Rectangle {
+        eject := SengiToolButton {
             visible: device.mounted;
-            x: parent.width - self.width - Tokens.space-sm;
+            x: parent.width - self.width - Tokens.space-xxs;
             y: (parent.height - self.height) / 2;
-            width: Tokens.button - Tokens.space-sm;
-            height: Tokens.button - Tokens.space-sm;
-            border-radius: Tokens.radius;
-            background: eject-touch.has-hover ? Tokens.color-surface-hover : transparent;
-            border-width: Tokens.border-width;
-            border-color: Tokens.color-border;
-            accessible-role: button;
-            accessible-label: "Eject " + device.name;
-
-            SengiIcon {
-                x: (parent.width - self.width) / 2;
-                y: (parent.height - self.height) / 2;
-                name: "eject";
-                ink: Tokens.color-text-muted;
-            }
-
-            eject-touch := TouchArea {
-                enabled: device.mounted;
-                clicked => { Files.eject-device(index); }
-            }
+            icon: "eject";
+            name: "Eject " + device.name;
+            enabled: device.mounted;
+            clicked => { Files.eject-device(index); }
+            hover(on, x, top, bottom) => { root.tip(on, self.name, x, top, bottom); }
         }
     }
 
@@ -438,7 +373,17 @@ export component FilesWindow inherits Window {
     default-font-family: Tokens.font-family;
     default-font-size: Tokens.font-size-md;
 
-    private property <length> line: Tokens.button + Tokens.space-sm;
+    private property <length> line: Tokens.button + Tokens.space-md;
+    // Where the folder's rows are, for the tests to point at.
+    out property <length> row-height: root.line;
+    out property <length> list-top: list.absolute-position.y;
+    // The name of the button under the pointer, and where the button is.
+    private property <string> tip-text;
+    private property <length> tip-x;
+    private property <length> tip-top;
+    private property <length> tip-bottom;
+    private property <bool> tip-wanted: false;
+    out property <bool> tip-shown: false;
     // The size and time columns need room; a narrow window keeps the name.
     private property <bool> roomy: list.width > Tokens.chooser-width;
     private property <bool> roomier: list.width > Tokens.chooser-width + Tokens.settings-control-width;
@@ -460,7 +405,6 @@ export component FilesWindow inherits Window {
     private property <int> drop-row: -1;
     private property <int> drop-place: -1;
     private property <int> drop-device: -1;
-    private property <length> side-step: Tokens.button + Tokens.space-sm + Tokens.space-xxs;
     // The program asks the list to move by raising a count.
     private property <int> top-tick: Files.scroll-top;
     private property <int> reveal-tick: Files.reveal-tick;
@@ -489,9 +433,41 @@ export component FilesWindow inherits Window {
     }
 
     function open-menu(index: int, x: length, y: length) {
+        root.hide-tip();
         root.menu-x = x;
         root.menu-y = y;
         Files.context(index);
+    }
+
+    // A right-click at (x, y) in the window while a menu is open: the menu
+    // for whatever is there takes its place.
+    function menu-at(x: length, y: length) {
+        if x < Tokens.settings-sidebar-width {
+            return;
+        }
+        let at = Math.floor((y - list.absolute-position.y + list.offset) / root.line);
+        let on-row = y >= list.absolute-position.y && y < list.absolute-position.y + list.height
+            && at >= 0 && at < Files.total
+            && x >= list.absolute-position.x + Tokens.space-sm
+            && x < list.absolute-position.x + list.width - Tokens.space-sm - Tokens.space-xs;
+        root.open-menu(on-row ? at : -1, x, y);
+    }
+
+    function point-at(on: bool, text: string, x: length, top: length, bottom: length) {
+        if on {
+            root.tip-text = text;
+            root.tip-x = x;
+            root.tip-top = top;
+            root.tip-bottom = bottom;
+            root.tip-wanted = true;
+        } else if root.tip-x == x && root.tip-top == top {
+            root.hide-tip();
+        }
+    }
+
+    function hide-tip() {
+        root.tip-wanted = false;
+        root.tip-shown = false;
     }
 
     function end-drag() {
@@ -520,14 +496,14 @@ export component FilesWindow inherits Window {
         root.drop-place = -1;
         root.drop-device = -1;
         if x < Tokens.settings-sidebar-width {
-            let at = Math.floor((y - Tokens.space-sm) / root.side-step);
+            let at = Math.floor((y - Tokens.space-sm) / sidebar.step);
             if at >= 0 && at < Files.places.length
-                && y - Tokens.space-sm - at * root.side-step < Tokens.button + Tokens.space-sm {
+                && y - Tokens.space-sm - at * sidebar.step < sidebar.row-height {
                 root.drop-place = at;
             }
-            let dev = Math.floor((y - sidebar.devices-top) / sidebar.dev-step);
+            let dev = Math.floor((y - sidebar.devices-top) / sidebar.step);
             if dev >= 0 && dev < Files.devices.length
-                && y - sidebar.devices-top - dev * sidebar.dev-step < sidebar.dev-step - Tokens.space-xxs {
+                && y - sidebar.devices-top - dev * sidebar.step < sidebar.row-height {
                 root.drop-device = dev;
             }
         } else if y > list.absolute-position.y && y < list.absolute-position.y + list.height {
@@ -661,6 +637,7 @@ export component FilesWindow inherits Window {
             y: 0;
             width: Tokens.settings-sidebar-width;
             height: parent.height;
+            tip(on, text, x, top, bottom) => { root.point-at(on, text, x, top, bottom); }
         }
 
         Rectangle {
@@ -668,58 +645,173 @@ export component FilesWindow inherits Window {
             width: parent.width - Tokens.settings-sidebar-width;
             height: parent.height;
 
+            // Under the toolbar, the headings and the status line: a right
+            // click on any bare part of the folder's side has its menu.
+            TouchArea {
+                pointer-event(event) => {
+                    if event.kind != PointerEventKind.down {
+                        return;
+                    }
+                    scope.focus();
+                    if event.button == PointerEventButton.right {
+                        root.open-menu(-1, self.absolute-position.x + self.mouse-x,
+                            self.absolute-position.y + self.mouse-y);
+                    } else if event.button == PointerEventButton.left && Files.renaming >= 0 {
+                        Files.click-empty();
+                    }
+                }
+            }
+
             VerticalLayout {
-                // The bar of buttons.
+                // The toolbar.
                 HorizontalLayout {
-                    padding: Tokens.space-md;
-                    spacing: Tokens.space-sm;
+                    padding: Tokens.space-sm;
+                    spacing: Tokens.space-xxs;
 
-                    IconButton {
+                    SengiToolButton {
                         icon: "arrow-left";
-                        text: "Back";
+                        name: "Back";
                         enabled: Files.can-back;
-                        clicked => { Files.back(); }
+                        clicked => {
+                            root.hide-tip();
+                            scope.focus();
+                            Files.back();
+                        }
+                        hover(on, x, top, bottom) => { root.point-at(on, self.name, x, top, bottom); }
                     }
 
-                    IconButton {
+                    SengiToolButton {
+                        icon: "arrow-right";
+                        name: "Forward";
+                        enabled: Files.can-forward;
+                        clicked => {
+                            root.hide-tip();
+                            scope.focus();
+                            Files.forward();
+                        }
+                        hover(on, x, top, bottom) => { root.point-at(on, self.name, x, top, bottom); }
+                    }
+
+                    SengiToolButton {
                         icon: "arrow-up";
-                        text: "Up";
+                        name: "Up";
                         enabled: Files.can-up;
-                        clicked => { Files.up(); }
+                        clicked => {
+                            root.hide-tip();
+                            scope.focus();
+                            Files.up();
+                        }
+                        hover(on, x, top, bottom) => { root.point-at(on, self.name, x, top, bottom); }
                     }
 
-                    PathBar {
+                    // The path, set a little apart from the buttons.
+                    HorizontalLayout {
                         horizontal-stretch: 1;
-                        height: Tokens.button;
+                        padding-left: Tokens.space-sm;
+                        padding-right: Tokens.space-sm;
+
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            PathBar {
+                                height: Tokens.button;
+                            }
+                        }
                     }
 
-                    if Files.in-trash: IconButton {
+                    if !Files.in-trash: SengiToolButton {
+                        icon: "folder-plus";
+                        name: "New Folder";
+                        clicked => {
+                            root.hide-tip();
+                            scope.focus();
+                            Files.new-folder();
+                        }
+                        hover(on, x, top, bottom) => { root.point-at(on, self.name, x, top, bottom); }
+                    }
+
+                    if !Files.in-trash: SengiToolButton {
+                        icon: "file-plus";
+                        name: "New File";
+                        clicked => {
+                            root.hide-tip();
+                            scope.focus();
+                            Files.new-file();
+                        }
+                        hover(on, x, top, bottom) => { root.point-at(on, self.name, x, top, bottom); }
+                    }
+
+                    if Files.in-trash: SengiToolButton {
                         icon: "arrow-counter-clockwise";
-                        text: "Restore";
-                        show-text: true;
+                        name: "Restore";
                         enabled: Files.has-selection && !Files.busy;
-                        clicked => { Files.restore(); }
+                        clicked => {
+                            root.hide-tip();
+                            scope.focus();
+                            Files.restore();
+                        }
+                        hover(on, x, top, bottom) => { root.point-at(on, self.name, x, top, bottom); }
                     }
 
-                    if Files.in-trash: SengiButton {
-                        text: "Empty Trash";
+                    if Files.in-trash: SengiToolButton {
+                        icon: "trash";
+                        name: "Empty Trash";
                         enabled: Files.total > 0 && !Files.busy;
                         danger: true;
-                        focusable: false;
-                        clicked => { Files.empty-trash(); }
+                        clicked => {
+                            root.hide-tip();
+                            scope.focus();
+                            Files.empty-trash();
+                        }
+                        hover(on, x, top, bottom) => { root.point-at(on, self.name, x, top, bottom); }
                     }
 
-                    if !Files.in-trash: IconButton {
-                        icon: "folder-plus";
-                        text: "New Folder";
-                        show-text: true;
-                        clicked => { Files.new-folder(); }
+                    SengiToolButton {
+                        icon: Files.show-hidden ? "eye" : "eye-slash";
+                        name: Files.show-hidden ? "Hide Hidden Files" : "Show Hidden Files";
+                        checked: Files.show-hidden;
+                        clicked => {
+                            root.hide-tip();
+                            scope.focus();
+                            Files.toggle-hidden(!Files.show-hidden);
+                        }
+                        hover(on, x, top, bottom) => { root.point-at(on, self.name, x, top, bottom); }
+                    }
+                }
+
+                Rectangle {
+                    height: Tokens.border-width;
+                    background: Tokens.color-border;
+                }
+
+                // What the columns are, over the columns.
+                HorizontalLayout {
+                    height: Tokens.button;
+                    padding-left: Tokens.space-sm + Tokens.space-md;
+                    padding-right: Tokens.space-sm + Tokens.space-xs + Tokens.space-md;
+                    spacing: Tokens.space-md;
+
+                    SengiLabel {
+                        horizontal-stretch: 1;
+                        min-width: 0;
+                        text: "Name";
+                        vertical-alignment: center;
+                        overflow: elide;
                     }
 
-                    if !Files.in-trash: SengiButton {
-                        text: "New File";
-                        focusable: false;
-                        clicked => { Files.new-file(); }
+                    if root.roomy: SengiLabel {
+                        width: root.size-width;
+                        text: Files.in-trash ? "Original Location" : "Size";
+                        horizontal-alignment: Files.in-trash ? TextHorizontalAlignment.left : TextHorizontalAlignment.right;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    if root.roomier: SengiLabel {
+                        width: root.time-width;
+                        text: Files.in-trash ? "Deleted" : "Modified";
+                        vertical-alignment: center;
+                        overflow: elide;
                     }
                 }
 
@@ -732,7 +824,10 @@ export component FilesWindow inherits Window {
                     vertical-stretch: 1;
 
                     list := Scroll {
-                        content-height: Files.total * root.line;
+                        // A row's height stays free after the last one, so
+                        // that a full folder still has bare space to
+                        // right-click.
+                        content-height: Files.total == 0 ? 0px : (Files.total + 1) * root.line;
                         changed offset => { root.report-view(); }
                         changed height => { root.report-view(); }
                         init => { root.report-view(); }
@@ -740,7 +835,7 @@ export component FilesWindow inherits Window {
                         // Under the rows: a click where there is no row.
                         TouchArea {
                             width: parent.width;
-                            height: Math.max(parent.height, Files.total * root.line);
+                            height: Math.max(parent.height, (Files.total + 1) * root.line);
                             pointer-event(event) => {
                                 if event.kind != PointerEventKind.down {
                                     return;
@@ -842,6 +937,7 @@ export component FilesWindow inherits Window {
                                             self.take-focus();
                                             self.select-all();
                                         }
+                                        edited(text) => { Files.rename-edited(text); }
                                         accepted(text) => {
                                             if Files.rename-accepted(text) {
                                                 scope.focus();
@@ -892,13 +988,12 @@ export component FilesWindow inherits Window {
 
                 // The line at the bottom: what is here, or what just happened.
                 HorizontalLayout {
-                    padding-left: Tokens.space-md;
-                    padding-right: Tokens.space-md;
-                    padding-top: Tokens.space-sm;
-                    padding-bottom: Tokens.space-sm;
-                    spacing: Tokens.space-md;
+                    height: Tokens.button + Tokens.space-xs;
+                    padding-left: Tokens.space-sm + Tokens.space-md;
+                    padding-right: Tokens.space-sm;
+                    spacing: Tokens.space-sm;
 
-                    SengiText {
+                    SengiLabel {
                         horizontal-stretch: 1;
                         min-width: 0;
                         text: Files.notice != "" ? Files.notice : Files.status;
@@ -908,32 +1003,39 @@ export component FilesWindow inherits Window {
                         overflow: elide;
                     }
 
-                    if Files.cancelable: SengiButton {
-                        text: "Cancel";
-                        focusable: false;
-                        clicked => { Files.cancel-job(); }
-                    }
-
-                    SengiLabel {
-                        text: "Show hidden";
-                        font-size: Tokens.font-size-md;
-                        font-weight: Tokens.font-weight-regular;
-                        vertical-alignment: center;
-                    }
-
-                    VerticalLayout {
+                    if Files.cancelable: VerticalLayout {
                         alignment: center;
-                        SengiToggle {
-                            checked: Files.show-hidden;
-                            toggled(on) => {
-                                Files.toggle-hidden(on);
-                                scope.focus();
+                        SengiToolButton {
+                            height: Tokens.button;
+                            icon: "x";
+                            name: "Cancel";
+                            clicked => {
+                                root.hide-tip();
+                                Files.cancel-job();
                             }
+                            hover(on, x, top, bottom) => { root.point-at(on, self.name, x, top, bottom); }
                         }
                     }
                 }
             }
         }
+    }
+
+    // The tooltip comes after the pointer has rested a moment.
+    Timer {
+        interval: Tokens.motion-slow;
+        running: root.tip-wanted && !root.tip-shown;
+        triggered => { root.tip-shown = true; }
+    }
+
+    // Under the button, or over it where there is no room under.
+    if root.tip-shown: SengiTooltip {
+        text: root.tip-text;
+        x: Math.clamp(root.tip-x - self.width / 2, Tokens.space-xs,
+            root.width - self.width - Tokens.space-xs);
+        y: root.tip-bottom + Tokens.space-xs + self.height < root.height
+            ? root.tip-bottom + Tokens.space-xs
+            : root.tip-top - self.height - Tokens.space-xs;
     }
 
     // What is being dragged, beside the pointer.
@@ -954,11 +1056,17 @@ export component FilesWindow inherits Window {
     }
 
     if Files.menu-open: TouchArea {
-        // Any click outside the menu only closes it.
+        // A click outside the menu only closes it; a right-click there
+        // opens the menu for the new spot.
         pointer-event(event) => {
             if event.kind == PointerEventKind.down {
+                let x = self.mouse-x;
+                let y = self.mouse-y;
                 Files.menu-open = false;
                 scope.focus();
+                if event.button == PointerEventButton.right {
+                    root.menu-at(x, y);
+                }
             }
         }
     }

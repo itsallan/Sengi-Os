@@ -11,7 +11,7 @@ use sengi_apps::Env;
 use sengi_files::app::{self, App, Start};
 use sengi_files::devices::Sources;
 use sengi_files::session::Place;
-use sengi_files::ui::{Files, FilesWindow};
+use sengi_files::ui::{Files, FilesWindow, ThemeSwitch};
 use sengi_shots::harness::{self, BACKDROP};
 use slint::platform::{Key, PointerEventButton, WindowEvent};
 use slint::{ComponentHandle, LogicalPosition, Model};
@@ -93,6 +93,7 @@ fn open_with(
     sources: Sources,
 ) -> (FilesWindow, std::rc::Rc<App>) {
     let window = FilesWindow::new().unwrap();
+    window.global::<ThemeSwitch>().set_light(harness::light());
     window.show().unwrap();
     harness::resize(&harness::window(), size.0, size.1);
     let start = Start {
@@ -166,9 +167,9 @@ fn right_click(at: (f32, f32)) {
 }
 
 /// The middle of row `n` of the list in a window of the usual layout:
-/// 200 wide places, a bar of buttons 51 high, rows 34 high.
+/// 200 wide places, a toolbar and headings 74 high together, rows 38 high.
 fn row_at(n: usize) -> (f32, f32) {
-    (500.0, 51.0 + 34.0 * n as f32 + 17.0)
+    (500.0, 74.0 + 38.0 * n as f32 + 19.0)
 }
 
 /// The middle of place `n` in the sidebar.
@@ -659,6 +660,12 @@ fn polish(home: &Home) {
     for glyph in [
         "arrow-left",
         "arrow-up",
+        "arrow-right",
+        "file-plus",
+        "eye",
+        "eye-slash",
+        "trash",
+        "x",
         "folder-plus",
         "arrow-counter-clockwise",
         "hard-drives",
@@ -688,7 +695,7 @@ fn polish(home: &Home) {
     right_click(row_at(3));
     files(&w).invoke_menu_chosen("copy".into());
     assert!(files(&w).get_can_paste());
-    right_click(row_at(12));
+    right_click(row_at(9));
     assert!(app.selected_names().is_empty());
     assert_eq!(menu_ids(&w), ["new-folder", "new-file", "paste", "hidden"]);
     assert!(files(&w)
@@ -704,17 +711,17 @@ fn polish(home: &Home) {
     fs::write(play.join(".dot"), "").unwrap();
     app::folder_changed(&app);
     assert!(!names(&app).contains(&".dot".to_string()));
-    right_click(row_at(12));
+    right_click(row_at(9));
     files(&w).invoke_menu_chosen("hidden".into());
     assert!(files(&w).get_show_hidden());
     assert!(names(&app).contains(&".dot".to_string()));
-    right_click(row_at(12));
+    right_click(row_at(9));
     assert!(files(&w).get_menu().iter().any(|row| row.checked));
     files(&w).invoke_menu_chosen("hidden".into());
     assert!(!names(&app).contains(&".dot".to_string()));
 
     // A real click on New Folder in the menu: the menu opens at the pointer.
-    let spot = row_at(12);
+    let spot = row_at(9);
     right_click(spot);
     press_release(
         PointerEventButton::Left,

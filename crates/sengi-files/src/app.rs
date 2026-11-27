@@ -51,6 +51,8 @@ struct State {
     notice: String,
     notice_error: bool,
     renaming: Option<usize>,
+    /// What the field of that rename holds.
+    typed: String,
     busy: bool,
     free: Option<u64>,
     cancel: Arc<AtomicBool>,
@@ -104,7 +106,7 @@ fn tilde(home: &Path, path: &Path) -> String {
 /// "2026-11-25T10:20:30" as "2026-11-25 10:20".
 fn deleted_text(date: &str) -> String {
     match date.get(..16) {
-        Some(short) => format!("Deleted {}", short.replacen('T', " ", 1)),
+        Some(short) => short.replacen('T', " ", 1),
         None => String::new(),
     }
 }
@@ -308,6 +310,7 @@ impl App {
         )));
         files.set_in_trash(s.session.in_trash());
         files.set_can_back(s.session.can_back());
+        files.set_can_forward(s.session.can_forward());
         files.set_can_up(s.session.parent_place().is_some());
         files.set_can_paste(s.session.clipboard.is_some() && !s.session.in_trash());
         files.set_has_selection(!s.session.selected.is_empty());
@@ -527,19 +530,24 @@ fn loaded(app: &Rc<App>, generation: u64, result: Result<(Vec<Entry>, usize), St
 }
 
 fn set_rename_text(app: &Rc<App>, name: &str) {
+    app.state.borrow_mut().typed = name.to_string();
     if let Some(window) = app.window.upgrade() {
         window.global::<Files>().set_rename_text(name.into());
     }
 }
 
 fn navigate(app: &Rc<App>, place: Place) {
+    // The name being typed belongs to the folder that is being left.
+    let refused = settle_rename(app).and_then(|ended| ended.error);
     {
         let mut s = app.state.borrow_mut();
         s.session.go(place);
-        s.renaming = None;
         s.view.0 = 0;
     }
-    app.clear_notice();
+    match refused {
+        Some(error) => app.say(error, true),
+        None => app.clear_notice(),
+    }
     load(
         app,
         Then {
@@ -630,6 +638,9 @@ fn new_item(app: &Rc<App>, what: &str, create: fn(&std::path::Path) -> std::io::
     if !app.idle() {
         return;
     }
+    // A name still being typed is kept first. What is read and selected next
+    // is the new item.
+    settle_rename(app);
     let made = {
         let s = app.state.borrow();
         s.session.can_change_here().and_then(|dir| {
@@ -674,6 +685,51 @@ fn start_rename(app: &Rc<App>) {
         Err(error) => app.say(error, true),
     }
     app.render();
+}
+
+/// A rename that something else brought to an end.
+struct Ended {
+    /// The folder should be read again: the order may have changed.
+    reread: bool,
+    error: Option<String>,
+}
+
+/// A click somewhere else ends a rename and keeps what was typed; a name that
+/// cannot be taken leaves the old one. The entry is changed where it stands,
+/// so that the row numbers the click came with still hold.
+fn settle_rename(app: &Rc<App>) -> Option<Ended> {
+    let mut s = app.state.borrow_mut();
+    let at = s.renaming.take()?;
+    let mut ended = Ended {
+        reread: s.stale,
+        error: None,
+    };
+    let dir = s.session.dir()?.to_path_buf();
+    let old = s.session.entries.get(at)?.name.clone();
+    match fsops::rename(&dir, &old, &s.typed) {
+        Ok(new) => {
+            ended.reread |= new != old;
+            s.session.entries[at].name = new;
+        }
+        Err(error) => ended.error = Some(error.to_string()),
+    }
+    Some(ended)
+}
+
+/// Ends any rename, does what was asked for, and then reads the folder again
+/// and says what was wrong with the name.
+fn after_rename(app: &Rc<App>, action: impl FnOnce()) {
+    let ended = settle_rename(app);
+    action();
+    let Some(ended) = ended else { return };
+    if let Some(error) = ended.error {
+        app.say(error, true);
+    }
+    if ended.reread {
+        folder_changed(app);
+    } else {
+        app.render();
+    }
 }
 
 fn rename_accepted(app: &Rc<App>, text: &str) -> bool {
@@ -961,6 +1017,7 @@ fn dialog_confirmed(app: &Rc<App>) {
 
 /// One step along the history: back, or forward again.
 fn walk(app: &Rc<App>, back: bool) {
+    let refused = settle_rename(app).and_then(|ended| ended.error);
     let went = {
         let mut s = app.state.borrow_mut();
         if back {
@@ -970,8 +1027,10 @@ fn walk(app: &Rc<App>, back: bool) {
         }
     };
     if went {
-        app.state.borrow_mut().renaming = None;
-        app.clear_notice();
+        match refused {
+            Some(error) => app.say(error, true),
+            None => app.clear_notice(),
+        }
         load(
             app,
             Then {
@@ -986,9 +1045,15 @@ fn walk(app: &Rc<App>, back: bool) {
 /// clicked is selected unless it is part of the selection already, and the
 /// menu is made from what that leaves.
 fn context_menu(app: &Rc<App>, at: i32) {
-    if app.state.borrow().renaming.is_some() {
+    // The row whose name is being typed has no menu of its own.
+    let renaming = app.state.borrow().renaming;
+    if renaming.is_some_and(|row| row as i32 == at) {
         return;
     }
+    after_rename(app, || show_menu(app, at));
+}
+
+fn show_menu(app: &Rc<App>, at: i32) {
     let rows = {
         let mut s = app.state.borrow_mut();
         if at >= 0 {
@@ -1105,7 +1170,8 @@ fn drop_items(app: &Rc<App>, kind: i32, target: i32) {
 /// A drive in the sidebar was clicked: an open one is shown, one that is
 /// not is opened first, by `udisksctl`, on a thread of its own.
 fn open_device(app: &Rc<App>, at: usize) {
-    if !app.idle() || app.state.borrow().renaming.is_some() {
+    settle_rename(app);
+    if !app.idle() {
         return;
     }
     let (device, env, sources) = {
@@ -1164,7 +1230,8 @@ fn device_opened(app: &Rc<App>, name: &str, result: Result<(), String>, found: V
 /// unmounted and the disk is powered off, and the answer is said at the
 /// bottom, naming what is using the drive when it is busy.
 fn eject_device(app: &Rc<App>, at: usize) {
-    if !app.idle() || app.state.borrow().renaming.is_some() {
+    settle_rename(app);
+    if !app.idle() {
         return;
     }
     let (device, all, env, sources) = {
@@ -1316,6 +1383,7 @@ pub fn attach(window: &FilesWindow, start: Start, sync: bool) -> Rc<App> {
             notice: start.notice.clone().unwrap_or_default(),
             notice_error: start.notice.is_some(),
             renaming: None,
+            typed: String::new(),
             busy: false,
             free: None,
             cancel: Arc::new(AtomicBool::new(false)),
@@ -1402,20 +1470,25 @@ fn wire(window: &FilesWindow, app: &Rc<App>) {
         }
     });
     on!(on_click, |app, at, ctrl, shift| {
-        if app.state.borrow().renaming.is_none() {
-            app.state
-                .borrow_mut()
-                .session
-                .click(at.max(0) as usize, ctrl, shift);
-            app.clear_notice();
-            app.render();
+        let at = at.max(0) as usize;
+        if app.state.borrow().renaming != Some(at) {
+            after_rename(&app, || {
+                app.state.borrow_mut().session.click(at, ctrl, shift);
+                app.clear_notice();
+                app.render();
+            });
         }
     });
-    on!(on_click_empty, |app| {
-        if app.state.borrow().renaming.is_none() {
-            app.state.borrow_mut().session.select_none();
-            app.clear_notice();
-            app.render();
+    on!(on_click_empty, |app| after_rename(&app, || {
+        app.state.borrow_mut().session.select_none();
+        app.clear_notice();
+        app.render();
+    }));
+    on!(on_rename_edited, |app, text| {
+        app.state.borrow_mut().typed = text.to_string();
+        // A field made again, after scrolling away and back, starts with it.
+        if let Some(window) = app.window.upgrade() {
+            window.global::<Files>().set_rename_text(text);
         }
     });
     on!(on_open, |app, at| open_at(&app, at.max(0) as usize));
@@ -1477,8 +1550,11 @@ fn wire(window: &FilesWindow, app: &Rc<App>) {
     on!(on_new_folder, |app| new_folder(&app));
     on!(on_new_file, |app| new_file(&app));
     on!(on_toggle_hidden, |app, on| {
-        app.state.borrow_mut().session.show_hidden = on;
-        refresh(&app);
+        // The rows move, so a name being typed is kept first.
+        after_rename(&app, || {
+            app.state.borrow_mut().session.show_hidden = on;
+            refresh(&app);
+        });
     });
     on!(on_start_rename, |app| start_rename(&app));
     on!(on_rename_cancelled, |app| {

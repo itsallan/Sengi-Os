@@ -225,6 +225,16 @@ and the measured idle RAM and boot time.
   and Ctrl+Y. Selecting by dragging works, tab-indented files keep their tabs,
   CRLF files stay CRLF, and files over 512 KB open for reading only.
 - The accent colour is green (#2f9e6b), not orange.
+- Files: the toolbar is flat icon buttons with names on hover (Back, Forward,
+  Up, New Folder, New File, show hidden files; Restore and Empty Trash in the
+  Trash) instead of bordered text buttons and the switch at the bottom, the
+  list has column headings and roomier rows, the sidebar's rows are one height
+  and the status line is quieter. A right-click on any bare part of the folder
+  side, including under the last row of a long folder, offers New Folder, New
+  File and Paste; a right-click moves an open menu; and clicking elsewhere
+  while naming something keeps the name instead of leaving the clicks dead. On
+  the desktop an icon's menu acts on that icon even when a name being typed
+  re-orders the icons.
 - The Installer and Settings app icons are Phosphor Bold glyphs, like the
   Store's.
 
