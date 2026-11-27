@@ -65,6 +65,19 @@ fonts-dejavu-mono
 pipewire
 pipewire-pulse
 wireplumber
+# ALSA's default device leads to PipeWire, for programs that know only ALSA.
+pipewire-alsa
+# Which switches and levels make up the speakers, headphones and microphones
+# of cards that run through a sound DSP, as many laptops' do.
+alsa-ucm-conf
+# aplay and amixer to look at a card with, and alsactl, which udev runs to
+# set a new card's levels and to keep them across a restart. Nothing stays
+# running.
+alsa-utils
+# Bluetooth headphones and speakers: a plugin WirePlumber loads.
+libspa-0.2-bluetooth
+# The DSP firmware those cards need is not free software and is added by
+# build.sh with the rest of the firmware.
 iwd
 bluez
 

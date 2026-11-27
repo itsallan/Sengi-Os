@@ -34,11 +34,14 @@ one asks to be kept. The licence text sits next to the files it covers.
 ## Hardware firmware
 
 - What: the image includes Debian's `firmware-iwlwifi`, `firmware-realtek`,
-  `firmware-mediatek`, `firmware-atheros`, `firmware-brcm80211` and
-  `firmware-intel-graphics` packages, and `intel-microcode`, from the
-  `non-free-firmware` section. They are binary files that the kernel loads
-  into Wi-Fi, Bluetooth and graphics chips. Nothing of ours links them.
-- Licence: each maker's own, which is not free software but allows
-  redistribution. The texts are in the image under
-  `/usr/share/doc/<package>/copyright`. Build the image without them with
-  `SENGI_NONFREE_FIRMWARE=0 scripts/build-iso.sh`.
+  `firmware-mediatek`, `firmware-atheros`, `firmware-brcm80211`,
+  `firmware-intel-graphics`, `firmware-intel-sound` and `firmware-sof-signed`
+  packages, and `intel-microcode`, from the `non-free-firmware` section. They
+  are binary files that the kernel loads into Wi-Fi, Bluetooth, graphics and
+  audio chips. Nothing of ours links them.
+- Licence: each maker's own, which allows redistribution; most are not free
+  software. The audio DSP firmware of `firmware-sof-signed` is built from the
+  Sound Open Firmware project, whose source is mostly BSD-3-Clause, and is
+  signed by Intel; Debian files it under `non-free-firmware` too. The texts are
+  in the image under `/usr/share/doc/<package>/copyright`. Build the image
+  without them with `SENGI_NONFREE_FIRMWARE=0 scripts/build-iso.sh`.

@@ -87,9 +87,17 @@ chroot "$root" systemctl mask systemd-networkd-wait-online.service \
 chroot "$root" ldconfig
 chroot "$root" systemctl mask ldconfig.service systemd-journal-catalog-update.service \
 	systemd-hwdb-update.service systemd-update-done.service
-# pipewire-pulse stays socket activated; the Bluetooth media proxy is not
-# needed until a Bluetooth audio device is in use.
+# Sound belongs to the user: PipeWire and WirePlumber start with the session,
+# the PulseAudio server only when a program first connects to its socket, and
+# most programs reach sound that way. Disabling the service takes the socket
+# with it, so the socket is enabled again after.
 chroot "$root" systemctl --global disable pipewire-pulse.service
+chroot "$root" systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service
+for unit in sockets.target.wants/pipewire.socket sockets.target.wants/pipewire-pulse.socket \
+	pipewire.service.wants/wireplumber.service; do
+	[ -L "$root/etc/systemd/user/$unit" ] || { echo "$unit is not enabled" >&2; exit 1; }
+done
+# The Bluetooth media proxy is not needed to play over Bluetooth.
 chroot "$root" systemctl --global mask mpris-proxy.service
 chroot "$root" systemctl set-default graphical.target
 

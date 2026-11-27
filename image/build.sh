@@ -121,10 +121,14 @@ packages=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$src/image/packages.list" | 
 # Wi-Fi and Bluetooth chips need firmware that is not free software, from
 # Debian's non-free-firmware section: Intel (Wi-Fi and Bluetooth are in one
 # package), Realtek, MediaTek, Atheros and Broadcom, plus Intel graphics
-# firmware and CPU microcode. SENGI_NONFREE_FIRMWARE=0 builds without it.
+# firmware and CPU microcode. Intel's audio DSP, which drives the sound of
+# many laptops with digital microphones from Skylake on, needs its own: the
+# one package for Skylake to Comet Lake machines and the SOF one for newer
+# ones. SENGI_NONFREE_FIRMWARE=0 builds without all of it.
 if [ "${SENGI_NONFREE_FIRMWARE:-1}" = 1 ]; then
 	components="main non-free-firmware"
 	packages="$packages,firmware-iwlwifi,firmware-realtek,firmware-mediatek,firmware-atheros,firmware-brcm80211,firmware-intel-graphics,intel-microcode"
+	packages="$packages,firmware-intel-sound,firmware-sof-signed"
 fi
 
 mmdebstrap --variant=minbase \
