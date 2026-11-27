@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="132" viewBox="0 17 98 67" role="img" aria-label="Sengi OS">
+  <title>Sengi OS</title>
+  <g transform="translate(0 -6)">
+    <path d="M6 38 H16 M2 45 H12" fill="none" stroke="#2f9e6b" stroke-width="3" stroke-linecap="round" opacity="0.65"/>
+    <path d="M21 52 Q10 54 4 66" fill="none" stroke="#2f9e6b" stroke-width="3" stroke-linecap="round"/>
+    <path d="M34 62 L22 78 M56 64 L68 78" fill="none" stroke="#2f9e6b" stroke-width="6" stroke-linecap="round"/>
+    <circle cx="62" cy="37" r="5.5" fill="#2f9e6b"/>
+    <path d="M20 50 C20 38 34 34 48 36 C58 37 64 40 70 44 L93 52 Q95 53.5 93 55 L70 58 C62 63 50 66 38 64 C26 62 20 58 20 50 Z" fill="#2f9e6b"/>
+    <circle cx="70" cy="49" r="2.4" fill="#16171b"/>
+  </g>
+</svg>
