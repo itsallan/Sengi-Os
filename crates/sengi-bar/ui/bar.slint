@@ -1,6 +1,6 @@
 // The Sengi OS top bar: menu on the left, status and session on the right.
 
-import { Tokens, SengiText, SengiIcon } from "components.slint";
+import { Tokens, SengiText, SengiIcon, SengiLogo } from "components.slint";
 export { ThemeSwitch } from "components.slint";
 import { TrayMenu, MenuPanel, MenuRow } from "tray-menu.slint";
 
@@ -28,6 +28,9 @@ component BarItem inherits Rectangle {
     in property <bool> caution: false;
     // Items that do nothing on click do not light up on hover either.
     in property <bool> interactive: true;
+    // The logo's small mark before the words, part of the same item.
+    in property <bool> logo: false;
+    private property <length> lead: root.logo ? Tokens.logo-mark + Tokens.space-xs : 0px;
     callback clicked();
     callback middle-clicked();
 
@@ -35,9 +38,17 @@ component BarItem inherits Rectangle {
     background: root.interactive && touch.has-hover ? Tokens.color-surface-hover : transparent;
     animate background { duration: Tokens.motion-fast; }
     height: Tokens.bar-height - Tokens.space-xs;
-    width: content.preferred-width + Tokens.space-sm * 2;
+    width: content.preferred-width + root.lead + Tokens.space-sm * 2;
+
+    if root.logo: SengiLogo {
+        x: Tokens.space-sm;
+        y: (parent.height - self.height) / 2;
+        width: Tokens.logo-mark;
+    }
 
     content := SengiText {
+        x: root.lead;
+        width: parent.width - root.lead;
         text: root.text;
         color: root.alert ? Tokens.color-danger
             : root.caution ? Tokens.color-warning
@@ -243,6 +254,7 @@ export component Bar inherits Window {
             BarItem {
                 text: "Sengi OS";
                 strong: true;
+                logo: true;
                 clicked => { root.open-launcher(); }
             }
         }
