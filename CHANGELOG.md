@@ -3,295 +3,77 @@
 All notable changes to Sengi OS. Each release section lists what is in its ISO
 and the measured idle RAM and boot time.
 
-## Unreleased
+## 1.0.0 - 2026-11-27
 
-### Changed
-
-- The light and high contrast themes are not offered yet. Sengi OS is dark:
-  the theme picker is gone from Settings, Appearance and from the Welcome
-  wizard (its second step is now the wallpaper), Settings, Accessibility has
-  no High contrast switch, and a saved `appearance.theme` of `"light"` or
-  `"high-contrast"` shows as dark. Both palettes and their tests stay in the
-  source behind `LIGHT_THEME_ENABLED` and `HIGH_CONTRAST_ENABLED` in
-  sengi-config.
-- A visual polish pass: secondary actions (Scan, Search, Refresh, Clear all,
-  Skip setup and the like) are quiet buttons without a fill; the chosen page
-  in the Settings sidebar has an accent mark that hover does not; muted and
-  switched-off sliders are dimmed; the calculator's key columns are equal;
-  notification history shows its times at the left of each card; and the
-  quick settings Screenshot heading lines up with the rows above it.
+The first public release of Sengi OS.
 
 ### Added
 
-- A live boot entry without the NVIDIA driver, "Sengi OS (NVIDIA graphics
-  off)", picked with N while the machine starts, for hybrid laptops that
-  freeze with nouveau loaded.
-- sengi-compositor writes a watchdog line to the journal when its main loop
-  stalls for more than 2 seconds.
-- Store: opens on a grid of categories (browsers, office, media, graphics,
-  communication, utilities, development, screen recording, notes) and a grid
-  of featured apps as cards, in two to four columns by the window's width,
-  with a page for each category, search from anywhere, install progress on the
-  card and the arrow keys, Return and Escape. Offline it shows a banner in
-  plain words with Retry, and tries again by itself when the network comes
-  back. App icons come from Flathub's data and appear when it arrives. The
-  recommended apps are in `crates/sengi-store/featured.toml`.
-- Printing (sengi-print): Settings has a Printers page that lists the
-  printers with their state, picks your default, prints a test page, shows the
-  print queue with Cancel, removes printers, and adds them by searching the
-  network for printers that need no driver or by typing an address. Adding,
-  removing and searching ask for your password (pkexec, polkit action
-  `org.sengi.os.printer`, every name and address checked again as root); the
-  rest needs none. CUPS is not in the ISO (87 MB installed with what it pulls
-  in, 25 MB to download): a fresh install shows Install printing support on
-  the page, which installs it through the update helper
-  (`sengi-update install-package cups`, an allow-list of one name) and sets it
-  up to start only when something asks: not at boot, no web page, no network
-  port, no printer sharing, no `cups-browsed`. Flatpak apps print through the
-  portal and other apps through CUPS, with nothing more to set up.
-- Settings, Updates (sengi-update): looks for updates to the system's packages
-  and to Flatpak apps, lists them with their versions and marks the security
-  ones, and updates both with **Update all** with a real progress bar, a step
-  count, downloaded bytes and a Cancel that works until the install starts.
-  It asks for your password in Settings (through pkexec and polkit, with no
-  stored password and no background program), never removes a package or
-  changes the Debian release, refuses on a low battery or while another apt
-  runs, says "Restart needed" when the system asks for it, and shows a count on
-  the sidebar. The live system says updates are available after installing.
-- Settings, Accessibility: Text size (Small, Default, Large, Extra large),
-  Reduce motion and Cursor size (Normal, Large, Extra large). Text size scales
-  every type size and the heights of rows, buttons, the bar and title bars in
-  all programs; reduced motion turns every animation off; a larger cursor
-  applies to the compositor and to programs it starts afterwards. The settings
-  are `appearance.text-size`, `appearance.reduce-motion` and
-  `appearance.cursor-size`. Sticky keys, slow keys and an on-screen keyboard
-  are not built yet.
-- Settings, Display: the displays drawn where they are, a Position choice for
-  each (left of, right of, above, below or mirroring another), and a Main
-  display, which is where the bar and the dock go. Positions and scales are
-  tried for 15 seconds and go back unless kept, and are remembered for each
-  display. Mirroring puts two displays of the same size in one place.
-- Night light: Settings, Display has a switch, a start and end time (21:00 to
-  07:00 unless set) and a warmth. It is a colour ramp on the display, so it
-  costs nothing per frame and screenshots stay untinted. Needs a display
-  driver with a colour ramp, which a virtual machine's usually lacks.
-- Touchpad: Settings, Mouse & Touchpad has Click (by number of fingers or by
-  the bottom corners), Scroll (two fingers or the edge) and Three-finger
-  swipes. Left and right swipes switch windows, up shows the switcher, down
-  picks the selected window. Pinching is ignored. None of this has been tried
-  on a real touchpad yet.
-- Screenshots: Quick settings has Screen, Area and In 5 s. `sengi-shot --select`
-  dims the screen and you drag a rectangle (live size label, Enter or letting
-  go takes it, Escape cancels); `--delay N` counts down in a corner before the
-  shot; `--clipboard` copies the picture to the clipboard itself (see data
-  control below), with no wl-copy. The two screens are the new
-  sengi-snip, so a plain screenshot still links no toolkit.
-- Calculator (sengi-calc): decimal arithmetic by hand with the usual
-  precedence, brackets and percent, so 0.1 + 0.2 is 0.3; keyboard or keys,
-  the last five sums, Ctrl+C copies the answer, division by zero says so.
-- Click the clock in the bar and a calendar opens (sengi-calendar): a month grid
-  with today marked, previous and next month, Today, Escape or a click outside
-  closes it. `appearance.week-start` in settings.toml (monday, sunday or
-  saturday) sets the first column.
-
-- Files lists USB sticks, SD cards and external disks under Devices in the
-  sidebar, opens them with a click (no password), has an Eject button, and
-  follows plugging and unplugging. On an open drive it copies, moves, renames
-  and trashes (into the drive's own Trash), with a progress line and Cancel for
-  long copies and clear messages for a full or read-only drive. The image adds
-  udisks2, which stays off until the first drive is opened.
-- The screen dims after 2 minutes without input and goes off after 5, and
-  any key, click or movement brings it back. Dimming, switching off and an
-  optional lock are timed by sengi-compositor itself, with no polling and
-  without swayidle, which is now only started under labwc. The lock after
-  idling is off unless you set it; locking before sleep stays on.
-- Closing the lid puts the computer to sleep, on battery and on mains, and
-  the screen is locked before it does, so the lock screen is there on
-  waking. A short press of the power button sleeps and holding it switches
-  off. These are logind settings in the image.
-- Settings, Power: dim, switch off and lock times, and "When the lid is
-  closed" (sleep or do nothing), which only shows on a computer that has a
-  lid. They are kept in settings.toml and take effect at once.
-- While you drag a window to a screen edge, a flat see-through outline in
-  the accent colour shows where it will land, and goes when you let go.
-- Super+/ (or Super+F1) shows a sheet of every keyboard shortcut, made from
-  the same table the compositor binds the keys with. Settings, Keyboard has
-  a Keyboard shortcuts button for it.
-
-- Themes: the groundwork for more than one, where a change applies at once:
-  the bar, dock and desktop restart in the new colours, window frames and
-  menus are repainted, and anything opened later starts in it. Saved as
-  `appearance.theme`. The palettes are in `tokens/sengi.toml` with their WCAG
-  contrast numbers, which the tests check (4.5 for text, 3 for parts of
-  controls).
-- Settings has a Wallpaper page: the plain colour, six flat wallpapers in the
-  Sengi OS colours, or a PNG or JPEG of your own, by path or from ~/Pictures.
-  It shows at once and is remembered; a missing or broken file falls back to
-  the desktop colour with a note.
-- Files (sengi-files), a small file manager: places on the left, the folder
-  in the middle, a path bar with Back and Up. Open folders and files, rename
-  (F2), make folders (Ctrl+Shift+N), copy, cut and paste (never over an
-  existing name: the copy becomes "name 2"), move to the Trash with Delete,
-  and a Trash view with Restore and Empty Trash. It only changes things inside
-  your home folder. The desktop opens folders in it, and it is at the end of
-  the default dock.
-- Files polish: a right-click menu on items and on empty space, the list
-  follows the folder when other programs change it, natural order ("file2"
-  before "file10"), drag and drop of items onto folders and places, Alt+Right
-  for forward, and Phosphor Bold glyphs on the places and buttons.
-- Double-click a file and it opens (sengi-open): text, code, Markdown and logs
-  in Text Editor, PNG and JPEG pictures in Image Viewer, folders in Files, and
-  a notification "Nothing can open this file" for anything else. Files and
-  the desktop use it, and the default apps are set for Flatpak apps and the Store.
-- Text Editor (sengi-edit), a plain UTF-8 editor: Ctrl+S saves, Ctrl+Z and
-  Ctrl+Shift+Z undo and redo, Ctrl+F finds, and closing with unsaved changes asks
-  first. Files that are not text or are over 5 MB are not opened, and it says why.
-- Image Viewer (sengi-view) for PNG and JPEG: fit to the window, + - 0 to zoom,
-  drag to move, Left and Right through the folder, the size in pixels and the
-  size of the file in the status line. Pictures over 100 megapixels are refused.
-- Welcome (sengi-welcome): on the first login of an installed system a small
-  window offers Dark or Light and a wallpaper, the network, the keyboard layout,
-  a few apps to find in the Store and the keys worth knowing (Super+/, Print).
-  Back, Next and Skip; shown once, never on the live image, and it can be
-  opened again from the launcher. `sengi-store --search TEXT` opens the Store
-  with a search already typed, and `sengi-settings --set appearance.theme`
-  now applies the theme to the running session as the window does.
-- The Store shows real install progress read from Flatpak: a bar with the
-  percentage, the step and the speed when Flatpak gives them, and an
-  honest moving bar when it does not.
-- The Store shows an Open button for installed apps, also right after an
-  install, and it starts the app.
-- Right-click a dock tile to keep the app in the dock or remove it, open it
-  or quit it. Pins are saved to ~/.config/sengi-os/dock.toml and survive a
-  restart; running apps that are not pinned still follow the pinned ones.
-- sengi-desktop: the folders and files of ~/Desktop show as icons under the
-  windows. Right-click for New Folder and New File (both start in rename), Open Terminal
-  Here and Settings; select, rename, open and move to the Trash. The image has
-  no file manager yet, so opening a folder says so.
-- Every window gets the Sengi OS title bar with close, minimise and maximise,
-  also Chromium, Firefox and other apps that ask to draw their own (they show
-  their bar inside ours).
-- A level indicator: the volume, mute, screen brightness and keyboard light
-  keys show a rounded panel with an icon and a bar near the bottom of the
-  screen for about a second (sengi-osd). It runs only then.
-- Print saves a PNG of the screen to ~/Pictures (Screenshot-DATE-TIME.png) and
-  Alt+Print or Shift+Print the window in front, with a notification that says
-  where it went (sengi-shot).
-- A Screenshot button in quick settings: the panel closes and the whole screen
-  is saved to ~/Pictures, like the Print key does.
-- Laptop keys: the screen brightness keys step the backlight by 5 percent and
-  never go below 5 percent, and the keyboard light keys (up, down, on/off)
-  work too, also on the lock screen. They run sengi-brightness, which asks
-  logind, so no root is needed.
-- Windows have a soft shadow, darker for the window you are working in. It
-  is drawn in flat steps with no blur, costs nothing per frame, and can be
-  switched off with `window-shadows = false` under `[appearance]` in
-  `settings.toml`.
-- The launcher shows every installed app as a grid of icons with names while
-  nothing is typed; typing narrows it to the list, which now has a small icon
-  in front of each name. The arrow keys move through the grid.
-- sengi-store, a small app store: type the name of an app, pick it from the
-  Flathub list, and it is installed for your user. It has its own icon at the
-  end of the dock. Flathub is set up as the Flatpak source in the image.
-- The installer can install Sengi OS beside another system: on a UEFI
-  computer, with a GPT disk that has an EFI system partition and 10 GB or more
-  of free space, it adds one partition there, adds a Sengi OS folder to the EFI system
-  partition and puts Sengi OS first in the firmware boot list; the other
-  system's files are not touched and it stays in the boot menu, shown for 3
-  seconds. Shrink the other system first, from inside it.
-  Known limits: not offered with Secure Boot on or with a hybrid MBR; a
-  BitLocker or TPM setup may ask for its recovery key once after the boot list
-  changes; the 3-second menu wait is left out of the boot-time figure the
-  install test reports (it is waiting for a person, and is reported on its
-  own); only tried on virtual disks.
-- Wi-Fi and Bluetooth firmware is in the image: Intel (both radios), Realtek,
-  MediaTek, Atheros and Broadcom, plus Intel graphics firmware and CPU
-  microcode, from Debian's non-free-firmware section.
-- The licence: LICENSE (GPL-3.0-or-later), licence fields on every crate, and
-  the licences of the Rust crates the programs are built from in
-  /usr/share/doc/sengi-os.
-- The notification centre groups the history by app, with a count and a Clear
-  button for each group, says "2 min ago" instead of a clock time, and keeps
-  the last 50 across a restart in a private file in ~/.local/state/sengi-os.
-- Drag a pinned tile in the dock left or right to reorder it, or up and out
-  of the dock to remove it. The order is saved to dock.toml.
-- Right-click an app in the launcher for Open, and Keep in Dock or Remove from
-  Dock. The dock picks up the change within a couple of seconds.
-- sengi-compositor offers data control (ext-data-control and wlr-data-control,
-  not to sandboxed programs), so wl-copy, wl-paste, clipboard managers and
-  sengi-shot can set and read the clipboard without a window. `sengi-shot
-  --clipboard` now does it natively: it takes the clipboard, goes on in the
-  background to hand over the picture, and the shortcut returns at once.
-- Clipboard history (sengi-compositor, off by default): Settings, Keyboard,
-  Privacy turns on a memory-only list of the last 20 texts you copied. Super+V
-  shows it, Up and Down or the pointer choose, Return or a click puts the text
-  back on the clipboard (nothing is typed for you), Delete forgets one entry,
-  Clear history forgets all. Texts over 100 KiB and anything a password
-  manager marks are never kept; it is emptied when the screen locks. Nothing
-  is written to disk.
+- Files, a small file manager: places and removable drives on the left, icon
+  toolbar, right-click menus, drag and drop, natural sorting, automatic
+  refresh and a Trash. It changes things only in your home folder and on
+  drives you open (USB sticks, SD cards and external disks, mounted with a
+  click through udisks2, with Eject, copy progress and Cancel).
+- A desktop: the folders and files of ~/Desktop as icons, with a right-click
+  menu for New Folder, New File, Open Terminal Here and Settings.
+- Text Editor and Image Viewer, and double-click to open (sengi-open).
+- Calculator, a calendar that opens from the clock, and screenshots of the
+  screen, a window or a dragged area, with a timer and clipboard copy.
+- The Store: category grid and featured apps with their icons, search, real
+  install progress, an Open button, and a plain offline notice that retries.
+- Settings pages for Wallpaper, Printers, Updates and Accessibility (text
+  size, reduce motion, cursor size), display scaling and arrangement, night
+  light, touchpad options and gestures, and idle and lid choices under Power.
+- Printing is installed from Settings, Printers when you first need it.
+- A welcome wizard on the first login of an installed system.
+- Dock pinning, drag to reorder, and right-click menus in the dock and the
+  launcher. The launcher shows all apps as a grid.
+- Notification history grouped by app, kept across restarts.
+- Volume and brightness indicator, laptop brightness keys, dimming and screen
+  off when idle, suspend on lid close with the screen locked first.
+- Window shadows, snap hints, a keyboard shortcut sheet (Super+/) and an
+  optional clipboard history (Super+V, off by default).
+- Wi-Fi and Bluetooth firmware for Intel, Realtek, MediaTek, Atheros and
+  Broadcom, with Intel graphics firmware and CPU microcode.
+- Installing beside another system on a UEFI computer with free space.
+- A live boot entry without the NVIDIA driver (press N in the boot menu), and
+  a journal line if the compositor ever stalls.
+- The GPL-3.0-or-later licence and third-party notices.
 
 ### Changed
 
-- Window shadows are much fainter, narrower and sit closer to the window.
-- Text Editor: redesigned with an icon toolbar and tooltips, the file name in
-  the middle, text edge to edge, optional line numbers, a find bar, a fuller
-  status line, Open and Save As dialogs, Save in the unsaved-changes question
-  and Ctrl+Y. Selecting by dragging works, tab-indented files keep their tabs,
-  CRLF files stay CRLF, and files over 512 KB open for reading only.
-- The accent colour is green (#2f9e6b), not orange.
-- Files: the toolbar is flat icon buttons with names on hover (Back, Forward,
-  Up, New Folder, New File, show hidden files; Restore and Empty Trash in the
-  Trash) instead of bordered text buttons and the switch at the bottom, the
-  list has column headings and roomier rows, the sidebar's rows are one height
-  and the status line is quieter. A right-click on any bare part of the folder
-  side, including under the last row of a long folder, offers New Folder, New
-  File and Paste; a right-click moves an open menu; and clicking elsewhere
-  while naming something keeps the name instead of leaving the clicks dead. On
-  the desktop an icon's menu acts on that icon even when a name being typed
-  re-orders the icons.
-- The Installer and Settings app icons are Phosphor Bold glyphs, like the
-  Store's.
+- The accent colour is green and every icon of our own is Phosphor Bold.
+- Sengi OS 1.0 is dark only. Light and high contrast themes are not offered yet.
+- Every window gets the Sengi OS title bar, also apps that draw their own.
 
 ### Fixed
 
-- Windows' rounded bottom corners showed dark specks over a wallpaper or
-  another window. What is behind them shows there now.
-- The desktop's right-click menus opened behind any window in their way. They
-  now show above every window, and a press elsewhere or Escape closes them.
-- The whole desktop froze, pointer and all, when a window was minimised with
-  its yellow button while another window was open. The compositor took a
-  lock it already held while handing the keyboard to the next window. The
-  same happened when a click outside closed a program's menu, and when the
-  screen locked with such a menu open.
-- Right click on a clickpad: pressing the bottom right corner is a right
-  click again. The default of `touchpad.click-method` is now `areas`; a
-  two-finger tap is a right click as before, and a choice made in Settings
-  is kept.
-- Settings > About: rows of facts are placed by hand so a value cannot land
-  beside the wrong label, the live system's disk line says it is held in
-  memory, and a test guards the layout.
-- Windows never appeared on small screens such as 800x600: a window asked to
-  shrink never got the frame callback it waits for.
-- App icons that draw nothing, such as xterm's small icon, no longer leave a
-  blank tile in the dock: the program's name is tried next, then a letter.
-- The dock's search button is a dark tile like the others, not a permanent
-  orange one.
-- The installed system's boot menu says "Sengi OS", not "Sengi OS GNU/Linux".
-- The time zone list has Kigali, and every other country's own city.
-- What a program started from the dock or the launcher prints goes to the
-  journal, so one that fails to start leaves a trace (`journalctl -t name`).
-- Polish pass: the sections of the Display, Sound and installer Disk pages are
-  spaced like the other pages, the Store list keeps a readable width on a wide
-  screen, and the launcher's letter tiles match the dock's and the Store's.
+- The whole desktop froze when a window was minimised while another was open,
+  when a click outside closed a program's menu, and when the screen locked
+  with such a menu open.
+- Pressing the bottom right corner of a clickpad is a right click again.
+- Windows now appear on small screens such as 800x600.
+- Dark specks in the bottom corners of windows, and desktop menus that opened
+  behind windows.
+- The About page layout, blank dock icons and the boot menu label.
+
+### Not tested on real hardware
+
+Automated and virtual machine tests cover these, a real computer does not yet:
+
+- the freeze fix, on the laptop where the freeze was seen
+- installing beside Windows on a real disk (a stand-in was used)
+- suspend and lid close, night light, touchpad options and gestures
+- USB drives, printers and real Flatpak install progress
 
 ### Known limits
 
-- Flatpak runtimes are large and the live USB keeps changes in RAM: install
-  Sengi OS to the disk before installing big apps.
+- Flatpak runtimes are large and the live USB keeps changes in memory:
+  install Sengi OS to the disk before installing big apps.
 - Secure Boot has to be off.
-- The Store opens a second window if started twice.
-- Dual boot has been tested with a stand-in for Windows, not a real Windows
-  disk, and only on UEFI.
+- Chromium and Firefox may show their own title bar inside ours.
+- Sticky keys, slow keys and an on-screen keyboard are not available.
+- There is no screen recorder in the base system; the Store offers two.
 
 ## 0.8.0
 

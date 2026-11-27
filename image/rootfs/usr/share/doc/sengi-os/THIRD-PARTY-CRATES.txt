@@ -6388,25 +6388,25 @@ GNU General Public License v3.0 or later
 ------------------------------------------------------------------------
 
 Used by:
- - sengi-apps 0.8.0 <https://github.com/itsallan/Sengi-Os>
- - sengi-bar 0.8.0 <https://github.com/itsallan/Sengi-Os>
- - sengi-clock 0.8.0 <https://github.com/itsallan/Sengi-Os>
- - sengi-config 0.8.0 <https://github.com/itsallan/Sengi-Os>
- - sengi-dock 0.8.0 <https://github.com/itsallan/Sengi-Os>
- - sengi-focus 0.8.0 <https://github.com/itsallan/Sengi-Os>
- - sengi-greeter 0.8.0 <https://github.com/itsallan/Sengi-Os>
- - sengi-install 0.8.0 <https://github.com/itsallan/Sengi-Os>
- - sengi-installer 0.8.0 <https://github.com/itsallan/Sengi-Os>
- - sengi-launcher 0.8.0 <https://github.com/itsallan/Sengi-Os>
- - sengi-layer 0.8.0 <https://github.com/itsallan/Sengi-Os>
- - sengi-lock 0.8.0 <https://github.com/itsallan/Sengi-Os>
- - sengi-notify 0.8.0 <https://github.com/itsallan/Sengi-Os>
- - sengi-quick 0.8.0 <https://github.com/itsallan/Sengi-Os>
- - sengi-settings 0.8.0 <https://github.com/itsallan/Sengi-Os>
- - sengi-system 0.8.0 <https://github.com/itsallan/Sengi-Os>
- - sengi-text 0.8.0 <https://github.com/itsallan/Sengi-Os>
- - sengi-tokens 0.8.0 <https://github.com/itsallan/Sengi-Os>
- - sengi-ui 0.8.0 <https://github.com/itsallan/Sengi-Os>
+ - sengi-apps 1.0.0 <https://github.com/itsallan/Sengi-Os>
+ - sengi-bar 1.0.0 <https://github.com/itsallan/Sengi-Os>
+ - sengi-clock 1.0.0 <https://github.com/itsallan/Sengi-Os>
+ - sengi-config 1.0.0 <https://github.com/itsallan/Sengi-Os>
+ - sengi-dock 1.0.0 <https://github.com/itsallan/Sengi-Os>
+ - sengi-focus 1.0.0 <https://github.com/itsallan/Sengi-Os>
+ - sengi-greeter 1.0.0 <https://github.com/itsallan/Sengi-Os>
+ - sengi-install 1.0.0 <https://github.com/itsallan/Sengi-Os>
+ - sengi-installer 1.0.0 <https://github.com/itsallan/Sengi-Os>
+ - sengi-launcher 1.0.0 <https://github.com/itsallan/Sengi-Os>
+ - sengi-layer 1.0.0 <https://github.com/itsallan/Sengi-Os>
+ - sengi-lock 1.0.0 <https://github.com/itsallan/Sengi-Os>
+ - sengi-notify 1.0.0 <https://github.com/itsallan/Sengi-Os>
+ - sengi-quick 1.0.0 <https://github.com/itsallan/Sengi-Os>
+ - sengi-settings 1.0.0 <https://github.com/itsallan/Sengi-Os>
+ - sengi-system 1.0.0 <https://github.com/itsallan/Sengi-Os>
+ - sengi-text 1.0.0 <https://github.com/itsallan/Sengi-Os>
+ - sengi-tokens 1.0.0 <https://github.com/itsallan/Sengi-Os>
+ - sengi-ui 1.0.0 <https://github.com/itsallan/Sengi-Os>
 
 GNU GENERAL PUBLIC LICENSE
 Version 3, 29 June 2007
@@ -11421,9 +11421,9 @@ GNU General Public License v3.0 or later
 ------------------------------------------------------------------------
 
 Used by:
- - sengi-compositor 0.8.0
- - sengi-config 0.8.0 <https://github.com/itsallan/Sengi-Os>
- - sengi-tokens 0.8.0 <https://github.com/itsallan/Sengi-Os>
+ - sengi-compositor 1.0.0
+ - sengi-config 1.0.0 <https://github.com/itsallan/Sengi-Os>
+ - sengi-tokens 1.0.0 <https://github.com/itsallan/Sengi-Os>
 
 GNU GENERAL PUBLIC LICENSE
 Version 3, 29 June 2007

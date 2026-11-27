@@ -4,7 +4,7 @@ members = ["crates/sengi-apps", "crates/sengi-bar", "crates/sengi-brightness", "
 exclude = ["crates/sengi-compositor"]
 
 [workspace.package]
-version = "0.8.0"
+version = "1.0.0"
 edition = "2021"
 repository = "https://github.com/itsallan/Sengi-Os"
 license = "GPL-3.0-or-later"

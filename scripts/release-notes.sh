@@ -62,6 +62,7 @@ cat <<NOTES
 
 Check the download with \`sha256sum -c sengi-os-$version-amd64.iso.sha256\`,
 flash the ISO to a USB stick and boot it. The live user is \`live\` with
-password \`live\`. To install, open Install Sengi OS from the dock: it
-erases one whole disk, which it shows you before it does.
+password \`live\`. To install, open Install Sengi OS from the dock. It
+erases one whole disk, which it shows you before it does, or on a UEFI
+computer it installs beside another system into free space.
 NOTES

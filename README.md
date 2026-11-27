@@ -90,7 +90,7 @@ Boot the ISO in QEMU:
 
     qemu-system-x86_64 -enable-kvm -cpu host -smp 2 -m 4G \
       -device virtio-vga -display gtk \
-      -drive file=out/sengi-os-0.8.0-amd64.iso,format=raw,if=virtio,readonly=on
+      -drive file=out/sengi-os-1.0.0-amd64.iso,format=raw,if=virtio,readonly=on
 
 Or flash it to a USB stick and boot from that. The live session logs in on its
 own; the user is `live` and the password is `live`. To see the login screen,
@@ -198,18 +198,18 @@ the ISO:
     qemu-img create -f qcow2 /tmp/sengi-disk.qcow2 16G
     qemu-system-x86_64 -enable-kvm -cpu host -smp 2 -m 4G \
       -device virtio-vga -display gtk \
-      -drive file=out/sengi-os-0.8.0-amd64.iso,format=raw,if=virtio,readonly=on \
+      -drive file=out/sengi-os-1.0.0-amd64.iso,format=raw,if=virtio,readonly=on \
       -drive file=/tmp/sengi-disk.qcow2,format=qcow2,if=virtio
 
 ## Testing
 
-    scripts/boot-test.sh out/sengi-os-0.8.0-amd64.iso test-output
+    scripts/boot-test.sh out/sengi-os-1.0.0-amd64.iso test-output
 
 This boots the ISO headless, saves screenshots, and records idle RAM and boot
 time against the budgets. It also opens Settings, locks and unlocks the
 screen, and logs out and back in through the login screen.
 
-    scripts/install-test.sh out/sengi-os-0.8.0-amd64.iso test-output/install
+    scripts/install-test.sh out/sengi-os-1.0.0-amd64.iso test-output/install
 
 This installs onto a blank disk image through the installer's window, then
 starts that disk alone, logs in with the password it chose, and checks that

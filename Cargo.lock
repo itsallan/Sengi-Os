@@ -3514,7 +3514,7 @@ checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
 name = "sengi-apps"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "libc",
  "png",
@@ -3524,7 +3524,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-bar"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "async-io",
  "chrono",
@@ -3544,14 +3544,14 @@ dependencies = [
 
 [[package]]
 name = "sengi-brightness"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "sengi-system",
 ]
 
 [[package]]
 name = "sengi-calc"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "sengi-config",
  "sengi-shots",
@@ -3561,7 +3561,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-calendar"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "sengi-clock",
@@ -3574,7 +3574,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-clock"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "libc",
@@ -3584,11 +3584,11 @@ dependencies = [
 
 [[package]]
 name = "sengi-config"
-version = "0.8.0"
+version = "1.0.0"
 
 [[package]]
 name = "sengi-desktop"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "libc",
  "png",
@@ -3602,7 +3602,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-dock"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "png",
  "sengi-apps",
@@ -3616,7 +3616,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-edit"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "sengi-apps",
  "sengi-config",
@@ -3628,7 +3628,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-files"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "libc",
  "sengi-apps",
@@ -3641,7 +3641,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-focus"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "wayland-client",
  "wayland-protocols-wlr",
@@ -3649,7 +3649,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-greeter"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "libc",
@@ -3665,7 +3665,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-install"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "libc",
  "sengi-config",
@@ -3674,7 +3674,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-installer"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "sengi-config",
  "sengi-install",
@@ -3688,7 +3688,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-launcher"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "png",
  "sengi-apps",
@@ -3702,7 +3702,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-layer"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "slint",
  "smithay-client-toolkit",
@@ -3711,7 +3711,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-lock"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "libc",
@@ -3726,7 +3726,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-notify"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "sengi-config",
@@ -3742,7 +3742,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-open"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "sengi-apps",
  "sengi-system",
@@ -3750,7 +3750,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-osd"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "png",
  "sengi-config",
@@ -3763,7 +3763,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-print"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "libc",
  "sengi-text",
@@ -3772,7 +3772,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-quick"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "sengi-config",
  "sengi-layer",
@@ -3784,7 +3784,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-settings"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "libc",
  "png",
@@ -3801,7 +3801,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-shot"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "libc",
  "png",
@@ -3812,7 +3812,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-shots"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "png",
  "slint",
@@ -3821,7 +3821,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-snip"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "sengi-config",
  "sengi-layer",
@@ -3832,7 +3832,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-store"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "libc",
  "sengi-apps",
@@ -3844,7 +3844,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-system"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "libc",
  "sengi-text",
@@ -3853,15 +3853,15 @@ dependencies = [
 
 [[package]]
 name = "sengi-text"
-version = "0.8.0"
+version = "1.0.0"
 
 [[package]]
 name = "sengi-tokens"
-version = "0.8.0"
+version = "1.0.0"
 
 [[package]]
 name = "sengi-ui"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "slint",
  "slint-build",
@@ -3869,7 +3869,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-update"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "libc",
  "sengi-text",
@@ -3877,7 +3877,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-view"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "png",
  "sengi-config",
@@ -3891,7 +3891,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-wallpapers"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "png",
  "sengi-tokens",
@@ -3899,7 +3899,7 @@ dependencies = [
 
 [[package]]
 name = "sengi-welcome"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "sengi-apps",
  "sengi-config",
