@@ -50,4 +50,5 @@ before or after; the boot test fails if the live image has it running.
 `cargo test -p sengi-welcome`: the step model, the marker rule, the commands, and
 the real window driven without a display (`tests/window.rs`). With
 `SENGI_RENDER_DIR=dir` it writes a PNG of every step at 888x600 and 720x480;
-`SENGI_THEME=high-contrast` makes the high contrast ones (names end in `-hc`).
+`SENGI_THEME=light` or `high-contrast` draws the palettes that are not offered
+yet (names end in `-light` and `-hc`).

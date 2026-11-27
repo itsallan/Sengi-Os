@@ -460,7 +460,13 @@ mod tests {
             "[appearance]\ntheme = \"high-contrast\"\ntext-size = \"extra-large\"\nreduce-motion = true\ncursor-size = \"large\"\n",
         )
         .appearance;
-        assert_eq!(chosen.palette(), Palette::HighContrast);
+        // Dark while high contrast is not offered.
+        let palette = if sengi_config::HIGH_CONTRAST_ENABLED {
+            Palette::HighContrast
+        } else {
+            Palette::Dark
+        };
+        assert_eq!(chosen.palette(), palette);
         assert!(!chosen.light);
         assert_eq!(chosen.text_percent, 140);
         assert!(chosen.reduce_motion);

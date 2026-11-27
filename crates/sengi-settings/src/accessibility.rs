@@ -1,7 +1,8 @@
-//! The Accessibility page: text size, high contrast, reduced motion and
-//! the size of the pointer. The settings are `appearance.text-size`,
-//! `appearance.theme` (high contrast is one of its three values),
-//! `appearance.reduce-motion` and `appearance.cursor-size`.
+//! The Accessibility page: text size, reduced motion and the size of the
+//! pointer. The settings are `appearance.text-size`,
+//! `appearance.reduce-motion` and `appearance.cursor-size`. A High
+//! contrast switch, which sets `appearance.theme`, is shown only while
+//! `sengi_config::HIGH_CONTRAST_ENABLED` is on.
 //!
 //! This window follows a change at once; the bar, the dock, the desktop
 //! and the notifications are started again to read it, as for the theme
@@ -83,7 +84,11 @@ impl AccessibilityPage {
                 }
             }
         });
+        data.set_offer_high_contrast(sengi_config::HIGH_CONTRAST_ENABLED);
         data.on_set_high_contrast(move |on| {
+            if !sengi_config::HIGH_CONTRAST_ENABLED {
+                return;
+            }
             if let Some(app) = weak.upgrade() {
                 let theme =
                     theme_after_switch(&app.settings.borrow().text("appearance", "theme"), on)

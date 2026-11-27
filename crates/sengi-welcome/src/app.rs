@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use sengi_config::settings::{Layout, THEME_HIGH_CONTRAST, THEME_LIGHT};
-use sengi_config::LIGHT_THEME_ENABLED;
+use sengi_config::{HIGH_CONTRAST_ENABLED, LIGHT_THEME_ENABLED};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use crate::marker;
@@ -84,9 +84,9 @@ pub fn attach(window: &WelcomeWindow, start: Start) -> Rc<App> {
         state: RefCell::new(state),
         timer: slint::Timer::default(),
     });
-    window
-        .global::<Welcome>()
-        .set_offer_light(LIGHT_THEME_ENABLED);
+    let welcome = window.global::<Welcome>();
+    welcome.set_offer_light(LIGHT_THEME_ENABLED);
+    welcome.set_offer_high_contrast(HIGH_CONTRAST_ENABLED);
     wire(window, &app);
     app.show();
     app
@@ -209,7 +209,9 @@ impl App {
     }
 
     fn choose_theme(&self, name: &str) {
-        if name == THEME_LIGHT && !LIGHT_THEME_ENABLED {
+        if (name == THEME_LIGHT && !LIGHT_THEME_ENABLED)
+            || (name == THEME_HIGH_CONTRAST && !HIGH_CONTRAST_ENABLED)
+        {
             return;
         }
         if let Some(window) = self.window.upgrade() {

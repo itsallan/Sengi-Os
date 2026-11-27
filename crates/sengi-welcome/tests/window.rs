@@ -177,15 +177,15 @@ fn the_choices_are_run_as_settings_changes() {
     assert_eq!(app.step(), Step::Look);
     assert!(welcome.get_can_back());
 
-    // The theme applies in this window at once and is asked of Settings.
+    // Only the dark theme is offered: asking for another does nothing,
+    // and the dark one applies at once and is asked of Settings.
     assert!(!welcome.get_offer_light());
+    assert!(!welcome.get_offer_high_contrast());
     welcome.invoke_choose_theme("high-contrast".into());
-    assert!(w.global::<ThemeSwitch>().get_high_contrast());
-    welcome.invoke_choose_theme("dark".into());
     assert!(!w.global::<ThemeSwitch>().get_high_contrast());
-    // The light theme is not offered: asking for it does nothing.
     welcome.invoke_choose_theme("light".into());
     assert!(!w.global::<ThemeSwitch>().get_light());
+    welcome.invoke_choose_theme("dark".into());
 
     // The plain colour and the pictures, in order.
     assert_eq!(welcome.get_wallpapers().row_count(), 7);
@@ -196,17 +196,11 @@ fn the_choices_are_run_as_settings_changes() {
         let changes = recorder.changes.borrow();
         assert_eq!(
             changes[0],
-            [
-                "sengi-settings",
-                "--set",
-                "appearance.theme",
-                "high-contrast"
-            ]
+            ["sengi-settings", "--set", "appearance.theme", "dark"]
         );
-        assert_eq!(changes[1][3], "dark");
-        assert_eq!(changes[2][2], "appearance.wallpaper");
-        assert!(changes[2][3].ends_with("/pictures/02-dusk.png"));
-        assert_eq!(changes[3][3], "solid");
+        assert_eq!(changes[1][2], "appearance.wallpaper");
+        assert!(changes[1][3].ends_with("/pictures/02-dusk.png"));
+        assert_eq!(changes[2][3], "solid");
     }
 
     // Network: Wi-Fi is up, and the button opens Settings on its page.

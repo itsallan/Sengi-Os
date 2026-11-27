@@ -7,10 +7,19 @@ and the measured idle RAM and boot time.
 
 ### Changed
 
-- The light theme is not offered yet. Settings, Appearance and the Welcome
-  wizard offer Dark and High contrast, and a saved
-  `appearance.theme = "light"` shows as dark. The light palette and its tests
-  stay in the source behind `LIGHT_THEME_ENABLED` in sengi-config.
+- The light and high contrast themes are not offered yet. Sengi OS is dark:
+  the theme picker is gone from Settings, Appearance and from the Welcome
+  wizard (its second step is now the wallpaper), Settings, Accessibility has
+  no High contrast switch, and a saved `appearance.theme` of `"light"` or
+  `"high-contrast"` shows as dark. Both palettes and their tests stay in the
+  source behind `LIGHT_THEME_ENABLED` and `HIGH_CONTRAST_ENABLED` in
+  sengi-config.
+- A visual polish pass: secondary actions (Scan, Search, Refresh, Clear all,
+  Skip setup and the like) are quiet buttons without a fill; the chosen page
+  in the Settings sidebar has an accent mark that hover does not; muted and
+  switched-off sliders are dimmed; the calculator's key columns are equal;
+  notification history shows its times at the left of each card; and the
+  quick settings Screenshot heading lines up with the rows above it.
 
 ### Added
 
@@ -49,16 +58,14 @@ and the measured idle RAM and boot time.
   changes the Debian release, refuses on a low battery or while another apt
   runs, says "Restart needed" when the system asks for it, and shows a count on
   the sidebar. The live system says updates are available after installing.
-- Settings, Accessibility: Text size (Small, Default, Large, Extra large), High
-  contrast, Reduce motion and Cursor size (Normal, Large, Extra large). Text
-  size scales every type size and the heights of rows, buttons, the bar and
-  title bars in all programs; high contrast is a third theme beside Dark and
-  Light (Settings, Appearance too) with white text on black at 7:1 or better
-  and 2 px lines; reduced motion turns every animation off; a larger cursor
-  applies to the compositor and to programs it starts afterwards. The
-  settings are `appearance.text-size`, `appearance.theme = "high-contrast"`,
-  `appearance.reduce-motion` and `appearance.cursor-size`. Sticky keys, slow
-  keys and an on-screen keyboard are not built yet.
+- Settings, Accessibility: Text size (Small, Default, Large, Extra large),
+  Reduce motion and Cursor size (Normal, Large, Extra large). Text size scales
+  every type size and the heights of rows, buttons, the bar and title bars in
+  all programs; reduced motion turns every animation off; a larger cursor
+  applies to the compositor and to programs it starts afterwards. The settings
+  are `appearance.text-size`, `appearance.reduce-motion` and
+  `appearance.cursor-size`. Sticky keys, slow keys and an on-screen keyboard
+  are not built yet.
 - Settings, Display: the displays drawn where they are, a Position choice for
   each (left of, right of, above, below or mirroring another), and a Main
   display, which is where the bar and the dock go. Positions and scales are
@@ -111,12 +118,12 @@ and the measured idle RAM and boot time.
   the same table the compositor binds the keys with. Settings, Keyboard has
   a Keyboard shortcuts button for it.
 
-- Themes: Settings, Appearance shows a preview of each (a light palette is
-  built too, but not offered yet), and a change applies at once: the bar, dock and desktop
-  restart in the new colours, window frames and menus are repainted, and
-  anything opened later starts in it. Saved as `appearance.theme`. The
-  palettes are in `tokens/sengi.toml` with their WCAG contrast numbers, which
-  the tests check (4.5 for text, 3 for parts of controls).
+- Themes: the groundwork for more than one, where a change applies at once:
+  the bar, dock and desktop restart in the new colours, window frames and
+  menus are repainted, and anything opened later starts in it. Saved as
+  `appearance.theme`. The palettes are in `tokens/sengi.toml` with their WCAG
+  contrast numbers, which the tests check (4.5 for text, 3 for parts of
+  controls).
 - Settings has a Wallpaper page: the plain colour, six flat wallpapers in the
   Sengi OS colours, or a PNG or JPEG of your own, by path or from ~/Pictures.
   It shows at once and is remembered; a missing or broken file falls back to

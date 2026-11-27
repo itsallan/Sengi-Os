@@ -1,5 +1,5 @@
-// The Accessibility page: text size, high contrast, reduced motion and the
-// size of the pointer.
+// The Accessibility page: text size, reduced motion and the size of the
+// pointer, and high contrast when it is offered.
 
 import { Tokens, SengiText, SengiToggle } from "components.slint";
 import { Page, PageColumn, Card, Divider, SettingRow, SectionLabel, Note, Gap, Segmented } from "../kit.slint";
@@ -7,6 +7,8 @@ import { Page, PageColumn, Card, Divider, SettingRow, SectionLabel, Note, Gap, S
 export global AccessibilityData {
     // Which of Small, Default, Large and Extra large is chosen, from 0.
     in property <int> text-size: 1;
+    // Set from sengi-config's HIGH_CONTRAST_ENABLED.
+    in property <bool> offer-high-contrast: false;
     in property <bool> high-contrast: false;
     in property <bool> reduce-motion: false;
     // Which of Normal, Large and Extra large, from 0.
@@ -49,24 +51,26 @@ export component AccessibilityPage inherits Page {
         Gap { }
 
         SectionLabel {
-            text: "Display";
+            text: AccessibilityData.offer-high-contrast ? "Display" : "Motion";
         }
 
         Card {
-            SettingRow {
-                title: "High contrast";
-                detail: "White text on black, thicker outlines and a brighter accent";
+            if AccessibilityData.offer-high-contrast: VerticalLayout {
+                SettingRow {
+                    title: "High contrast";
+                    detail: "White text on black, thicker outlines and a brighter accent";
 
-                VerticalLayout {
-                    alignment: center;
-                    SengiToggle {
-                        checked: AccessibilityData.high-contrast;
-                        toggled(on) => { AccessibilityData.set-high-contrast(on); }
+                    VerticalLayout {
+                        alignment: center;
+                        SengiToggle {
+                            checked: AccessibilityData.high-contrast;
+                            toggled(on) => { AccessibilityData.set-high-contrast(on); }
+                        }
                     }
                 }
-            }
 
-            Divider { }
+                Divider { }
+            }
 
             SettingRow {
                 title: "Reduce motion";

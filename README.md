@@ -11,22 +11,20 @@ Sengi OS is in early development. There is no stable release yet.
 - Under 10 seconds from power-on to desktop.
 - A familiar layout: top bar, centred dock, window buttons on the left,
   centred search launcher, quick settings and notifications at the top right.
-- Its own look, driven by one design tokens file, in a dark and a high
-  contrast theme (Settings, Appearance). A light palette is in the source but
-  not offered yet. The palettes and their measured contrast ratios are in
-  `tokens/sengi.toml`; the login screen follows the system-wide default, `appearance.theme` in `/etc/xdg/sengi-os/settings.toml`.
+- Its own look, driven by one design tokens file. There is one theme, dark;
+  light and high contrast palettes are in the source but not offered yet. The
+  palettes and their measured contrast ratios are in `tokens/sengi.toml`.
 - Accessibility (Settings, Accessibility): text size (Small, Default, Large,
   Extra large: 90, 100, 120 and 140 percent of every type size, and of the
   heights that hold a line of text, in every program and in the title bars),
-  a high contrast theme (white on black, 7:1 or better for text, 2 px lines,
-  a brighter accent), reduced motion (every animation takes no time) and a
-  larger pointer (36 or 48 px, for the compositor and for programs started
-  from it). Sticky keys, slow keys and an on-screen keyboard are not built:
-  they need a layer of the compositor between the keyboard and every program
-  that has to be tested with real people before it is trusted, and an on-screen
-  keyboard also needs a text-input protocol the compositor does not have yet.
-  Icons keep their size at every text size. The settings apply to
-  sengi-compositor; the labwc fallback does not follow them.
+  reduced motion (every animation takes no time) and a larger pointer (36 or
+  48 px, for the compositor and for programs started from it). Sticky keys,
+  slow keys and an on-screen keyboard are not built: they need a layer of the
+  compositor between the keyboard and every program that has to be tested with
+  real people before it is trusted, and an on-screen keyboard also needs a
+  text-input protocol the compositor does not have yet. Icons keep their size
+  at every text size. The settings apply to sengi-compositor; the labwc
+  fallback does not follow them.
 
 Both budgets are measured on every release. A release that misses them does
 not ship.

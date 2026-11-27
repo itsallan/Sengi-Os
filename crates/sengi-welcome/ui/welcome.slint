@@ -40,8 +40,11 @@ export global Welcome {
     callback back();
     callback skip();
     callback choose-theme(string);
-    // Set from sengi-config's LIGHT_THEME_ENABLED.
+    // Set from sengi-config's LIGHT_THEME_ENABLED and
+    // HIGH_CONTRAST_ENABLED. With neither, the step is the wallpaper alone.
     in property <bool> offer-light;
+    in property <bool> offer-high-contrast;
+    out property <bool> themes: self.offer-light || self.offer-high-contrast;
     callback choose-wallpaper(int);
     callback filter-layouts(string);
     callback choose-layout(string);
@@ -311,11 +314,12 @@ export component WelcomeWindow inherits Window {
                         spacing: Tokens.space-lg;
 
                         Heading {
-                            title: "Choose how it looks";
-                            lead: "The theme, and the picture behind your windows.";
+                            title: Welcome.themes ? "Choose how it looks" : "Pick a wallpaper";
+                            lead: Welcome.themes ? "The theme, and the picture behind your windows."
+                                : "The picture behind your windows.";
                         }
 
-                        HorizontalLayout {
+                        if Welcome.themes: HorizontalLayout {
                             spacing: Tokens.space-md;
 
                             ThemeCard {
@@ -344,7 +348,7 @@ export component WelcomeWindow inherits Window {
                                 clicked => { Welcome.choose-theme("light"); }
                             }
 
-                            ThemeCard {
+                            if Welcome.offer-high-contrast: ThemeCard {
                                 horizontal-stretch: 1;
                                 text: "High contrast";
                                 c-bg: Tokens.hc-bg;
@@ -358,7 +362,7 @@ export component WelcomeWindow inherits Window {
                             }
                         }
 
-                        SengiLabel {
+                        if Welcome.themes: SengiLabel {
                             text: "Wallpaper";
                         }
 

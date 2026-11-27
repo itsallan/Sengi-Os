@@ -23,7 +23,23 @@ pub const THEME_LIGHT: &str = "light";
 /// `appearance.theme = "light"` reads as dark and no window offers it.
 /// The palette and its tests stay. Set this to `true` to bring it back.
 pub const LIGHT_THEME_ENABLED: bool = false;
+
+/// The themes that can be chosen, quoted, for a complaint about any other.
+fn offered_themes() -> String {
+    let mut themes = vec!["\"dark\""];
+    if LIGHT_THEME_ENABLED {
+        themes.push("\"light\"");
+    }
+    if HIGH_CONTRAST_ENABLED {
+        themes.push("\"high-contrast\"");
+    }
+    themes.join(" or ")
+}
 pub const THEME_HIGH_CONTRAST: &str = "high-contrast";
+/// THE HIGH CONTRAST SWITCH. As with the light theme below: not offered
+/// yet, a saved `appearance.theme = "high-contrast"` reads as dark, and the
+/// palette and its tests stay. Set this to `true` to bring it back.
+pub const HIGH_CONTRAST_ENABLED: bool = false;
 /// The values of `appearance.text-size` with the percent each scales the
 /// type by. The same steps are in `[text-scale]` of the tokens.
 pub const TEXT_SIZES: [(&str, u32); 4] = [
@@ -165,10 +181,7 @@ pub fn check(section: &str, key: &str, value: &Value) -> Result<Value, String> {
             {
                 Ok(value.clone())
             }
-            _ if LIGHT_THEME_ENABLED => {
-                Err("must be \"dark\", \"light\" or \"high-contrast\"".to_string())
-            }
-            _ => Err("must be \"dark\" or \"high-contrast\"".to_string()),
+            _ => Err(format!("must be {}", offered_themes())),
         },
         ("appearance", "text-size") => match value {
             Value::Text(name) if TEXT_SIZES.iter().any(|(known, _)| known == name) => {
@@ -367,9 +380,9 @@ impl Settings {
             .or_else(|| valid(&self.system))
             .unwrap_or(default);
         // The file keeps the word, so it counts again once the theme does.
-        let hidden = !LIGHT_THEME_ENABLED
-            && (section, key) == ("appearance", "theme")
-            && value == Value::text(THEME_LIGHT);
+        let hidden = (section, key) == ("appearance", "theme")
+            && ((!LIGHT_THEME_ENABLED && value == Value::text(THEME_LIGHT))
+                || (!HIGH_CONTRAST_ENABLED && value == Value::text(THEME_HIGH_CONTRAST)));
         Some(if hidden {
             Value::text(THEME_DARK)
         } else {
@@ -403,7 +416,8 @@ impl Settings {
         self.text("appearance", "theme") == THEME_LIGHT
     }
 
-    /// Whether the high contrast theme is chosen. It is a palette of its
+    /// Whether the high contrast theme is chosen, never while
+    /// [`HIGH_CONTRAST_ENABLED`] is off. It is a palette of its
     /// own: `light` is false then.
     pub fn high_contrast(&self) -> bool {
         self.text("appearance", "theme") == THEME_HIGH_CONTRAST
@@ -676,23 +690,25 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_light_theme_reads_as_dark_while_it_is_not_offered() {
-        let saved = settings("", "[appearance]\ntheme = \"light\"\n");
-        let shown = if LIGHT_THEME_ENABLED {
-            THEME_LIGHT
-        } else {
-            THEME_DARK
-        };
-        assert_eq!(saved.text("appearance", "theme"), shown);
-        assert!(!saved.high_contrast());
-        // The word is still accepted, so an old file draws no complaint.
-        assert!(check("appearance", "theme", &Value::text("light")).is_ok());
+    fn a_saved_theme_that_is_not_offered_reads_as_dark() {
+        for (word, offered) in [
+            (THEME_LIGHT, LIGHT_THEME_ENABLED),
+            (THEME_HIGH_CONTRAST, HIGH_CONTRAST_ENABLED),
+        ] {
+            let user = format!("[appearance]\ntheme = \"{word}\"\n");
+            let shown = if offered { word } else { THEME_DARK };
+            assert_eq!(settings("", &user).text("appearance", "theme"), shown);
+            // The system's file is read the same way.
+            assert_eq!(settings(&user, "").text("appearance", "theme"), shown);
+            // The word is still accepted, so an old file draws no complaint.
+            assert!(check("appearance", "theme", &Value::text(word)).is_ok());
+        }
     }
 
     #[test]
     fn high_contrast_is_a_palette_of_its_own() {
         let hc = settings("", "[appearance]\ntheme = \"high-contrast\"\n");
-        assert!(hc.high_contrast());
+        assert_eq!(hc.high_contrast(), HIGH_CONTRAST_ENABLED);
         assert!(!hc.light());
         assert!(!settings("", "").high_contrast());
         assert!(!settings("", "[appearance]\ntheme = \"light\"\n").high_contrast());

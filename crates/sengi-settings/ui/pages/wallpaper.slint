@@ -40,8 +40,11 @@ export global WallpaperData {
     callback choose(string);
     // The name of the theme to use.
     callback choose-theme(string);
-    // Set from sengi-config's LIGHT_THEME_ENABLED.
+    // Set from sengi-config's LIGHT_THEME_ENABLED and
+    // HIGH_CONTRAST_ENABLED. With neither, there is only the dark theme and
+    // nothing to choose.
     in property <bool> offer-light;
+    in property <bool> offer-high-contrast;
 }
 
 // A thumbnail with its name under it. The one in use has a ring in the
@@ -220,60 +223,64 @@ export component WallpaperPage inherits Page {
     content-height: column.preferred-height;
 
     column := PageColumn {
-        SectionLabel {
-            text: "Theme";
+        if WallpaperData.offer-light || WallpaperData.offer-high-contrast: VerticalLayout {
+            spacing: Tokens.space-sm;
+
+            SectionLabel {
+                text: "Theme";
+            }
+
+            Rectangle {
+                preferred-height: root.tile-height;
+
+                ThemeTile {
+                    x: 0;
+                    width: root.tile-width;
+                    height: root.tile-height;
+                    title: "Dark";
+                    chosen: WallpaperData.theme == "dark";
+                    c-bg: Tokens.dark-bg;
+                    c-surface: Tokens.dark-surface;
+                    c-text: Tokens.dark-text;
+                    c-muted: Tokens.dark-text-muted;
+                    c-accent: Tokens.dark-accent;
+                    c-border: Tokens.dark-border;
+                    clicked => { WallpaperData.choose-theme("dark"); }
+                }
+
+                if WallpaperData.offer-light: ThemeTile {
+                    x: root.tile-width + root.gap;
+                    width: root.tile-width;
+                    height: root.tile-height;
+                    title: "Light";
+                    chosen: WallpaperData.theme == "light";
+                    c-bg: Tokens.light-bg;
+                    c-surface: Tokens.light-surface;
+                    c-text: Tokens.light-text;
+                    c-muted: Tokens.light-text-muted;
+                    c-accent: Tokens.light-accent;
+                    c-border: Tokens.light-border;
+                    clicked => { WallpaperData.choose-theme("light"); }
+                }
+
+                if WallpaperData.offer-high-contrast: ThemeTile {
+                    x: (root.tile-width + root.gap) * (WallpaperData.offer-light ? 2 : 1);
+                    width: root.tile-width;
+                    height: root.tile-height;
+                    title: "High contrast";
+                    chosen: WallpaperData.theme == "high-contrast";
+                    c-bg: Tokens.hc-bg;
+                    c-surface: Tokens.hc-surface;
+                    c-text: Tokens.hc-text;
+                    c-muted: Tokens.hc-text-muted;
+                    c-accent: Tokens.hc-accent;
+                    c-border: Tokens.hc-border;
+                    clicked => { WallpaperData.choose-theme("high-contrast"); }
+                }
+            }
+
+            Gap { }
         }
-
-        Rectangle {
-            preferred-height: root.tile-height;
-
-            ThemeTile {
-                x: 0;
-                width: root.tile-width;
-                height: root.tile-height;
-                title: "Dark";
-                chosen: WallpaperData.theme == "dark";
-                c-bg: Tokens.dark-bg;
-                c-surface: Tokens.dark-surface;
-                c-text: Tokens.dark-text;
-                c-muted: Tokens.dark-text-muted;
-                c-accent: Tokens.dark-accent;
-                c-border: Tokens.dark-border;
-                clicked => { WallpaperData.choose-theme("dark"); }
-            }
-
-            if WallpaperData.offer-light: ThemeTile {
-                x: root.tile-width + root.gap;
-                width: root.tile-width;
-                height: root.tile-height;
-                title: "Light";
-                chosen: WallpaperData.theme == "light";
-                c-bg: Tokens.light-bg;
-                c-surface: Tokens.light-surface;
-                c-text: Tokens.light-text;
-                c-muted: Tokens.light-text-muted;
-                c-accent: Tokens.light-accent;
-                c-border: Tokens.light-border;
-                clicked => { WallpaperData.choose-theme("light"); }
-            }
-
-            ThemeTile {
-                x: (root.tile-width + root.gap) * (WallpaperData.offer-light ? 2 : 1);
-                width: root.tile-width;
-                height: root.tile-height;
-                title: "High contrast";
-                chosen: WallpaperData.theme == "high-contrast";
-                c-bg: Tokens.hc-bg;
-                c-surface: Tokens.hc-surface;
-                c-text: Tokens.hc-text;
-                c-muted: Tokens.hc-text-muted;
-                c-accent: Tokens.hc-accent;
-                c-border: Tokens.hc-border;
-                clicked => { WallpaperData.choose-theme("high-contrast"); }
-            }
-        }
-
-        Gap { }
 
         SectionLabel {
             text: "Current wallpaper";

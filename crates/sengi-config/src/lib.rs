@@ -10,7 +10,7 @@
 pub mod settings;
 pub mod store;
 
-pub use settings::{Settings, LIGHT_THEME_ENABLED};
+pub use settings::{Settings, HIGH_CONTRAST_ENABLED, LIGHT_THEME_ENABLED};
 pub use store::{Dirs, Document, Value};
 
 /// How a program looks, read once as it starts.
@@ -47,9 +47,10 @@ pub fn appearance_of(
     Appearance {
         light: LIGHT_THEME_ENABLED
             && theme.map_or(settings.light(), |name| name == settings::THEME_LIGHT),
-        high_contrast: theme.map_or(settings.high_contrast(), |name| {
-            name == settings::THEME_HIGH_CONTRAST
-        }),
+        high_contrast: HIGH_CONTRAST_ENABLED
+            && theme.map_or(settings.high_contrast(), |name| {
+                name == settings::THEME_HIGH_CONTRAST
+            }),
         text_scale: percent as f32 / 100.0,
         reduce_motion: match reduce_motion {
             Some("1" | "true") => true,
@@ -84,7 +85,8 @@ pub fn theme_is_light() -> bool {
     appearance().light
 }
 
-/// Whether the high contrast theme is chosen. `light` is false then.
+/// Whether the high contrast theme is chosen (never while
+/// [`HIGH_CONTRAST_ENABLED`] is off). `light` is false then.
 pub fn theme_is_high_contrast() -> bool {
     appearance().high_contrast
 }
@@ -132,7 +134,8 @@ mod tests {
             "[appearance]\ntheme = \"high-contrast\"\ntext-size = \"extra-large\"\nreduce-motion = true\n",
         );
         let found = appearance_of(&chosen, None, None, None);
-        assert!(found.high_contrast && !found.light && found.reduce_motion);
+        assert_eq!(found.high_contrast, HIGH_CONTRAST_ENABLED);
+        assert!(!found.light && found.reduce_motion);
         assert_eq!(found.text_scale, 1.4);
         let plain = appearance_of(&settings(""), None, None, None);
         assert_eq!(
@@ -150,7 +153,8 @@ mod tests {
     fn the_environment_wins_and_a_word_nobody_knows_is_ignored() {
         let chosen = settings("[appearance]\ntheme = \"light\"\ntext-size = \"large\"\n");
         let found = appearance_of(&chosen, Some("high-contrast"), Some("small"), Some("1"));
-        assert!(found.high_contrast && !found.light && found.reduce_motion);
+        assert_eq!(found.high_contrast, HIGH_CONTRAST_ENABLED);
+        assert!(!found.light && found.reduce_motion);
         assert_eq!(found.text_scale, 0.9);
         let found = appearance_of(&chosen, Some("dark"), None, Some("0"));
         assert!(!found.light && !found.high_contrast);

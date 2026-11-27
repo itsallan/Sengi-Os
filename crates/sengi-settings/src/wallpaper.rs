@@ -521,6 +521,7 @@ impl WallpaperPage {
         let data = app.window.global::<WallpaperData>();
         let (weak_app, weak_page) = (Rc::downgrade(app), Rc::downgrade(&page));
         data.set_offer_light(sengi_config::LIGHT_THEME_ENABLED);
+        data.set_offer_high_contrast(sengi_config::HIGH_CONTRAST_ENABLED);
         data.on_choose(move |path| {
             if let (Some(app), Some(page)) = (weak_app.upgrade(), weak_page.upgrade()) {
                 page.choose(&app, path.as_str());
@@ -535,14 +536,15 @@ impl WallpaperPage {
         page
     }
 
-    /// Switch to the dark or high contrast theme, or the light one when it
+    /// Switch to the dark theme, or the light or high contrast one when it
     /// is offered. This window
     /// changes at once; the rest of the session follows when the setting
     /// has been saved.
     fn choose_theme(&self, app: &Rc<App>, name: &str) {
         let data = app.window.global::<WallpaperData>();
-        let offered = [THEME_DARK, THEME_HIGH_CONTRAST].contains(&name)
-            || (sengi_config::LIGHT_THEME_ENABLED && name == THEME_LIGHT);
+        let offered = name == THEME_DARK
+            || (sengi_config::LIGHT_THEME_ENABLED && name == THEME_LIGHT)
+            || (sengi_config::HIGH_CONTRAST_ENABLED && name == THEME_HIGH_CONTRAST);
         if !offered || data.get_theme() == name {
             return;
         }
