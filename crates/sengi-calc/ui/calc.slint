@@ -37,6 +37,8 @@ component PadKey inherits SengiButton {
     in property <string> send;
 
     focusable: false;
+    // The same for every key, so the columns are equal whatever the word.
+    preferred-width: Tokens.button;
     horizontal-stretch: 1;
     vertical-stretch: 1;
     clicked => {
@@ -196,57 +198,80 @@ export component CalcWindow inherits Window {
                 }
             }
 
-            GridLayout {
+            // Rows rather than a grid: every key starts from the same width
+            // and takes the same share, so the columns line up and are equal
+            // whatever is written on them.
+            VerticalLayout {
                 vertical-stretch: 3;
                 spacing: Tokens.space-sm;
 
-                Row {
+                HorizontalLayout {
+                    vertical-stretch: 1;
+                    spacing: Tokens.space-sm;
+
                     PadKey { text: "C"; send: "\u{1b}"; }
                     PadKey { text: "("; }
                     PadKey { text: ")"; }
                     PadKey { text: "Back"; send: "\u{8}"; }
                 }
 
-                Row {
+                HorizontalLayout {
+                    vertical-stretch: 1;
+                    spacing: Tokens.space-sm;
+
                     PadKey { text: "7"; }
                     PadKey { text: "8"; }
                     PadKey { text: "9"; }
                     PadKey { text: "\u{f7}"; }
                 }
 
-                Row {
+                HorizontalLayout {
+                    vertical-stretch: 1;
+                    spacing: Tokens.space-sm;
+
                     PadKey { text: "4"; }
                     PadKey { text: "5"; }
                     PadKey { text: "6"; }
                     PadKey { text: "\u{d7}"; }
                 }
 
-                Row {
+                HorizontalLayout {
+                    vertical-stretch: 1;
+                    spacing: Tokens.space-sm;
+
                     PadKey { text: "1"; }
                     PadKey { text: "2"; }
                     PadKey { text: "3"; }
                     PadKey { text: "\u{2212}"; }
                 }
 
-                Row {
+                HorizontalLayout {
+                    vertical-stretch: 1;
+                    spacing: Tokens.space-sm;
+
                     PadKey { text: "0"; }
                     PadKey { text: "."; }
                     PadKey { text: "%"; }
                     PadKey { text: "+"; }
                 }
 
-                Row {
+                HorizontalLayout {
+                    vertical-stretch: 1;
+                    spacing: Tokens.space-sm;
+
                     SengiButton {
                         text: "Copy";
                         focusable: false;
                         enabled: Pad.copy-text != "";
+                        preferred-width: Tokens.button;
                         horizontal-stretch: 1;
-                        vertical-stretch: 1;
                         clicked => { root.copy(); }
                     }
 
+                    // As wide as three keys and the gaps between them.
                     PadKey {
-                        colspan: 3;
+                        preferred-width: Tokens.button * 3 + Tokens.space-sm * 2;
+                        horizontal-stretch: 3;
                         text: "=";
                         primary: true;
                     }

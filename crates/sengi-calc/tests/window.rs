@@ -83,6 +83,11 @@ fn calculator_window() {
     }
     assert_eq!(pad.get_history().row_count(), 5);
     picture("calc-history.png");
+    for (width, height) in [(720, 480), (888, 600)] {
+        harness::resize(&harness::window(), width, height);
+        picture(&format!("calc-history-{width}x{height}.png"));
+    }
+    harness::resize(&harness::window(), 320, 480);
     pad.invoke_recall(0);
     assert_eq!(pad.get_expression(), "1.5");
 }
