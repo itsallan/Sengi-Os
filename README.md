@@ -8,13 +8,13 @@
 
 <p align="center">
   <a href="https://github.com/itsallan/Sengi-Os/releases/latest"><b>Download 1.0.0</b></a> ·
-  <a href="docs/media/sengi-os-1.0.mp4">Watch the video</a> ·
+  <a href="docs/media/sengi-os-1.0.mp4?raw=true">Video</a> ·
   <a href="docs/guide.md">Guide</a> ·
   <a href="CHANGELOG.md">Changelog</a>
 </p>
 
 <p align="center">
-  <a href="docs/media/sengi-os-1.0.mp4">
+  <a href="docs/media/sengi-os-1.0.mp4?raw=true">
     <img src="docs/media/video-poster.jpg" alt="Watch the Sengi OS video: 7.7 s boot, 236 MB of memory at idle" width="800">
   </a>
 </p>
