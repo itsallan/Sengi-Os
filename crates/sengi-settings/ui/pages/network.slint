@@ -73,6 +73,8 @@ export component NetworkPage inherits Page {
 
                             if NetworkData.saved: SengiButton {
                                 text: "Forget";
+                                quiet: true;
+                                danger: true;
                                 clicked => { NetworkData.forget-connected(); }
                             }
 
@@ -123,6 +125,7 @@ export component NetworkPage inherits Page {
 
                 SengiButton {
                     text: "Scan";
+                    quiet: true;
                     enabled: !NetworkData.scanning;
                     clicked => { NetworkData.scan(); }
                 }

@@ -77,6 +77,7 @@ export component PrintersPage inherits Page {
 
                         SengiButton {
                             text: "Refresh";
+                            quiet: true;
                             enabled: !PrintersData.loading && !PrintersData.busy;
                             clicked => { PrintersData.refresh(); }
                         }
@@ -219,6 +220,7 @@ export component PrintersPage inherits Page {
 
                 SengiButton {
                     text: "Close";
+                    quiet: true;
                     clicked => { PrintersData.close-add(); }
                 }
             }
@@ -274,6 +276,7 @@ export component PrintersPage inherits Page {
 
                         SengiButton {
                             text: "Remove";
+                            quiet: true;
                             danger: true;
                             enabled: !PrintersData.busy;
                             clicked => { PrintersData.remove(); }

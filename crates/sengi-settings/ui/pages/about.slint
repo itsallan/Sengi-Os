@@ -71,6 +71,7 @@ export component AboutPage inherits Page {
                     alignment: center;
                     SengiButton {
                         text: "Measure again";
+                        quiet: true;
                         clicked => { AboutData.refresh(); }
                     }
                 }

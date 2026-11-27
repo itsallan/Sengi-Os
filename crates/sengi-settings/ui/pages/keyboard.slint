@@ -45,6 +45,7 @@ export component KeyboardPage inherits Page {
 
             SengiButton {
                 text: "Add layout";
+                quiet: true;
                 enabled: KeyboardData.can-add;
                 clicked => { KeyboardData.add(); }
             }

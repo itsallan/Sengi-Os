@@ -73,6 +73,8 @@ export component UpdatesPage inherits Page {
 
                 SengiButton {
                     text: UpdatesData.checking ? "Checking\u{2026}" : "Check for updates";
+                    // Steps back while there is something to install.
+                    quiet: UpdatesData.can-update;
                     enabled: !UpdatesData.live && !UpdatesData.checking && !UpdatesData.working;
                     clicked => { UpdatesData.check(); }
                 }

@@ -142,8 +142,8 @@ export component Slider inherits Rectangle {
         width: Metrics.slider-knob / 2 + root.travel * root.fraction;
         height: Metrics.slider-track;
         border-radius: self.height / 2;
-        background: !root.enabled ? Tokens.color-border
-            : root.dim ? Tokens.color-text-muted : Tokens.color-accent;
+        background: !root.enabled || root.dim
+            ? Tokens.color-text-disabled : Tokens.color-accent;
         animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
     }
 
@@ -788,8 +788,10 @@ export component ItemList inherits Rectangle {
         y: index * Metrics.row;
         height: Metrics.row;
         border-radius: Tokens.radius;
-        border-width: scope.has-focus && root.current == index ? Tokens.focus-ring-width : 0;
-        border-color: Tokens.color-focus-ring;
+        border-width: scope.has-focus && root.current == index ? Tokens.focus-ring-width
+            : ThemeSwitch.high-contrast && self.lit && item.enabled ? Tokens.border-width : 0;
+        border-color: scope.has-focus && root.current == index
+            ? Tokens.color-focus-ring : Tokens.color-accent;
         background: self.lit && item.enabled ? Tokens.color-surface-hover : transparent;
         animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
 

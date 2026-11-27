@@ -93,6 +93,7 @@ export component BluetoothPage inherits Page {
 
                 SengiButton {
                     text: BluetoothData.searching ? "Stop" : "Search";
+                    quiet: true;
                     clicked => { BluetoothData.search(); }
                 }
             }
