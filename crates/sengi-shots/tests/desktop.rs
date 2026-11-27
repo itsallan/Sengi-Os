@@ -464,58 +464,198 @@ fn quicks() {
     }
 }
 
+/// The name, summary and glyph of the apps the pictures of the Store show,
+/// with a colour to stand in for the icon of those that have one.
+type Shown = (&'static str, &'static str, &'static str, Option<[u8; 3]>);
+
+const APPS: [Shown; 9] = [
+    (
+        "Firefox",
+        "Fast, Private & Safe Web Browser",
+        "globe",
+        Some([220, 100, 40]),
+    ),
+    (
+        "LibreOffice",
+        "The LibreOffice productivity suite",
+        "briefcase",
+        Some([60, 160, 90]),
+    ),
+    (
+        "VLC",
+        "VLC media player, the open-source multimedia player",
+        "play-circle",
+        Some([230, 140, 30]),
+    ),
+    (
+        "GNU Image Manipulation Program",
+        "High-end image creation and manipulation",
+        "palette",
+        Some([150, 120, 90]),
+    ),
+    (
+        "Thunderbird",
+        "A free and open source email, newsfeed, chat and calendaring client, with a summary far too long for two lines of any card",
+        "chat-circle",
+        Some([40, 100, 190]),
+    ),
+    (
+        "Bitwarden",
+        "A secure and free password manager for all of your devices",
+        "wrench",
+        Some([30, 80, 200]),
+    ),
+    ("Visual Studio Code", "Code editing. Redefined.", "code", None),
+    (
+        "OBS Studio",
+        "Live stream and record videos",
+        "video-camera",
+        Some([60, 60, 70]),
+    ),
+    (
+        "Obsidian",
+        "Markdown-based knowledge base",
+        "note-pencil",
+        Some([120, 80, 200]),
+    ),
+];
+
+const CATEGORIES: [(&str, &str); 9] = [
+    ("Browsers", "globe"),
+    ("Office", "briefcase"),
+    ("Media", "play-circle"),
+    ("Graphics", "palette"),
+    ("Communication", "chat-circle"),
+    ("Utilities", "wrench"),
+    ("Development", "code"),
+    ("Screen recording", "video-camera"),
+    ("Notes", "note-pencil"),
+];
+
+fn store_card(index: usize) -> store::Card {
+    let (name, summary, glyph, rgb) = APPS[index];
+    store::Card {
+        id: name.into(),
+        name: name.into(),
+        summary: summary.into(),
+        icon: rgb.map(|c| swatch(48, c)).unwrap_or_default(),
+        has_icon: rgb.is_some(),
+        glyph: glyph.into(),
+        letter: name[..1].into(),
+        percent: -1,
+        detail: "".into(),
+        state: store::RowState::Available,
+        unavailable: false,
+    }
+}
+
+fn store_tiles() -> Vec<store::Tile> {
+    CATEGORIES
+        .iter()
+        .map(|(name, icon)| store::Tile {
+            name: (*name).into(),
+            icon: (*icon).into(),
+        })
+        .collect()
+}
+
+/// The Store's pages at the sizes it is likely to have.
 fn stores() {
-    let row =
-        |name: &str, summary: &str, state: store::RowState, rgb: Option<[u8; 3]>| store::Row {
-            id: name.into(),
-            name: name.into(),
-            summary: summary.into(),
-            icon: rgb.map(|c| swatch(40, c)).unwrap_or_default(),
-            has_icon: rgb.is_some(),
-            letter: name.chars().next().unwrap().to_string().into(),
-            state,
-            percent: -1,
-            detail: "".into(),
-            heading: false,
-            unavailable: false,
-        };
     use store::RowState::*;
-    for variant in ["results", "empty", "error", "many"] {
-        for (width, height) in [(800u32, 600u32), (1024, 768), (1920, 1080)] {
+    use store::StorePage;
+    let variants = [
+        "start",
+        "keys",
+        "category",
+        "search",
+        "empty",
+        "installing",
+        "offline",
+        "loading",
+        "stale",
+    ];
+    for variant in variants {
+        for (width, height) in [(888u32, 600u32), (720, 480), (1280, 800)] {
             let w = store::themed(store::StoreWindow::new().unwrap());
             let g = w.global::<store::Store>();
+            let mut cards: Vec<store::Card> = (0..APPS.len()).map(store_card).collect();
             match variant {
-                "results" | "many" => {
-                    let mut rows = vec![
-                        row("Firefox", "Fast, private and safe web browser from Mozilla", Available, Some([200, 80, 60])),
-                        row("GIMP", "Create images and edit photographs with a very long summary that keeps on going past the end of the row", Installed, Some([60, 160, 90])),
-                        row("Inkscape", "Vector graphics", Installing, None),
-                        row("A rather long application name that will not fit on one row of the list", "Short", Failed, Some([70, 100, 200])),
-                        row("VLC", "", Available, None),
-                    ];
-                    rows[2].percent = 45;
-                    rows[2].detail = "Installing 2 of 4 \u{b7} 12.3 MB \u{b7} 4.1 MB/s".into();
-                    if variant == "many" {
-                        for n in 0..20 {
-                            rows.push(row(
-                                &format!("App {n}"),
-                                "Does something useful",
-                                Available,
-                                None,
-                            ));
-                        }
+                "start" | "keys" => {
+                    g.set_tiles(list(store_tiles()));
+                    cards[2].state = Installed;
+                }
+                "category" => {
+                    g.set_page(StorePage::Category);
+                    g.set_title("Graphics".into());
+                    cards = vec![store_card(3), store_card(6), store_card(7)];
+                    cards[1].state = Installed;
+                }
+                "search" => {
+                    g.set_page(StorePage::Search);
+                    g.set_title("Results for \u{201c}o\u{201d}".into());
+                    g.set_start_query("o".into());
+                    for card in &mut cards {
+                        card.glyph = "".into();
                     }
-                    g.set_rows(list(rows));
-                    g.set_message("Installing Inkscape…".into());
                 }
                 "empty" => {
-                    g.set_hint("No app matches “zzzz”. Try another word.".into());
+                    g.set_page(StorePage::Search);
+                    g.set_title("Results for \u{201c}zzzz\u{201d}".into());
+                    g.set_start_query("zzzz".into());
+                    g.set_hint("No app is named \u{201c}zzzz\u{201d}.".into());
+                    cards.clear();
                 }
-                _ => {
-                    g.set_hint("Flathub could not be reached.".into());
-                    g.set_message("Installing Inkscape failed: no network".into());
+                "installing" => {
+                    g.set_page(StorePage::Category);
+                    g.set_title("Media".into());
+                    cards = (0..6).map(store_card).collect();
+                    cards[0].state = Installing;
+                    cards[0].percent = 45;
+                    cards[0].detail = "Installing 2 of 4 \u{b7} 12.3 MB \u{b7} 4.1 MB/s".into();
+                    cards[1].state = Installing;
+                    cards[2].state = Failed;
+                    cards[3].state = Installed;
+                    g.set_message(
+                        "Could not install VLC. You\u{2019}re offline. Connect to the internet and try again."
+                            .into(),
+                    );
                     g.set_message_is_error(true);
                 }
+                "offline" | "loading" => {
+                    g.set_tiles(list(store_tiles()));
+                    for card in &mut cards {
+                        card.summary = "".into();
+                        card.has_icon = false;
+                        card.unavailable = true;
+                    }
+                    if variant == "offline" {
+                        g.set_banner(
+                            "You\u{2019}re offline. Connect to the internet to browse apps.".into(),
+                        );
+                        g.set_banner_retry(true);
+                    } else {
+                        g.set_banner(
+                            "Getting the list of apps. The first time can take a few minutes."
+                                .into(),
+                        );
+                        g.set_banner_busy(true);
+                    }
+                }
+                _ => {
+                    g.set_tiles(list(store_tiles()));
+                    g.set_banner(
+                        "You\u{2019}re offline. These are the apps from last time; installing needs the internet."
+                            .into(),
+                    );
+                    g.set_banner_retry(true);
+                }
+            }
+            g.set_cards(list(cards));
+            match variant {
+                // A card the keys are on, further down the page.
+                "keys" => g.set_current(14),
+                "category" | "search" | "installing" => g.set_current(0),
+                _ => {}
             }
             show(
                 &w,
@@ -528,156 +668,77 @@ fn stores() {
     }
 }
 
-/// The start page: the recommended apps by group, with Flathub reached
-/// and without it.
-fn featured_stores() {
-    let labels: Vec<slint::SharedString> = {
-        [
-            "All",
-            "Featured",
-            "Browsers",
-            "Office",
-            "Media",
-            "Graphics",
-            "Communication",
-            "Utilities",
-            "Development",
-            "Screen recording",
-            "Notes",
-        ]
-        .iter()
-        .map(|c| c.to_string().into())
-        .collect()
-    };
-    use store::RowState::*;
-    let row =
-        |name: &str, summary: &str, state: store::RowState, rgb: Option<[u8; 3]>| store::Row {
-            id: name.into(),
-            name: name.into(),
-            summary: summary.into(),
-            icon: rgb.map(|c| swatch(40, c)).unwrap_or_default(),
-            has_icon: rgb.is_some(),
-            letter: name.chars().next().unwrap().to_string().into(),
-            state,
-            percent: -1,
-            detail: "".into(),
-            heading: false,
-            unavailable: false,
-        };
-    let heading = |name: &str| store::Row {
-        heading: true,
-        unavailable: true,
-        ..row(name, "", Available, None)
-    };
-    for variant in ["featured", "offline", "group"] {
-        for (width, height) in [(888u32, 600u32), (720, 480)] {
-            let w = store::themed(store::StoreWindow::new().unwrap());
-            let g = w.global::<store::Store>();
-            g.set_chips(list(labels.clone()));
-            g.set_chips_first(list(labels[..6].to_vec()));
-            g.set_chips_second(list(labels[6..].to_vec()));
-            let mut rows = match variant {
-                "featured" => vec![
-                    heading("Browsers"),
-                    row(
-                        "Firefox",
-                        "Fast, Private & Safe Web Browser",
-                        Available,
-                        Some([220, 100, 40]),
-                    ),
-                    row(
-                        "Chromium",
-                        "The open-source web browser behind Chrome",
-                        Installed,
-                        Some([70, 110, 200]),
-                    ),
-                    heading("Office"),
-                    row(
-                        "LibreOffice",
-                        "Comprehensive, professional-quality productivity suite",
-                        Available,
-                        Some([60, 160, 90]),
-                    ),
-                    heading("Media"),
-                    row(
-                        "VLC",
-                        "Play any video or audio file",
-                        Installing,
-                        Some([230, 140, 30]),
-                    ),
-                    row(
-                        "mpv",
-                        "A free, open source, and cross-platform media player",
-                        Available,
-                        None,
-                    ),
-                    heading("Graphics"),
-                    row(
-                        "GIMP",
-                        "Create images and edit photographs",
-                        Available,
-                        Some([150, 120, 90]),
-                    ),
-                    row(
-                        "Inkscape",
-                        "Vector graphics editor",
-                        Available,
-                        Some([90, 90, 90]),
-                    ),
-                    row("Krita", "Digital painting", Failed, None),
-                ],
-                "group" => vec![
-                    heading("Screen recording"),
-                    row(
-                        "OBS Studio",
-                        "Live streaming and screen recording",
-                        Available,
-                        Some([60, 60, 70]),
-                    ),
-                    row("Kooha", "Elegantly record your screen", Available, None),
-                ],
-                _ => {
-                    let mut rows = vec![heading("Browsers")];
-                    for name in ["Firefox", "Chromium"] {
-                        rows.push(row(name, "", Available, None));
-                    }
-                    rows.push(heading("Office"));
-                    rows.push(row("LibreOffice", "", Available, None));
-                    rows.push(heading("Media"));
-                    for name in ["VLC", "mpv"] {
-                        rows.push(row(name, "", Available, None));
-                    }
-                    for r in &mut rows {
-                        r.unavailable = true;
-                    }
-                    rows
-                }
-            };
-            if variant == "featured" {
-                rows[6].percent = 45;
-                rows[6].detail = "Installing 2 of 4 \u{b7} 12.3 MB".into();
-                g.set_message("Installing VLC".into());
-            }
-            g.set_current(1);
-            g.set_rows(list(rows));
-            if variant == "offline" {
-                g.set_notice(
-                    "Not connected to Flathub. These apps can be installed once you are online."
-                        .into(),
-                );
-            }
-            if variant == "group" {
-                g.set_chip(9);
-            }
-            show(
-                &w,
-                width,
-                height,
-                &format!("store-{variant}-{width}x{height}.png"),
-                BACKDROP,
-            );
+/// The keys of the Store go where the window says they do: arrows to the
+/// grids, Return to what is chosen, Escape and Backspace back.
+fn store_keys() {
+    use slint::platform::Key;
+    let w = store::themed(store::StoreWindow::new().unwrap());
+    let g = w.global::<store::Store>();
+    let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let note = |what: &'static str| {
+        let heard = heard.clone();
+        move |detail: String| {
+            let line = format!("{what} {detail}");
+            heard.borrow_mut().push(line.trim().to_string());
         }
-    }
+    };
+    g.set_tiles(list(store_tiles()));
+    g.set_cards(list((0..9).map(store_card).collect::<Vec<_>>()));
+    let said = note("step");
+    g.on_step(move |current, key, tiles, cards| {
+        said(format!("{current} {key} {tiles} {cards}"));
+        match key {
+            1 | 3 => current + 1,
+            _ => current - 1,
+        }
+    });
+    let said = note("category");
+    g.on_open_category(move |index| said(index.to_string()));
+    let said = note("install");
+    g.on_install(move |id| said(id.into()));
+    let said = note("search");
+    g.on_search(move |text| said(text.into()));
+    let said = note("back");
+    g.on_back(move || said(String::new()));
+
+    w.show().unwrap();
+    let win = harness::window();
+    harness::resize(&win, 888, 600);
+    harness::advance(100);
+    harness::draw(&win, BACKDROP);
+    let press = |key: slint::SharedString| {
+        harness::key(&win, &key);
+        harness::advance(50);
+    };
+    let take = || heard.borrow_mut().drain(..).collect::<Vec<_>>();
+
+    press(Key::DownArrow.into());
+    assert_eq!(take(), ["step -1 3 4 3"]);
+    assert_eq!(g.get_current(), 0);
+    press(Key::RightArrow.into());
+    assert_eq!(take(), ["step 0 1 4 3"]);
+    press(Key::Return.into());
+    assert_eq!(take(), ["category 1"]);
+    g.set_current(9);
+    press(Key::Return.into());
+    assert_eq!(take(), ["install Firefox"]);
+    // On the start page there is nowhere to go back to from Backspace.
+    press(Key::Backspace.into());
+    assert!(take().is_empty());
+
+    g.set_page(store::StorePage::Category);
+    press(Key::Backspace.into());
+    assert_eq!(take(), ["back"]);
+    press(Key::Escape.into());
+    assert_eq!(take(), ["back"]);
+    // Typing searches; left then moves in the text, and Escape clears it.
+    press("a".into());
+    assert_eq!(take(), ["search a"]);
+    press(Key::LeftArrow.into());
+    assert!(take().is_empty());
+    press(Key::Escape.into());
+    assert_eq!(take(), ["search"]);
+    w.hide().unwrap();
 }
 
 fn launchers() {
@@ -762,6 +823,6 @@ fn desktop() {
     notifications();
     quicks();
     stores();
-    featured_stores();
+    store_keys();
     launchers();
 }

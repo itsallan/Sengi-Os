@@ -1,34 +1,51 @@
-//! The store's behaviour: loading the list, searching it, installing, and
-//! drawing icons. Flatpak is only ever run on a thread of its own; the
-//! window is touched only from the event loop.
+//! The store's behaviour: loading the list, the pages and the search,
+//! installing, and drawing icons. Flatpak is only ever run on a thread of
+//! its own; the window is touched only from the event loop.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use slint::{
-    ComponentHandle, Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel,
+    ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel,
 };
 
-use sengi_apps::icons::{Decoder, Pixels, DECODE_TIMEOUT};
+use sengi_apps::icons::{Decoder, Pixels};
 
 use crate::catalog::App;
-use crate::featured::{self, Chip, Featured, Item};
+use crate::featured::{self, Featured, Item, Page};
 use crate::flatpak::{Error, Flatpak};
 use crate::icons;
+use crate::nav::{self, Grid, Key};
+use crate::online::{self, Retry};
+use crate::problem::Problem;
 use crate::progress::Progress;
 use crate::rows::{Refused, Rows, State};
-use crate::ui::{Row, RowState, Store, StoreWindow};
+use crate::ui::{Card, RowState, Store, StorePage, StoreWindow, Tile};
 
 /// The most apps shown for one search.
-const SHOWN: usize = 40;
+const SHOWN: usize = 48;
 
-/// Pixels per side the icons are decoded to; Flathub's are 64.
-const ICON_PIXELS: u32 = 64;
+/// Logical pixels per side an icon is drawn at: the token store.app-icon.
+const ICON_SIZE: f32 = 48.0;
+
+/// The most pixels per side an icon is decoded to; Flathub's largest.
+const MAX_ICON_PIXELS: u32 = 128;
+
+/// How long one icon may take: more than the bar gives a tray icon, because
+/// a first start decodes while flatpak is writing to the disk.
+const DECODE_WAIT: Duration = Duration::from_secs(3);
+
+/// Said under the page while a list from last time is brought up to date.
+const UPDATING: &str = "Updating the list of apps";
 
 /// The longest search that is looked at.
 const MAX_QUERY: usize = 64;
+
+/// The soonest the list is asked for again after a failed try because the
+/// user typed or moved, unless the search was empty before.
+const RETRY_AFTER: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Default)]
 struct Message {
@@ -56,14 +73,15 @@ impl Message {
 struct Data {
     catalog: Vec<App>,
     featured: Featured,
-    chip: Chip,
-    /// Flathub was asked for and did not answer, and there is no list
-    /// from an earlier time to go by.
-    unreachable: bool,
-    loading: bool,
+    page: Page,
     query: String,
+    /// Why the list could not be had or brought up to date.
+    problem: Option<Problem>,
+    loading: bool,
     rows: Rows,
-    icons: HashMap<String, Option<Pixels>>,
+    icons: icons::Cache,
+    /// Pixels per side the icons are decoded to, for this screen.
+    icon_pixels: u32,
     decoding: bool,
     /// How far the install under way has got, as far as flatpak says.
     progress: Option<Progress>,
@@ -74,46 +92,52 @@ struct Data {
     /// When the list was last asked for, so that typing offline does not
     /// ask again at every key.
     last_attempt: Option<Instant>,
+    retry: Retry,
 }
 
-/// The soonest the list is asked for again after a failed try, unless the
-/// search was empty before.
-const RETRY_AFTER: Duration = Duration::from_secs(30);
+/// Turns an icon file into pixels of the size asked for.
+type Decode = Box<dyn Fn(&Path, u32) -> Option<Pixels> + Send + Sync>;
 
 pub struct Context {
     data: Mutex<Data>,
     flatpak: Flatpak,
-    decoder: Decoder,
+    decode: Decode,
     data_home: PathBuf,
+    proc_net: PathBuf,
+    /// The window is closed: nothing new is started.
+    closing: AtomicBool,
     /// None in tests, which have no window.
     window: Option<slint::Weak<StoreWindow>>,
 }
 
 pub type Shared = Arc<Context>;
 
-/// What one row needs, in a form that may cross to the event loop.
-struct RowData {
+/// What one card needs, in a form that may cross to the event loop.
+struct CardData {
     id: String,
     name: String,
     summary: String,
+    glyph: String,
     letter: String,
     icon: Option<Pixels>,
     state: State,
     progress: Option<Progress>,
-    /// A group's name, not an app.
-    heading: bool,
-    /// Shown by name only and not to be installed: Flathub is not there.
+    /// Shown by name only and not to be installed: there is no list.
     unavailable: bool,
 }
 
 struct View {
-    rows: Vec<RowData>,
+    page: StorePage,
+    title: String,
+    tiles: Vec<(String, String)>,
+    cards: Vec<CardData>,
     hint: String,
-    notice: String,
+    banner: String,
+    banner_retry: bool,
+    banner_busy: bool,
     message: Message,
-    reset: bool,
-    /// The row the keys start on when `reset`.
-    first: usize,
+    /// Where the keys are to be, when the page changed.
+    current: Option<i32>,
 }
 
 fn to_image(pixels: &Pixels) -> Image {
@@ -124,31 +148,35 @@ fn to_image(pixels: &Pixels) -> Image {
     ))
 }
 
+fn model<T: Clone + 'static>(items: Vec<T>) -> ModelRc<T> {
+    ModelRc::new(VecModel::from(items))
+}
+
 fn apply(window: &StoreWindow, view: View) {
-    let rows: Vec<Row> = view
-        .rows
+    let cards: Vec<Card> = view
+        .cards
         .iter()
-        .map(|row| Row {
-            id: SharedString::from(row.id.as_str()),
-            name: row.name.as_str().into(),
-            summary: row.summary.as_str().into(),
-            letter: row.letter.as_str().into(),
-            icon: row.icon.as_ref().map(to_image).unwrap_or_default(),
-            has_icon: row.icon.is_some(),
-            percent: row
+        .map(|card| Card {
+            id: SharedString::from(card.id.as_str()),
+            name: card.name.as_str().into(),
+            summary: card.summary.as_str().into(),
+            glyph: card.glyph.as_str().into(),
+            letter: card.letter.as_str().into(),
+            icon: card.icon.as_ref().map(to_image).unwrap_or_default(),
+            has_icon: card.icon.is_some(),
+            percent: card
                 .progress
                 .as_ref()
                 .and_then(|p| p.percent)
                 .map_or(-1, i32::from),
-            detail: row
+            detail: card
                 .progress
                 .as_ref()
                 .map(Progress::detail)
                 .unwrap_or_default()
                 .into(),
-            heading: row.heading,
-            unavailable: row.unavailable,
-            state: match row.state {
+            unavailable: card.unavailable,
+            state: match card.state {
                 State::Available => RowState::Available,
                 State::Installing => RowState::Installing,
                 State::Installed => RowState::Installed,
@@ -156,27 +184,55 @@ fn apply(window: &StoreWindow, view: View) {
             },
         })
         .collect();
+    let tiles: Vec<Tile> = view
+        .tiles
+        .iter()
+        .map(|(name, icon)| Tile {
+            name: name.as_str().into(),
+            icon: icon.as_str().into(),
+        })
+        .collect();
     let store = window.global::<Store>();
-    store.set_rows(ModelRc::new(VecModel::from(rows)));
+    let total = i32::try_from(tiles.len() + cards.len()).unwrap_or(i32::MAX);
+    store.set_page(view.page);
+    // The tiles never change while they are shown, and are left alone so
+    // that they are not made again under the pointer.
+    if store.get_tiles().row_count() != tiles.len() {
+        store.set_tiles(model(tiles));
+    }
+    store.set_cards(model(cards));
+    store.set_title(view.title.into());
     store.set_hint(view.hint.into());
-    store.set_notice(view.notice.into());
+    store.set_banner(view.banner.into());
+    store.set_banner_retry(view.banner_retry);
+    store.set_banner_busy(view.banner_busy);
     store.set_message(view.message.text.into());
     store.set_message_is_error(view.message.error);
-    if view.reset {
-        store.set_current(i32::try_from(view.first).unwrap_or(0));
+    match view.current {
+        Some(current) => store.set_current(current.min(total - 1)),
+        None if store.get_current() >= total => store.set_current(total - 1),
+        None => {}
     }
 }
 
 impl Context {
-    fn new(flatpak: Flatpak, data_home: PathBuf, window: Option<slint::Weak<StoreWindow>>) -> Self {
+    fn new(
+        flatpak: Flatpak,
+        data_home: PathBuf,
+        window: Option<slint::Weak<StoreWindow>>,
+        decode: Decode,
+    ) -> Self {
         Self {
             data: Mutex::new(Data {
                 featured: Featured::builtin(),
+                icon_pixels: ICON_SIZE as u32,
                 ..Data::default()
             }),
             flatpak,
-            decoder: Decoder::default(),
+            decode,
             data_home,
+            proc_net: PathBuf::from(online::PROC_NET),
+            closing: AtomicBool::new(false),
             window,
         }
     }
@@ -201,109 +257,149 @@ impl Context {
     }
 }
 
-/// What the list shows now.
+/// The cards on show now.
 fn items(data: &Data) -> Vec<Item> {
-    featured::browse(&data.featured, &data.catalog, &data.query, data.chip, SHOWN)
+    featured::browse(&data.featured, &data.catalog, &data.query, data.page, SHOWN)
+}
+
+fn searching(data: &Data) -> bool {
+    !data.query.trim().is_empty()
+}
+
+/// How many category tiles are on show: they are on the start page only.
+fn tile_count(data: &Data) -> usize {
+    if data.page == Page::Start && !searching(data) {
+        data.featured.groups.len()
+    } else {
+        0
+    }
 }
 
 /// The IDs of the apps on show.
 fn shown_ids(data: &Data) -> Vec<String> {
     items(data)
         .into_iter()
-        .filter_map(|item| match item {
-            Item::App(index) => Some(data.catalog[index].id.clone()),
-            Item::Offline { id, .. } => Some(id),
-            Item::Heading(_) => None,
+        .map(|item| match item {
+            Item::App(index) => data.catalog[index].id.clone(),
+            Item::Offline { id, .. } => id,
         })
         .collect()
 }
 
-fn view(data: &Data, reset: bool) -> View {
-    let items = items(data);
-    let row = |id: &str, name: &str, summary: &str, unavailable: bool| {
-        let state = data.rows.state(id);
-        RowData {
-            id: id.to_string(),
-            name: name.to_string(),
-            summary: summary.to_string(),
-            letter: sengi_text::initial(name),
-            icon: data.icons.get(id).cloned().flatten(),
-            state,
-            progress: if state == State::Installing {
-                data.progress.clone()
+/// The banner over the page: its words, whether it offers Retry, and
+/// whether it says work is going on.
+fn banner(data: &Data) -> (String, bool, bool) {
+    match data.problem {
+        Some(problem) => {
+            let text = if data.catalog.is_empty() {
+                problem.banner()
             } else {
-                None
-            },
-            heading: false,
-            unavailable,
+                problem.stale()
+            };
+            (text.to_string(), !data.loading, data.loading)
         }
-    };
-    let rows: Vec<RowData> = items
-        .iter()
-        .map(|item| match item {
-            Item::Heading(name) => RowData {
-                id: String::new(),
-                name: name.clone(),
-                summary: String::new(),
-                letter: String::new(),
-                icon: None,
-                state: State::Available,
-                progress: None,
-                heading: true,
-                unavailable: true,
-            },
-            Item::App(index) => {
-                let app = &data.catalog[*index];
-                row(&app.id, &app.name, &app.summary, false)
+        None if data.loading && data.catalog.is_empty() => (
+            "Getting the list of apps. The first time can take a few minutes.".to_string(),
+            false,
+            true,
+        ),
+        None => (String::new(), false, false),
+    }
+}
+
+fn view(data: &Data, current: Option<i32>) -> View {
+    let cards: Vec<CardData> = items(data)
+        .into_iter()
+        .map(|item| {
+            let (id, name, summary, unavailable) = match item {
+                Item::App(index) => {
+                    let app = &data.catalog[index];
+                    (app.id.clone(), app.name.clone(), app.summary.clone(), false)
+                }
+                Item::Offline { id, name } => (id, name, String::new(), true),
+            };
+            let state = data.rows.state(&id);
+            CardData {
+                glyph: data
+                    .featured
+                    .group_of(&id)
+                    .map(|g| g.icon.clone())
+                    .unwrap_or_default(),
+                letter: sengi_text::initial(&name),
+                icon: data.icons.get(&id).cloned(),
+                progress: (state == State::Installing)
+                    .then(|| data.progress.clone())
+                    .flatten(),
+                state,
+                id,
+                name,
+                summary,
+                unavailable,
             }
-            Item::Offline { id, name } => row(id, name, "", true),
         })
         .collect();
-    let hint = if data.catalog.is_empty() && data.featured.groups.is_empty() {
-        if data.loading {
-            "Getting the list of apps".to_string()
-        } else {
-            "The list of apps is not available. Type to try again.".to_string()
-        }
-    } else if data.query.trim().is_empty() {
-        "Type the name of an app".to_string()
-    } else if data.chip == Chip::All {
-        format!("No app is named \u{201c}{}\u{201d}", data.query.trim())
-    } else {
-        format!(
-            "No recommended app is named \u{201c}{}\u{201d}. Choose All to look at every app.",
-            data.query.trim()
-        )
+    let tiles = data
+        .featured
+        .groups
+        .iter()
+        .take(tile_count(data))
+        .map(|g| (g.name.clone(), g.icon.clone()))
+        .collect();
+    let query = data.query.trim();
+    let (page, title) = match data.page {
+        _ if searching(data) => (
+            StorePage::Search,
+            format!("Results for \u{201c}{query}\u{201d}"),
+        ),
+        Page::Start => (StorePage::Start, String::new()),
+        Page::Category(index) => (
+            StorePage::Category,
+            data.featured
+                .groups
+                .get(index)
+                .map(|g| g.name.clone())
+                .unwrap_or_default(),
+        ),
     };
-    let notice = if data.unreachable && data.catalog.is_empty() && !data.loading {
-        "Not connected to Flathub. These apps can be installed once you are online.".to_string()
-    } else {
+    let hint = if !cards.is_empty() {
         String::new()
+    } else if searching(data) && data.catalog.is_empty() {
+        format!("No recommended app is named \u{201c}{query}\u{201d}.")
+    } else if searching(data) {
+        format!("No app is named \u{201c}{query}\u{201d}.")
+    } else {
+        "Flathub has none of these apps right now.".to_string()
     };
+    let (banner, banner_retry, banner_busy) = banner(data);
     View {
-        first: featured::first(&items),
-        rows,
+        page,
+        title,
+        tiles,
+        cards,
         hint,
-        notice,
+        banner,
+        banner_retry,
+        banner_busy,
         message: data.message.clone(),
-        reset,
+        current,
     }
 }
 
 /// Draws the window again from the data, from any thread.
-fn render(shared: &Shared, reset: bool) {
-    let v = view(&shared.lock(), reset);
+fn render(shared: &Shared, current: Option<i32>) {
+    let v = view(&shared.lock(), current);
     shared.post(v);
     decode_icons(shared);
 }
 
 fn set_message(shared: &Shared, message: Message) {
     shared.lock().message = message;
-    render(shared, false);
+    render(shared, None);
 }
 
-/// Decodes the icons of the apps on show that have not been tried, a few
-/// at a time on a thread of their own, drawing the list as they come.
+/// Decodes the icons of the apps on show that are not known yet, a few at a
+/// time on a thread of their own, drawing the page as they come. Without
+/// appstream data there is nothing to look in, and nothing is noted.
 fn decode_icons(shared: &Shared) {
     {
         let mut data = shared.lock();
@@ -318,36 +414,46 @@ fn decode_icons(shared: &Shared) {
         .spawn({
             let shared = shared.clone();
             move || loop {
-                let wanted: Vec<String> = {
+                let stamp = icons::stamp(&shared.data_home);
+                let (wanted, stamp, pixels) = {
                     let mut data = shared.lock();
-                    let wanted: Vec<String> = shown_ids(&data)
-                        .into_iter()
-                        .filter(|id| !data.icons.contains_key(id))
-                        .take(8)
-                        .collect();
-                    if wanted.is_empty() {
-                        data.decoding = false;
-                        return;
+                    let wanted: Vec<String> = match &stamp {
+                        Some(stamp) => shown_ids(&data)
+                            .into_iter()
+                            .filter(|id| data.icons.wanted(id, stamp))
+                            .take(8)
+                            .collect(),
+                        None => Vec::new(),
+                    };
+                    match stamp {
+                        Some(stamp) if !wanted.is_empty() => (wanted, stamp, data.icon_pixels),
+                        _ => {
+                            data.decoding = false;
+                            return;
+                        }
                     }
-                    wanted
                 };
-                let decoded: Vec<(String, Option<Pixels>)> = wanted
+                let aliases = aliases_for(&shared, &wanted, &stamp);
+                let decoded: Vec<(String, Option<Pixels>, bool)> = wanted
                     .into_iter()
                     .map(|id| {
-                        let pixels = icons::find(&shared.data_home, &id).and_then(|path| {
-                            shared
-                                .decoder
-                                .decode_file(&path, ICON_PIXELS, DECODE_TIMEOUT)
-                        });
-                        (id, pixels)
+                        let files = icons::find(&shared.data_home, &id, &aliases);
+                        let icon = files.iter().find_map(|path| (shared.decode)(path, pixels));
+                        (id, icon, !files.is_empty())
                     })
                     .collect();
-                let v = {
+                let (v, changed) = {
                     let mut data = shared.lock();
-                    data.icons.extend(decoded);
-                    view(&data, false)
+                    let mut changed = false;
+                    for (id, icon, there) in decoded {
+                        changed |= icon.is_some();
+                        data.icons.note(&id, &stamp, icon, there);
+                    }
+                    (view(&data, None), changed)
                 };
-                shared.post(v);
+                if changed {
+                    shared.post(v);
+                }
             }
         });
     if spawned.is_err() {
@@ -355,16 +461,22 @@ fn decode_icons(shared: &Shared) {
     }
 }
 
-fn explain(error: &Error) -> String {
-    match error {
-        Error::Missing => "Flatpak is not installed, so apps cannot be found.".to_string(),
-        Error::TimedOut => {
-            "Flatpak did not answer in time. Check the network connection.".to_string()
-        }
-        Error::Failed(text) | Error::Refused(text) => {
-            format!("Could not get the list of apps: {text}")
-        }
+/// The other names of icons: read from the appstream data once, and only
+/// when an app has no picture under its own ID.
+fn aliases_for(shared: &Shared, wanted: &[String], stamp: &str) -> Arc<icons::Aliases> {
+    if let Some(known) = shared.lock().icons.aliases(stamp) {
+        return known;
     }
+    let none = icons::Aliases::new();
+    if wanted
+        .iter()
+        .all(|id| !icons::find(&shared.data_home, id, &none).is_empty())
+    {
+        return Arc::new(none);
+    }
+    let read = Arc::new(icons::aliases(&shared.data_home));
+    shared.lock().icons.set_aliases(stamp, read.clone());
+    read
 }
 
 /// Reads the apps of Flathub, from what is on the disk first and then from
@@ -374,9 +486,8 @@ fn load(shared: Shared) {
         let mut data = shared.lock();
         data.loading = true;
         data.last_attempt = Some(Instant::now());
-        Context::note(&mut data, Message::info("Getting the list of apps"));
     }
-    render(&shared, false);
+    render(&shared, None);
 
     let flatpak = &shared.flatpak;
     let mut failure = flatpak.ensure_remote().err();
@@ -395,18 +506,17 @@ fn load(shared: Shared) {
     };
     // Without the appstream data the list has no real names and no icons,
     // so on a first start it waits for the refresh below.
-    let cached = if icons::has_appstream(&shared.data_home) {
-        flatpak.list_remote(true)
-    } else {
-        Ok(Vec::new())
-    };
-    if let Ok(apps) = cached {
-        if !apps.is_empty() {
-            let mut data = shared.lock();
-            data.catalog = apps;
-            Context::note(&mut data, Message::info("Updating the list of apps"));
-            drop(data);
-            render(&shared, false);
+    if icons::has_appstream(&shared.data_home) {
+        if let Ok(apps) = flatpak.list_remote(true) {
+            if !apps.is_empty() {
+                let mut data = shared.lock();
+                data.catalog = apps;
+                if data.problem.is_none() {
+                    Context::note(&mut data, Message::info(UPDATING));
+                }
+                drop(data);
+                render(&shared, None);
+            }
         }
     }
 
@@ -414,23 +524,18 @@ fn load(shared: Shared) {
     match flatpak.refresh_appstream() {
         Ok(()) => match flatpak.list_remote(false) {
             Ok(apps) if !apps.is_empty() => {
-                let mut data = shared.lock();
-                data.catalog = apps;
-                // Icons that were not there may be now.
-                data.icons.retain(|_, pixels| pixels.is_some());
+                shared.lock().catalog = apps;
                 failure = None;
             }
             Ok(_) => failure = Some(Error::Failed("the list is empty".to_string())),
             Err(error) => failure = Some(error),
         },
-        Err(error) => {
-            // The refresh failed: a rough list is better than none.
-            if shared.lock().catalog.is_empty() {
-                if let Ok(apps) = flatpak.list_remote(true) {
-                    shared.lock().catalog = apps;
-                }
-            }
-            failure = Some(error);
+        Err(error) => failure = Some(error),
+    }
+    // A rough list is better than none.
+    if failure.is_some() && shared.lock().catalog.is_empty() {
+        if let Ok(apps) = flatpak.list_remote(true) {
+            shared.lock().catalog = apps;
         }
     }
     if failure.is_none() && !installed_known {
@@ -441,39 +546,45 @@ fn load(shared: Shared) {
             Message::info("Could not tell which apps are installed yet"),
         );
         data.loading = false;
-        data.unreachable = false;
+        data.problem = None;
+        data.retry.reset();
         drop(data);
-        render(&shared, false);
+        render(&shared, None);
         return;
     }
     finish_load(&shared, failure);
 }
 
 fn finish_load(shared: &Shared, failure: Option<Error>) {
+    let routes = online::default_routes(&shared.proc_net);
     {
         let mut data = shared.lock();
         data.loading = false;
-        data.unreachable = matches!(failure, Some(Error::TimedOut | Error::Failed(_)));
-        let message = match failure {
-            None => Message::default(),
-            Some(error) if data.catalog.is_empty() => Message::error(explain(&error)),
-            // The list from last time is good enough to search.
-            Some(_) => Message::info("No network: the list may be out of date"),
-        };
-        Context::note(&mut data, message);
+        data.problem = failure.as_ref().map(Problem::of);
+        match failure {
+            None => data.retry.reset(),
+            Some(error) => {
+                // What flatpak said, for whoever looks into it.
+                eprintln!("sengi-store: could not get the list of apps: {error}");
+                data.retry.failed(routes);
+            }
+        }
+        // The banner says what there is to say about the list.
+        if data.message.text == UPDATING {
+            data.message = Message::default();
+        }
     }
-    render(shared, false);
+    render(shared, None);
 }
 
 fn start_load(shared: &Shared) {
     {
         let mut data = shared.lock();
-        if data.loading {
+        if data.loading || shared.closing.load(Ordering::Relaxed) {
             return;
         }
         data.loading = true;
     }
-    let shared = shared.clone();
     let spawned = std::thread::Builder::new()
         .name("store-load".into())
         .spawn({
@@ -485,51 +596,156 @@ fn start_load(shared: &Shared) {
     }
 }
 
-fn search(shared: &Shared, text: &str) {
-    let retry = {
+/// Whether using the Store is a reason to ask for the list again now.
+fn due_by_use(data: &Data) -> bool {
+    data.catalog.is_empty()
+        && !data.loading
+        && data
+            .last_attempt
+            .is_none_or(|at| at.elapsed() >= RETRY_AFTER)
+}
+
+/// One look, every few seconds, at whether the world has changed: new
+/// appstream data (then there may be icons, and a list), or a network that
+/// has come back. `last` is the data seen the time before.
+fn look(shared: &Shared, last: &mut Option<String>, elapsed: Duration) {
+    let stamp = icons::stamp(&shared.data_home);
+    let arrived = stamp != *last;
+    *last = stamp;
+    let routes = online::default_routes(&shared.proc_net);
+    let load = {
         let mut data = shared.lock();
-        let was_empty = data.query.trim().is_empty();
+        let failed = !data.loading && data.problem.is_some_and(Problem::network);
+        let due = failed && data.retry.due(routes, elapsed);
+        due || (arrived && failed && data.catalog.is_empty() && last.is_some())
+    };
+    if load {
+        start_load(shared);
+    }
+    if arrived {
+        render(shared, None);
+    }
+}
+
+/// Looks, now and then, until the window is closed. It sleeps in between.
+fn watch(shared: &Shared) {
+    let shared = shared.clone();
+    let _ = std::thread::Builder::new()
+        .name("store-watch".into())
+        .spawn(move || {
+            let mut last = icons::stamp(&shared.data_home);
+            let mut at = Instant::now();
+            while !shared.closing.load(Ordering::Relaxed) {
+                std::thread::sleep(online::LOOK_EVERY);
+                let elapsed = at.elapsed();
+                at = Instant::now();
+                look(&shared, &mut last, elapsed);
+            }
+        });
+}
+
+/// The Retry button: asked for by the user, so there is no waiting.
+fn retry_now(shared: &Shared) {
+    {
+        let mut data = shared.lock();
+        data.sticky = false;
+        data.message = Message::default();
+        data.retry.reset();
+    }
+    start_load(shared);
+    render(shared, None);
+}
+
+fn search(shared: &Shared, text: &str) {
+    let (retry, current) = {
+        let mut data = shared.lock();
+        let was_empty = !searching(&data);
         data.query = sengi_text::line(text, MAX_QUERY);
         // Whatever went wrong before has been seen by now.
         data.sticky = false;
-        let due = data
-            .last_attempt
-            .is_none_or(|at| at.elapsed() >= RETRY_AFTER);
-        data.catalog.is_empty()
-            && !data.loading
-            && ((was_empty && !data.query.trim().is_empty()) || due)
+        if data.message.error {
+            data.message = Message::default();
+        }
+        let first_letter = was_empty && searching(&data);
+        let retry = due_by_use(&data) || (first_letter && data.catalog.is_empty() && !data.loading);
+        // Return installs the best result; with nothing typed nothing is
+        // chosen.
+        (retry, if searching(&data) { 0 } else { nav::FIELD })
     };
     if retry {
         start_load(shared);
     }
-    render(shared, true);
+    render(shared, Some(current));
 }
 
-/// A chip was chosen: 0 is All, 1 Featured, then the groups. Like typing,
-/// it asks for the list again if there is none, but no sooner than a
-/// search would.
-fn choose_chip(shared: &Shared, index: usize) {
+fn open_category(shared: &Shared, index: usize) {
     let retry = {
         let mut data = shared.lock();
-        data.chip = Chip::from_index(index);
+        if index >= data.featured.groups.len() {
+            return;
+        }
+        data.page = Page::Category(index);
+        data.query.clear();
         data.sticky = false;
-        data.catalog.is_empty()
-            && !data.loading
-            && data
-                .last_attempt
-                .is_none_or(|at| at.elapsed() >= RETRY_AFTER)
+        due_by_use(&data)
     };
     if retry {
         start_load(shared);
     }
-    render(shared, true);
+    render(shared, Some(0));
 }
 
-/// The row an arrow key moves to from `current`, never a heading.
-fn step_row(shared: &Shared, current: i32, by: i32) -> i32 {
-    let items = items(&shared.lock());
-    let current = usize::try_from(current).unwrap_or(0);
-    i32::try_from(featured::step(&items, current, by.signum())).unwrap_or(0)
+/// From a category to the start page, with its tile chosen. A search is
+/// cleared by the field, which then says so through `search`.
+fn back(shared: &Shared) {
+    let current = {
+        let mut data = shared.lock();
+        let current = match data.page {
+            Page::Category(index) => i32::try_from(index).unwrap_or(nav::FIELD),
+            Page::Start => nav::FIELD,
+        };
+        data.page = Page::Start;
+        data.sticky = false;
+        current
+    };
+    render(shared, Some(current));
+}
+
+/// Where a key leads in the grids now on show.
+fn step(shared: &Shared, current: i32, key: i32, tile_columns: i32, card_columns: i32) -> i32 {
+    let Some(key) = Key::from_code(key) else {
+        return current;
+    };
+    let data = shared.lock();
+    let columns = |n: i32| usize::try_from(n).unwrap_or(1);
+    nav::step(
+        &[
+            Grid {
+                count: tile_count(&data),
+                columns: columns(tile_columns),
+            },
+            Grid {
+                count: items(&data).len(),
+                columns: columns(card_columns),
+            },
+        ],
+        current,
+        key,
+    )
+}
+
+/// The screen has `factor` physical pixels to a logical one.
+fn scaled(shared: &Shared, factor: f32) {
+    let pixels = ((ICON_SIZE * factor).round() as u32).clamp(ICON_SIZE as u32, MAX_ICON_PIXELS);
+    {
+        let mut data = shared.lock();
+        if data.icon_pixels == pixels {
+            return;
+        }
+        data.icon_pixels = pixels;
+        data.icons = icons::Cache::default();
+    }
+    render(shared, None);
 }
 
 fn install(shared: &Shared, id: &str) {
@@ -549,15 +765,14 @@ fn install(shared: &Shared, id: &str) {
                 data.message =
                     Message::info("Another app is being installed. Try again when it is done.");
                 drop(data);
-                render(shared, false);
+                render(shared, None);
                 return;
             }
         }
         name
     };
-    render(shared, false);
+    render(shared, None);
 
-    let shared = shared.clone();
     let id = id.to_string();
     let spawned = std::thread::Builder::new()
         .name("store-install".into())
@@ -568,7 +783,7 @@ fn install(shared: &Shared, id: &str) {
         });
     if spawned.is_err() {
         shared.lock().rows.finish(&id, false);
-        set_message(&shared, Message::error("Could not start the install"));
+        set_message(shared, Message::error("Could not start the install"));
     }
 }
 
@@ -593,12 +808,13 @@ fn open(shared: &Shared, id: &str) {
             data.message = Message::info(format!("Opening {name}"));
         }
         Err(error) => {
+            eprintln!("sengi-store: could not open {id}: {error}");
             let mut data = shared.lock();
             data.sticky = true;
-            data.message = Message::error(format!("Could not open {name}: {error}"));
+            data.message = Message::error(format!("Could not open {name}."));
         }
     }
-    render(shared, false);
+    render(shared, None);
 }
 
 /// The install itself, on its own thread.
@@ -613,16 +829,14 @@ fn run_install(shared: &Shared, id: &str, name: &str) {
         Ok(_) => {
             let report = |progress: Progress| {
                 shared.lock().progress = Some(progress);
-                render(shared, false);
+                render(shared, None);
             };
             shared
                 .flatpak
                 .install_with(id, Some(&report))
                 .map(|()| false)
         }
-        Err(error) => Err(Error::Failed(format!(
-            "could not check whether it is installed already: {error}"
-        ))),
+        Err(error) => Err(error),
     };
     {
         let mut data = shared.lock();
@@ -639,12 +853,13 @@ fn run_install(shared: &Shared, id: &str, name: &str) {
                     Message::info(format!("{name} is installed. It is in the launcher now."));
             }
             Err(error) => {
+                eprintln!("sengi-store: could not install {id}: {error}");
                 data.sticky = true;
-                data.message = Message::error(format!("Could not install {name}: {error}"));
+                data.message = Message::error(Problem::of(error).install(name));
             }
         }
     }
-    render(shared, false);
+    render(shared, None);
 }
 
 /// Makes the store out of a window and starts loading. When the window is
@@ -665,29 +880,39 @@ pub fn run_with_query(
     query: &str,
 ) -> Result<(), slint::PlatformError> {
     let query = sengi_text::line(query, MAX_QUERY);
-    let shared: Shared = Arc::new(Context::new(flatpak, data_home, Some(window.as_weak())));
+    let decoder = Decoder::default();
+    let shared: Shared = Arc::new(Context::new(
+        flatpak,
+        data_home,
+        Some(window.as_weak()),
+        Box::new(move |path, pixels| decoder.decode_file(path, pixels, DECODE_WAIT)),
+    ));
     let store = window.global::<Store>();
     store.set_start_query(query.as_str().into());
     store.on_search({
         let shared = shared.clone();
         move |text| search(&shared, &text)
     });
-    store.on_chip_selected({
+    store.on_open_category({
         let shared = shared.clone();
-        move |index| choose_chip(&shared, usize::try_from(index).unwrap_or(0))
+        move |index| open_category(&shared, usize::try_from(index).unwrap_or(usize::MAX))
     });
-    store.on_step_row({
+    store.on_back({
         let shared = shared.clone();
-        move |current, by| step_row(&shared, current, by)
+        move || back(&shared)
     });
-    let labels: Vec<SharedString> = Chip::labels(&shared.lock().featured)
-        .iter()
-        .map(|l| l.as_str().into())
-        .collect();
-    let half = labels.len().div_ceil(2);
-    store.set_chips_first(ModelRc::new(VecModel::from(labels[..half].to_vec())));
-    store.set_chips_second(ModelRc::new(VecModel::from(labels[half..].to_vec())));
-    store.set_chips(ModelRc::new(VecModel::from(labels)));
+    store.on_retry({
+        let shared = shared.clone();
+        move || retry_now(&shared)
+    });
+    store.on_step({
+        let shared = shared.clone();
+        move |current, key, tiles, cards| step(&shared, current, key, tiles, cards)
+    });
+    store.on_scaled({
+        let shared = shared.clone();
+        move |factor| scaled(&shared, factor)
+    });
     store.on_install({
         let shared = shared.clone();
         move |id| install(&shared, &id)
@@ -696,331 +921,17 @@ pub fn run_with_query(
         let shared = shared.clone();
         move |id| open(&shared, &id)
     });
-    render(&shared, true);
+    render(&shared, Some(nav::FIELD));
     start_load(&shared);
     if !query.is_empty() {
         search(&shared, &query);
     }
+    watch(&shared);
     let result = window.run();
+    shared.closing.store(true, Ordering::Relaxed);
     shared.flatpak.stop_all();
     result
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::flatpak::testing::{quick, Fake};
-
-    const LISTING: &str = "org.gimp.GIMP\\tGIMP\\tImages\\norg.x.Y\\tY\\t\\n";
-
-    /// A fake flatpak that answers like the real one for what the store
-    /// asks, and fails the install if `install_exit` is not 0.
-    fn fake(tag: &str, install_exit: u8, extra: &str) -> Fake {
-        Fake::new(
-            tag,
-            &format!(
-                "case \"$*\" in\n\
-                 *remotes*) printf 'flathub\\thttps://dl.flathub.org/repo/\\tuser\\n';;\n\
-                 *remote-ls*) printf '{LISTING}';;\n\
-                 *\" install \"*) echo 'error: no space left' >&2; exit {install_exit};;\n\
-                 {extra}\n\
-                 esac"
-            ),
-        )
-    }
-
-    fn context(fake: &Fake) -> Shared {
-        Arc::new(Context::new(
-            fake.flatpak(quick()),
-            fake.dir.join("data"),
-            None,
-        ))
-    }
-
-    fn wait_until(shared: &Shared, done: impl Fn(&Data) -> bool) {
-        for _ in 0..400 {
-            if done(&shared.lock()) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
-        panic!("it did not come to pass");
-    }
-
-    #[test]
-    fn load_fills_the_catalog() {
-        let fake = fake("app-load", 0, "");
-        let shared = context(&fake);
-        load(shared.clone());
-        let data = shared.lock();
-        assert_eq!(data.catalog.len(), 2);
-        assert!(!data.loading);
-        assert!(!data.message.error);
-    }
-
-    #[test]
-    fn a_failed_install_keeps_its_reason_until_the_user_acts() {
-        let fake = fake("app-fail", 1, "");
-        let shared = context(&fake);
-        load(shared.clone());
-        install(&shared, "org.gimp.GIMP");
-        wait_until(&shared, |d| d.sticky);
-        {
-            let data = shared.lock();
-            assert!(data.message.error);
-            assert!(data.message.text.contains("no space left"));
-            assert_eq!(data.rows.state("org.gimp.GIMP"), State::Failed);
-        }
-        // A note from a thread of ours does not wipe it out.
-        {
-            let mut data = shared.lock();
-            Context::note(&mut data, Message::info("Updating the list of apps"));
-            assert!(data.message.error);
-        }
-        search(&shared, "gi");
-        assert!(!shared.lock().sticky);
-    }
-
-    #[test]
-    fn an_install_marks_the_row_installed() {
-        let fake = fake("app-ok", 0, "");
-        let shared = context(&fake);
-        load(shared.clone());
-        install(&shared, "org.gimp.GIMP");
-        wait_until(&shared, |d| {
-            d.rows.state("org.gimp.GIMP") == State::Installed
-        });
-        assert!(!shared.lock().message.error);
-    }
-
-    #[test]
-    fn an_install_shows_its_progress_and_then_none() {
-        let fake = Fake::new(
-            "app-progress",
-            "case \"$*\" in\n\
-             *remotes*) printf 'flathub\\thttps://dl.flathub.org/repo/\\tuser\\n';;\n\
-             *remote-ls*) printf 'org.gimp.GIMP\\tGIMP\\tImages\\n';;\n\
-             *\" install \"*) printf 'Installing 2/4…\\n'; printf 'Installing… 45%%  12.3 MB  4.1 MB/s\\r'; sleep 1;;\n\
-             esac",
-        );
-        let shared = context(&fake);
-        load(shared.clone());
-        install(&shared, "org.gimp.GIMP");
-        wait_until(&shared, |d| {
-            d.progress.as_ref().is_some_and(|p| p.percent == Some(45))
-        });
-        search(&shared, "gimp");
-        {
-            let data = shared.lock();
-            let v = view(&data, false);
-            let row = v.rows.iter().find(|r| r.id == "org.gimp.GIMP").unwrap();
-            let p = row.progress.as_ref().unwrap();
-            assert_eq!(p.step, Some((2, 4)));
-            assert_eq!(
-                p.detail(),
-                "Installing 2 of 4 \u{b7} 12.3 MB \u{b7} 4.1 MB/s"
-            );
-        }
-        wait_until(&shared, |d| {
-            d.rows.state("org.gimp.GIMP") == State::Installed
-        });
-        assert!(shared.lock().progress.is_none());
-    }
-
-    #[test]
-    fn open_runs_only_an_installed_app() {
-        let fake = fake("app-open", 0, "");
-        let shared = context(&fake);
-        load(shared.clone());
-        open(&shared, "org.gimp.GIMP");
-        std::thread::sleep(Duration::from_millis(200));
-        assert!(!fake.calls().iter().any(|c| c.starts_with("run ")));
-        install(&shared, "org.gimp.GIMP");
-        wait_until(&shared, |d| {
-            d.rows.state("org.gimp.GIMP") == State::Installed
-        });
-        open(&shared, "org.gimp.GIMP");
-        wait_until(&shared, |_| {
-            fake.calls().iter().any(|c| c == "run org.gimp.GIMP")
-        });
-        assert!(shared.lock().message.text.contains("Opening GIMP"));
-    }
-
-    #[test]
-    fn an_app_installed_elsewhere_is_not_installed_again() {
-        let fake = Fake::new(
-            "app-elsewhere",
-            "case \"$*\" in\n\
-             *remotes*) printf 'flathub\\thttps://dl.flathub.org/repo/\\tuser\\n';;\n\
-             *remote-ls*) printf 'org.gimp.GIMP\\tGIMP\\tImages\\n';;\n\
-             list*) echo org.gimp.GIMP;;\n\
-             *\" install \"*) exit 1;;\n\
-             esac",
-        );
-        let shared = context(&fake);
-        install_unlisted(&shared);
-        wait_until(&shared, |d| {
-            d.rows.state("org.gimp.GIMP") == State::Installed
-        });
-        assert!(!fake.calls().iter().any(|c| c.contains(" install ")));
-    }
-
-    /// An install for an app that is in the catalog but was not known to be
-    /// installed when the list loaded.
-    fn install_unlisted(shared: &Shared) {
-        shared.lock().catalog = vec![App::new("org.gimp.GIMP", "GIMP", "")];
-        install(shared, "org.gimp.GIMP");
-    }
-
-    #[test]
-    fn offline_typing_does_not_ask_for_the_list_at_every_key() {
-        let fake = Fake::new("app-offline", "echo 'error: could not connect' >&2; exit 1");
-        let shared = context(&fake);
-        load(shared.clone());
-        assert!(shared.lock().message.error);
-        let calls = fake.calls().len();
-        for text in ["f", "fi", "fir", "fire"] {
-            search(&shared, text);
-        }
-        std::thread::sleep(Duration::from_millis(300));
-        // The first letter counted as a new search; the rest did not.
-        wait_until(&shared, |d| !d.loading);
-        let asked = fake.calls().len() - calls;
-        assert!(asked <= 1, "{asked} more calls");
-    }
-
-    /// A flatpak that lists Firefox, GIMP (named as Flathub names it) and
-    /// something that is not recommended.
-    fn flathub_fake(tag: &str) -> Fake {
-        Fake::new(
-            tag,
-            "case \"$*\" in\n\
-             *remotes*) printf 'flathub\\thttps://dl.flathub.org/repo/\\tuser\\n';;\n\
-             *remote-ls*) printf 'org.mozilla.firefox\\tFirefox\\tWeb browser\\n\
-             org.gimp.GIMP\\tGNU Image Manipulation Program\\tImages\\n\
-             org.x.Other\\tOther\\t\\n';;\n\
-             esac",
-        )
-    }
-
-    fn names_shown(data: &Data) -> Vec<String> {
-        view(data, false)
-            .rows
-            .iter()
-            .map(|r| {
-                if r.heading {
-                    format!("# {}", r.name)
-                } else {
-                    r.name.clone()
-                }
-            })
-            .collect()
-    }
-
-    #[test]
-    fn the_start_page_shows_only_what_flathub_has() {
-        let fake = flathub_fake("app-featured");
-        let shared = context(&fake);
-        load(shared.clone());
-        let data = shared.lock();
-        let v = view(&data, true);
-        assert_eq!(
-            names_shown(&data),
-            [
-                "# Browsers",
-                "Firefox",
-                "# Graphics",
-                "GNU Image Manipulation Program"
-            ]
-        );
-        assert_eq!(v.first, 1);
-        assert_eq!(v.rows[1].summary, "Web browser");
-        assert!(v.rows.iter().all(|r| !r.unavailable || r.heading));
-        assert!(v.notice.is_empty());
-    }
-
-    #[test]
-    fn chips_and_typing_filter_the_start_page() {
-        let fake = flathub_fake("app-chips");
-        let shared = context(&fake);
-        load(shared.clone());
-        // Office has nothing on this list of apps.
-        choose_chip(&shared, 3);
-        assert!(names_shown(&shared.lock()).is_empty());
-        choose_chip(&shared, 2);
-        assert_eq!(names_shown(&shared.lock()), ["# Browsers", "Firefox"]);
-        search(&shared, "gimp");
-        assert!(names_shown(&shared.lock()).is_empty());
-        choose_chip(&shared, 0);
-        // The welcome wizard's word finds GIMP by its ID.
-        assert_eq!(
-            names_shown(&shared.lock()),
-            ["GNU Image Manipulation Program"]
-        );
-        for word in ["firefox", "gimp"] {
-            search(&shared, word);
-            assert_eq!(names_shown(&shared.lock()).len(), 1, "{word}");
-        }
-    }
-
-    #[test]
-    fn offline_the_recommended_names_are_shown_and_not_installable() {
-        let fake = Fake::new(
-            "app-offline-start",
-            "echo 'error: could not connect' >&2; exit 1",
-        );
-        let shared = context(&fake);
-        load(shared.clone());
-        let data = shared.lock();
-        let v = view(&data, true);
-        assert!(v.notice.starts_with("Not connected"));
-        let apps: Vec<&RowData> = v.rows.iter().filter(|r| !r.heading).collect();
-        assert!(apps.len() >= 10);
-        assert!(apps.iter().all(|r| r.unavailable && r.summary.is_empty()));
-        assert!(apps.iter().any(|r| r.name == "Firefox"));
-        assert_eq!(v.rows[0].name, "Browsers");
-        drop(data);
-        install(&shared, "org.mozilla.firefox");
-        std::thread::sleep(Duration::from_millis(100));
-        assert!(!fake.calls().iter().any(|c| c.contains(" install ")));
-        assert_eq!(
-            shared.lock().rows.state("org.mozilla.firefox"),
-            State::Available
-        );
-    }
-
-    #[test]
-    fn a_refused_source_is_not_called_not_connected() {
-        let fake = Fake::new(
-            "app-bad-remote-start",
-            "case \"$*\" in *remotes*) printf 'flathub\\thttp://evil/\\tuser\\n';; esac",
-        );
-        let shared = context(&fake);
-        load(shared.clone());
-        assert!(view(&shared.lock(), false).notice.is_empty());
-    }
-
-    #[test]
-    fn the_arrow_keys_skip_the_headings() {
-        let fake = flathub_fake("app-keys");
-        let shared = context(&fake);
-        load(shared.clone());
-        // # Browsers, Firefox, # Graphics, GIMP
-        assert_eq!(step_row(&shared, 1, 1), 3);
-        assert_eq!(step_row(&shared, 3, -1), 1);
-        assert_eq!(step_row(&shared, 3, 1), 3);
-    }
-
-    #[test]
-    fn a_source_that_is_not_flathub_stops_the_load() {
-        let fake = Fake::new(
-            "app-bad-remote",
-            "case \"$*\" in *remotes*) printf 'flathub\\thttp://evil/\\tuser\\n';; esac",
-        );
-        let shared = context(&fake);
-        load(shared.clone());
-        let data = shared.lock();
-        assert!(data.message.error);
-        assert!(data.catalog.is_empty());
-    }
-}
+mod tests;

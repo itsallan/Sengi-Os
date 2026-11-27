@@ -1,39 +1,67 @@
-# The apps the Store recommends before anything is typed, by group. The
-# groups and the apps in them are shown in this order. Each line is a
-# Flathub application ID and the name to show when Flathub cannot be
-# reached; online, the name and the summary come from Flathub, and an ID
-# that Flathub does not list is left out. Keep to this shape: a [group]
-# line, then one "id" = "name" line for each app.
+# The apps the Store recommends, by category. The categories and the apps
+# in them are shown in this order, and the first app of each category is the
+# featured one on the start page. Each category has an `icon` line naming a
+# Phosphor Bold icon of ui/icons/phosphor/bold for its tile, then one
+# "id" = "name" line for each app: a Flathub application ID and the name to
+# show when Flathub cannot be reached. Online, the name and the summary come
+# from Flathub, and an ID that Flathub does not list is left out. No app's
+# logo is shipped; the icons come with Flathub's data.
 
 [Browsers]
+icon = "globe"
 "org.mozilla.firefox" = "Firefox"
 "org.chromium.Chromium" = "Chromium"
+"io.gitlab.librewolf-community" = "LibreWolf"
+"org.gnome.Epiphany" = "GNOME Web"
 
 [Office]
+icon = "briefcase"
 "org.libreoffice.LibreOffice" = "LibreOffice"
+"org.onlyoffice.desktopeditors" = "ONLYOFFICE"
+"org.gnome.Evince" = "Document Viewer"
+"com.github.xournalpp.xournalpp" = "Xournal++"
 
 [Media]
+icon = "play-circle"
 "org.videolan.VLC" = "VLC"
 "io.mpv.Mpv" = "mpv"
+"org.audacityteam.Audacity" = "Audacity"
+"fr.handbrake.ghb" = "HandBrake"
 
 [Graphics]
+icon = "palette"
 "org.gimp.GIMP" = "GIMP"
 "org.inkscape.Inkscape" = "Inkscape"
 "org.kde.krita" = "Krita"
+"org.blender.Blender" = "Blender"
 
 [Communication]
-"org.mozilla.Thunderbird" = "Thunderbird"
+icon = "chat-circle"
+"org.mozilla.thunderbird" = "Thunderbird"
+"org.telegram.desktop" = "Telegram"
+"org.signal.Signal" = "Signal"
+"im.riot.Riot" = "Element"
 
 [Utilities]
+icon = "wrench"
 "com.bitwarden.desktop" = "Bitwarden"
 "org.keepassxc.KeePassXC" = "KeePassXC"
+"com.github.tchx84.Flatseal" = "Flatseal"
+"org.gnome.FileRoller" = "File Roller"
 
 [Development]
+icon = "code"
 "com.visualstudio.code" = "Visual Studio Code"
+"com.vscodium.codium" = "VSCodium"
+"org.gnome.Builder" = "Builder"
 
 ["Screen recording"]
+icon = "video-camera"
 "com.obsproject.Studio" = "OBS Studio"
 "io.github.seadve.Kooha" = "Kooha"
 
 [Notes]
+icon = "note-pencil"
 "md.obsidian.Obsidian" = "Obsidian"
+"net.cozic.joplin_desktop" = "Joplin"
+"org.standardnotes.standardnotes" = "Standard Notes"

@@ -53,7 +53,7 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             quick: Duration::from_secs(20),
-            appstream: Duration::from_secs(120),
+            appstream: Duration::from_secs(10 * 60),
             listing: Duration::from_secs(60),
             // How long an install may go without a word from flatpak, not
             // how long it may take: a big one keeps printing as it goes.

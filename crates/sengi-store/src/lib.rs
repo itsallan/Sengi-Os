@@ -1,5 +1,5 @@
-//! sengi-store, the Sengi OS app store: type the name of an app, pick it
-//! from what Flathub has, and it is installed for this user.
+//! sengi-store, the Sengi OS app store: pick an app from a category or type
+//! its name, and it is installed for this user from Flathub.
 
 pub mod app;
 pub mod catalog;

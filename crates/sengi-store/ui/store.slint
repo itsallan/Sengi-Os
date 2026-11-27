@@ -1,63 +1,78 @@
-// The store's window: a search field on top, the apps whose names match
-// under it, and one line at the bottom for what is going on. Built from
-// the shared components and Settings' kit; nothing here has a colour or a
-// size of its own.
+// The store's window: a search field on top and under it a page of grids.
+// The start page has a tile for each category and the featured apps, a
+// category and a search show app cards. Built from the shared components
+// and Settings' kit; nothing here has a colour or a size of its own.
 
-import { Tokens, SengiText, SengiLabel, SengiButton, SengiProgress } from "components.slint";
+import { Tokens, SengiText, SengiLabel, SengiButton, SengiIcon, SengiProgress } from "components.slint";
 export { ThemeSwitch } from "components.slint";
 import { Scroll, TextField } from "kit.slint";
 
-// What an app in the list is doing.
+// What an app is doing.
 export enum RowState { available, installing, installed, failed }
 
-export struct Row {
+export enum StorePage { start, category, search }
+
+// A category on the start page.
+export struct Tile {
+    name: string,
+    // The name of a Phosphor Bold icon.
+    icon: string,
+}
+
+export struct Card {
     id: string,
     name: string,
     summary: string,
-    // The icon, if there is one; else a tile with the initial.
+    // The icon, if Flathub's has arrived; else a placeholder with the
+    // category's glyph, or the initial for an app of no category.
     icon: image,
     has-icon: bool,
+    glyph: string,
+    letter: string,
     // How far an install has got, 0 to 100, or less than 0 when flatpak
     // has not said.
     percent: int,
     // What step it is on, and the size and speed, when flatpak says.
     detail: string,
-    letter: string,
     state: RowState,
-    // A group's name (in `name`) and not an app: no button, no stop for
-    // the keys.
-    heading: bool,
-    // Shown by name only, because Flathub is not there: no button.
+    // Shown by name only, because the list of apps is not there: no button.
     unavailable: bool,
 }
 
 // What the window shows and what it reports. Rust fills the one and hears
 // the other.
 export global Store {
-    in property <[Row]> rows;
-    // Said in place of the list when it has nothing to show.
+    in property <StorePage> page;
+    // The heading of a category or of the results of a search.
+    in property <string> title;
+    in property <[Tile]> tiles;
+    in property <[Card]> cards;
+    // Said in place of the cards when there are none.
     in property <string> hint;
-    // A note over the list, such as that Flathub cannot be reached.
-    in property <string> notice;
+    // A banner over the page, such as that there is no network.
+    in property <string> banner;
+    // With a Retry button, or with a bar that says work is going on.
+    in property <bool> banner-retry;
+    in property <bool> banner-busy;
     // What the search field holds when the window opens (--search).
     in property <string> start-query;
-    // The line under the list.
+    // The line under the page.
     in property <string> message;
     in property <bool> message-is-error: false;
-    in-out property <int> current: 0;
-    // The chips under the search field, and the one that is chosen.
-    // All of them in order, and the same in two rows, because they do
-    // not fit in one.
-    in property <[string]> chips;
-    in property <[string]> chips-first;
-    in property <[string]> chips-second;
-    in-out property <int> chip: 0;
-    callback chip-selected(int);
-    // The row `by` (1 or -1) from `current` that is not a heading.
-    callback step-row(int, int) -> int;
+    // The chosen tile or card, counting tiles first, or -1 for none.
+    in-out property <int> current: -1;
+
     callback search(string);
     callback install(string);
     callback open(string);
+    callback open-category(int);
+    callback back();
+    callback retry();
+    // Where a key leads from `current`: 0 left, 1 right, 2 up, 3 down,
+    // with the tiles and the cards that fit side by side.
+    callback step(int, int, int, int) -> int;
+    // Physical pixels to a logical one, for the size icons are decoded to.
+    callback scaled(float);
 }
 
 // Work that cannot say how far it has got: a short bar going to and fro.
@@ -67,7 +82,7 @@ component Busy inherits Rectangle {
     width: Tokens.space-xxl;
     height: Tokens.space-xs;
     border-radius: self.height / 2;
-    background: Tokens.color-surface-raised;
+    background: Tokens.color-surface-hover;
     init => { root.over = true; }
 
     Rectangle {
@@ -84,25 +99,22 @@ component Busy inherits Rectangle {
     }
 }
 
-// One choice among the groups of apps.
-component Chip inherits Rectangle {
-    in property <string> text;
-    in property <bool> selected;
+component BackButton inherits Rectangle {
     callback clicked();
 
+    width: Tokens.button;
     height: Tokens.button;
-    preferred-width: label.preferred-width + Tokens.space-md * 2;
     border-radius: Tokens.radius;
-    background: root.selected ? Tokens.color-accent
-        : touch.has-hover ? Tokens.color-surface-hover : Tokens.color-surface-raised;
+    background: touch.has-hover ? Tokens.color-surface-hover : Tokens.color-surface-raised;
     animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+    accessible-role: button;
+    accessible-label: "Back";
+    accessible-action-default => { root.clicked(); }
 
-    label := SengiText {
-        text: root.text;
-        color: root.selected ? Tokens.color-accent-text : Tokens.color-text;
-        font-weight: Tokens.font-weight-medium;
-        horizontal-alignment: center;
-        vertical-alignment: center;
+    SengiIcon {
+            x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        name: "arrow-left";
     }
 
     touch := TouchArea {
@@ -110,27 +122,86 @@ component Chip inherits Rectangle {
     }
 }
 
-component AppTile inherits Rectangle {
-    in property <image> icon;
-    in property <bool> has-icon;
-    in property <string> letter;
+// The surface of a tile and of a card, with the ring of the one the keys
+// are on.
+component Panel inherits Rectangle {
+    in property <bool> selected;
+    in property <bool> hovered;
 
-    width: Tokens.dock-icon;
-    height: Tokens.dock-icon;
     border-radius: Tokens.radius;
-    background: root.has-icon ? transparent : Tokens.color-surface-raised;
-    border-width: root.has-icon ? 0 : Tokens.border-width;
-    border-color: Tokens.color-border;
+    border-width: root.selected ? Tokens.focus-ring-width : Tokens.border-width;
+    border-color: root.selected ? Tokens.color-focus-ring : Tokens.color-border;
+    background: root.hovered ? Tokens.color-surface-raised : Tokens.color-surface;
+    animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+}
 
-    if root.has-icon: Image {
+component CategoryTile inherits Panel {
+    in property <Tile> tile;
+    callback chosen();
+
+    hovered: touch.has-hover;
+    accessible-role: button;
+    accessible-label: root.tile.name;
+    accessible-action-default => { root.chosen(); }
+
+    touch := TouchArea {
+        clicked => { root.chosen(); }
+    }
+
+    HorizontalLayout {
+        padding-left: Tokens.space-md;
+        padding-right: Tokens.space-sm;
+        spacing: Tokens.space-md;
+
+        VerticalLayout {
+            alignment: center;
+            SengiIcon {
+                width: Tokens.store-tile-icon;
+                height: Tokens.store-tile-icon;
+                name: root.tile.icon;
+                ink: Tokens.color-accent-strong;
+            }
+        }
+
+        SengiText {
+            horizontal-stretch: 1;
+            text: root.tile.name;
+            font-weight: Tokens.font-weight-medium;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+component AppIcon inherits Rectangle {
+    in property <Card> app;
+
+    width: Tokens.store-app-icon;
+    height: Tokens.store-app-icon;
+    border-radius: Tokens.radius;
+    background: root.app.has-icon ? transparent : Tokens.color-surface-raised;
+
+    if root.app.has-icon: Image {
         width: parent.width;
         height: parent.height;
-        source: root.icon;
+        source: root.app.icon;
         image-fit: contain;
     }
 
-    if !root.has-icon: SengiText {
-        text: root.letter;
+    if !root.app.has-icon && root.app.glyph != "": SengiIcon {
+            x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: Tokens.store-tile-icon;
+        height: Tokens.store-tile-icon;
+        name: root.app.glyph;
+        ink: Tokens.color-text-muted;
+    }
+
+    if !root.app.has-icon && root.app.glyph == "": SengiText {
+        width: parent.width;
+        height: parent.height;
+        text: root.app.letter;
+        color: Tokens.color-text-muted;
         font-size: Tokens.font-size-xl;
         font-weight: Tokens.font-weight-bold;
         horizontal-alignment: center;
@@ -138,9 +209,135 @@ component AppTile inherits Rectangle {
     }
 }
 
+component AppCard inherits Panel {
+    in property <Card> app;
+    callback chosen();
+    callback install();
+    callback open();
+
+    private property <length> inner: self.width - Tokens.space-md * 2;
+    private property <length> words-x: Tokens.space-md * 2 + Tokens.store-app-icon;
+    private property <length> foot: self.height - Tokens.space-md - Tokens.button;
+
+    hovered: touch.has-hover;
+    accessible-role: list-item;
+    accessible-label: root.app.name;
+
+    touch := TouchArea {
+        clicked => { root.chosen(); }
+    }
+
+    AppIcon {
+        x: Tokens.space-md;
+        y: Tokens.space-md;
+        app: root.app;
+    }
+
+    VerticalLayout {
+        x: root.words-x;
+        y: Tokens.space-md;
+        width: root.width - root.words-x - Tokens.space-md;
+        height: root.foot - Tokens.space-md - Tokens.space-xs;
+        spacing: Tokens.space-xxs;
+        alignment: start;
+
+        SengiText {
+            text: root.app.name;
+            font-weight: Tokens.font-weight-medium;
+            overflow: elide;
+        }
+
+        if root.app.summary != "": SengiLabel {
+            // Two lines, and no more.
+            height: Tokens.font-size-sm * 3;
+            text: root.app.summary;
+            font-weight: Tokens.font-weight-regular;
+            wrap: word-wrap;
+            overflow: elide;
+        }
+    }
+
+    // How far it is, over the bar.
+    if root.app.state == RowState.installing: SengiLabel {
+        x: Tokens.space-md;
+        y: root.foot - self.height - Tokens.space-xxs;
+        width: root.inner;
+        text: root.app.detail != "" ? root.app.detail : "Installing";
+        font-weight: Tokens.font-weight-regular;
+        overflow: elide;
+    }
+
+    if root.app.state == RowState.installing && root.app.percent >= 0: HorizontalLayout {
+        x: Tokens.space-md;
+        y: root.foot;
+        width: root.inner;
+        height: Tokens.button;
+        spacing: Tokens.space-sm;
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            SengiProgress { percent: root.app.percent; }
+        }
+        SengiText {
+            text: root.app.percent + "%";
+            color: Tokens.color-text-muted;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            min-width: Tokens.space-xxl - Tokens.space-md;
+        }
+    }
+
+    if root.app.state == RowState.installing && root.app.percent < 0: Busy {
+        x: Tokens.space-md;
+        y: root.foot + (Tokens.button - self.height) / 2;
+        width: root.inner;
+    }
+
+    if root.app.state == RowState.failed: SengiLabel {
+        x: Tokens.space-md;
+        y: root.foot;
+        height: Tokens.button;
+        text: "Not installed";
+        color: Tokens.color-danger;
+        vertical-alignment: center;
+    }
+
+    if root.app.state == RowState.installed: SengiButton {
+        x: root.width - self.width - Tokens.space-md;
+        y: root.foot;
+        width: self.preferred-width;
+        height: Tokens.button;
+        text: "Open";
+        primary: root.selected;
+        outlined: true;
+        focusable: false;
+        clicked => { root.open(); }
+    }
+
+    if (root.app.state == RowState.available || root.app.state == RowState.failed) && !root.app.unavailable: SengiButton {
+        x: root.width - self.width - Tokens.space-md;
+        y: root.foot;
+        width: self.preferred-width;
+        height: Tokens.button;
+        text: root.app.state == RowState.failed ? "Try again" : "Install";
+        primary: root.selected;
+        outlined: true;
+        focusable: false;
+        clicked => { root.install(); }
+    }
+}
+
+component Heading inherits SengiText {
+    height: Tokens.button;
+    font-size: Tokens.font-size-lg;
+    font-weight: Tokens.font-weight-bold;
+    vertical-alignment: center;
+    overflow: elide;
+}
+
 export component StoreWindow inherits Window {
     title: "Store";
-    preferred-width: Tokens.settings-page-width + Tokens.space-xxl;
+    preferred-width: Tokens.settings-window-width;
     preferred-height: Tokens.settings-window-height;
     min-width: Tokens.chooser-width;
     min-height: Tokens.settings-window-min-height;
@@ -148,10 +345,31 @@ export component StoreWindow inherits Window {
     default-font-family: Tokens.font-family;
     default-font-size: Tokens.font-size-md;
 
-    private property <length> line: Tokens.dock-icon + Tokens.space-sm;
-    // However wide the window is, the list stays as wide as it opens.
-    private property <length> widest: Tokens.settings-page-width + Tokens.space-xxl;
-    private property <int> hovered: -1;
+    // However wide the window is, the grids stay no wider than this.
+    private property <length> column: Math.min(root.width, Tokens.store-page-width + Tokens.space-lg * 2);
+    private property <length> page-width: root.column - Tokens.space-lg * 2;
+    private property <length> gap: Tokens.space-md;
+
+    private property <int> tile-columns: Math.clamp(
+        Math.floor((root.page-width + root.gap) / (Tokens.store-tile-width + root.gap)), 2, 5);
+    private property <int> card-columns: Math.clamp(
+        Math.floor((root.page-width + root.gap) / (Tokens.store-card-width + root.gap)), 2, 4);
+    private property <length> tile-width: (root.page-width - root.gap * (root.tile-columns - 1)) / root.tile-columns;
+    private property <length> card-width: (root.page-width - root.gap * (root.card-columns - 1)) / root.card-columns;
+    private property <length> tile-step: Tokens.store-tile-height + root.gap;
+    private property <length> card-step: Tokens.store-card-height + root.gap;
+
+    private property <bool> at-start: Store.page == StorePage.start;
+    private property <length> head: Tokens.button + Tokens.space-sm;
+    private property <length> tiles-height: Math.ceil(Store.tiles.length / root.tile-columns) * root.tile-step;
+    private property <length> cards-heading: root.at-start ? root.head + root.tiles-height + Tokens.space-sm : 0px;
+    private property <length> cards-top: root.cards-heading + root.head;
+    private property <length> content: root.cards-top
+        + Math.ceil(Store.cards.length / root.card-columns) * root.card-step + Tokens.space-xs;
+
+    // The keys have gone into the grids, so left and right move there and
+    // not in the text of the field.
+    private property <bool> browsing: false;
 
     // The renderer keeps two buffers and only one of them knows after a
     // change of size or scale that it is new, so for a few frames the
@@ -165,47 +383,90 @@ export component StoreWindow inherits Window {
         root.sheets-owed = 3;
     }
 
-    function step(by: int) {
-        if Store.rows.length > 0 {
-            Store.current = Store.step-row(Store.current, by);
-            // The heading above the first app of a group comes into
-            // view with it.
-            if Store.current > 0 && Store.rows[Store.current - 1].heading {
-                list.reveal((Store.current - 1) * root.line, root.line * 2);
+    // Brings the chosen tile or card into view, and with the first row of
+    // a grid its heading.
+    function reveal-current() {
+        if Store.current < 0 {
+            return;
+        }
+        if Store.current < Store.tiles.length {
+            if Store.current < root.tile-columns {
+                list.reveal(0px, root.head + root.tile-step);
             } else {
-                list.reveal(Store.current * root.line, root.line);
+                list.reveal(root.head + Math.floor(Store.current / root.tile-columns) * root.tile-step,
+                    root.tile-step);
             }
+        } else if Store.current - Store.tiles.length < root.card-columns {
+            list.reveal(root.cards-heading, root.head + root.card-step);
+        } else {
+            list.reveal(root.cards-top
+                    + Math.floor((Store.current - Store.tiles.length) / root.card-columns) * root.card-step,
+                root.card-step);
+        }
+    }
+
+    function move(key: int) {
+        Store.current = Store.step(Store.current, key, root.tile-columns, root.card-columns);
+        root.browsing = Store.current >= 0;
+        if Store.current < 0 {
+            list.reveal(0px, root.head);
+        } else {
+            root.reveal-current();
         }
     }
 
     function use-current() {
-        if Store.current >= 0 && Store.current < Store.rows.length
-            && !Store.rows[Store.current].heading {
-            if Store.rows[Store.current].state == RowState.installed {
-                Store.open(Store.rows[Store.current].id);
-            } else if !Store.rows[Store.current].unavailable {
-                Store.install(Store.rows[Store.current].id);
+        if Store.current < 0 {
+            return;
+        }
+        if Store.current < Store.tiles.length {
+            Store.open-category(Store.current);
+        } else if Store.current - Store.tiles.length < Store.cards.length {
+            if Store.cards[Store.current - Store.tiles.length].state == RowState.installed {
+                Store.open(Store.cards[Store.current - Store.tiles.length].id);
+            } else if !Store.cards[Store.current - Store.tiles.length].unavailable
+                && Store.cards[Store.current - Store.tiles.length].state != RowState.installing {
+                Store.install(Store.cards[Store.current - Store.tiles.length].id);
             }
         }
     }
 
-    function pick-chip(index: int) {
-        if index >= 0 && index < Store.chips.length {
-            Store.chip = index;
-            Store.chip-selected(index);
-            list.reveal(0, root.line);
+    // Out of a search first, then out of a category.
+    function go-back() {
+        root.browsing = false;
+        if field.text != "" {
+            field.clear();
+            Store.search("");
+        } else {
+            Store.back();
         }
+        field.take-focus();
     }
 
-    changed pixel => { root.draw-everything(); }
+    changed pixel => {
+        root.draw-everything();
+        Store.scaled(root.pixel > 0 ? 1 / root.pixel : 1);
+    }
     changed width => { root.draw-everything(); }
     changed height => { root.draw-everything(); }
-    init => { field.take-focus(); }
+    init => {
+        field.take-focus();
+        Store.scaled(root.pixel > 0 ? 1 / root.pixel : 1);
+    }
 
     // Set by the program after the window is made, when it was started with
     // --search.
     private property <string> start-query: Store.start-query;
     changed start-query => { field.text = root.start-query; }
+
+    // Another page starts at its top, and the chosen thing is in view.
+    private property <string> shown: Store.title;
+    changed shown => {
+        list.reveal(0px, root.head);
+        root.reveal-current();
+    }
+    private property <int> chosen: Store.current;
+    changed chosen => { root.reveal-current(); }
 
     Timer {
         interval: Tokens.motion-fast;
@@ -220,257 +481,198 @@ export component StoreWindow inherits Window {
         background: Math.mod(root.sheet, 2) == 0 ? transparent : Tokens.color-bg.transparentize(1);
     }
 
-    // Sees Tab before the field does: it moves along the chips, and
-    // Shift+Tab back, so the keyboard never leaves the search field.
+    // Sees keys before the field does, which keeps the keyboard all the
+    // time: the grids are only marked.
     FocusScope {
         focus-on-click: false;
         focus-on-tab-navigation: false;
         capture-key-pressed(event) => {
             if event.text == Key.Backtab || (event.text == Key.Tab && event.modifiers.shift) {
-                root.pick-chip(Math.mod(Store.chip - 1 + Store.chips.length, Store.chips.length));
+                root.move(0);
                 return accept;
             }
             if event.text == Key.Tab {
-                root.pick-chip(Math.mod(Store.chip + 1, Store.chips.length));
+                root.move(1);
+                return accept;
+            }
+            if event.text == Key.LeftArrow && event.modifiers.alt {
+                root.go-back();
+                return accept;
+            }
+            if (event.text == Key.LeftArrow || event.text == Key.RightArrow)
+                && (field.text == "" || root.browsing) {
+                root.move(event.text == Key.LeftArrow ? 0 : 1);
+                return accept;
+            }
+            if event.text == Key.Backspace && field.text == "" && !root.at-start {
+                // A held key that emptied the field goes no further.
+                if !event.repeat {
+                    root.go-back();
+                }
                 return accept;
             }
             return reject;
         }
 
-    Rectangle {
-        width: Math.min(parent.width, root.widest);
-        x: (parent.width - self.width) / 2;
+        // However wide the window is, the page stays in the middle of it.
+        Rectangle {
+            width: root.column;
+            x: (parent.width - self.width) / 2;
 
-        VerticalLayout {
-            padding: Tokens.space-lg;
-            spacing: Tokens.space-md;
-
-            field := TextField {
-                placeholder: "Search apps by name";
-                edited(text) => {
-                    Store.current = 0;
-                    Store.search(text);
-                }
-                accepted => { root.use-current(); }
-                cancelled => {
-                    self.clear();
-                    Store.current = 0;
-                    Store.search("");
-                }
-                stepped(by) => { root.step(by); }
-            }
-
-            // The chips in two rows, because all of them do not fit in one.
             VerticalLayout {
-                spacing: Tokens.space-sm;
+                padding-top: Tokens.space-lg;
+                spacing: Tokens.space-md;
+
                 HorizontalLayout {
+                    padding-left: Tokens.space-lg;
+                    padding-right: Tokens.space-lg;
                     spacing: Tokens.space-sm;
-                    alignment: start;
-                    for label[index] in Store.chips-first: Chip {
-                        text: label;
-                        selected: Store.chip == index;
-                        clicked => {
-                            root.pick-chip(index);
-                            field.take-focus();
+
+                    if Store.page != StorePage.start: BackButton {
+                        clicked => { root.go-back(); }
+                    }
+
+                    field := TextField {
+                        horizontal-stretch: 1;
+                        placeholder: "Search apps by name";
+                        edited(text) => {
+                            root.browsing = false;
+                            Store.search(text);
                         }
+                        accepted => { root.use-current(); }
+                        cancelled => { root.go-back(); }
+                        stepped(by) => { root.move(by < 0 ? 2 : 3); }
                     }
                 }
-                HorizontalLayout {
-                    spacing: Tokens.space-sm;
-                    alignment: start;
-                    for label[index] in Store.chips-second: Chip {
-                        text: label;
-                        selected: Store.chip == index + Store.chips-first.length;
-                        clicked => {
-                            root.pick-chip(index + Store.chips-first.length);
-                            field.take-focus();
-                        }
-                    }
-                }
-            }
 
-            if Store.notice != "": Rectangle {
-                height: notice-text.preferred-height + Tokens.space-sm * 2;
-                border-radius: Tokens.radius;
-                background: Tokens.color-surface-raised;
-                notice-text := SengiText {
-                    x: Tokens.space-md;
-                    y: Tokens.space-sm;
-                    width: parent.width - Tokens.space-md * 2;
-                    text: Store.notice;
-                    color: Tokens.color-text;
-                    wrap: word-wrap;
-                }
-            }
-
-            Rectangle {
-                vertical-stretch: 1;
-
-                list := Scroll {
-                    content-height: Store.rows.length * root.line;
-
-                    for app[index] in Store.rows: Rectangle {
-                        private property <bool> lit: !app.heading
-                            && (root.hovered == index || Store.current == index);
-
-                        y: index * root.line;
-                        height: root.line;
+                if Store.banner != "": HorizontalLayout {
+                    padding-left: Tokens.space-lg;
+                    padding-right: Tokens.space-lg;
+                    Rectangle {
+                        height: Math.max(words.preferred-height, Tokens.button) + Tokens.space-sm * 2;
                         border-radius: Tokens.radius;
-                        background: self.lit ? Tokens.color-surface-hover : transparent;
-                        animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+                        background: Tokens.color-surface-raised;
 
-                        if app.heading: SengiText {
-                            x: Tokens.space-sm;
-                            width: parent.width - Tokens.space-sm * 2;
-                            height: parent.height - Tokens.space-xs;
-                            text: app.name;
-                            color: Tokens.color-text-muted;
-                            font-weight: Tokens.font-weight-medium;
-                            vertical-alignment: bottom;
-                            overflow: elide;
+                        SengiIcon {
+                            x: Tokens.space-md;
+                            y: (parent.height - self.height) / 2;
+                            name: Store.banner-busy ? "arrows-clockwise" : "wifi-slash";
+                            ink: Tokens.color-text-muted;
                         }
 
-                        TouchArea {
-                            enabled: !app.heading;
-                            visible: !app.heading;
-                            changed has-hover => {
-                                if self.has-hover {
-                                    root.hovered = index;
-                                } else if root.hovered == index {
-                                    root.hovered = -1;
-                                }
-                            }
+                        words := SengiText {
+                            x: Tokens.space-md * 2 + Tokens.bar-icon;
+                            y: (parent.height - self.height) / 2;
+                            width: parent.width - self.x - Tokens.space-md * 2
+                                - (Store.banner-retry ? retry.preferred-width : Store.banner-busy ? Tokens.space-xxl : 0px);
+                            height: self.preferred-height;
+                            text: Store.banner;
+                            wrap: word-wrap;
+                        }
+
+                        retry := SengiButton {
+                            x: parent.width - self.width - Tokens.space-sm;
+                            y: (parent.height - self.height) / 2;
+                            width: self.preferred-width;
+                            height: Tokens.button;
+                            visible: Store.banner-retry;
+                            enabled: Store.banner-retry;
+                            outlined: true;
+                            focusable: false;
+                            text: "Retry";
                             clicked => {
-                                Store.current = index;
+                                Store.retry();
                                 field.take-focus();
                             }
+                        }
 
-                            HorizontalLayout {
-                                padding-left: Tokens.space-sm;
-                                padding-right: Tokens.space-md;
-                                spacing: Tokens.space-md;
-
-                                VerticalLayout {
-                                    alignment: center;
-                                    AppTile {
-                                        icon: app.icon;
-                                        has-icon: app.has-icon;
-                                        letter: app.letter;
-                                    }
-                                }
-
-                                VerticalLayout {
-                                    horizontal-stretch: 1;
-                                    alignment: center;
-                                    spacing: Tokens.space-xxs;
-
-                                    SengiText {
-                                        text: app.name;
-                                        font-weight: Tokens.font-weight-medium;
-                                        overflow: elide;
-                                    }
-
-                                    if app.summary != "": SengiLabel {
-                                        text: app.summary;
-                                        font-weight: Tokens.font-weight-regular;
-                                        overflow: elide;
-                                    }
-                                }
-
-                                if app.state == RowState.installing && app.percent >= 0: VerticalLayout {
-                                    width: Tokens.dialog-width * 2 / 3;
-                                    alignment: center;
-                                    spacing: Tokens.space-xs;
-                                    SengiLabel {
-                                        text: app.detail;
-                                        font-weight: Tokens.font-weight-regular;
-                                        horizontal-alignment: right;
-                                        overflow: elide;
-                                    }
-                                    HorizontalLayout {
-                                        spacing: Tokens.space-sm;
-                                        VerticalLayout {
-                                            alignment: center;
-                                            horizontal-stretch: 1;
-                                            SengiProgress { percent: app.percent; }
-                                        }
-                                        SengiText {
-                                            text: app.percent + "%";
-                                            color: Tokens.color-text-muted;
-                                            horizontal-alignment: right;
-                                            min-width: Tokens.space-xxl - Tokens.space-md;
-                                        }
-                                    }
-                                }
-
-                                if app.state == RowState.installing && app.percent < 0: HorizontalLayout {
-                                    spacing: Tokens.space-sm;
-                                    alignment: end;
-                                    VerticalLayout {
-                                        alignment: center;
-                                        Busy { }
-                                    }
-                                    SengiText {
-                                        text: app.detail != "" ? app.detail : "Installing";
-                                        color: Tokens.color-text-muted;
-                                        vertical-alignment: center;
-                                    }
-                                }
-
-                                if app.state == RowState.installed: VerticalLayout {
-                                    alignment: center;
-                                    SengiButton {
-                                        text: "Open";
-                                        primary: Store.current == index;
-                                        focusable: false;
-                                        clicked => {
-                                            Store.current = index;
-                                            Store.open(app.id);
-                                            field.take-focus();
-                                        }
-                                    }
-                                }
-
-                                if (app.state == RowState.available || app.state == RowState.failed) && !app.unavailable: VerticalLayout {
-                                    alignment: center;
-                                    SengiButton {
-                                        text: app.state == RowState.failed ? "Try again" : "Install";
-                                        primary: Store.current == index;
-                                        focusable: false;
-                                        clicked => {
-                                            Store.current = index;
-                                            Store.install(app.id);
-                                            field.take-focus();
-                                        }
-                                    }
-                                }
-                            }
+                        if Store.banner-busy: Busy {
+                            x: parent.width - self.width - Tokens.space-md;
+                            y: (parent.height - self.height) / 2;
                         }
                     }
                 }
 
-                if Store.rows.length == 0: SengiText {
-                    width: parent.width;
-                    height: parent.height;
-                    text: Store.hint;
-                    color: Tokens.color-text-muted;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                    wrap: word-wrap;
+                Rectangle {
+                    vertical-stretch: 1;
+
+                    list := Scroll {
+                        content-height: root.content;
+
+                        if root.at-start: Heading {
+                            x: Tokens.space-lg;
+                            y: 0px;
+                            width: root.page-width;
+                            text: "Categories";
+                        }
+
+                        for tile[index] in Store.tiles: CategoryTile {
+                            x: Tokens.space-lg + Math.mod(index, root.tile-columns) * (root.tile-width + root.gap);
+                            y: root.head + Math.floor(index / root.tile-columns) * root.tile-step;
+                            width: root.tile-width;
+                            height: Tokens.store-tile-height;
+                            tile: tile;
+                            selected: Store.current == index;
+                            chosen => {
+                                root.browsing = false;
+                                Store.open-category(index);
+                                field.take-focus();
+                            }
+                        }
+
+                        Heading {
+                            x: Tokens.space-lg;
+                            y: root.cards-heading;
+                            width: root.page-width;
+                            text: root.at-start ? "Featured" : Store.title;
+                        }
+
+                        for app[index] in Store.cards: AppCard {
+                            x: Tokens.space-lg + Math.mod(index, root.card-columns) * (root.card-width + root.gap);
+                            y: root.cards-top + Math.floor(index / root.card-columns) * root.card-step;
+                            width: root.card-width;
+                            height: Tokens.store-card-height;
+                            app: app;
+                            selected: Store.current == index + Store.tiles.length;
+                            chosen => {
+                                Store.current = index + Store.tiles.length;
+                                field.take-focus();
+                            }
+                            install => {
+                                Store.current = index + Store.tiles.length;
+                                Store.install(app.id);
+                                field.take-focus();
+                            }
+                            open => {
+                                Store.current = index + Store.tiles.length;
+                                Store.open(app.id);
+                                field.take-focus();
+                            }
+                        }
+
+                        if Store.cards.length == 0: SengiText {
+                            x: Tokens.space-lg;
+                            y: root.cards-top + Tokens.space-xl;
+                            width: root.page-width;
+                            text: Store.hint;
+                            color: Tokens.color-text-muted;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                if Store.message != "": HorizontalLayout {
+                    padding-left: Tokens.space-lg;
+                    padding-right: Tokens.space-lg;
+                    padding-bottom: Tokens.space-md;
+                    SengiText {
+                        text: Store.message;
+                        color: Store.message-is-error ? Tokens.color-danger : Tokens.color-text-muted;
+                        wrap: word-wrap;
+                    }
                 }
             }
-
-            SengiLabel {
-                text: Store.message;
-                color: Store.message-is-error ? Tokens.color-danger : Tokens.color-text-muted;
-                font-weight: Tokens.font-weight-regular;
-                font-size: Tokens.font-size-md;
-                height: Tokens.list-row-height;
-                vertical-alignment: top;
-                wrap: word-wrap;
-                overflow: elide;
-            }
         }
-    }
     }
 }
