@@ -1,6 +1,7 @@
 //! Reading and writing the file: what may be opened as text, and a save
 //! that cannot leave half a file behind.
 
+use std::borrow::Cow;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -8,6 +9,11 @@ use std::path::{Path, PathBuf};
 /// The most that is opened. More than this is a log or a database, not
 /// something to edit in a window that keeps the whole text in memory.
 pub const MAX_BYTES: u64 = 5 * 1024 * 1024;
+
+/// The most that can be changed. Every key typed lays the whole text out
+/// again, which past this size takes long enough to be felt on each one;
+/// moving about and searching stay quick.
+pub const EDIT_BYTES: u64 = 512 * 1024;
 
 /// Why a file is not opened for editing.
 #[derive(Debug, PartialEq, Eq)]
@@ -101,17 +107,99 @@ pub fn save(path: &Path, text: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Where a name typed for a new file goes: an absolute path as it is,
-/// `~/` from the home folder, anything else in the home folder too.
-pub fn place_named(typed: &str, home: &Path) -> PathBuf {
-    let typed = typed.trim();
-    if let Some(rest) = typed.strip_prefix("~/") {
-        home.join(rest)
-    } else if typed.starts_with('/') {
-        PathBuf::from(typed)
-    } else {
-        home.join(typed)
+/// How the lines of a file end. The editor works with plain newlines and puts
+/// the carriage returns back when it saves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineEnding {
+    Lf,
+    CrLf,
+}
+
+impl LineEnding {
+    pub fn name(self) -> &'static str {
+        match self {
+            LineEnding::Lf => "LF",
+            LineEnding::CrLf => "CRLF",
+        }
     }
+
+    /// The text as it is written to disk.
+    pub fn restore(self, text: &str) -> Cow<'_, str> {
+        match self {
+            LineEnding::Lf => Cow::Borrowed(text),
+            // Pasted text may bring its own carriage returns.
+            LineEnding::CrLf => Cow::Owned(text.replace("\r\n", "\n").replace('\n', "\r\n")),
+        }
+    }
+}
+
+/// How many columns a tab takes, and Tab fills up to.
+pub const TAB_WIDTH: usize = 4;
+
+/// What differs between the text on disk and the text as it is edited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Format {
+    pub ending: LineEnding,
+    /// The file is indented with tabs, which are edited as spaces.
+    pub tabs: bool,
+}
+
+impl Format {
+    /// A new file: plain newlines and spaces.
+    pub const PLAIN: Format = Format {
+        ending: LineEnding::Lf,
+        tabs: false,
+    };
+
+    /// The text as it is written to disk.
+    pub fn restore(self, text: &str) -> Cow<'_, str> {
+        if !self.tabs {
+            return self.ending.restore(text);
+        }
+        let tabbed: String = text.split_inclusive('\n').map(indent_with_tabs).collect();
+        Cow::Owned(self.ending.restore(&tabbed).into_owned())
+    }
+}
+
+/// The text as it is edited, and what to do to it to save it again.
+///
+/// A file whose every line ends the DOS way loses the carriage returns here.
+/// The text field draws a tab as a single space, so a file that uses tabs to
+/// indent and for nothing else has them widened to four spaces. A file that
+/// mixes either way keeps what it has, so that saving it changes nothing that
+/// was not edited.
+pub fn normalise(mut text: String) -> (String, Format) {
+    let mut format = Format::PLAIN;
+    let newlines = text.bytes().filter(|b| *b == b'\n').count();
+    let returns = text.bytes().filter(|b| *b == b'\r').count();
+    if newlines > 0 && returns == newlines && text.matches("\r\n").count() == newlines {
+        text = text.replace("\r\n", "\n");
+        format.ending = LineEnding::CrLf;
+    }
+    if text.contains('\t') && text.split_inclusive('\n').all(only_indents_with_tabs) {
+        format.tabs = true;
+        text = text.split_inclusive('\n').map(widen_tabs).collect();
+    }
+    (text, format)
+}
+
+/// True if the line's tabs all come first, and the spaces after them are too
+/// few to be taken for another tab on the way back.
+fn only_indents_with_tabs(line: &str) -> bool {
+    let rest = line.trim_start_matches('\t');
+    let spaces = rest.len() - rest.trim_start_matches(' ').len();
+    spaces < TAB_WIDTH && !rest.contains('\t')
+}
+
+fn widen_tabs(line: &str) -> String {
+    let rest = line.trim_start_matches('\t');
+    " ".repeat((line.len() - rest.len()) * TAB_WIDTH) + rest
+}
+
+fn indent_with_tabs(line: &str) -> String {
+    let rest = line.trim_start_matches(' ');
+    let spaces = line.len() - rest.len();
+    "\t".repeat(spaces / TAB_WIDTH) + &" ".repeat(spaces % TAB_WIDTH) + rest
 }
 
 #[cfg(test)]
@@ -217,13 +305,36 @@ mod tests {
     }
 
     #[test]
-    fn a_typed_name_finds_its_place() {
-        let home = Path::new("/home/a");
+    fn dos_line_endings_come_back_and_mixed_ones_are_left_alone() {
+        let (text, format) = normalise("a\r\nb\r\n".to_string());
+        assert_eq!((text.as_str(), format.ending), ("a\nb\n", LineEnding::CrLf));
+        assert_eq!(format.restore("a\nc\r\nd\n"), "a\r\nc\r\nd\r\n");
+        for odd in ["a\r\nb\n", "a\rb\r\n", "a\rb", "a\nb", ""] {
+            let (text, format) = normalise(odd.to_string());
+            assert_eq!((text.as_str(), format), (odd, Format::PLAIN));
+            assert_eq!(format.restore(&text), odd);
+        }
+    }
+
+    #[test]
+    fn indenting_tabs_are_edited_as_spaces_and_come_back() {
+        let make = "all:\n\techo one\n\t\techo two\n\t  aligned\n  two\n";
+        let (text, format) = normalise(make.to_string());
+        assert!(format.tabs);
         assert_eq!(
-            place_named(" notes.txt ", home),
-            Path::new("/home/a/notes.txt")
+            text,
+            "all:\n    echo one\n        echo two\n      aligned\n  two\n"
         );
-        assert_eq!(place_named("~/x/y.md", home), Path::new("/home/a/x/y.md"));
-        assert_eq!(place_named("/tmp/z", home), Path::new("/tmp/z"));
+        assert_eq!(format.restore(&text), make);
+        // A line typed in the editor is indented the way the file is.
+        assert_eq!(format.restore("    new\n"), "\tnew\n");
+        let dos = "a\r\n\tb\r\n";
+        let (text, format) = normalise(dos.to_string());
+        assert_eq!(format.restore(&text), dos);
+        // Tabs elsewhere, or beside four spaces, stay as they are.
+        for kept in ["a\tb\n", "\ta\n    b\n", "  \ta\n", "\t    a\n"] {
+            let (text, format) = normalise(kept.to_string());
+            assert_eq!((text.as_str(), format), (kept, Format::PLAIN));
+        }
     }
 }

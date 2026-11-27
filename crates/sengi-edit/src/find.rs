@@ -64,6 +64,35 @@ fn floor_boundary(text: &str, mut at: usize) -> usize {
     at
 }
 
+/// Where in `after` the part that differs from `before` ends.
+pub fn end_of_change(before: &str, after: &str) -> usize {
+    let (a, b) = (before.as_bytes(), after.as_bytes());
+    let head = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+    // Two characters may begin with the same byte.
+    let head = floor_boundary(before, head);
+    // The tail the two share, without counting any of the head twice.
+    let tail = a[head..]
+        .iter()
+        .rev()
+        .zip(b[head..].iter().rev())
+        .take_while(|(x, y)| x == y)
+        .count();
+    let mut end = b.len() - tail;
+    while !after.is_char_boundary(end) {
+        end += 1;
+    }
+    end
+}
+
+/// How many characters lie between two byte offsets, given in either order.
+pub fn characters_between(text: &str, a: usize, b: usize) -> usize {
+    let (low, high) = (
+        floor_boundary(text, a.min(b)),
+        floor_boundary(text, a.max(b)),
+    );
+    text[low..high].chars().count()
+}
+
 /// Where the caret is, as a line and a column (both from 1, the column in
 /// characters).
 pub fn line_and_column(text: &str, offset: usize) -> (usize, usize) {
@@ -117,6 +146,25 @@ mod tests {
         assert_eq!(count(text, "a", 4), (2, 3));
         assert_eq!(count(text, "a", 1), (0, 3));
         assert_eq!(count(text, "zz", 0), (0, 0));
+    }
+
+    #[test]
+    fn a_change_ends_where_the_texts_meet_again() {
+        assert_eq!(end_of_change("ab", "Hi ab"), 3);
+        assert_eq!(end_of_change("ab", "abcd"), 4);
+        assert_eq!(end_of_change("aXXb", "ab"), 1);
+        assert_eq!(end_of_change("aa", "aaa"), 3);
+        assert_eq!(end_of_change("\u{e9}", "\u{e8}\u{e9}"), 2);
+        assert_eq!(end_of_change("x", "x"), 1);
+    }
+
+    #[test]
+    fn a_selection_is_counted_in_characters() {
+        let text = "a\u{e9}\u{4e2d}b";
+        assert_eq!(characters_between(text, 1, 6), 2);
+        assert_eq!(characters_between(text, 6, 1), 2);
+        assert_eq!(characters_between(text, 3, 3), 0);
+        assert_eq!(characters_between(text, 0, 99), 4);
     }
 
     #[test]

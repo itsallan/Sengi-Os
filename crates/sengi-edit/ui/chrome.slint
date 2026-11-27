@@ -1,0 +1,128 @@
+// The frame around the text: the toolbar's icon buttons and their tooltip.
+// Built from the shared components; nothing here has a colour or a size of
+// its own.
+
+import { Tokens, SengiText, SengiLabel, SengiIcon } from "components.slint";
+
+// The name of the button under the pointer, for the window to draw over
+// everything else.
+export global Tip {
+    in-out property <string> text;
+    in-out property <string> keys;
+    // The middle of the button, in the window.
+    in-out property <length> x;
+    in-out property <length> y;
+    in-out property <bool> shown: false;
+}
+
+// A flat square button around an icon. `label` is its name for the tooltip
+// and for a screen reader, `keys` the shortcut shown beside the name.
+export component ToolButton inherits Rectangle {
+    in property <string> icon;
+    in property <string> label;
+    in property <string> keys;
+    in property <bool> enabled: true;
+    // Switched on, as the line numbers button is while they show.
+    in property <bool> active: false;
+    out property <bool> hovered: touch.has-hover;
+    callback clicked();
+
+    width: Tokens.button + Tokens.space-xs;
+    height: self.width;
+    border-radius: Tokens.radius;
+    background: root.active ? Tokens.color-surface-hover
+        : root.enabled && touch.pressed ? Tokens.color-surface-hover
+        : root.enabled && touch.has-hover ? Tokens.color-surface-raised : transparent;
+    animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+
+    SengiIcon {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        name: root.icon;
+        ink: root.enabled ? Tokens.color-text : Tokens.color-text-disabled;
+    }
+
+    Timer {
+        interval: Tokens.tooltip-delay;
+        running: touch.has-hover && !touch.pressed && !Tip.shown && Tip.text == root.label;
+        triggered => { Tip.shown = true; }
+    }
+
+    // A TouchArea that is switched off hears no pointer, so the tooltip of a
+    // button that cannot be used comes from the same one.
+    touch := TouchArea {
+        changed has-hover => {
+            if self.has-hover {
+                Tip.shown = false;
+                Tip.text = root.label;
+                Tip.keys = root.keys;
+                Tip.x = self.absolute-position.x + root.width / 2;
+                Tip.y = self.absolute-position.y + root.height;
+            } else if Tip.text == root.label {
+                Tip.shown = false;
+                Tip.text = "";
+            }
+        }
+        clicked => {
+            Tip.shown = false;
+            Tip.text = "";
+            if root.enabled {
+                root.clicked();
+            }
+        }
+    }
+}
+
+// A short line between two groups of buttons.
+export component ToolGap inherits Rectangle {
+    width: Tokens.space-md + Tokens.border-width;
+    height: Tokens.button + Tokens.space-xs;
+
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: Tokens.border-width;
+        height: Tokens.space-lg;
+        background: Tokens.color-border;
+    }
+}
+
+// The tooltip. It goes last in the window, so it lies over the rest.
+export component TipLayer inherits Rectangle {
+    if Tip.shown: Rectangle {
+        x: Math.clamp(Tip.x - self.width / 2, Tokens.space-xs,
+            root.width - self.width - Tokens.space-xs);
+        y: Tip.y + Tokens.space-xs;
+        width: words.preferred-width;
+        height: Tokens.button;
+        border-radius: Tokens.radius;
+        border-width: Tokens.border-width;
+        border-color: Tokens.color-border;
+        background: Tokens.color-surface-raised;
+
+        words := HorizontalLayout {
+            padding-left: Tokens.space-sm;
+            padding-right: Tokens.space-sm;
+            spacing: Tokens.space-sm;
+
+            SengiText {
+                text: Tip.text;
+                font-size: Tokens.font-size-sm;
+                vertical-alignment: center;
+            }
+
+            if Tip.keys != "": SengiLabel {
+                text: Tip.keys;
+                font-weight: Tokens.font-weight-regular;
+                vertical-alignment: center;
+            }
+        }
+    }
+}

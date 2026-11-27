@@ -3,6 +3,7 @@
 //! closed.
 
 pub mod app;
+pub mod browse;
 pub mod doc;
 pub mod find;
 

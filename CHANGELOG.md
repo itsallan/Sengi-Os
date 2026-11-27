@@ -219,6 +219,11 @@ and the measured idle RAM and boot time.
 ### Changed
 
 - Window shadows are much fainter, narrower and sit closer to the window.
+- Text Editor: redesigned with an icon toolbar and tooltips, the file name in
+  the middle, text edge to edge, optional line numbers, a find bar, a fuller
+  status line, Open and Save As dialogs, Save in the unsaved-changes question
+  and Ctrl+Y. Selecting by dragging works, tab-indented files keep their tabs,
+  CRLF files stay CRLF, and files over 512 KB open for reading only.
 - The accent colour is green (#2f9e6b), not orange.
 - The Installer and Settings app icons are Phosphor Bold glyphs, like the
   Store's.

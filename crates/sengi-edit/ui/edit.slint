@@ -1,13 +1,15 @@
-// The Text Editor window: a bar with the file's name and two buttons, a find
-// bar when it is asked for, the text, and one line at the bottom. Built from
-// the shared components, Settings' kit and the text area of ui/; nothing
-// here has a colour or a size of its own.
+// The Text Editor window: a toolbar with the file's name in the middle, a
+// find bar when it is asked for, the text edge to edge, and a quiet line of
+// status. Built from the shared components, the text field of Settings' kit
+// and the text area of ui/; nothing here has a colour or a size of its own.
 
-import { Tokens, SengiText, SengiLabel, SengiButton } from "components.slint";
-import { TextField, DialogLayer, DialogSpec } from "kit.slint";
+import { Tokens, SengiText, SengiLabel, SengiButton, SengiIcon } from "components.slint";
+import { TextField } from "kit.slint";
 import { SengiTextArea } from "text-area.slint";
+import { Tip, ToolButton, ToolGap, TipLayer } from "chrome.slint";
+import { Question, FileEntry, Browse, QuestionLayer, FileLayer } from "dialogs.slint";
 
-export { DialogSpec }
+export { Question, FileEntry, Browse, Tip }
 export { ThemeSwitch } from "components.slint";
 
 // What the window shows and what it reports. Rust fills the one and hears
@@ -22,31 +24,156 @@ export global Edit {
     in property <int> select-from;
     in property <int> select-to;
     in property <int> select-tick;
+    // Goes up when another file is shown.
+    in property <int> reset-tick;
     // The window title, and the name shown over the text.
     in property <string> title: "Text Editor";
     in property <string> name;
+    in property <bool> untitled: true;
     in property <bool> dirty: false;
     // Why the file is not shown, said in place of the text. Empty when it is.
     in property <string> refusal;
-    in property <string> status;
+    // The file is too large to be changed.
+    in property <bool> read-only: false;
+    // The line at the bottom: where the caret is, what just happened, how
+    // much text there is and how its lines end.
+    in property <string> position;
     in property <string> notice;
     in property <bool> notice-is-error: false;
+    in property <string> size;
+    in property <string> line-ending: "LF";
+    in property <int> lines: 1;
+    in property <int> line: 1;
+    in-out property <bool> line-numbers: false;
     in-out property <bool> find-open: false;
     in-out property <string> find-text;
     // "2 of 5", "No match" or nothing.
     in property <string> find-result;
-    in property <bool> dialog-open: false;
-    in property <DialogSpec> dialog;
+    in property <bool> asking: false;
+    in property <Question> question;
+    in property <bool> browsing: false;
+    in property <Browse> browse;
+    in property <[FileEntry]> entries;
+    in property <int> entry: -1;
+    in-out property <string> file-name;
+    in property <int> name-tick;
 
+    callback new-file();
+    callback open-file();
     callback save();
+    callback save-as();
     callback close();
     callback text-edited();
     callback caret-moved();
+    callback tab();
+    callback redone(string);
+    callback find-opened();
     callback find-changed(string);
     callback find-next();
     callback find-previous();
-    callback dialog-confirmed(string);
-    callback dialog-cancelled();
+    callback question-confirmed();
+    callback question-other();
+    callback question-cancelled();
+    callback folder-up();
+    callback entry-picked(int);
+    callback entry-chosen(int);
+    callback entry-stepped(int);
+    callback name-typed();
+    callback file-accepted();
+    callback file-cancelled();
+}
+
+component FindBar inherits Rectangle {
+    callback closed();
+
+    public function take-focus() {
+        field.take-focus();
+        field.select-all();
+    }
+
+    height: Tokens.list-row-height;
+    background: Tokens.color-bg;
+
+    HorizontalLayout {
+        padding-left: Tokens.space-md;
+        padding-right: Tokens.space-sm;
+        spacing: Tokens.space-xs;
+
+        VerticalLayout {
+            alignment: center;
+            padding-right: Tokens.space-xs;
+            SengiIcon {
+                name: "magnifying-glass";
+                ink: Tokens.color-text-muted;
+            }
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            field := TextField {
+                text <=> Edit.find-text;
+                placeholder: "Find in text";
+                edited(text) => { Edit.find-changed(text); }
+                accepted(text) => { Edit.find-next(); }
+                cancelled => { root.closed(); }
+                stepped(direction) => {
+                    if direction > 0 {
+                        Edit.find-next();
+                    } else {
+                        Edit.find-previous();
+                    }
+                }
+            }
+        }
+
+        SengiLabel {
+            width: Tokens.value-column-lg + Tokens.space-sm;
+            text: Edit.find-result;
+            font-weight: Tokens.font-weight-regular;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        VerticalLayout {
+            alignment: center;
+            ToolButton {
+                icon: "caret-up";
+                label: "Previous match";
+                keys: "Shift+F3";
+                enabled: Edit.find-text != "";
+                clicked => { Edit.find-previous(); }
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            ToolButton {
+                icon: "caret-down";
+                label: "Next match";
+                keys: "F3";
+                enabled: Edit.find-text != "";
+                clicked => { Edit.find-next(); }
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            ToolButton {
+                icon: "x";
+                label: "Close";
+                keys: "Esc";
+                clicked => { root.closed(); }
+            }
+        }
+    }
+
+    Rectangle {
+        y: parent.height - self.height;
+        height: Tokens.border-width;
+        background: Tokens.color-border;
+    }
 }
 
 export component EditWindow inherits Window {
@@ -58,6 +185,11 @@ export component EditWindow inherits Window {
     background: Tokens.color-bg;
     default-font-family: Tokens.font-family;
     default-font-size: Tokens.font-size-md;
+
+    private property <bool> shown: Edit.refusal == "";
+    private property <bool> editable: root.shown && !Edit.read-only;
+    private property <bool> covered: Edit.asking || Edit.browsing;
+    private property <length> bar: Tokens.list-row-height + Tokens.space-xs;
 
     // The renderer keeps two buffers and only one of them knows after a
     // change of size or scale that it is new, so for a few frames the
@@ -72,9 +204,13 @@ export component EditWindow inherits Window {
     }
 
     function open-find() {
+        if !root.shown {
+            return;
+        }
+        // The program may put the selected words in the field.
+        Edit.find-opened();
         Edit.find-open = true;
-        find-field.take-focus();
-        find-field.select-all();
+        find.take-focus();
     }
 
     function close-find() {
@@ -92,6 +228,32 @@ export component EditWindow inherits Window {
     changed select-tick => {
         area.select(Edit.select-from, Edit.select-to);
         root.sync();
+    }
+    private property <int> reset-tick: Edit.reset-tick;
+    changed reset-tick => {
+        area.reset();
+        root.sync();
+        root.come-home();
+    }
+    // A dialog that has gone gives the keyboard back.
+    changed covered => {
+        Tip.shown = false;
+        Tip.text = "";
+        root.come-home();
+    }
+    changed shown => { root.come-home(); }
+
+    // The keyboard belongs in the text, or with the window's own keys where
+    // no text is shown.
+    function come-home() {
+        if root.covered {
+            return;
+        }
+        if root.shown {
+            area.take-focus();
+        } else {
+            scope.focus();
+        }
     }
 
     changed pixel => { root.draw-everything(); }
@@ -113,14 +275,24 @@ export component EditWindow inherits Window {
 
     scope := FocusScope {
         key-pressed(event) => {
-            if Edit.dialog-open {
+            if root.covered {
                 return EventResult.reject;
             }
             if event.modifiers.control {
                 if event.text == "s" || event.text == "S" {
-                    Edit.save();
+                    if event.modifiers.shift {
+                        Edit.save-as();
+                    } else {
+                        Edit.save();
+                    }
+                } else if event.text == "o" || event.text == "O" {
+                    Edit.open-file();
+                } else if event.text == "n" || event.text == "N" {
+                    Edit.new-file();
                 } else if event.text == "f" || event.text == "F" {
                     root.open-find();
+                } else if event.text == "l" || event.text == "L" {
+                    Edit.line-numbers = !Edit.line-numbers;
                 } else if event.text == "w" || event.text == "W" || event.text == "q" || event.text == "Q" {
                     Edit.close();
                 } else {
@@ -144,39 +316,139 @@ export component EditWindow inherits Window {
         }
 
         VerticalLayout {
-            HorizontalLayout {
-                padding: Tokens.space-md;
-                spacing: Tokens.space-sm;
+            // The toolbar. The name is placed over it, in the middle of the
+            // window and not of the room the buttons leave.
+            toolbar := Rectangle {
+                height: root.bar;
+                background: Tokens.color-bg;
 
-                SengiText {
-                    horizontal-stretch: 1;
-                    text: (Edit.dirty ? "* " : "") + Edit.name;
-                    font-weight: Tokens.font-weight-medium;
-                    vertical-alignment: center;
-                    overflow: elide;
-                }
+                leading := HorizontalLayout {
+                    x: Tokens.space-sm;
+                    y: (parent.height - self.height) / 2;
+                    width: self.preferred-width;
+                    height: Tokens.button + Tokens.space-xs;
+                    spacing: Tokens.space-xxs;
 
-                SengiButton {
-                    text: "Find";
-                    enabled: Edit.refusal == "";
-                    focusable: false;
-                    clicked => {
-                        if Edit.find-open {
-                            root.close-find();
-                        } else {
-                            root.open-find();
+                    ToolButton {
+                        icon: "file-plus";
+                        label: "New";
+                        keys: "Ctrl+N";
+                        clicked => { Edit.new-file(); }
+                    }
+
+                    ToolButton {
+                        icon: "folder-open";
+                        label: "Open";
+                        keys: "Ctrl+O";
+                        clicked => { Edit.open-file(); }
+                    }
+
+                    ToolButton {
+                        icon: "floppy-disk";
+                        label: "Save";
+                        keys: "Ctrl+S";
+                        enabled: root.editable;
+                        clicked => {
+                            Edit.save();
+                            if !root.covered {
+                                area.take-focus();
+                            }
+                        }
+                    }
+
+                    ToolGap { }
+
+                    ToolButton {
+                        icon: "arrow-counter-clockwise";
+                        label: "Undo";
+                        keys: "Ctrl+Z";
+                        enabled: root.editable;
+                        clicked => {
+                            area.undo();
+                            area.take-focus();
+                        }
+                    }
+
+                    ToolButton {
+                        icon: "arrow-clockwise";
+                        label: "Redo";
+                        keys: "Ctrl+Y";
+                        enabled: root.editable;
+                        clicked => {
+                            area.redo();
+                            area.take-focus();
                         }
                     }
                 }
 
-                SengiButton {
-                    text: "Save";
-                    primary: Edit.dirty;
-                    enabled: Edit.refusal == "";
-                    focusable: false;
-                    clicked => {
-                        Edit.save();
-                        area.take-focus();
+                trailing := HorizontalLayout {
+                    x: parent.width - self.width - Tokens.space-sm;
+                    y: (parent.height - self.height) / 2;
+                    width: self.preferred-width;
+                    height: Tokens.button + Tokens.space-xs;
+                    spacing: Tokens.space-xxs;
+
+                    ToolButton {
+                        icon: "list-numbers";
+                        label: "Line numbers";
+                        keys: "Ctrl+L";
+                        enabled: root.shown;
+                        active: Edit.line-numbers;
+                        clicked => {
+                            Edit.line-numbers = !Edit.line-numbers;
+                            area.take-focus();
+                        }
+                    }
+
+                    ToolButton {
+                        icon: "magnifying-glass";
+                        label: "Find";
+                        keys: "Ctrl+F";
+                        enabled: root.shown;
+                        active: Edit.find-open;
+                        clicked => {
+                            if Edit.find-open {
+                                root.close-find();
+                            } else {
+                                root.open-find();
+                            }
+                        }
+                    }
+                }
+
+                // The unsaved dot, then the name.
+                Rectangle {
+                    // As far from each end as the wider group of buttons.
+                    private property <length> side:
+                        Math.max(leading.width, trailing.width) + Tokens.space-lg;
+
+                    x: self.side;
+                    width: parent.width - self.side * 2;
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: Tokens.space-sm;
+
+                        if Edit.dirty: VerticalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: Tokens.password-dot;
+                                height: Tokens.password-dot;
+                                border-radius: self.height / 2;
+                                background: Tokens.color-accent;
+                                accessible-role: text;
+                                accessible-label: "Not saved";
+                            }
+                        }
+
+                        SengiText {
+                            max-width: toolbar.width - (Math.max(leading.width, trailing.width) + Tokens.space-lg) * 2
+                                - (Edit.dirty ? Tokens.password-dot + Tokens.space-sm : 0px);
+                            text: Edit.name;
+                            font-weight: Tokens.font-weight-medium;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
                     }
                 }
             }
@@ -186,62 +458,90 @@ export component EditWindow inherits Window {
                 background: Tokens.color-border;
             }
 
-            HorizontalLayout {
+            // Kept in the tree when closed, so that it can take the keyboard
+            // the moment it opens.
+            find := FindBar {
                 visible: Edit.find-open;
-                height: Edit.find-open ? Tokens.button + Tokens.space-sm * 2 : 0;
-                padding-left: Tokens.space-md;
-                padding-right: Tokens.space-md;
-                padding-top: Tokens.space-sm;
-                padding-bottom: Tokens.space-xs;
-                spacing: Tokens.space-sm;
-
-                find-field := TextField {
-                    horizontal-stretch: 1;
-                    text <=> Edit.find-text;
-                    placeholder: "Find";
-                    edited(text) => { Edit.find-changed(text); }
-                    accepted(text) => { Edit.find-next(); }
-                    cancelled => { root.close-find(); }
-                }
-
-                SengiLabel {
-                    width: Tokens.value-column-lg;
-                    text: Edit.find-result;
-                    vertical-alignment: center;
-                }
-
-                SengiButton {
-                    text: "Previous";
-                    focusable: false;
-                    clicked => { Edit.find-previous(); }
-                }
-
-                SengiButton {
-                    text: "Next";
-                    focusable: false;
-                    clicked => { Edit.find-next(); }
-                }
+                height: Edit.find-open ? Tokens.list-row-height : 0px;
+                clip: true;
+                closed => { root.close-find(); }
             }
 
             Rectangle {
                 vertical-stretch: 1;
+                background: Tokens.color-surface;
 
                 area := SengiTextArea {
-                    visible: Edit.refusal == "";
-                    x: Tokens.space-md;
-                    y: Tokens.space-md;
-                    width: parent.width - Tokens.space-md * 2;
-                    height: parent.height - Tokens.space-md * 2;
+                    visible: root.shown;
+                    read-only: Edit.read-only;
                     text <=> Edit.text;
+                    line-numbers: Edit.line-numbers;
+                    lines: Edit.lines;
+                    current-line: Edit.line;
                     edited => { root.sync(); Edit.text-edited(); }
                     moved => { root.sync(); Edit.caret-moved(); }
+                    tab => { Edit.tab(); }
+                    redone(before) => { Edit.redone(before); }
                     init => { self.take-focus(); }
                 }
 
-                if Edit.refusal != "": VerticalLayout {
+                // A page with no name and nothing on it yet. The caret is at
+                // the top and typing begins there.
+                if root.editable && Edit.untitled && Edit.text == "": VerticalLayout {
                     alignment: center;
-                    padding: Tokens.space-xl;
                     spacing: Tokens.space-md;
+
+                    HorizontalLayout {
+                        alignment: center;
+                        SengiIcon {
+                            width: Tokens.space-xxl;
+                            height: Tokens.space-xxl;
+                            name: "file-text";
+                            ink: Tokens.color-text-disabled;
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: Tokens.space-xs;
+
+                        SengiText {
+                            text: "Start typing";
+                            font-size: Tokens.font-size-lg;
+                            font-weight: Tokens.font-weight-medium;
+                            horizontal-alignment: center;
+                        }
+
+                        SengiText {
+                            text: "or open a file to carry on with it";
+                            color: Tokens.color-text-muted;
+                            horizontal-alignment: center;
+                        }
+                    }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        SengiButton {
+                            text: "Open a file";
+                            focusable: false;
+                            clicked => { Edit.open-file(); }
+                        }
+                    }
+                }
+
+                if !root.shown: VerticalLayout {
+                    alignment: center;
+                    padding: Tokens.space-xxl;
+                    spacing: Tokens.space-md;
+
+                    HorizontalLayout {
+                        alignment: center;
+                        SengiIcon {
+                            width: Tokens.space-xxl;
+                            height: Tokens.space-xxl;
+                            name: "warning";
+                            ink: Tokens.color-warning;
+                        }
+                    }
 
                     SengiText {
                         text: "This file is not opened";
@@ -256,6 +556,15 @@ export component EditWindow inherits Window {
                         horizontal-alignment: center;
                         wrap: word-wrap;
                     }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        SengiButton {
+                            text: "Open another file";
+                            focusable: false;
+                            clicked => { Edit.open-file(); }
+                        }
+                    }
                 }
             }
 
@@ -264,36 +573,74 @@ export component EditWindow inherits Window {
                 background: Tokens.color-border;
             }
 
-            HorizontalLayout {
-                padding-left: Tokens.space-md;
-                padding-right: Tokens.space-md;
-                padding-top: Tokens.space-sm;
-                padding-bottom: Tokens.space-sm;
-                spacing: Tokens.space-md;
+            Rectangle {
+                height: Tokens.button;
+                background: Tokens.color-bg;
 
-                SengiLabel {
-                    horizontal-stretch: 1;
-                    text: Edit.notice != "" ? Edit.notice : Edit.status;
-                    color: Edit.notice == "" ? Tokens.color-text-muted
-                        : Edit.notice-is-error ? Tokens.color-danger : Tokens.color-text;
-                    font-weight: Tokens.font-weight-regular;
-                    overflow: elide;
-                }
+                HorizontalLayout {
+                    padding-left: Tokens.space-md;
+                    padding-right: Tokens.space-md;
+                    spacing: Tokens.space-lg;
 
-                SengiLabel {
-                    text: "UTF-8";
-                    font-weight: Tokens.font-weight-regular;
+                    SengiLabel {
+                        visible: root.shown;
+                        text: Edit.position;
+                        font-weight: Tokens.font-weight-regular;
+                        vertical-alignment: center;
+                    }
+
+                    SengiLabel {
+                        horizontal-stretch: 1;
+                        text: Edit.notice;
+                        color: Edit.notice-is-error ? Tokens.color-danger : Tokens.color-text;
+                        font-weight: Tokens.font-weight-regular;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    if root.shown: SengiLabel {
+                        text: Edit.size;
+                        font-weight: Tokens.font-weight-regular;
+                        vertical-alignment: center;
+                    }
+
+                    if root.shown: SengiLabel {
+                        text: Edit.line-ending;
+                        font-weight: Tokens.font-weight-regular;
+                        vertical-alignment: center;
+                    }
+
+                    if root.shown: SengiLabel {
+                        text: "UTF-8";
+                        font-weight: Tokens.font-weight-regular;
+                        vertical-alignment: center;
+                    }
                 }
             }
         }
     }
 
-    if Edit.dialog-open: DialogLayer {
-        spec: Edit.dialog;
-        confirmed(text) => { Edit.dialog-confirmed(text); }
-        cancelled => {
-            Edit.dialog-cancelled();
-            scope.focus();
-        }
+    TipLayer { }
+
+    if Edit.browsing: FileLayer {
+        browse: Edit.browse;
+        entries: Edit.entries;
+        current: Edit.entry;
+        name <=> Edit.file-name;
+        select-tick: Edit.name-tick;
+        up => { Edit.folder-up(); }
+        picked(index) => { Edit.entry-picked(index); }
+        chosen(index) => { Edit.entry-chosen(index); }
+        stepped(direction) => { Edit.entry-stepped(direction); }
+        typed => { Edit.name-typed(); }
+        accepted => { Edit.file-accepted(); }
+        cancelled => { Edit.file-cancelled(); }
+    }
+
+    if Edit.asking: QuestionLayer {
+        ask: Edit.question;
+        confirmed => { Edit.question-confirmed(); }
+        other => { Edit.question-other(); }
+        cancelled => { Edit.question-cancelled(); }
     }
 }

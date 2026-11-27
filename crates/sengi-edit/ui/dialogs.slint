@@ -1,0 +1,352 @@
+// The editor's two questions: one with up to three answers, for changes
+// that were not saved and for replacing a file, and one that picks a file to
+// open or a name to save under. Both lie over the whole window and share the
+// same card, and Escape leaves either.
+
+import { Tokens, SengiText, SengiLabel, SengiButton, SengiSurface, SengiIcon } from "components.slint";
+import { TextField } from "kit.slint";
+import { ToolButton } from "chrome.slint";
+
+// What a question says and the answers it offers.
+export struct Question {
+    title: string,
+    body: string,
+    // The usual answer, at the right.
+    confirm: string,
+    // A second answer at the far left that throws something away, or nothing.
+    other: string,
+    // The usual answer is the one that cannot be taken back.
+    danger: bool,
+}
+
+export struct FileEntry {
+    name: string,
+    folder: bool,
+}
+
+// The file dialog's words and its list.
+export struct Browse {
+    title: string,
+    confirm: string,
+    // The folder shown, as it is to be read.
+    folder: string,
+    can-up: bool,
+    // Under the list, when it does not hold everything, or nothing.
+    note: string,
+    // Under the field: what was wrong with the last try.
+    problem: string,
+}
+
+// Takes the focus that Tab carries past the last control of a dialog and
+// hands it back to the first.
+component Fence inherits FocusScope {
+    callback reached();
+
+    width: 0;
+    height: 0;
+    changed has-focus => {
+        if self.has-focus {
+            root.reached();
+        }
+    }
+}
+
+// The shade over the window and the card in the middle of it.
+component Sheet inherits Rectangle {
+    in property <length> card-width;
+    callback cancelled();
+    // Tab left the dialog's last control, or Shift+Tab its first.
+    callback wrapped-round();
+
+    background: Tokens.color-scrim;
+
+    // Nothing behind the dialog can be clicked.
+    TouchArea { }
+
+    FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.cancelled();
+            }
+            // Tab moves between the dialog's own controls. Nothing else
+            // typed here reaches the window behind.
+            return event.text == Key.Tab || event.text == Key.Backtab
+                ? EventResult.reject : EventResult.accept;
+        }
+
+        card := SengiSurface {
+            width: Math.min(root.card-width, root.width - Tokens.space-xl * 2);
+            height: body.preferred-height;
+
+            Fence {
+                reached => { root.wrapped-round(); }
+            }
+
+            body := VerticalLayout {
+                padding: Tokens.space-xl;
+                spacing: Tokens.space-md;
+
+                @children
+            }
+
+            Fence {
+                reached => { root.wrapped-round(); }
+            }
+        }
+    }
+}
+
+export component QuestionLayer inherits Rectangle {
+    in property <Question> ask;
+    callback confirmed();
+    callback other();
+    callback cancelled();
+
+    // Where the keyboard starts: on the answer that loses nothing.
+    function settle() {
+        if root.ask.danger {
+            cancel.focus();
+        } else {
+            confirm.focus();
+        }
+    }
+
+    init => { root.settle(); }
+    changed ask => { root.settle(); }
+
+    Sheet {
+        card-width: Tokens.dialog-width + Tokens.space-xxl;
+        cancelled => { root.cancelled(); }
+        wrapped-round => { cancel.focus(); }
+
+        SengiText {
+            text: root.ask.title;
+            font-size: Tokens.font-size-lg;
+            font-weight: Tokens.font-weight-bold;
+            wrap: word-wrap;
+        }
+
+        SengiText {
+            text: root.ask.body;
+            color: Tokens.color-text-muted;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            padding-top: Tokens.space-xs;
+            spacing: Tokens.space-sm;
+
+            if root.ask.other != "": SengiButton {
+                text: root.ask.other;
+                danger: true;
+                horizontal-stretch: 0;
+                clicked => { root.other(); }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+
+            cancel := SengiButton {
+                text: "Cancel";
+                horizontal-stretch: 0;
+                clicked => { root.cancelled(); }
+            }
+
+            confirm := SengiButton {
+                text: root.ask.confirm;
+                primary: !root.ask.danger;
+                danger: root.ask.danger;
+                horizontal-stretch: 0;
+                clicked => { root.confirmed(); }
+            }
+        }
+    }
+}
+
+export component FileLayer inherits Rectangle {
+    in property <Browse> browse;
+    in property <[FileEntry]> entries;
+    // The row picked in the list, or -1.
+    in property <int> current: -1;
+    in-out property <string> name <=> field.text;
+    // Each change selects the whole name, for typing over it.
+    in property <int> select-tick;
+    callback up();
+    callback picked(int);
+    callback chosen(int);
+    callback stepped(int);
+    callback typed();
+    callback accepted();
+    callback cancelled();
+
+    private property <length> row-height: Tokens.button + Tokens.space-xs;
+    // What the card holds besides the list, so the list takes only what is
+    // left of a small window.
+    private property <length> chrome: Tokens.space-xl * 4 + Tokens.space-md * 4
+        + Tokens.font-size-lg * 2 + Tokens.button * 3 + Tokens.space-xs
+        + (root.browse.note != "" ? Tokens.space-md + Tokens.font-size-sm * 2 : 0px)
+        + (root.browse.problem != "" ? Tokens.space-md + Tokens.font-size-sm * 2 : 0px);
+    private property <length> list-height: Math.max(root.row-height * 3,
+        Math.min(root.row-height * Tokens.chooser-lines, root.height - root.chrome));
+
+    private property <int> tick: root.select-tick;
+    changed tick => {
+        field.take-focus();
+        field.select-all();
+    }
+    changed current => {
+        if root.current >= 0 {
+            let top = root.current * root.row-height;
+            if top + list.content-y < 0px {
+                list.content-y = -top;
+            } else if top + root.row-height + list.content-y > list.height {
+                list.content-y = list.height - top - root.row-height;
+            }
+        }
+    }
+    changed entries => { list.content-y = 0px; }
+    init => {
+        field.take-focus();
+        field.select-all();
+    }
+
+    Sheet {
+        card-width: Tokens.chooser-width;
+        cancelled => { root.cancelled(); }
+        wrapped-round => { field.take-focus(); }
+
+        SengiText {
+            text: root.browse.title;
+            font-size: Tokens.font-size-lg;
+            font-weight: Tokens.font-weight-bold;
+            overflow: elide;
+        }
+
+        HorizontalLayout {
+            spacing: Tokens.space-sm;
+
+            ToolButton {
+                icon: "arrow-up";
+                label: "Up one folder";
+                enabled: root.browse.can-up;
+                clicked => {
+                    root.up();
+                    field.take-focus();
+                }
+            }
+
+            SengiText {
+                horizontal-stretch: 1;
+                text: root.browse.folder;
+                color: Tokens.color-text-muted;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        Rectangle {
+            height: root.list-height + Tokens.space-xs * 2;
+            border-radius: Tokens.radius;
+            border-width: Tokens.border-width;
+            border-color: Tokens.color-border;
+            background: Tokens.color-bg;
+
+            if root.entries.length == 0: SengiText {
+                text: "This folder is empty";
+                color: Tokens.color-text-muted;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            list := Flickable {
+                x: Tokens.space-xs;
+                y: Tokens.space-xs;
+                width: parent.width - Tokens.space-xs * 2;
+                height: parent.height - Tokens.space-xs * 2;
+                content-width: self.width;
+                content-height: Math.max(self.height, root.entries.length * root.row-height);
+
+                for entry[index] in root.entries: Rectangle {
+                    y: index * root.row-height;
+                    width: list.width - Tokens.space-sm;
+                    height: root.row-height;
+                    border-radius: Tokens.radius;
+                    background: index == root.current ? Tokens.color-surface-hover
+                        : touch.has-hover ? Tokens.color-surface-raised : transparent;
+                    accessible-role: list-item;
+                    accessible-label: entry.name;
+
+                    SengiIcon {
+                        x: Tokens.space-sm;
+                        y: (parent.height - self.height) / 2;
+                        name: entry.folder ? "folder" : "file";
+                        ink: Tokens.color-text-muted;
+                    }
+
+                    SengiText {
+                        x: Tokens.space-sm * 2 + Tokens.bar-icon;
+                        width: parent.width - self.x - Tokens.space-sm;
+                        height: parent.height;
+                        text: entry.name;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    touch := TouchArea {
+                        clicked => { root.picked(index); }
+                        double-clicked => { root.chosen(index); }
+                    }
+                }
+            }
+
+            // Where the view is, when the folder is longer than the list.
+            if list.content-height > list.height: Rectangle {
+                x: parent.width - self.width - Tokens.space-xxs;
+                y: Tokens.space-xs + (list.height - self.height)
+                    * Math.clamp(-list.content-y / (list.content-height - list.height), 0, 1);
+                width: Tokens.space-xs;
+                height: Math.max(list.height * list.height / list.content-height, Tokens.space-xl);
+                border-radius: self.width / 2;
+                background: Tokens.color-border;
+            }
+        }
+
+        if root.browse.note != "": SengiLabel {
+            text: root.browse.note;
+            font-weight: Tokens.font-weight-regular;
+            wrap: word-wrap;
+        }
+
+        field := TextField {
+            placeholder: "File name or path";
+            edited => { root.typed(); }
+            accepted => { root.accepted(); }
+            cancelled => { root.cancelled(); }
+            stepped(direction) => { root.stepped(direction); }
+        }
+
+        if root.browse.problem != "": SengiLabel {
+            text: root.browse.problem;
+            color: Tokens.color-danger;
+            font-weight: Tokens.font-weight-regular;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            alignment: end;
+            spacing: Tokens.space-sm;
+
+            SengiButton {
+                text: "Cancel";
+                clicked => { root.cancelled(); }
+            }
+
+            SengiButton {
+                text: root.browse.confirm;
+                primary: true;
+                clicked => { root.accepted(); }
+            }
+        }
+    }
+}
