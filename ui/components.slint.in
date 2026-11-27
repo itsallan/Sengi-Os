@@ -183,6 +183,12 @@ export component SengiToolButton inherits Rectangle {
 // A button that cannot be used is drawn as an outline with no fill. A
 // fill in a surface colour would vanish on whichever surface has that
 // colour, leaving bare words that do not look like a button at all.
+//
+// Three weights: `primary` is the one thing to do next, the plain button
+// any other action, and `quiet`, words alone until the pointer is on
+// them, the ones that should not compete: dismiss, refresh, step aside.
+// High contrast draws a line around every button but the filled one,
+// since its fills are too close to the surfaces to be told apart.
 export component SengiButton inherits Rectangle {
     in property <string> text;
     in property <bool> primary: false;
@@ -191,6 +197,7 @@ export component SengiButton inherits Rectangle {
     // With a line around it, for a button on a surface that may take on
     // the button's own colours, such as a list row under the pointer.
     in property <bool> outlined: false;
+    in property <bool> quiet: false;
     // False for a button that only repeats, for the pointer, what a key
     // already does where the keyboard is: it is then no stop for Tab.
     in property <bool> focusable: true;
@@ -202,11 +209,13 @@ export component SengiButton inherits Rectangle {
     min-height: Tokens.button;
     border-radius: Tokens.radius;
     border-width: scope.has-focus ? Tokens.focus-ring-width
-        : root.outlined || !root.enabled ? Tokens.border-width : 0;
+        : root.outlined || (ThemeSwitch.high-contrast && !(root.primary && root.enabled))
+            || (!root.enabled && !root.quiet) ? Tokens.border-width : 0;
     border-color: scope.has-focus ? Tokens.color-focus-ring
         : !root.enabled ? Tokens.color-outline-disabled : Tokens.color-border;
     background: !root.enabled ? transparent
         : root.primary ? (touch.has-hover ? Tokens.color-accent-hover : Tokens.color-accent)
+        : root.quiet ? (touch.has-hover ? Tokens.color-surface-hover : transparent)
         : (touch.has-hover ? Tokens.color-surface-hover : Tokens.color-surface-raised);
     animate background { duration: Tokens.motion-fast; easing: @{motion.easing}; }
 
@@ -261,9 +270,13 @@ export component SengiToggle inherits Rectangle {
     width: Tokens.space-xl * 1.5;
     height: Tokens.space-lg + Tokens.space-xs;
     border-radius: self.height / 2;
+    // In high contrast the track that is off is outlined: its fill alone
+    // can hardly be seen on black.
     border-width: scope.has-focus ? Tokens.focus-ring-width
-        : !root.enabled ? Tokens.border-width : 0;
-    border-color: scope.has-focus ? Tokens.color-focus-ring : Tokens.color-outline-disabled;
+        : !root.enabled || (ThemeSwitch.high-contrast && !root.checked)
+            ? Tokens.border-width : 0;
+    border-color: scope.has-focus ? Tokens.color-focus-ring
+        : root.enabled ? Tokens.color-border : Tokens.color-outline-disabled;
     background: !root.enabled ? transparent
         : root.checked ? Tokens.color-accent : Tokens.color-surface-raised;
     animate background { duration: Tokens.motion-fast; easing: @{motion.easing}; }
