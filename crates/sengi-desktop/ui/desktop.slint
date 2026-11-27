@@ -331,14 +331,14 @@ export component Desktop inherits Window {
                     label: "Open";
                     chosen => {
                         root.menu-open = false;
-                        root.open-item(root.menu-item);
+                        root.open-item(root.selected);
                     }
                 }
                 if root.menu-item >= 0: MenuRow {
                     label: "Rename";
                     chosen => {
                         root.menu-open = false;
-                        root.begin-rename(root.menu-item);
+                        root.begin-rename(root.selected);
                     }
                 }
                 if root.menu-item >= 0: MenuSeparator { }
@@ -346,7 +346,7 @@ export component Desktop inherits Window {
                     label: "Move to Trash";
                     chosen => {
                         root.menu-open = false;
-                        root.trash-item(root.menu-item);
+                        root.trash-item(root.selected);
                     }
                 }
             }

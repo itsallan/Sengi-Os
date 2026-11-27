@@ -14,7 +14,9 @@ It makes `~/Desktop` on the first run.
 ## What it does
 
 - A right click on bare desktop opens a menu: New Folder, New File, Open Terminal Here,
-  Settings.... A left click anywhere else closes it and clears the selection.
+  Settings.... A left click anywhere else closes it and clears the selection;
+  a right click elsewhere moves it. This holds on every bare part of the
+  desktop, and while a name is being typed (the name is kept).
 - New Folder makes "untitled folder" ("untitled folder 2", ...) and puts it
   straight into rename. Return or a click elsewhere keeps the new name, Escape
   keeps the old one.
@@ -54,5 +56,5 @@ clicked and gives it back when a window is.
 - `desk.rs`: the selection, the rename and the rules, with no window in it.
 - `app.rs`: joins the desk to the Slint component in `ui/desktop.slint`.
 
-The render test writes pictures of the desktop when `SENGI_RENDER_DIR` names
-a folder.
+`tests/clicks.rs` drives the right button with pointer events. The render test
+writes pictures of the desktop when `SENGI_RENDER_DIR` names a folder.
