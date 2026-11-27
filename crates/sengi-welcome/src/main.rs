@@ -1,4 +1,5 @@
-//! sengi-welcome: the first-run welcome of Sengi OS.
+//! sengi-welcome: the first-run welcome of Sengi OS, and the question of its
+//! live image.
 
 use std::process::ExitCode;
 use std::rc::Rc;
@@ -6,19 +7,62 @@ use std::rc::Rc;
 use sengi_apps::env::Env;
 use sengi_config::{Dirs, Settings};
 use sengi_welcome::app::{self, Start};
-use sengi_welcome::marker;
 use sengi_welcome::system::{self, Process};
-use sengi_welcome::ui::{ThemeSwitch, WelcomeWindow};
+use sengi_welcome::ui::{LiveWindow, ThemeSwitch, WelcomeWindow};
+use sengi_welcome::{live, marker};
 
 /// What the dock and the compositor know the window by. The `.desktop`
 /// file has the same name.
 const APP_ID: &str = "sengi-welcome";
 
-const USAGE: &str = "usage: sengi-welcome [--again | --first-run]\n\nOpens the Sengi OS welcome: a few steps to make a new installation yours.\n\n  --again      open it whether or not it has been seen before\n  --first-run  for the session: open it only on an installed system, and only\n               if it has not been seen; otherwise do nothing\n";
+const USAGE: &str = "usage: sengi-welcome [--again | --first-run | --live]\n\nOpens the Sengi OS welcome: a few steps to make a new installation yours.\n\n  --again      open it whether or not it has been seen before\n  --first-run  for the session: open it only on an installed system, and only\n               if it has not been seen; otherwise do nothing\n  --live       for the session: on the live image, ask once per start whether\n               to install Sengi OS or try it first; otherwise do nothing\n";
+
+/// After the first component, which is what brings the backend up, and
+/// before the window is shown.
+fn set_app_id() {
+    if let Err(error) = slint::set_xdg_app_id(APP_ID) {
+        eprintln!("sengi-welcome: could not set the application id: {error}");
+    }
+}
+
+fn no_window(error: slint::PlatformError) -> ExitCode {
+    eprintln!("sengi-welcome: cannot open a window: {error}");
+    ExitCode::FAILURE
+}
+
+fn ended(result: Result<(), slint::PlatformError>) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("sengi-welcome: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn ask_live(env: &Env) -> ExitCode {
+    let boot = std::fs::read_to_string(marker::BOOT_ID).unwrap_or_default();
+    let asked = marker::was_asked(&env.state_home, &boot);
+    if !marker::should_ask(marker::running_live(), asked) {
+        return ExitCode::SUCCESS;
+    }
+    let window = match LiveWindow::new() {
+        Ok(window) => window,
+        Err(error) => return no_window(error),
+    };
+    sengi_config::apply_theme!(slint::ComponentHandle::global::<ThemeSwitch>(&window));
+    set_app_id();
+    let runner = Rc::new(Process::new());
+    ended(live::run(window, &env.state_home, &boot, runner))
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let env = Env::from_process();
+    if args.len() > 1 {
+        eprintln!("sengi-welcome: unexpected argument {}\n\n{USAGE}", args[1]);
+        return ExitCode::from(2);
+    }
     match args.first().map(String::as_str) {
         None | Some("--again") => {}
         Some("--first-run") => {
@@ -27,6 +71,7 @@ fn main() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
         }
+        Some("--live") => return ask_live(&env),
         Some("-h" | "--help") => {
             print!("{USAGE}");
             return ExitCode::SUCCESS;
@@ -40,24 +85,13 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     }
-    if args.len() > 1 {
-        eprintln!("sengi-welcome: unexpected argument {}\n\n{USAGE}", args[1]);
-        return ExitCode::from(2);
-    }
 
     let window = match WelcomeWindow::new() {
         Ok(window) => window,
-        Err(error) => {
-            eprintln!("sengi-welcome: cannot open a window: {error}");
-            return ExitCode::FAILURE;
-        }
+        Err(error) => return no_window(error),
     };
     sengi_config::apply_theme!(slint::ComponentHandle::global::<ThemeSwitch>(&window));
-    // After the first component, which is what brings the backend up, and
-    // before the window is shown.
-    if let Err(error) = slint::set_xdg_app_id(APP_ID) {
-        eprintln!("sengi-welcome: could not set the application id: {error}");
-    }
+    set_app_id();
     let (settings, _) = Settings::load(&Dirs::from_env());
     let start = Start {
         state_home: env.state_home,
@@ -68,11 +102,5 @@ fn main() -> ExitCode {
         layouts: settings.layouts(),
         runner: Rc::new(Process::new()),
     };
-    match app::run(window, start) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("sengi-welcome: {error}");
-            ExitCode::FAILURE
-        }
-    }
+    ended(app::run(window, start))
 }

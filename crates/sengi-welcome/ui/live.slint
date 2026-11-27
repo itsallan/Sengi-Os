@@ -1,0 +1,127 @@
+// The question the live image asks once the desktop is up: install Sengi OS,
+// or try it first. Nothing here has a colour or a size of its own.
+
+import { Tokens, SengiText, SengiButton, SengiIcon } from "components.slint";
+
+// The two answers.
+export global Live {
+    callback install();
+    callback try-first();
+}
+
+export component LiveWindow inherits Window {
+    title: "Sengi OS";
+    preferred-width: Tokens.welcome-live-width;
+    preferred-height: Tokens.welcome-live-height;
+    background: Tokens.color-bg;
+    default-font-family: Tokens.font-family;
+    default-font-size: Tokens.font-size-md;
+
+    // As in the welcome: after a change of size or scale only one of the
+    // renderer's two buffers knows, so for a few frames all is drawn.
+    private property <float> pixel: 1phx / 1px;
+    private property <int> sheet: 0;
+    private property <int> sheets-owed: 0;
+
+    function draw-everything() {
+        root.sheet += 1;
+        root.sheets-owed = 3;
+    }
+
+    changed pixel => { root.draw-everything(); }
+    changed width => { root.draw-everything(); }
+    changed height => { root.draw-everything(); }
+
+    Timer {
+        interval: Tokens.motion-fast;
+        running: root.sheets-owed > 0;
+        triggered => {
+            root.sheet += 1;
+            root.sheets-owed -= 1;
+        }
+    }
+
+    Rectangle {
+        background: Math.mod(root.sheet, 2) == 0 ? transparent : Tokens.color-bg.transparentize(1);
+    }
+
+    // Escape is "Try it first". Return presses the button that has the
+    // keyboard, which to begin with is "Install Sengi OS": that only opens
+    // the installer, which asks before it writes anything.
+    FocusScope {
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                Live.try-first();
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+
+        VerticalLayout {
+            alignment: center;
+
+            HorizontalLayout {
+                alignment: center;
+
+                VerticalLayout {
+                    width: Tokens.welcome-live-width;
+                    padding: Tokens.space-xl;
+                    spacing: Tokens.space-xl;
+
+                    HorizontalLayout {
+                        spacing: Tokens.space-lg;
+
+                        VerticalLayout {
+                            alignment: start;
+
+                            SengiIcon {
+                                name: "info";
+                                ink: Tokens.color-accent;
+                                width: Tokens.osd-icon;
+                                height: Tokens.osd-icon;
+                            }
+                        }
+
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: Tokens.space-sm;
+
+                            SengiText {
+                                text: "You are trying Sengi OS";
+                                font-size: Tokens.font-size-xl;
+                                font-weight: Tokens.font-weight-bold;
+                                wrap: word-wrap;
+                            }
+
+                            SengiText {
+                                text: "It runs from the USB stick. Nothing is installed, and changes are lost at shutdown.";
+                                color: Tokens.color-text-muted;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        alignment: end;
+                        spacing: Tokens.space-sm;
+
+                        SengiButton {
+                            text: "Try it first";
+                            clicked => { Live.try-first(); }
+                        }
+
+                        SengiButton {
+                            text: "Install Sengi OS";
+                            primary: true;
+                            clicked => { Live.install(); }
+                            init => { self.focus(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

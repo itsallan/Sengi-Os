@@ -267,6 +267,11 @@ pub fn files_command() -> Vec<String> {
     words(&["sengi-files"])
 }
 
+/// The installer, which only the live image has.
+pub fn installer_command() -> Vec<String> {
+    words(&["sengi-installer"])
+}
+
 /// How commands are run, so that the tests can watch instead.
 pub trait Runner {
     /// A change of settings: run in turn, in the background, in the order
@@ -426,6 +431,7 @@ mod tests {
         assert_eq!(settings_command("network"), ["sengi-settings", "network"]);
         assert_eq!(store_command("gimp"), ["sengi-store", "--search", "gimp"]);
         assert_eq!(store_command(""), ["sengi-store"]);
+        assert_eq!(installer_command(), ["sengi-installer"]);
     }
 
     #[test]

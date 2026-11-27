@@ -138,6 +138,8 @@ export global Tokens {
     out property <length> calc-window-width: @{size.calc-window-width}px;
     out property <length> calc-window-height: @{size.calc-window-height}px;
     out property <length> calc-display-height: @{size.calc-display-height}px;
+    out property <length> welcome-live-width: @{size.welcome-live-width}px;
+    out property <length> welcome-live-height: @{size.welcome-live-height}px;
     out property <length> calendar-cell: @{size.calendar-cell}px;
     out property <length> calendar-cell-height: @{size.calendar-cell-height}px;
     out property <length> snip-countdown-width: @{size.snip-countdown-width}px * ThemeSwitch.text-scale;

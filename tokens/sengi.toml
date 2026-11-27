@@ -222,6 +222,9 @@ chooser-lines = 8
 calc-window-width = 320
 calc-window-height = 480
 calc-display-height = 64
+# The question of the live image, install or try first, as it opens.
+welcome-live-width = 440
+welcome-live-height = 192
 # The calendar popup under the clock: one day of the month grid.
 calendar-cell = 40
 calendar-cell-height = 32
