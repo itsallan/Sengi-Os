@@ -921,6 +921,7 @@ pub fn run_with_query(
         let shared = shared.clone();
         move |id| open(&shared, &id)
     });
+    scaled(&shared, window.window().scale_factor());
     render(&shared, Some(nav::FIELD));
     start_load(&shared);
     if !query.is_empty() {

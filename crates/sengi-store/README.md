@@ -21,6 +21,8 @@ Settings.
 - **Search**: whatever is typed searches every app of Flathub by name, from
   any page. Clearing the field goes back to the page it was typed on.
 
+The tiles are two to five to a row, one fewer where the last would be alone.
+
 An app is a card: its icon, its name, up to two lines about it and one
 button, Install or Open. The grid has two to four columns by the width of
 the window and stops growing at 1200 px.

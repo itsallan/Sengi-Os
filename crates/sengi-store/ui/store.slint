@@ -350,8 +350,11 @@ export component StoreWindow inherits Window {
     private property <length> page-width: root.column - Tokens.space-lg * 2;
     private property <length> gap: Tokens.space-md;
 
-    private property <int> tile-columns: Math.clamp(
+    private property <int> tiles-fit: Math.clamp(
         Math.floor((root.page-width + root.gap) / (Tokens.store-tile-width + root.gap)), 2, 5);
+    // A column less rather than one tile alone in the last row.
+    private property <int> tile-columns: root.tiles-fit > 2 && Math.mod(Store.tiles.length, root.tiles-fit) == 1
+        ? root.tiles-fit - 1 : root.tiles-fit;
     private property <int> card-columns: Math.clamp(
         Math.floor((root.page-width + root.gap) / (Tokens.store-card-width + root.gap)), 2, 4);
     private property <length> tile-width: (root.page-width - root.gap * (root.tile-columns - 1)) / root.tile-columns;
@@ -383,6 +386,12 @@ export component StoreWindow inherits Window {
         root.sheets-owed = 3;
     }
 
+    // No band is asked to be taller than the view, which has no height yet
+    // when the window has just been made.
+    function bring(top: length, height: length) {
+        list.reveal(top, Math.min(height, list.height));
+    }
+
     // Brings the chosen tile or card into view, and with the first row of
     // a grid its heading.
     function reveal-current() {
@@ -391,15 +400,15 @@ export component StoreWindow inherits Window {
         }
         if Store.current < Store.tiles.length {
             if Store.current < root.tile-columns {
-                list.reveal(0px, root.head + root.tile-step);
+                root.bring(0px, root.head + root.tile-step);
             } else {
-                list.reveal(root.head + Math.floor(Store.current / root.tile-columns) * root.tile-step,
+                root.bring(root.head + Math.floor(Store.current / root.tile-columns) * root.tile-step,
                     root.tile-step);
             }
         } else if Store.current - Store.tiles.length < root.card-columns {
-            list.reveal(root.cards-heading, root.head + root.card-step);
+            root.bring(root.cards-heading, root.head + root.card-step);
         } else {
-            list.reveal(root.cards-top
+            root.bring(root.cards-top
                     + Math.floor((Store.current - Store.tiles.length) / root.card-columns) * root.card-step,
                 root.card-step);
         }
@@ -409,7 +418,7 @@ export component StoreWindow inherits Window {
         Store.current = Store.step(Store.current, key, root.tile-columns, root.card-columns);
         root.browsing = Store.current >= 0;
         if Store.current < 0 {
-            list.reveal(0px, root.head);
+            root.bring(0px, root.head);
         } else {
             root.reveal-current();
         }
@@ -457,12 +466,16 @@ export component StoreWindow inherits Window {
     // Set by the program after the window is made, when it was started with
     // --search.
     private property <string> start-query: Store.start-query;
-    changed start-query => { field.text = root.start-query; }
+    // Selected, so that typing starts a search of one's own.
+    changed start-query => {
+        field.text = root.start-query;
+        field.select-all();
+    }
 
     // Another page starts at its top, and the chosen thing is in view.
     private property <string> shown: Store.title;
     changed shown => {
-        list.reveal(0px, root.head);
+        root.bring(0px, root.head);
         root.reveal-current();
     }
     private property <int> chosen: Store.current;

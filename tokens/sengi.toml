@@ -210,7 +210,7 @@ store-tile-width = 168
 store-tile-height = 52
 store-tile-icon = 24
 store-card-width = 256
-store-card-height = 132
+store-card-height = 120
 store-app-icon = 48
 # A row of a list or of a card of settings.
 list-row-height = 42

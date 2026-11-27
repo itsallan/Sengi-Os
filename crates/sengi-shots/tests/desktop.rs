@@ -713,10 +713,10 @@ fn store_keys() {
     let take = || heard.borrow_mut().drain(..).collect::<Vec<_>>();
 
     press(Key::DownArrow.into());
-    assert_eq!(take(), ["step -1 3 4 3"]);
+    assert_eq!(take(), ["step -1 3 3 3"]);
     assert_eq!(g.get_current(), 0);
     press(Key::RightArrow.into());
-    assert_eq!(take(), ["step 0 1 4 3"]);
+    assert_eq!(take(), ["step 0 1 3 3"]);
     press(Key::Return.into());
     assert_eq!(take(), ["category 1"]);
     g.set_current(9);
