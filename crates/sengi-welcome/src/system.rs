@@ -5,6 +5,7 @@
 //! it up exactly as the Settings window does, so there is one place that
 //! knows how.
 
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -281,9 +282,14 @@ pub trait Runner {
     fn open(&self, command: Vec<String>);
 }
 
+/// Where the session bus is.
+pub const BUS: &str = "DBUS_SESSION_BUS_ADDRESS";
+
 /// The real thing.
 pub struct Process {
     queue: mpsc::Sender<Vec<String>>,
+    /// `BUS` for what is opened, when this process keeps another for itself.
+    bus: Option<Option<OsString>>,
 }
 
 impl Process {
@@ -301,7 +307,36 @@ impl Process {
                         .status();
                 }
             });
-        Process { queue }
+        Process { queue, bus: None }
+    }
+
+    /// For a process that has taken its own session bus away: what it opens
+    /// is handed `bus`, the value the session gave, or none if it gave none.
+    pub fn handing_on(bus: Option<OsString>) -> Process {
+        Process {
+            bus: Some(bus),
+            ..Process::new()
+        }
+    }
+
+    /// A program to be opened, `words` being its name and arguments.
+    fn command(&self, words: &[String]) -> Command {
+        let mut command = Command::new(&words[0]);
+        command
+            .args(&words[1..])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        match &self.bus {
+            Some(Some(bus)) => {
+                command.env(BUS, bus);
+            }
+            Some(None) => {
+                command.env_remove(BUS);
+            }
+            None => {}
+        }
+        command
     }
 }
 
@@ -319,20 +354,12 @@ impl Runner for Process {
     fn open(&self, command: Vec<String>) {
         // In its own scope under app.slice, as the launcher starts apps;
         // directly if sengi-run is not there.
-        let started = Command::new("sengi-run")
-            .args(&command)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+        let mut scoped = words(&["sengi-run"]);
+        scoped.extend_from_slice(&command);
+        let started = self
+            .command(&scoped)
             .spawn()
-            .or_else(|_| {
-                Command::new(&command[0])
-                    .args(&command[1..])
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .spawn()
-            });
+            .or_else(|_| self.command(&command).spawn());
         if let Ok(mut child) = started {
             // Reaped when it ends, so that it is no zombie meanwhile.
             let _ = std::thread::Builder::new()
@@ -432,6 +459,29 @@ mod tests {
         assert_eq!(store_command("gimp"), ["sengi-store", "--search", "gimp"]);
         assert_eq!(store_command(""), ["sengi-store"]);
         assert_eq!(installer_command(), ["sengi-installer"]);
+    }
+
+    #[test]
+    fn what_is_opened_gets_the_sessions_bus_back() {
+        use std::ffi::OsStr;
+
+        let name = words(&["sengi-installer"]);
+        let bus_of = |process: Process| {
+            process
+                .command(&name)
+                .get_envs()
+                .find(|(key, _)| *key == OsStr::new(BUS))
+                .map(|(_, value)| value.map(OsStr::to_os_string))
+        };
+        // Left alone, the child inherits whatever this process has.
+        assert_eq!(bus_of(Process::new()), None);
+        let given = OsString::from("unix:path=/run/user/1000/bus");
+        assert_eq!(
+            bus_of(Process::handing_on(Some(given.clone()))),
+            Some(Some(given))
+        );
+        // The session gave none: the stand-in is taken out again.
+        assert_eq!(bus_of(Process::handing_on(None)), Some(None));
     }
 
     #[test]

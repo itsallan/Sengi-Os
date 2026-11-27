@@ -46,13 +46,19 @@ fn ask_live(env: &Env) -> ExitCode {
     if !marker::should_ask(marker::running_live(), asked) {
         return ExitCode::SUCCESS;
     }
+    // The toolkit asks the desktop portal for a colour scheme before its
+    // first window, which starts the portal's services, and they stay. The
+    // question takes its colours from Settings, so it is given no bus to ask
+    // on; the installer is handed the session's. Set before any thread is.
+    let bus = std::env::var_os(system::BUS);
+    std::env::set_var(system::BUS, "disabled:");
     let window = match LiveWindow::new() {
         Ok(window) => window,
         Err(error) => return no_window(error),
     };
     sengi_config::apply_theme!(slint::ComponentHandle::global::<ThemeSwitch>(&window));
     set_app_id();
-    let runner = Rc::new(Process::new());
+    let runner = Rc::new(Process::handing_on(bus));
     ended(live::run(window, &env.state_home, &boot, runner))
 }
 
