@@ -73,6 +73,7 @@ export component CalendarWindow inherits Window {
                     SengiButton {
                         width: Tokens.button;
                         focusable: false;
+                        quiet: true;
                         clicked => { Cal.previous(); }
 
                         SengiIcon {
@@ -93,6 +94,7 @@ export component CalendarWindow inherits Window {
                     SengiButton {
                         width: Tokens.button;
                         focusable: false;
+                        quiet: true;
                         clicked => { Cal.next(); }
 
                         SengiIcon {
@@ -145,6 +147,7 @@ export component CalendarWindow inherits Window {
                         width: Tokens.calendar-cell * 2;
                         text: "Today";
                         focusable: false;
+                        quiet: true;
                         enabled: !Cal.on-today;
                         clicked => { Cal.go-today(); }
                     }

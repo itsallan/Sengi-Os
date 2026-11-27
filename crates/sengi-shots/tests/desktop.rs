@@ -349,13 +349,15 @@ fn notifications() {
         w.set_centre_open(true);
         w.set_dnd(n == 3);
         w.set_centre_focus(if n == 3 { 2 } else { -1 });
-        show(
-            &w,
-            1366,
-            768,
-            &format!("notify-centre-{label}-1366x768.png"),
-            BACKDROP,
-        );
+        for (width, height) in [(720u32, 480u32), (888, 600), (1366, 768)] {
+            show(
+                &w,
+                width,
+                height,
+                &format!("notify-centre-{label}-{width}x{height}.png"),
+                BACKDROP,
+            );
+        }
     }
 }
 
@@ -388,7 +390,7 @@ fn nets() -> Vec<quick::NetworkItem> {
 fn quicks() {
     let scenes = ["full", "networks", "passphrase", "off", "empty", "low"];
     for variant in scenes {
-        for (width, height) in [(800u32, 600u32), (1366, 768)] {
+        for (width, height) in [(720u32, 480u32), (888, 600), (1366, 768)] {
             let w = quick::themed(quick::QuickWindow::new().unwrap());
             w.set_wifi_enabled(true);
             w.set_wifi_on(true);
@@ -797,13 +799,15 @@ fn launchers() {
                 w.set_error("Could not start Firefox 0: no such file".into());
             }
         }
-        show(
-            &w,
-            1280,
-            720,
-            &format!("launcher-{variant}-1280x720.png"),
-            BACKDROP,
-        );
+        for (width, height) in [(720u32, 480u32), (888, 600), (1280, 720)] {
+            show(
+                &w,
+                width,
+                height,
+                &format!("launcher-{variant}-{width}x{height}.png"),
+                BACKDROP,
+            );
+        }
     }
     let w = launcher::themed(launcher::LauncherWindow::new().unwrap());
     w.set_grid_capable(true);

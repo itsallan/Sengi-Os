@@ -27,6 +27,9 @@ fn calendar_popup() {
     assert_eq!(cal.get_days().row_count(), 42);
     assert!(cal.get_on_today());
     picture("calendar-today-888x600.png");
+    harness::resize(&harness::window(), 720, 480);
+    picture("calendar-today-720x480.png");
+    harness::resize(&harness::window(), 888, 600);
 
     cal.invoke_next();
     assert_eq!(cal.get_title(), "December 2026");

@@ -65,6 +65,8 @@ component ThemeCard inherits Rectangle {
     callback clicked();
 
     forward-focus: scope;
+    // The cards share the row equally, however long their names.
+    preferred-width: Tokens.button;
     border-radius: Tokens.radius;
     border-width: scope.has-focus || root.selected ? Tokens.focus-ring-width : Tokens.border-width;
     border-color: scope.has-focus ? Tokens.color-focus-ring
@@ -497,6 +499,7 @@ export component WelcomeWindow inherits Window {
                                         alignment: center;
                                         SengiButton {
                                             text: "Find in the Store";
+                                            quiet: true;
                                             clicked => { Welcome.open-store(index); }
                                         }
                                     }
@@ -580,6 +583,7 @@ export component WelcomeWindow inherits Window {
 
                 if !Welcome.last: SengiButton {
                     text: "Skip setup";
+                    quiet: true;
                     clicked => { Welcome.skip(); }
                 }
 
