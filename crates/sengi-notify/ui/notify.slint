@@ -5,7 +5,7 @@
 // are. With the centre open it covers the output, see-through around the
 // panel, so that a click anywhere else lands on it and closes the centre.
 
-import { Tokens, SengiText, SengiLabel, SengiSurface, SengiButton, SengiToggle, SengiIcon } from "components.slint";
+import { Tokens, ThemeSwitch, SengiText, SengiLabel, SengiSurface, SengiButton, SengiToggle, SengiIcon } from "components.slint";
 export { ThemeSwitch } from "components.slint";
 
 export struct ActionItem {
@@ -94,7 +94,7 @@ component Heading inherits HorizontalLayout {
     SengiLabel {
         horizontal-stretch: 0;
         text: root.time;
-        color: Tokens.color-text-disabled;
+        color: Tokens.color-text-muted;
         vertical-alignment: center;
     }
 }
@@ -160,6 +160,8 @@ component ActionButton inherits Rectangle {
     min-width: 0;
     height: Tokens.button;
     border-radius: Tokens.radius;
+    border-width: ThemeSwitch.high-contrast ? Tokens.border-width : 0;
+    border-color: root.enabled ? Tokens.color-border : Tokens.color-outline-disabled;
     background: !root.enabled ? Tokens.color-surface
         : touch.has-hover ? Tokens.color-surface-hover : Tokens.color-surface-raised;
     animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
@@ -297,9 +299,10 @@ component HistoryRow inherits SengiSurface {
         spacing: Tokens.space-xs;
 
         Heading {
-            // The group heading above says whose it is.
-            app: "";
-            time: root.data.time;
+            // The group heading above says whose it is, so the time takes
+            // that place instead of floating alone by the close button.
+            app: root.data.time;
+            time: "";
             critical: root.data.critical;
         }
 
@@ -367,6 +370,7 @@ component GroupHeader inherits Rectangle {
             clear := SengiButton {
                 height: parent.height;
                 text: "Clear";
+                quiet: true;
                 focusable: false;
                 clicked => { root.cleared(); }
             }
@@ -445,6 +449,7 @@ component CentrePanel inherits SengiSurface {
                 clear := SengiButton {
                     height: parent.height;
                     text: "Clear all";
+                    quiet: true;
                     enabled: root.history.length > 0;
                     clicked => { root.clear-all(); }
                 }
