@@ -546,6 +546,7 @@ fn store_card(index: usize) -> store::Card {
         letter: name[..1].into(),
         percent: -1,
         detail: "".into(),
+        pace: "".into(),
         state: store::RowState::Available,
         unavailable: false,
     }
@@ -613,7 +614,9 @@ fn stores() {
                     cards = (0..6).map(store_card).collect();
                     cards[0].state = Installing;
                     cards[0].percent = 45;
-                    cards[0].detail = "Installing 2 of 4 \u{b7} 12.3 MB \u{b7} 4.1 MB/s".into();
+                    cards[0].detail = "Step 2 of 2 \u{b7} up to 300.1 MB".into();
+                    cards[0].pace = "20.0 MB/s \u{b7} 00:11 left".into();
+                    // One that flatpak has not said anything about yet.
                     cards[1].state = Installing;
                     cards[2].state = Failed;
                     cards[3].state = Installed;

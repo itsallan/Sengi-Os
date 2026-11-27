@@ -32,8 +32,10 @@ export struct Card {
     // How far an install has got, 0 to 100, or less than 0 when flatpak
     // has not said.
     percent: int,
-    // What step it is on, and the size and speed, when flatpak says.
+    // What step it is on and how much that downloads, and under it the
+    // speed and the time left, when flatpak says.
     detail: string,
+    pace: string,
     state: RowState,
     // Shown by name only, because the list of apps is not there: no button.
     unavailable: bool,
@@ -247,7 +249,7 @@ component AppCard inherits Panel {
             overflow: elide;
         }
 
-        if root.app.summary != "": SengiLabel {
+        if root.app.summary != "" && root.app.state != RowState.installing: SengiLabel {
             // Two lines, and no more.
             height: Tokens.font-size-sm * 3;
             text: root.app.summary;
@@ -255,16 +257,19 @@ component AppCard inherits Panel {
             wrap: word-wrap;
             overflow: elide;
         }
-    }
 
-    // How far it is, over the bar.
-    if root.app.state == RowState.installing: SengiLabel {
-        x: Tokens.space-md;
-        y: root.foot - self.height - Tokens.space-xxs;
-        width: root.inner;
-        text: root.app.detail != "" ? root.app.detail : "Installing";
-        font-weight: Tokens.font-weight-regular;
-        overflow: elide;
+        // How far it is, where the summary was.
+        if root.app.state == RowState.installing: SengiLabel {
+            text: root.app.detail != "" ? root.app.detail : "Installing";
+            font-weight: Tokens.font-weight-regular;
+            overflow: elide;
+        }
+
+        if root.app.state == RowState.installing && root.app.pace != "": SengiLabel {
+            text: root.app.pace;
+            font-weight: Tokens.font-weight-regular;
+            overflow: elide;
+        }
     }
 
     if root.app.state == RowState.installing && root.app.percent >= 0: HorizontalLayout {

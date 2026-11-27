@@ -29,7 +29,13 @@ pub enum Problem {
 const SIGNS: [(Problem, &[&str]); 5] = [
     (
         Problem::Space,
-        &["no space left", "not enough disk space", "disk quota"],
+        &[
+            "no space left",
+            "not enough disk space",
+            "disk quota",
+            // What flatpak says when the disk is below the room it keeps.
+            "min-free-space",
+        ],
     ),
     (
         Problem::Secure,

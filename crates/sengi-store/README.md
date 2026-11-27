@@ -27,11 +27,13 @@ An app is a card: its icon, its name, up to two lines about it and one
 button, Install or Open. The grid has two to four columns by the width of
 the window and stops growing at 1200 px.
 
-While an app is installed its card shows the step, size and speed that
-flatpak prints, with a bar and a percentage; what is not printed is not made
-up, and with no percentage a bar moves to and fro instead. The end of the
-output is read about four times a second at most. One app is installed at a
-time. Open runs `flatpak run <id>` for the user, detached: the Store does not
+While an app is installed its card shows, in place of the summary, the step
+and the most that step downloads ("Step 2 of 2 · up to 300.1 MB"), then
+the speed and the time left, over a bar and the percentage of that step. All
+of it is what flatpak prints, read by `sengi_text::progress`; what is not
+printed is not made up (how much has arrived is not), and with no percentage
+a bar moves to and fro instead. The card is brought up to date four times a
+second at most. One app is installed at a time. Open runs `flatpak run <id>` for the user, detached: the Store does not
 wait for the app, keeps none of its pipes, and does not stop it when the
 Store is closed. Nothing is installed without its button or Return.
 
@@ -114,7 +116,12 @@ installation, so there is no root, no polkit and no network code of our
 own. Each call has a time limit, and a call that goes over it is killed
 with whatever it started. A limit is how long flatpak may say nothing, so a big install that keeps printing is not cut off. Closing the window kills what is still running: Flatpak deploys an app only when all of it has arrived, so a cut-off install leaves nothing half installed and the next try carries on.
 
-Installs use `-y`: no question is asked and no permission list is shown. The Store also checks that the user's `flathub` remote is the real one, with signatures checked, and refuses to go on if it is not. Before an install it asks again what is installed, so an app that is there already, for the user or the system, is not installed twice.
+Installs use `-y`: no question is asked and no permission list is shown to the
+person. `--noninteractive` is left out, because with it flatpak says only
+which ref it is on. Without it, and with its output on a pipe, it prints a
+plain line about three times a second while data arrives; no pseudo-terminal
+is needed. Nothing is connected to its standard input, and flatpak answers
+anything `-y` does not cover with no. The Store also checks that the user's `flathub` remote is the real one, with signatures checked, and refuses to go on if it is not. Before an install it asks again what is installed, so an app that is there already, for the user or the system, is not installed twice.
 
 The Store does not stop a second copy of itself from opening.
 
@@ -124,7 +131,7 @@ The Store does not stop a second copy of itself from opening.
 | Start | `flatpak list --app --columns=application` | 20 s |
 | Start | `flatpak --user remote-ls --cached --app --columns=application,name,description flathub` | 60 s |
 | Start | `flatpak --user update --appstream`, then `remote-ls` again without `--cached` | 10 min, 60 s |
-| Install | `flatpak --user install -y --noninteractive flathub app/<id>` | 10 min without a word from flatpak |
+| Install | `flatpak --user install -y flathub app/<id>` | 10 min without a word from flatpak |
 
 `update --appstream` says one line and then nothing while it fetches some
 thousands of icons, so its limit is long; without a network it fails at once.
@@ -140,6 +147,11 @@ the session's `XDG_DATA_DIRS` names them, so a new app is in the launcher
 and can be pinned to the dock without logging in again.
 
 ## Tests
+
+The reading of flatpak's progress is tested in `sengi-text` against output
+captured from Flatpak 1.16. `cargo test -p sengi-store --test flatpak -- --ignored`
+installs from a real repository through the Store's own code; see the top of
+`tests/flatpak.rs`.
 
 The unit tests cover reading Flatpak's output, matching names, the pages, the
 keys in the grids, the plain words for errors, reading the routing tables,

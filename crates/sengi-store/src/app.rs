@@ -12,6 +12,7 @@ use slint::{
 };
 
 use sengi_apps::icons::{Decoder, Pixels};
+use sengi_text::progress::Progress;
 
 use crate::catalog::App;
 use crate::featured::{self, Featured, Item, Page};
@@ -20,7 +21,6 @@ use crate::icons;
 use crate::nav::{self, Grid, Key};
 use crate::online::{self, Retry};
 use crate::problem::Problem;
-use crate::progress::Progress;
 use crate::rows::{Refused, Rows, State};
 use crate::ui::{Card, RowState, Store, StorePage, StoreWindow, Tile};
 
@@ -173,6 +173,12 @@ fn apply(window: &StoreWindow, view: View) {
                 .progress
                 .as_ref()
                 .map(Progress::detail)
+                .unwrap_or_default()
+                .into(),
+            pace: card
+                .progress
+                .as_ref()
+                .map(Progress::pace)
                 .unwrap_or_default()
                 .into(),
             unavailable: card.unavailable,

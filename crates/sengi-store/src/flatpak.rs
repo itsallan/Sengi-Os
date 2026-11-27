@@ -14,8 +14,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use sengi_text::progress::{Progress, Reader};
+
 use crate::catalog::{self, App};
-use crate::progress::Progress;
 
 /// The remote the image ships a description of.
 const REMOTE: &str = "flathub";
@@ -26,18 +27,15 @@ const REPO_URL: &str = "https://dl.flathub.org/repo/flathub.flatpakrepo";
 /// No call goes on longer than this, however much it prints.
 const HARD_LIMIT: Duration = Duration::from_secs(4 * 3600);
 
-/// How long the output of a call that has ended is waited for. A helper
-/// it left behind may hold the pipes open.
 /// How often progress is looked at, which is also how often it is shown.
 const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 
+/// How long the output of a call that has ended is waited for. A helper
+/// it left behind may hold the pipes open.
 const DRAIN_WAIT: Duration = Duration::from_secs(2);
 
 /// The most output of one call that is kept. The whole of Flathub's
 /// listing is about 400 kB.
-/// How much of the end of the output is kept for reading progress.
-const TAIL: usize = 2048;
-
 const MAX_OUTPUT: u64 = 16 * 1024 * 1024;
 
 /// How long each kind of call may take.
@@ -56,7 +54,8 @@ impl Default for Limits {
             appstream: Duration::from_secs(10 * 60),
             listing: Duration::from_secs(60),
             // How long an install may go without a word from flatpak, not
-            // how long it may take: a big one keeps printing as it goes.
+            // how long it may take: it prints as long as data arrives, and
+            // gives up on a dead connection by itself.
             install: Duration::from_secs(10 * 60),
         }
     }
@@ -131,7 +130,8 @@ fn last_line(stderr: &[u8], stdout: &[u8]) -> String {
         let text = String::from_utf8_lossy(bytes);
         if let Some(line) = text.lines().rev().map(str::trim).find(|l| !l.is_empty()) {
             let line = line.strip_prefix("error:").unwrap_or(line).trim();
-            return sengi_text::line(line, 200);
+            // The reason comes last, after an address that can be long.
+            return sengi_text::line(line, 600);
         }
     }
     "Flatpak failed".to_string()
@@ -141,14 +141,15 @@ fn last_line(stderr: &[u8], stdout: &[u8]) -> String {
 #[derive(Default)]
 struct Pipe {
     bytes: Mutex<Vec<u8>>,
-    /// The last of what came, kept even when `bytes` is full.
-    tail: Mutex<Vec<u8>>,
     done: AtomicBool,
 }
 
+/// Reads a stream to its end on a thread, noting when something came, and
+/// shows it to the `reader` of progress if there is one.
 fn drain(
     mut source: impl Read + Send + 'static,
     last_word: Arc<Mutex<Instant>>,
+    reader: Option<Arc<Mutex<Reader>>>,
 ) -> (Arc<Pipe>, std::thread::JoinHandle<()>) {
     let pipe = Arc::new(Pipe::default());
     let mine = pipe.clone();
@@ -159,13 +160,11 @@ fn drain(
                 break;
             }
             *last_word.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
-            {
-                let mut tail = mine.tail.lock().unwrap_or_else(|e| e.into_inner());
-                tail.extend_from_slice(&chunk[..n]);
-                if tail.len() > TAIL {
-                    let cut = tail.len() - TAIL;
-                    tail.drain(..cut);
-                }
+            if let Some(reader) = &reader {
+                reader
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .feed(&chunk[..n]);
             }
             let mut bytes = mine.bytes.lock().unwrap_or_else(|e| e.into_inner());
             if (bytes.len() as u64) < MAX_OUTPUT {
@@ -175,12 +174,6 @@ fn drain(
         mine.done.store(true, Ordering::Release);
     });
     (pipe, handle)
-}
-
-fn tail_of(pipe: &Option<(Arc<Pipe>, std::thread::JoinHandle<()>)>) -> Vec<u8> {
-    pipe.as_ref()
-        .map(|(p, _)| p.tail.lock().unwrap_or_else(|e| e.into_inner()).clone())
-        .unwrap_or_default()
 }
 
 fn text(pipe: &Option<(Arc<Pipe>, std::thread::JoinHandle<()>)>) -> Vec<u8> {
@@ -258,8 +251,15 @@ impl Flatpak {
             .push(pid);
         let started = Instant::now();
         let last_word = Arc::new(Mutex::new(started));
-        let out = child.stdout.take().map(|s| drain(s, last_word.clone()));
-        let err = child.stderr.take().map(|s| drain(s, last_word.clone()));
+        let reader = on_progress.map(|_| Arc::new(Mutex::new(Reader::default())));
+        let out = child
+            .stdout
+            .take()
+            .map(|s| drain(s, last_word.clone(), reader.clone()));
+        let err = child
+            .stderr
+            .take()
+            .map(|s| drain(s, last_word.clone(), None));
 
         let mut reported = Progress::default();
         let mut last_look = Instant::now()
@@ -269,11 +269,14 @@ impl Flatpak {
             match child.try_wait() {
                 Ok(Some(status)) => break Some(status),
                 Ok(None) => {
-                    if let Some(report) = on_progress {
+                    if let (Some(report), Some(reader)) = (on_progress, &reader) {
                         if last_look.elapsed() >= PROGRESS_EVERY {
                             last_look = Instant::now();
-                            let (o, e) = (tail_of(&out), tail_of(&err));
-                            let now = Progress::from_tails(&[&o, &e]);
+                            let now = reader
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .now()
+                                .clone();
                             if !now.is_empty() && now != reported {
                                 reported = now.clone();
                                 report(now);
@@ -387,17 +390,11 @@ impl Flatpak {
         if !catalog::valid_id(id) {
             return Err(Error::Failed("That is not an app ID".to_string()));
         }
-        // -y: no question is asked, and no permission list is shown.
+        // -y: every question is answered yes. With --noninteractive as
+        // well, flatpak would not say how far it has got.
         let target = format!("app/{id}");
         self.run_with(
-            &[
-                "--user",
-                "install",
-                "-y",
-                "--noninteractive",
-                REMOTE,
-                &target,
-            ],
+            &["--user", "install", "-y", REMOTE, &target],
             self.limits.install,
             on_progress,
         )
@@ -503,6 +500,7 @@ pub mod testing {
 mod tests {
     use super::testing::*;
     use super::*;
+    use crate::problem::Problem;
 
     #[test]
     fn listing_is_read_from_the_output() {
@@ -525,7 +523,7 @@ mod tests {
         fake.flatpak(quick()).install("org.gimp.GIMP").unwrap();
         assert_eq!(
             fake.calls(),
-            ["--user install -y --noninteractive flathub app/org.gimp.GIMP"]
+            ["--user install -y flathub app/org.gimp.GIMP"]
         );
     }
 
@@ -534,7 +532,7 @@ mod tests {
         let fake = Fake::new(
             "progress-throttle",
             "echo 'Installing 2/4…'\n\
-             i=1; while [ $i -le 30 ]; do printf 'Installing… %s%%  1.5 MB  2.0 MB/s\\r' $i; i=$((i+1)); done\n\
+             i=1; while [ $i -le 30 ]; do printf 'Installing 2/4… ##  %s%%  2.0 MB/s\\n' $i; i=$((i+1)); done\n\
              sleep 1",
         );
         let seen = std::sync::Mutex::new(Vec::new());
@@ -551,6 +549,46 @@ mod tests {
         let last = seen.last().unwrap();
         assert_eq!(last.percent, Some(30));
         assert_eq!(last.step, Some((2, 4)));
+    }
+
+    /// The lines are the ones a real flatpak ended with.
+    #[test]
+    fn a_full_disk_and_a_lost_network_are_still_told_apart() {
+        for (file, expected) in [
+            ("disk-minimum", Problem::Space),
+            ("disk-full", Problem::Space),
+            ("network-gone", Problem::Offline),
+            ("network-stall", Problem::Slow),
+        ] {
+            let fake = Fake::new(
+                file,
+                &format!(
+                    "cat '{}/../sengi-text/tests/fixtures/{file}.err' >&2; exit 1",
+                    env!("CARGO_MANIFEST_DIR")
+                ),
+            );
+            let report = |_: Progress| {};
+            let error = fake
+                .flatpak(quick())
+                .install_with("org.gimp.GIMP", Some(&report))
+                .unwrap_err();
+            assert_eq!(Problem::of(&error), expected, "{file}: {error}");
+        }
+    }
+
+    /// The address of an object on Flathub is long, and the reason comes
+    /// after it.
+    #[test]
+    fn a_long_error_keeps_its_reason() {
+        let object = "a".repeat(62);
+        let fake = Fake::new(
+            "long-error",
+            &format!(
+                "echo 'error: Failed to install org.freedesktop.Platform.GL.default: While pulling runtime/org.freedesktop.Platform.GL.default/x86_64/24.08extra from remote flathub: While fetching https://dl.flathub.org/repo/objects/aa/{object}.filez: [6] Could not resolve hostname' >&2; exit 1"
+            ),
+        );
+        let error = fake.flatpak(quick()).installed().unwrap_err();
+        assert_eq!(Problem::of(&error), Problem::Offline, "{error}");
     }
 
     #[test]

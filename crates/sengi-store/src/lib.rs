@@ -9,7 +9,6 @@ pub mod icons;
 pub mod nav;
 pub mod online;
 pub mod problem;
-pub mod progress;
 pub mod rows;
 
 pub mod ui {

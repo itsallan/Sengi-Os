@@ -330,15 +330,16 @@ fn an_install_shows_its_progress_on_the_card_and_then_none() {
         &format!(
             "case \"$*\" in\n{REMOTES}\n\
              *remote-ls*) printf 'org.gimp.GIMP\\tGIMP\\tImages\\n';;\n\
-             *\" install \"*) printf 'Installing 2/4…\\n'; printf 'Installing… 45%%  12.3 MB  4.1 MB/s\\r'; sleep 1;;\n\
-             esac"
+             *\" install \"*) sed '/2\\/2.* 44%/q' '{}/../sengi-text/tests/fixtures/install.out'; sleep 1;;\n\
+             esac",
+            env!("CARGO_MANIFEST_DIR")
         ),
     );
     let shared = context(&fake);
     load(shared.clone());
     install(&shared, "org.gimp.GIMP");
     wait_until(&shared, |d| {
-        d.progress.as_ref().is_some_and(|p| p.percent == Some(45))
+        d.progress.as_ref().is_some_and(|p| p.percent == Some(44))
     });
     search(&shared, "gimp");
     {
@@ -346,11 +347,9 @@ fn an_install_shows_its_progress_on_the_card_and_then_none() {
         let v = view(&data, None);
         let card = v.cards.iter().find(|c| c.id == "org.gimp.GIMP").unwrap();
         let p = card.progress.as_ref().unwrap();
-        assert_eq!(p.step, Some((2, 4)));
-        assert_eq!(
-            p.detail(),
-            "Installing 2 of 4 \u{b7} 12.3 MB \u{b7} 4.1 MB/s"
-        );
+        assert_eq!(p.step, Some((2, 2)));
+        assert_eq!(p.detail(), "Step 2 of 2 \u{b7} up to 300.1 MB");
+        assert!(p.pace().ends_with(" left"), "{}", p.pace());
     }
     wait_until(&shared, |d| {
         d.rows.state("org.gimp.GIMP") == State::Installed
