@@ -9,6 +9,8 @@ and the measured idle RAM and boot time.
 
 - The Sengi OS logo in the bar, on the login screen, in Settings' About page,
   and on the first page of the installer and the welcome wizard.
+- The live USB system asks, once per start, whether to install Sengi OS or try
+  it first, and says that nothing is installed yet.
 
 ### Fixed
 

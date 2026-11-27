@@ -2,8 +2,11 @@
 
 ## Installing
 
-Start the computer from the USB stick and open **Install Sengi OS** from the
-dock (or search for "install"). It asks, in this order:
+Start the computer from the USB stick. Nothing is installed yet: the desktop
+you see runs from the stick, and changes are lost at shutdown. Sengi OS says so
+and asks whether to **Install Sengi OS** or **Try it first** (Escape does the
+same). To install later, open **Install Sengi OS** from the dock (or search for
+"install"). The installer asks, in this order:
 
 1. The keyboard layout and the time zone. The layout takes effect at once.
 2. The disk.

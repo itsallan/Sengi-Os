@@ -18,7 +18,7 @@ runs only while it is open. sengi-files is the file manager, an ordinary
 window too: your folders, USB and external drives, the Trash, copy, move and rename.
 sengi-open opens a file in the program for it: sengi-edit (a plain text
 editor) for text, sengi-view (an image viewer) for PNG and JPEG, Files for
-folders. sengi-calc is the calculator, a window too. sengi-welcome is the first-run welcome, shown once on an installed system. sengi-lock is the lock screen: the time, the
+folders. sengi-calc is the calculator, a window too. sengi-welcome is the first-run welcome, shown once on an installed system; on the live image it asks, once per start, whether to install Sengi OS or try it first. sengi-lock is the lock screen: the time, the
 date and a password field on every output, started when the screen locks
 and gone when it unlocks. It is unlocked with the user's password.
 The laptop keys are handled by the compositor: volume and brightness (also
@@ -73,8 +73,12 @@ choose Log out from the session menu, at the power icon in the bar.
     scripts/boot-test.sh out/sengi-os-1.0.0-amd64.iso test-output
 
 This boots the ISO headless, saves screenshots, and records idle RAM and boot
-time against the budgets. It also opens Settings, locks and unlocks the
-screen, and logs out and back in through the login screen.
+time against the budgets. It first checks the live image's question, install
+or try first, and chooses to try it. Idle RAM is recorded twice: with that
+question still on screen (`live_dialog_ram_mb`) and with the desktop settled
+after it is answered (`idle_ram_mb`); both have to be within the budget. The
+test also opens Settings, locks and unlocks the screen, and logs out and back
+in through the login screen.
 
     scripts/install-test.sh out/sengi-os-1.0.0-amd64.iso test-output/install
 
@@ -83,7 +87,10 @@ starts that disk alone, logs in with the password it chose, and checks that
 it is an installed system: no `live` user, `sudo` asks for a password, the
 root file system is the disk. It records how long installing took and the
 installed system's boot time and idle RAM. The only disk it writes is the
-image file it makes in the output directory. Set `SENGI_UEFI` to an OVMF
+image file it makes in the output directory. The installer is started with
+the button of the live image's question, or, with
+`SENGI_INSTALL_FROM=launcher`, from the launcher after trying first. Set
+`SENGI_UEFI` to an OVMF
 firmware image to run either test through UEFI. Set
 `SENGI_COMPOSITOR=labwc` to run either test on labwc instead of
 sengi-compositor, the default, the installed system included.

@@ -50,8 +50,9 @@ of 2 GB or more.
 sha256sum -c sengi-os-1.0.0-amd64.iso.sha256
 ```
 
-Write the ISO to the stick (this erases it), boot from it, then open
-**Install Sengi OS**. The live user and password are both `live`.
+Write the ISO to the stick (this erases it) and boot from it. Sengi OS asks
+whether to install or try it first; **Install Sengi OS** also stays on the
+dock. The live user and password are both `live`.
 
 > [!WARNING]
 > First release. Installing beside Windows, suspend and printing are not yet
