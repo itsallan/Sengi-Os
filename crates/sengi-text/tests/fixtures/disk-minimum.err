@@ -1,0 +1,1 @@
+error: Failed to install org.sengi.Test.Platform: While pulling runtime/org.sengi.Test.Platform/x86_64/1 from remote flathub: Writing content object: min-free-space-size 500MB would be exceeded, at least 4.1 kB requested

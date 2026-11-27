@@ -1,0 +1,1 @@
+error: Failed to install org.sengi.Test.App: While pulling app/org.sengi.Test.App/x86_64/stable from remote flathub: While fetching http://127.0.0.1:8765/objects/3d/6bcef556ac9086430f5cb642866a2edfd74a1a7f9087d26000c5d64a4dc6bc.filez: [7] Could not connect to server

@@ -1,0 +1,43 @@
+Looking for updates…
+
+
+ 1.	   	org.sengi.Test.Platform	1	u	flathub	< 40.0 MB
+ 2.	   	org.sengi.Test.App	stable	u	flathub	< 300.1 MB
+
+
+Updating 1/2…
+Updating 1/2…                        0%  0 bytes/s
+Updating 1/2…                        0%
+Updating 1/2… █████▊                29%
+Updating 1/2… ████████████▏         61%
+Updating 1/2… ██████████████████▍   92%  20.0 MB/s
+Updating 1/2… ████████████████████ 100%  20.0 MB/s
+Updating 2/2…
+Updating 2/2…                        0%  0 bytes/s
+Updating 2/2…                        0%
+Updating 2/2… ██▏                   11%
+Updating 2/2… ███                   15%
+Updating 2/2… ████                  20%  20.7 MB/s
+Updating 2/2… ████▏                 21%  26.6 MB/s
+Updating 2/2… █████▍                27%  32.6 MB/s
+Updating 2/2… ██████                30%  19.3 MB/s
+Updating 2/2… ██████▊               34%  22.3 MB/s
+Updating 2/2… ███████               35%  25.3 MB/s
+Updating 2/2… ████████▏             41%  18.8 MB/s
+Updating 2/2… ████████▊             44%  20.8 MB/s
+Updating 2/2… █████████▌            48%  22.9 MB/s
+Updating 2/2… ██████████▍           52%  24.9 MB/s
+Updating 2/2… ███████████           55%  20.2 MB/s  00:03
+Updating 2/2… ███████████▊          59%  21.7 MB/s  00:02
+Updating 2/2… ████████████▍         62%  23.2 MB/s  00:02
+Updating 2/2… █████████████▏        66%  19.7 MB/s  00:02
+Updating 2/2… █████████████▊        69%  20.9 MB/s  00:02
+Updating 2/2… ██████████████▌       73%  22.1 MB/s  00:01
+Updating 2/2… ███████████████▍      77%  19.4 MB/s  00:01
+Updating 2/2… ████████████████      80%  20.4 MB/s  00:01
+Updating 2/2… ████████████████▊     84%  21.4 MB/s  00:01
+Updating 2/2… █████████████████▍    87%  22.4 MB/s  00:00
+Updating 2/2… ██████████████████▏   91%  20.1 MB/s  00:00
+Updating 2/2… ██████████████████▊   94%  20.9 MB/s  00:00
+Updating 2/2… ████████████████████ 100%  21.4 MB/s  00:00
+Updates complete.

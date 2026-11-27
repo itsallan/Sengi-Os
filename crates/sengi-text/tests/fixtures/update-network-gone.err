@@ -1,0 +1,2 @@
+Error: While pulling app/org.sengi.Test.App/x86_64/stable from remote flathub: While fetching http://127.0.0.1:8765/objects/ea/53c7377511b740f602118b9205b7ea53fd6981f0d564a4f52e2643276088b9.filez: [7] Could not connect to server
+error: There were one or more errors

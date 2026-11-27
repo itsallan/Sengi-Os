@@ -4,7 +4,8 @@ Making text from outside safe to show: network and device names,
 notification text, tray titles and menu labels, names in desktop files.
 
 Used by sengi-apps (and through it sengi-launcher and sengi-dock),
-sengi-quick, sengi-notify and sengi-bar. It has no dependencies.
+sengi-quick, sengi-notify, sengi-bar, sengi-store and sengi-update. It has no
+dependencies.
 
 - `invisible(c)` and `hidden(c)`: the one list of characters that are not
   shown on their own. `hidden` is controls plus `invisible`: bidirectional
@@ -25,3 +26,10 @@ sengi-quick, sengi-notify and sengi-bar. It has no dependencies.
 - `initial(name)`: the letter for a fallback icon tile.
 
 Add a character to the list here and every program stops showing it.
+
+## Flatpak's progress
+
+`progress::Reader` takes the standard output of `flatpak install` or
+`flatpak update` run with `-y`, without `--noninteractive`, on a pipe, and
+says how far it has got. The Store and the updater share it. The files in
+`tests/fixtures` are what Flatpak 1.16.6 printed against a local repository.

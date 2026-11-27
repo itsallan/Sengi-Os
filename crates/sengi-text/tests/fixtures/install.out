@@ -1,0 +1,72 @@
+Looking for matches…
+Required runtime for org.sengi.Test.App/x86_64/stable (runtime/org.sengi.Test.Platform/x86_64/1) found in remote flathub
+
+
+ 1.	   	org.sengi.Test.Platform	1	i	flathub	< 40.0 MB
+ 2.	   	org.sengi.Test.App	stable	i	flathub	< 300.1 MB
+
+
+Installing 1/2…
+Installing 1/2…                        0%  0 bytes/s
+Installing 1/2…                        0%
+Installing 1/2… ███████▏              36%
+Installing 1/2… ████████              40%
+Installing 1/2… ███████████           55%  22.1 MB/s
+Installing 1/2… █████████████▊        69%  28.1 MB/s
+Installing 1/2… ███████████████       75%  34.1 MB/s
+Installing 1/2… ██████████████████    90%  20.0 MB/s
+Installing 1/2… ████████████████████ 100%  20.0 MB/s
+Installing 2/2…
+Installing 2/2…                        0%  0 bytes/s
+Installing 2/2…                        0%
+Installing 2/2… ██▌                   13%
+Installing 2/2… ██▌                   13%
+Installing 2/2… ███                   15%  21.9 MB/s
+Installing 2/2… ███▍                  17%  27.9 MB/s
+Installing 2/2… ███▊                  19%  33.8 MB/s
+Installing 2/2… ████▏                 21%  19.9 MB/s
+Installing 2/2… ████                  20%  22.9 MB/s
+Installing 2/2… ████▊                 24%  26.0 MB/s
+Installing 2/2… █████▏                26%  19.3 MB/s
+Installing 2/2… █████▌                28%  21.3 MB/s
+Installing 2/2… ██████                30%  23.3 MB/s
+Installing 2/2… ██████▍               32%  25.3 MB/s
+Installing 2/2… ██████▌               33%  20.5 MB/s  00:08
+Installing 2/2… ███████               35%  22.0 MB/s  00:07
+Installing 2/2… ███████▍              37%  23.5 MB/s  00:06
+Installing 2/2… ███████▊              39%  20.0 MB/s  00:07
+Installing 2/2… ████████              40%  21.2 MB/s  00:07
+Installing 2/2… ████████▍             42%  22.4 MB/s  00:06
+Installing 2/2… ████████▊             44%  19.7 MB/s  00:07
+Installing 2/2… █████████▏            46%  20.7 MB/s  00:07
+Installing 2/2… █████████▍            47%  21.7 MB/s  00:06
+Installing 2/2… █████████▊            49%  22.7 MB/s  00:06
+Installing 2/2… ██████████▏           51%  20.3 MB/s  00:06
+Installing 2/2… ██████████▌           53%  21.2 MB/s  00:06
+Installing 2/2… ██████████▊           54%  22.0 MB/s  00:05
+Installing 2/2… ███████████▏          56%  20.0 MB/s  00:06
+Installing 2/2… ███████████▌          58%  20.8 MB/s  00:05
+Installing 2/2… ████████████          60%  21.5 MB/s  00:05
+Installing 2/2… ████████████▍         62%  19.8 MB/s  00:05
+Installing 2/2… ████████████▌         63%  20.5 MB/s  00:05
+Installing 2/2… █████████████         65%  21.1 MB/s  00:04
+Installing 2/2… █████████████▍        67%  21.8 MB/s  00:04
+Installing 2/2… █████████████▊        69%  20.2 MB/s  00:04
+Installing 2/2… ██████████████▏       71%  20.8 MB/s  00:04
+Installing 2/2… ██████████████▍       72%  21.4 MB/s  00:03
+Installing 2/2… ██████████████▊       74%  20.0 MB/s  00:03
+Installing 2/2… ███████████████▏      76%  20.6 MB/s  00:03
+Installing 2/2… ███████████████▌      78%  21.1 MB/s  00:03
+Installing 2/2… ████████████████      80%  19.8 MB/s  00:03
+Installing 2/2… ████████████████▏     81%  20.3 MB/s  00:02
+Installing 2/2… ████████████████▌     83%  20.8 MB/s  00:02
+Installing 2/2… █████████████████     85%  21.3 MB/s  00:02
+Installing 2/2… █████████████████▏    86%  20.2 MB/s  00:02
+Installing 2/2… █████████████████▊    89%  20.6 MB/s  00:01
+Installing 2/2… ██████████████████    90%  21.1 MB/s  00:01
+Installing 2/2… ██████████████████▍   92%  20.0 MB/s  00:01
+Installing 2/2… ██████████████████▊   94%  20.4 MB/s  00:00
+Installing 2/2… ███████████████████▏  96%  20.9 MB/s  00:00
+Installing 2/2… ███████████████████▍  97%  19.9 MB/s  00:00
+Installing 2/2… ████████████████████ 100%  20.0 MB/s  00:00
+Installation complete.

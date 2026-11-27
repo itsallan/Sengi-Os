@@ -7,6 +7,8 @@
 //! characters serves every program, so a trick that is closed in one place
 //! is closed in all of them.
 
+pub mod progress;
+
 /// The least that [`line()`] reads of its input before giving up on it, in
 /// characters.
 const MIN_SCAN: usize = 768;
