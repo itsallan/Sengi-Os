@@ -16,7 +16,10 @@ use smithay::{
     },
     reexports::wayland_server::{protocol::wl_surface::WlSurface, Resource},
     utils::{Logical, Point, Serial, SERIAL_COUNTER},
-    wayland::{seat::WaylandFocus, shell::wlr_layer::Layer},
+    wayland::{
+        seat::WaylandFocus,
+        shell::wlr_layer::{KeyboardInteractivity, Layer},
+    },
 };
 
 use crate::{
@@ -886,9 +889,19 @@ impl State {
         let Some(output) = self.output_for_layer(&surface) else {
             return;
         };
-        let wants_keyboard = layer_map_for_output(&output)
+        let (wants_keyboard, holds_it) = layer_map_for_output(&output)
             .layer_for_surface(&surface, WindowSurfaceType::ALL)
-            .is_some_and(|layer| layer.can_receive_keyboard_focus());
+            .map_or((false, false), |layer| {
+                let exclusive = layer.cached_state().keyboard_interactivity
+                    == KeyboardInteractivity::Exclusive
+                    && matches!(layer.layer(), Layer::Top | Layer::Overlay);
+                (layer.can_receive_keyboard_focus(), exclusive)
+            });
+        // A menu or the launcher has the keyboard for as long as it is up
+        // anyway. Whatever was clicked before it is what gets it back.
+        if holds_it {
+            return;
+        }
         self.layer_focus = wants_keyboard.then_some(surface);
         self.update_keyboard_focus();
     }

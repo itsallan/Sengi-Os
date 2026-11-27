@@ -18,6 +18,9 @@ use wayland_protocols::xdg::shell::client::{
     xdg_toplevel::XdgToplevel,
     xdg_wm_base::XdgWmBase,
 };
+use wayland_protocols_wlr::layer_shell::v1::client::{
+    zwlr_layer_shell_v1, zwlr_layer_surface_v1::KeyboardInteractivity,
+};
 
 const COLOURS: [u32; 3] = [0xff20_b020, 0xffb0_2020, 0xff20_20b0];
 
@@ -241,6 +244,45 @@ fn the_screen_locks_while_a_menu_is_open() {
     let _lock = locker.lock().unwrap();
     locker.roundtrip().unwrap();
     alive(&compositor, &mut app);
+}
+
+#[test]
+fn a_menu_over_the_desktop_gives_the_keyboard_back_to_it_after_a_click() {
+    let compositor = Compositor::start(None);
+    let mut window = compositor.connect();
+    window.keyboard().unwrap();
+    let _window = window.window(COLOURS[0]).unwrap();
+    assert!(window.wait(SOON, |seen| seen.keyboard_enters == 1));
+
+    let mut desktop = compositor.connect();
+    desktop.keyboard().unwrap();
+    let (surface, layer) = desktop.desktop(COLOURS[1]).unwrap();
+    layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+    surface.commit();
+    desktop.roundtrip().unwrap();
+    // A click on bare desktop gives it the keyboard.
+    compositor.input("move 5 700");
+    compositor.input("click left");
+    assert!(desktop.wait(SOON, |seen| seen.keyboard_enters == 1));
+
+    // Its menu, over everything and holding the keyboard, is clicked and
+    // goes.
+    let mut menu = compositor.connect();
+    menu.keyboard().unwrap();
+    let (surface, layer) = menu.desktop(COLOURS[2]).unwrap();
+    layer.set_layer(zwlr_layer_shell_v1::Layer::Overlay);
+    layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+    surface.commit();
+    assert!(menu.wait(SOON, |seen| seen.keyboard_enters == 1));
+    compositor.input("move 200 300");
+    compositor.input("click left");
+    layer.destroy();
+    surface.destroy();
+    menu.roundtrip().unwrap();
+    assert!(
+        desktop.wait(SOON, |seen| seen.keyboard_enters == 2),
+        "the desktop did not get the keyboard back"
+    );
 }
 
 /// Not run by a plain `cargo test`: the compositor starts this test binary
