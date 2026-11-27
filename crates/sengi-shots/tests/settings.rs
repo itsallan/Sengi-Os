@@ -936,6 +936,8 @@ fn cards(picture: &harness::Picture, width: usize) -> Vec<(usize, usize)> {
             _ => {}
         }
     }
+    // A card may go on past the bottom of the window.
+    runs.extend(start.map(|from| (from, picture.height)));
     // The title's first letter is not a card.
     runs.retain(|(top, bottom)| bottom - top >= 30);
     runs

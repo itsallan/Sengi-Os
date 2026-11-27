@@ -1,6 +1,6 @@
 // The About page: what this is and what it runs on.
 
-import { Tokens, SengiText, SengiLabel, SengiButton } from "components.slint";
+import { Tokens, SengiText, SengiLabel, SengiButton, SengiLogo } from "components.slint";
 import { InfoRow, InfoCard, Page, PageColumn, Card, SettingRow, RowValue, SectionLabel, Gap } from "../kit.slint";
 
 export global AboutData {
@@ -22,6 +22,15 @@ export component AboutPage inherits Page {
             VerticalLayout {
                 padding: Tokens.space-lg;
                 spacing: Tokens.space-xs;
+
+                HorizontalLayout {
+                    alignment: start;
+
+                    SengiLogo {
+                        width: Tokens.logo-page;
+                        eye: Tokens.color-surface;
+                    }
+                }
 
                 SengiText {
                     text: AboutData.name;
