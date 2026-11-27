@@ -351,6 +351,13 @@ lock-prompt-hide = 30000
 # How long Restart and Shut down on the login screen wait, after a first
 # press, for the second press that carries them out.
 power-confirm = 5000
+# How long the pointer rests on a toolbar button before its name is shown.
+tooltip-delay = 500
+
+[editor]
+# The height of a line of text in the Text Editor, in percent of the natural
+# line height of the typeface.
+line-height-percent = 135
 
 [text-scale]
 # What the type sizes, and the heights of things that hold a line of text,

@@ -167,4 +167,6 @@ export global Tokens {
     out property <duration> osd-timeout: @{timing.osd-timeout}ms;
     out property <duration> lock-prompt-hide: @{timing.lock-prompt-hide}ms;
     out property <duration> power-confirm: @{timing.power-confirm}ms;
+    out property <duration> tooltip-delay: @{timing.tooltip-delay}ms;
+    out property <float> editor-line-height: @{editor.line-height-percent} / 100;
 }
