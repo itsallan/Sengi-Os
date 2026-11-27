@@ -37,7 +37,7 @@ fi
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
 rm -f "$out/serial.log" "$out"/*.png "$out"/*.ppm "$out/metrics.txt" \
-	"$out/mon.in" "$out/qmp.in" "$out/qmp.out" "$out/firmware.log"
+	"$out/mon.in" "$out/qmp.in" "$out/qmp.out" "$out/firmware.log" "$out/audio.wav"
 : >"$out/serial.log"
 mkfifo "$out/mon.in" "$out/qmp.in" "$out/qmp.out"
 
@@ -84,8 +84,8 @@ fi
 # Read the ISO once so the host's disk cache does not count against the guest.
 cat "$iso" >/dev/null
 
-# The sound card plays into nothing. It is there so PipeWire finds a sink and
-# the bar shows its volume item, which it hides on a machine with no audio.
+# The sound card is an Intel HDA one with line out and line in, and what the
+# guest plays on it is written to a .wav, which is listened to at the end.
 #
 # The monitor's mouse_move only sends relative motion, and the guest ignores
 # that anyway once it has switched the PS/2 mouse to the absolute VMware
@@ -96,7 +96,8 @@ qemu-system-x86_64 -machine q35,accel=$accel -cpu $cpu -smp 2 -m 4096 \
 	-drive file="$iso",format=raw,if=virtio,readonly=on \
 	${SENGI_UEFI:+-bios "$SENGI_UEFI"} \
 	-device "virtio-vga${SENGI_SCREEN:+,xres=$screen_w,yres=$screen_h}" -display none \
-	-audiodev none,id=snd -device intel-hda -device hda-output,audiodev=snd \
+	-audiodev wav,id=snd,path="$out/audio.wav",out.frequency=48000 \
+	-device intel-hda -device hda-duplex,audiodev=snd \
 	-nic user,model=virtio-net-pci \
 	-smbios type=11,value=io.systemd.credential:sengi.test=1 \
 	${SENGI_TEST_DEBUG:+-smbios "type=11,value=io.systemd.credential:sengi.test.debug=$SENGI_TEST_DEBUG"} \
@@ -164,10 +165,6 @@ if ! wait_for SENGI-BOOT; then
 fi
 boot_s=$(echo "$(now) $start" | awk '{printf "%.1f", $1 - $2}')
 
-wait_for SENGI-DONE || { stop; exit 1; }
-
-# The measurements are in. Now drive the desktop a little so the reviewer has
-# more than an empty screen to look at.
 shot() {
 	echo "screendump $out/$1.png -f png" >&3
 	sleep 1
@@ -176,6 +173,18 @@ key() {
 	echo "sendkey $1" >&3
 	sleep "${2:-2}"
 }
+
+# After the measurements the guest plays its tones (see sengi-boot-report),
+# and then waits for the volume up key.
+wait_for 'SENGI-SOUND keys ready\|SENGI-DONE' || { stop; exit 1; }
+if ! grep -q SENGI-DONE "$out/serial.log"; then
+	key volumeup 0.2
+	shot volume-key
+fi
+wait_for SENGI-DONE || { stop; exit 1; }
+
+# The measurements are in. Now drive the desktop a little so the reviewer has
+# more than an empty screen to look at.
 # Put the pointer on a pixel. QMP wants each axis scaled to 0..32767.
 pointer() {
 	printf '{"execute":"input-send-event","arguments":{"events":[{"type":"abs","data":{"axis":"x","value":%d}},{"type":"abs","data":{"axis":"y","value":%d}}]}}\n' \
@@ -891,6 +900,31 @@ fi
 rm -f "$out"/*.ppm "$out"/*.band
 stop
 
+# What the sound card was given to play, complete now that QEMU has ended.
+# The guest played a tone of 400 Hz through PipeWire and one of 1000 Hz
+# through ALSA's default device. For each tenth of a second of the left
+# channel the pitch is counted from the rises through zero; silence, which is
+# all zeros, has none. This prints how many tenths had the pitch $1.
+heard() {
+	[ -s "$out/audio.wav" ] || { echo 0; return; }
+	tail -c +45 "$out/audio.wav" | od -An -v -td2 -w4 | awk -v want="$1" '
+		{
+			if ($1 > 100) { if (low) rises++; low = 0 } else if ($1 < -100) low = 1
+			if (++n == 4800) {
+				if (rises * 10 >= want * 0.9 && rises * 10 <= want * 1.1) tenths++
+				n = rises = 0
+			}
+		}
+		END { print tenths + 0 }'
+}
+sound_fail=
+for pitch in 400 1000; do
+	tenths=$(heard "$pitch")
+	echo "sound: $tenths tenths of a second heard at $pitch Hz" >&2
+	[ "$tenths" -ge 5 ] ||
+		sound_fail=${sound_fail:-"the sound card was not given the $pitch Hz tone ($tenths tenths of a second of it heard)"}
+done
+
 guest_s=$(sed -n 's/.*SENGI-BOOT desktop_s=\([0-9.]*\).*/\1/p' "$out/serial.log" | head -1)
 ram_mb=$(sed -n 's/.*SENGI-IDLE ram_mb=\([0-9]*\).*/\1/p' "$out/serial.log" | head -1)
 got=$(sed -n 's/.*SENGI-INFO compositor: \([a-z-]*\).*/\1/p' "$out/serial.log" | head -1)
@@ -962,6 +996,10 @@ if [ -n "$apps_fail" ]; then
 fi
 if [ -n "$drives_fail" ]; then
 	echo "FAIL: $drives_fail" >&2
+	fail=1
+fi
+if [ -n "$sound_fail" ]; then
+	echo "FAIL: $sound_fail" >&2
 	fail=1
 fi
 if [ -n "$greeter_fail" ]; then

@@ -127,6 +127,109 @@ done
 may_power_off live
 # shellcheck disable=SC2046
 echo "SENGI-POLKIT pss_kb=$(pss_kb $(pidof polkitd))" >$port
+
+# Sound, on the card the test gives the guest. This comes after the idle
+# figure: playing starts things that are not resident before.
+default_sink() {
+	as_live wpctl inspect @DEFAULT_AUDIO_SINK@ 2>/dev/null |
+		sed -n 's/.*node\.name = "\(.*\)"/\1/p'
+}
+sink=
+n=0
+while [ $n -lt 50 ]; do
+	sink=$(default_sink)
+	case $sink in
+	'' | auto_null) ;;
+	*) break ;;
+	esac
+	sleep 0.2
+	n=$((n + 1))
+done
+case $sink in
+'' | auto_null) echo "SENGI-FAIL there is no sound output (default sink: ${sink:-none})" >$port ;;
+esac
+echo "SENGI-INFO sound sink: ${sink:-none}" >$port
+LC_ALL=C aplay -l 2>&1 | sed 's/^/SENGI-INFO aplay -l: /' >$port
+LC_ALL=C aplay -l 2>/dev/null | grep -q '^card ' ||
+	echo "SENGI-FAIL aplay -l lists no sound card" >$port
+as_live wpctl status 2>/dev/null | sed -n '/^Audio/,/^Video/s/^/SENGI-INFO wpctl: /p' >$port
+# Most programs speak to the PulseAudio server. It has to be listening, not
+# running, and start when something connects.
+pulse() {
+	as_live systemctl --user is-active pipewire-pulse.socket pipewire-pulse.service |
+		tr '\n' ' '
+}
+idle_pulse=$(pulse)
+[ "$idle_pulse" = "active inactive " ] ||
+	echo "SENGI-FAIL pipewire-pulse socket and service are '$idle_pulse' at idle, not 'active inactive '" >$port
+as_live logger --socket /run/user/1000/pulse/native boot-test >/dev/null 2>&1
+n=0
+while [ "$(pulse)" != "active active " ] && [ $n -lt 25 ]; do
+	sleep 0.2
+	n=$((n + 1))
+done
+[ "$(pulse)" = "active active " ] ||
+	echo "SENGI-FAIL connecting to the PulseAudio socket did not start pipewire-pulse ($(pulse))" >$port
+# A second of square wave at $1 Hz, which has to divide 24000, as a WAV file
+# of 48 kHz stereo.
+tone() {
+	high=
+	low=
+	i=0
+	while [ $i -lt $((24000 / $1)) ]; do
+		high="$high\\000\\040\\000\\040"
+		low="$low\\000\\340\\000\\340"
+		i=$((i + 1))
+	done
+	printf 'RIFF\044\356\002\000WAVEfmt \020\000\000\000\001\000\002\000\200\273\000\000\000\356\002\000\004\000\020\000data\000\356\002\000'
+	i=0
+	while [ $i -lt "$1" ]; do
+		# shellcheck disable=SC2059
+		printf "$high$low"
+		i=$((i + 1))
+	done
+}
+# Two ways in, told apart by the test by their pitch: PipeWire's own, and
+# ALSA's default device, which has to lead to PipeWire too.
+tone 400 >/run/sengi-tone-400.wav
+tone 1000 >/run/sengi-tone-1000.wav
+chmod 0644 /run/sengi-tone-400.wav /run/sengi-tone-1000.wav
+said=$(as_live timeout 10 pw-play /run/sengi-tone-400.wav 2>&1) ||
+	echo "SENGI-FAIL pw-play could not play: $(echo "$said" | tail -n 1)" >$port
+sleep 1
+said=$(as_live env LC_ALL=C timeout 10 aplay -v /run/sengi-tone-1000.wav 2>&1) ||
+	echo "SENGI-FAIL aplay could not play: $(echo "$said" | tail -n 1)" >$port
+echo "$said" | grep -q 'PipeWire' ||
+	echo "SENGI-FAIL ALSA's default device is not PipeWire" >$port
+rm -f /run/sengi-tone-400.wav /run/sengi-tone-1000.wav
+# The volume up key, which the test presses now.
+level() {
+	as_live wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null
+}
+before=$(level)
+after=$before
+echo "SENGI-SOUND keys ready" >$port
+n=0
+while [ "$after" = "$before" ] && [ $n -lt 75 ]; do
+	sleep 0.2
+	after=$(level)
+	n=$((n + 1))
+done
+echo "SENGI-INFO volume up key: '$before' then '$after'" >$port
+[ "$after" != "$before" ] ||
+	echo "SENGI-FAIL the volume up key did not change the volume ($before)" >$port
+as_live wpctl set-volume @DEFAULT_AUDIO_SINK@ "${before#Volume: }" >/dev/null 2>&1
+# The Bluetooth side of sound must be there, and cost nothing on a machine
+# with no adapter.
+if journalctl -b --no-pager -o cat | grep -q 'BlueZ SPA plugin is missing'; then
+	echo "SENGI-FAIL PipeWire cannot do Bluetooth audio" >$port
+fi
+if pidof bluetoothd >/dev/null; then
+	echo "SENGI-FAIL bluetoothd is running with no Bluetooth adapter" >$port
+fi
+# The bar looks at the volume four times a minute: let it see the old one
+# again before the test starts comparing screens.
+sleep 16
 echo "SENGI-DONE" >$port
 
 # The boot test goes on to open Settings and close it, and then to lock
