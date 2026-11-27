@@ -442,34 +442,41 @@ pub struct Titlebar {
 }
 
 /// One bottom corner of a window's frame, `size` pixels square: the border
-/// around the rounded corner at `radius`, the desktop outside it, where the
-/// client's own square corner would otherwise show. The left corner is at
-/// the left of the canvas, or the right one when `right` is set. The rest of
-/// the canvas is the border, or clear above it, so the client shows through.
-#[cfg(test)]
-pub fn draw_bottom_corner(
-    size: i32,
-    radius: f32,
-    border: i32,
-    edge: Rgba,
-    desktop: Rgba,
-    right: bool,
-) -> Canvas {
-    draw_bottom_corner_over(size, radius, border, edge, &|_, _| desktop, right)
-}
-
-/// As `draw_bottom_corner`, with what is behind the window at each pixel of
-/// the corner given by `behind`: the desktop with the window's shadow on it.
-pub fn draw_bottom_corner_over(
-    size: i32,
-    radius: f32,
-    border: i32,
-    edge: Rgba,
-    behind: &dyn Fn(usize, usize) -> Rgba,
-    right: bool,
-) -> Canvas {
+/// around the rounded corner at `radius`. The rest is clear, so the client
+/// shows inside it and whatever is behind the window outside it; the
+/// client's own square corner is cut away, see `bottom_insets`. The left
+/// corner is at the left of the canvas, or the right one when `right` is set.
+pub fn draw_bottom_corner(size: i32, radius: f32, border: i32, edge: Rgba, right: bool) -> Canvas {
     let size = size.max(1);
     let mut canvas = Canvas::new(size as usize, size as usize);
+    let (outer, inner) = bottom_corner_shapes(size, radius, border, right);
+    for y in 0..size as usize {
+        for x in 0..size as usize {
+            let ring = outer.coverage(x, y) - inner.coverage(x, y);
+            canvas.blend(x, y, edge, ring.max(0.0));
+        }
+    }
+    canvas
+}
+
+/// For each row of the client's area that a bottom corner reaches, from the
+/// top: how many pixels at that end of the row lie wholly outside the inside
+/// of the frame, and so are not to be drawn.
+pub fn bottom_insets(size: i32, radius: f32, border: i32) -> Vec<i32> {
+    let size = size.max(1);
+    let (_, inner) = bottom_corner_shapes(size, radius, border, false);
+    let first = border.clamp(0, size);
+    (0..(size - first) as usize)
+        .map(|y| {
+            (first..size)
+                .take_while(|&x| inner.coverage(x as usize, y) <= 0.0)
+                .count() as i32
+        })
+        .collect()
+}
+
+/// The outside and the inside of the border in a bottom corner.
+fn bottom_corner_shapes(size: i32, radius: f32, border: i32, right: bool) -> (Rounded, Rounded) {
     let inner_radius = (radius - border as f32).max(0.0);
     let (outer_radii, inner_radii, inner_x) = if right {
         ([0.0, 0.0, radius, 0.0], [0.0, 0.0, inner_radius, 0.0], 0)
@@ -485,15 +492,7 @@ pub fn draw_bottom_corner_over(
         Rect::new(inner_x, 0, size - border, size - border),
         inner_radii,
     );
-    for y in 0..size as usize {
-        for x in 0..size as usize {
-            let outside = outer.coverage(x, y);
-            let inside = inner.coverage(x, y);
-            canvas.blend(x, y, behind(x, y), 1.0 - outside);
-            canvas.blend(x, y, edge, (outside - inside).max(0.0));
-        }
-    }
-    canvas
+    (outer, inner)
 }
 
 /// `colour` darkened by `percent`.
@@ -628,45 +627,48 @@ mod tests {
     }
 
     #[test]
-    fn the_bottom_corners_are_the_desktop_and_the_edge_is_the_border() {
+    fn the_bottom_corners_are_the_border_and_clear_around_it() {
         let edge = Rgba {
             r: 255,
             g: 0,
             b: 0,
             a: 255,
         };
-        let desktop = Rgba {
-            r: 0,
-            g: 0,
-            b: 255,
-            a: 255,
-        };
         // Red, green, blue, alpha.
-        let is_desktop = |p: [u8; 4]| p[2] > 200 && p[0] < 60;
-        let is_edge = |p: [u8; 4]| p[0] > 200 && p[2] < 60;
-        let left = draw_bottom_corner(8, 6.0, 2, edge, desktop, false);
-        assert!(
-            is_desktop(left.pixel(0, 7)),
-            "left corner {:?}",
-            left.pixel(0, 7)
-        );
+        let is_edge = |p: [u8; 4]| p[0] > 200 && p[3] > 200;
+        let left = draw_bottom_corner(8, 6.0, 2, edge, false);
+        assert_eq!(left.pixel(0, 7)[3], 0, "clear outside the left corner");
         assert!(
             is_edge(left.pixel(7, 7)),
             "bottom edge at the right of the piece"
         );
         assert!(is_edge(left.pixel(4, 7)), "bottom edge");
         assert_eq!(left.pixel(7, 0)[3], 0, "the client shows above the corner");
-        let right = draw_bottom_corner(8, 6.0, 2, edge, desktop, true);
-        assert!(
-            is_desktop(right.pixel(7, 7)),
-            "right corner {:?}",
-            right.pixel(7, 7)
-        );
+        let right = draw_bottom_corner(8, 6.0, 2, edge, true);
+        assert_eq!(right.pixel(7, 7)[3], 0, "clear outside the right corner");
         assert!(
             is_edge(right.pixel(0, 7)),
             "bottom edge at the left of the piece"
         );
         assert_eq!(right.pixel(0, 0)[3], 0, "the client shows above the corner");
+    }
+
+    #[test]
+    fn the_client_loses_more_of_each_row_towards_the_bottom() {
+        let insets = bottom_insets(7, 6.0, 1);
+        assert_eq!(insets.len(), 6);
+        assert_eq!(insets[0], 0);
+        assert!(
+            insets.windows(2).all(|pair| pair[0] <= pair[1]),
+            "{insets:?}"
+        );
+        assert!((1..6).contains(&insets[5]), "{insets:?}");
+        // Square corners cut nothing.
+        assert!(bottom_insets(1, 0.0, 1).is_empty());
+        // At twice the size, about twice as much.
+        let double = bottom_insets(14, 12.0, 2);
+        assert_eq!(double.len(), 12);
+        assert!(double[11] > insets[5], "{double:?}");
     }
 
     #[test]

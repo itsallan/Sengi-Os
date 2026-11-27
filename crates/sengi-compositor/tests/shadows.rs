@@ -258,6 +258,71 @@ fn frame_time(settings: Option<&str>) -> Duration {
     times[times.len() / 2]
 }
 
+const WALL: u32 = 0xfff4_f1e8;
+
+#[test]
+fn the_bottom_corners_show_the_wallpaper_behind_them() {
+    for scale in [1u32, 2] {
+        let factor = scale.to_string();
+        let arguments = ["--scale", factor.as_str(), "--outputs", "1920x1080"];
+        let compositor = Compositor::start_args(&arguments, None);
+        // Without a shadow what is behind shows as it is.
+        reload(&compositor, OFF, 1);
+        let mut wall = compositor.connect();
+        let _wallpaper = wall.wallpaper(|_, _| WALL).unwrap();
+        let mut app = compositor.connect();
+        app.keyboard().unwrap();
+        let _window = app.decorated_window(GREEN).unwrap();
+        assert!(app.wait(SOON, |seen| seen.keyboard_enters == 1));
+        let picture = app.capture().unwrap();
+        shot(&picture, &format!("corners-wallpaper-{scale}.ppm"));
+        let (x0, _, x1, y1) = client(&picture, GREEN);
+        // The outermost pixel of the frame's box at each bottom corner, and
+        // the client's own corner pixel.
+        for (x, y) in [(x0 - scale, y1 + scale), (x1 + scale, y1 + scale)] {
+            assert_eq!(picture.at(x, y), rgb(WALL), "at {x},{y}, scale {scale}");
+        }
+        for x in [x0, x1] {
+            assert_ne!(picture.at(x, y1), rgb(GREEN), "the corner is square");
+        }
+        // Above the corners and along the bottom the client is whole.
+        let above = y1 - 8 * scale;
+        assert_eq!(picture.at(x0, above), rgb(GREEN));
+        assert_eq!(picture.at(x1, above), rgb(GREEN));
+        assert_eq!(picture.at((x0 + x1) / 2, y1), rgb(GREEN));
+        // None of the desktop colour is painted anywhere near a corner.
+        for y in y1 - 10 * scale..y1 + 4 * scale {
+            for x in (x0 - 4 * scale..x0 + 10 * scale).chain(x1 - 10 * scale..x1 + 4 * scale) {
+                assert_ne!(picture.at(x, y), desktop(), "desktop colour at {x},{y}");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_bottom_corners_show_a_window_behind_them() {
+    let compositor = Compositor::start_with(None, Some(OFF), None);
+    let mut back = compositor.connect();
+    back.keyboard().unwrap();
+    let _back = back.decorated_window(RED).unwrap();
+    assert!(back.wait(SOON, |seen| seen.keyboard_enters == 1));
+    let mut front = compositor.connect();
+    front.keyboard().unwrap();
+    let _front = front.decorated_window(GREEN).unwrap();
+    assert!(front.wait(SOON, |seen| seen.keyboard_enters == 1));
+    // Up by its title bar, until its bottom lies over the window behind.
+    let (x0, y0, ..) = client(&front.capture().unwrap(), GREEN);
+    compositor.input(&format!("move {} {}", x0 + 150, y0 - 20));
+    compositor.input("press left");
+    compositor.input(&format!("move {} {}", x0 + 150, y0 - 80));
+    compositor.input("release left");
+    compositor.input("move 5 5");
+    let picture = front.capture().unwrap();
+    shot(&picture, "corners-over-window.ppm");
+    let (x0, _, _, y1) = client(&picture, GREEN);
+    assert_eq!(picture.at(x0 - 1, y1 + 1), rgb(RED));
+}
+
 #[test]
 fn shadows_add_little_to_the_cost_of_a_frame() {
     let without = frame_time(Some(OFF));

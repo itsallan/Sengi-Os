@@ -30,7 +30,6 @@ use crate::{
     keys::Edge,
     layout::Rect,
     outputs::scale_key,
-    shadow::{self, Falloff},
     snap::Snap,
     state::{set_activated, State},
     text::Font,
@@ -111,6 +110,8 @@ pub struct WindowData {
     /// The shadow pictures of this window, by `scale_key` and whether it is
     /// focused.
     pub shadows: RefCell<HashMap<(u32, bool), crate::shadow::Buffers>>,
+    /// The names the cut pieces of the client are drawn under.
+    pub corner_ids: RefCell<crate::corners::Ids>,
     /// The title last rasterised, the room it had and its pixels, if the
     /// typeface is there.
     pub title: RefCell<TitleCache>,
@@ -130,10 +131,18 @@ pub struct FrameBuffers {
     pub left: SolidColorBuffer,
     pub right: SolidColorBuffer,
     pub bottom: SolidColorBuffer,
-    /// The left and right bottom corners, when they are rounded: drawn in
-    /// front of the client, where the corners of its own square area are
-    /// covered. Each is `bottom_corner` pixels square.
+    /// The border around the left and right bottom corners, when they are
+    /// rounded: drawn in front of the client, whose own square corners are
+    /// cut away. Each is `bottom_corner` pixels square.
     pub bottom_corners: Option<[MemoryRenderBuffer; 2]>,
+    /// The border, in logical pixels.
+    pub border: i32,
+    /// What the client loses of each of its bottom rows, in the screen's
+    /// pixels, see `decoration::bottom_insets`.
+    pub insets: Vec<i32>,
+    /// The border in the screen's pixels, and the side of a corner there.
+    pub border_pixels: i32,
+    pub corner_pixels: i32,
     /// Where they are, from the top of the frame's client area.
     pub bottom_top: i32,
     /// Their size, and how far the right one is from the left one.
@@ -882,6 +891,12 @@ impl State {
         // The size of each bottom corner: the radius and the border.
         let corner = logical.radius + border;
         let side_height = (height - radius).max(0);
+        // The straight part of the bottom edge: the corners have their own.
+        let bottom_width = if square {
+            full
+        } else {
+            (full - 2 * corner).max(0)
+        };
         let shape = (full, height, square);
         // Where the title may go: between the buttons and the frame's edge.
         let room = to_pixels(painted)
@@ -913,45 +928,27 @@ impl State {
             );
             // Two small corners, whatever the window's width: the client
             // sets that, so nothing here may grow with it.
+            let corner_pixels = to_pixels(corner).max(1);
+            let border_pixels = to_pixels(border);
+            let radius_pixels = to_pixels(radius) as f32;
+            let insets = if square {
+                Vec::new()
+            } else {
+                decoration::bottom_insets(corner_pixels, radius_pixels, border_pixels)
+            };
             let bottom_corners = (!square).then(|| {
-                let desktop = self
-                    .tokens
-                    .color("color.desktop")
-                    .expect("tokens define color.desktop");
-                let size = to_pixels(corner).max(1);
-                let shade = (self.config.appearance.window_shadows && paint.shadow.visible())
-                    .then(|| Falloff::new(&paint.shadow, paint.shadow.peak(active)));
-                let frame_w = to_pixels(full);
-                let frame_h = to_pixels(logical.metrics.titlebar + height + border);
                 [false, true].map(|right| {
-                    // What the corner covers is the desktop, with the shadow on it.
-                    let behind = |x: usize, y: usize| match &shade {
-                        Some(falloff) => {
-                            let left = if right { frame_w - size } else { 0 };
-                            let alpha = falloff.at(
-                                frame_w,
-                                frame_h,
-                                paint.radius,
-                                paint.shadow.offset,
-                                left + x as i32,
-                                frame_h - size + y as i32,
-                            );
-                            shadow::over(&paint.shadow, alpha, desktop)
-                        }
-                        None => desktop,
-                    };
-                    let picture = decoration::draw_bottom_corner_over(
-                        size,
-                        to_pixels(radius) as f32,
-                        to_pixels(border),
+                    let picture = decoration::draw_bottom_corner(
+                        corner_pixels,
+                        radius_pixels,
+                        border_pixels,
                         logical.border,
-                        &behind,
                         right,
                     );
                     MemoryRenderBuffer::from_slice(
                         &picture.into_pixels(),
                         Fourcc::Argb8888,
-                        (size, size),
+                        (corner_pixels, corner_pixels),
                         scale.round().max(1.0) as i32,
                         Transform::Normal,
                         None,
@@ -968,8 +965,12 @@ impl State {
                     rest: SolidColorBuffer::new(rest_size, fill),
                     left: SolidColorBuffer::new((border, side_height), line),
                     right: SolidColorBuffer::new((border, side_height), line),
-                    bottom: SolidColorBuffer::new((full, border), line),
+                    bottom: SolidColorBuffer::new((bottom_width, border), line),
                     bottom_corners,
+                    border,
+                    insets,
+                    border_pixels,
+                    corner_pixels,
                     bottom_top: height - radius,
                     bottom_corner: corner,
                     bottom_right: (full - corner).max(0),
@@ -981,7 +982,7 @@ impl State {
             buffers.left.update((border, side_height), line);
             buffers.right.update((border, side_height), line);
             buffers.titlebar_size = (painted, logical.metrics.titlebar);
-            buffers.bottom.update((full, border), line);
+            buffers.bottom.update((bottom_width, border), line);
         }
     }
 }

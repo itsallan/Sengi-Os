@@ -196,9 +196,11 @@ sengi-notify and sengi-lock included):
   frame, X11 windows follow their Motif hints, popups and menus have none.
   The frame:
   title bar with close, minimise and maximise on the left,
-  centred title in Inter, rounded top corners, 1 px border, separate looks
+  centred title in Inter, rounded corners, 1 px border, separate looks
   for the focused and unfocused window, hover highlight on buttons. All
-  sizes and colours are read from `tokens/sengi.toml`.
+  sizes and colours are read from `tokens/sengi.toml`. At the rounded
+  bottom corners the client's own square corners are not drawn, so the
+  wallpaper, the window behind and the shadow show there.
 - A faint shadow around framed windows, moved down a little, darker for the
   focused window than for the others, none for a window that fills the
   screen or is maximised; a snapped one keeps it. It is a stack of flat

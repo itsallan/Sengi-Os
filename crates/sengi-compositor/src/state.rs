@@ -1252,7 +1252,6 @@ impl State {
         if let Some(configure) = self.configure_inputs.as_mut() {
             configure(&config);
         }
-        let shadows_changed = self.config.appearance != config.appearance;
         let theme_changed = self.config.appearance.tokens_differ(&config.appearance)
             || self.config.appearance.cursor != config.appearance.cursor;
         self.config = config;
@@ -1265,12 +1264,6 @@ impl State {
             self.theme = Theme::from_tokens(&self.tokens);
             self.painters.clear();
             self.refresh_painters();
-        }
-        if shadows_changed {
-            // The bottom corners are painted over the shadow.
-            for window in self.space.elements().chain(self.minimised.iter()) {
-                window::data(window).frame.borrow_mut().clear();
-            }
         }
         crate::say!("settings read again");
         self.night_update();

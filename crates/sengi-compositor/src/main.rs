@@ -7,6 +7,7 @@ mod card;
 mod cli;
 mod clipboard;
 mod config;
+mod corners;
 mod cursor;
 mod decoration;
 #[cfg(any(feature = "winit", feature = "drm"))]

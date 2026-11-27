@@ -240,6 +240,8 @@ and the measured idle RAM and boot time.
 
 ### Fixed
 
+- Windows' rounded bottom corners showed dark specks over a wallpaper or
+  another window. What is behind them shows there now.
 - The whole desktop froze, pointer and all, when a window was minimised with
   its yellow button while another window was open. The compositor took a
   lock it already held while handing the keyboard to the next window. The

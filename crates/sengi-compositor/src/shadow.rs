@@ -63,14 +63,6 @@ impl ShadowStyle {
     pub fn visible(&self) -> bool {
         self.steps > 0 && self.spread > 0 && self.focused.max(self.unfocused) > 0.0
     }
-
-    pub fn peak(&self, active: bool) -> f32 {
-        if active {
-            self.focused
-        } else {
-            self.unfocused
-        }
-    }
 }
 
 /// The stack of rectangles for one darkness: how far each reaches past the
@@ -265,20 +257,6 @@ impl ShadowSet {
             Part::Left | Part::Right => Rectangle::new((0.0, h / 3.0).into(), (w, h / 3.0).into()),
             _ => Rectangle::from_size(Size::from((w, h))),
         }
-    }
-}
-
-/// What shows where the shadow lies over `behind`.
-pub fn over(style: &ShadowStyle, alpha: f32, behind: Rgba) -> Rgba {
-    let alpha = alpha.clamp(0.0, 1.0) * f32::from(style.colour.a) / 255.0;
-    let mix = |shade: u8, below: u8| {
-        (f32::from(shade) * alpha + f32::from(below) * (1.0 - alpha)).round() as u8
-    };
-    Rgba {
-        r: mix(style.colour.r, behind.r),
-        g: mix(style.colour.g, behind.g),
-        b: mix(style.colour.b, behind.b),
-        a: behind.a,
     }
 }
 

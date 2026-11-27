@@ -11,7 +11,8 @@ use smithay::{
             render_elements,
             solid::SolidColorRenderElement,
             surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
-            AsRenderElements, Kind, RenderElementStates,
+            utils::CropRenderElement,
+            AsRenderElements, Element, Kind, RenderElementStates,
         },
         Color32F, ImportAll, ImportMem, Renderer, Texture,
     },
@@ -21,7 +22,7 @@ use smithay::{
             send_frames_surface_tree, surface_primary_scanout_output,
             update_surface_primary_scanout_output, with_surfaces_surface_tree,
         },
-        Window,
+        PopupManager, Window,
     },
     input::pointer::{CursorImageStatus, CursorImageSurfaceData},
     output::Output,
@@ -29,17 +30,27 @@ use smithay::{
     utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale, Size},
     wayland::{
         compositor::{with_states, SurfaceData},
+        seat::WaylandFocus,
         shell::wlr_layer::Layer,
     },
 };
 
-use crate::{outputs::scale_key, state::State, window};
+use crate::{
+    corners::{Notch, Piece},
+    outputs::scale_key,
+    state::State,
+    window,
+};
 
 render_elements! {
     pub OutputElement<R> where R: ImportAll + ImportMem;
     Surface=WaylandSurfaceRenderElement<R>,
     Memory=MemoryRenderBufferRenderElement<R>,
     Solid=SolidColorRenderElement,
+    // A client with its bottom corners cut off: the part above them, and
+    // the pieces beside them.
+    Cropped=CropRenderElement<WaylandSurfaceRenderElement<R>>,
+    Piece=Piece<WaylandSurfaceRenderElement<R>>,
 }
 
 /// Renders everything visible on `output` into `target`.
@@ -138,15 +149,7 @@ where
         let location = location - origin;
         // The rounded bottom corners go in front of the client's own area.
         frame_corners(state, window, location, renderer, scale, &mut elements);
-        // Surface coordinates start at the buffer, not at the window
-        // geometry the location refers to.
-        let surface_origin = location - window.geometry().loc;
-        elements.extend(window.render_elements::<OutputElement<R>>(
-            renderer,
-            surface_origin.to_physical_precise_round(scale),
-            scale,
-            1.0,
-        ));
+        client(window, location, renderer, scale, &mut elements);
         frame(state, window, location, renderer, scale, &mut elements);
         // Last, so it is behind the window and in front of those below.
         shadow(state, window, location, renderer, scale, &mut elements);
@@ -245,6 +248,90 @@ fn cursor<R>(
     }
 }
 
+/// Adds what the client of `window` draws, its popups in front. Under a
+/// frame with rounded bottom corners the client's own corners are left out.
+fn client<R>(
+    window: &Window,
+    location: Point<i32, Logical>,
+    renderer: &mut R,
+    scale: Scale<f64>,
+    elements: &mut Vec<OutputElement<R>>,
+) where
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Clone + Send + Texture + 'static,
+{
+    // Surface coordinates start at the buffer, not at the window geometry
+    // the location refers to.
+    let origin: Point<i32, Physical> =
+        (location - window.geometry().loc).to_physical_precise_round(scale);
+    let data = window::data(window);
+    let slot = data.frame.borrow();
+    let cut = slot
+        .get(&scale_key(scale.x))
+        .filter(|buffers| data.decorated.get() && buffers.bottom_corners.is_some())
+        .zip(window.wl_surface());
+    let Some((buffers, surface)) = cut else {
+        elements.extend(window.render_elements::<OutputElement<R>>(renderer, origin, scale, 1.0));
+        return;
+    };
+
+    // Popups reach where they like, corners included.
+    if window.toplevel().is_some() {
+        for (popup, offset) in PopupManager::popups_for_surface(&surface) {
+            let offset = (window.geometry().loc + offset - popup.geometry().loc)
+                .to_physical_precise_round(scale);
+            elements.extend(render_elements_from_surface_tree(
+                renderer,
+                popup.wl_surface(),
+                origin + offset,
+                scale,
+                1.0,
+                Kind::Unspecified,
+            ));
+        }
+    }
+
+    // In the screen's pixels, from where the corner pictures are put.
+    let right_corner: Point<i32, Physical> = Point::<i32, Logical>::from((
+        location.x - buffers.border + buffers.bottom_right,
+        location.y + buffers.bottom_top,
+    ))
+    .to_f64()
+    .to_physical_precise_round(scale);
+    let left_edge: Point<i32, Physical> = location.to_f64().to_physical_precise_round(scale);
+    let notch = Notch {
+        left: left_edge.x,
+        top: right_corner.y,
+        right: right_corner.x + buffers.corner_pixels - buffers.border_pixels,
+        insets: &buffers.insets,
+        border: buffers.border_pixels,
+    };
+    let mut ids = data.corner_ids.borrow_mut();
+    for (index, piece) in notch.pieces().into_iter().enumerate() {
+        let tree: Vec<WaylandSurfaceRenderElement<R>> = render_elements_from_surface_tree(
+            renderer,
+            &surface,
+            origin,
+            scale,
+            1.0,
+            Kind::Unspecified,
+        );
+        for element in tree {
+            let Some(element) = CropRenderElement::from_element(element, scale, piece) else {
+                continue;
+            };
+            elements.push(if index == 0 {
+                OutputElement::Cropped(element)
+            } else {
+                OutputElement::Piece(Piece {
+                    id: ids.get(element.id(), index),
+                    element,
+                })
+            });
+        }
+    }
+}
+
 /// Adds the title bar and border of `window`, whose client area is at
 /// `location` on the output.
 fn frame<R>(
@@ -287,6 +374,11 @@ fn frame<R>(
         Err(err) => crate::say!("cannot draw a title bar: {err:?}"),
     }
 
+    let bottom_x = if buffers.bottom_corners.is_some() {
+        buffers.bottom_corner
+    } else {
+        0
+    };
     // The logical width of the bar, as the frame is laid out in.
     let painted = buffers.titlebar_size.0;
     let sides = [
@@ -296,9 +388,9 @@ fn frame<R>(
         ),
         (&buffers.left, at(-metrics.border, 0)),
         (&buffers.right, at(size.w, 0)),
-        // Drawn after the client, so it is behind it; the corners in front
-        // cover its ends.
-        (&buffers.bottom, at(-metrics.border, size.h)),
+        // Drawn after the client, so it is behind it. Rounded corners draw
+        // their own part of it.
+        (&buffers.bottom, at(bottom_x - metrics.border, size.h)),
     ];
     for (buffer, position) in sides {
         elements.push(OutputElement::Solid(SolidColorRenderElement::from_buffer(
