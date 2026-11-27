@@ -3,7 +3,31 @@
 A light, fast desktop operating system on a minimal Debian base, with its own
 interface. Named after the sengi, a tiny and very fast East African mammal.
 
-Sengi OS is in early development. There is no stable release yet.
+**Sengi OS 1.0.0 is out.** [Download it](https://github.com/itsallan/Sengi-Os/releases/latest):
+the release has the ISO, its checksum, the changelog, screenshots and the
+measured boot time and idle RAM.
+
+## Download and install
+
+You need a 64-bit Intel or AMD computer with Secure Boot turned off, and a
+USB stick of 2 GB or more.
+
+1. Download `sengi-os-1.0.0-amd64.iso` and its `.sha256` file from the
+   release page, and check them:
+
+       sha256sum -c sengi-os-1.0.0-amd64.iso.sha256
+
+2. Write the ISO to the stick with a tool such as balenaEtcher. This erases
+   the stick.
+3. Start the computer from the stick. The live system runs without touching
+   your disk; [Installing](#installing) puts it on the disk.
+
+This is a first release. It has been tested in virtual machines, and earlier
+builds on one laptop. Installing beside Windows has only been tried with a
+stand-in, and suspend, night light, touchpad gestures, USB drives and
+printers are not yet confirmed on real hardware. Back up what matters first. If the screen
+freezes on a laptop with NVIDIA graphics, press N in the live boot menu to
+start without the NVIDIA driver, and please report it.
 
 ## Goals
 
@@ -44,7 +68,7 @@ the focused app priority. sengi-settings is the settings application: network,
 Bluetooth, sound, display, power, date and time, keyboard, mouse and touchpad,
 notifications, printers, and a page about the machine. It is an ordinary window that
 runs only while it is open. sengi-files is the file manager, an ordinary
-window too: the home folder and its places, the Trash, copy, move and rename.
+window too: your folders, USB and external drives, the Trash, copy, move and rename.
 sengi-open opens a file in the program for it: sengi-edit (a plain text
 editor) for text, sengi-view (an image viewer) for PNG and JPEG, Files for
 folders. sengi-calc is the calculator, a window too. sengi-welcome is the first-run welcome, shown once on an installed system. sengi-lock is the lock screen: the time, the
@@ -102,11 +126,15 @@ choose Log out from the session menu, at the power icon in the bar.
 | Super+Return | Terminal |
 | Super+L | Lock |
 | Super+Q | Close window |
+| Print | Screenshot of the screen, saved to `~/Pictures` |
+| Alt+Print | Screenshot of the window in front |
+| Super+/ | Show every keyboard shortcut |
+| Super+V | Clipboard history (turn it on in Settings, Keyboard) |
 
 ## Installing
 
-Start the computer from the USB stick and open **Install Sengi OS**, the
-first icon in the dock (or search for "install"). It asks, in this order:
+Start the computer from the USB stick and open **Install Sengi OS** from the
+dock (or search for "install"). It asks, in this order:
 
 1. The keyboard layout and the time zone. The layout takes effect at once.
 2. The disk.
@@ -169,8 +197,8 @@ Realtek, MediaTek, Atheros, Broadcom); see `THIRD-PARTY-NOTICES.md`.
 
 **Updates do not install themselves.** An installed Sengi OS does not look
 for updates in the background: the timers Debian uses for that are switched
-off. Until Sengi OS has its own way of offering updates, they come when you
-ask for them, in a terminal: `sudo apt update && sudo apt upgrade`.
+off. Settings, Updates checks when you ask, and updates the system packages
+and your Flatpak apps with your password.
 
 **Printing.** Settings, Printers lists your printers, sets the default, prints a
 test page, shows and cancels print jobs, and adds a printer by searching the
@@ -184,8 +212,8 @@ asks, never at boot. Flatpak apps print through the portal, and other apps
 through CUPS, with nothing more to set up. Details and measurements are in
 [crates/sengi-print](crates/sengi-print/README.md).
 
-**Installing apps.** The Store, the last icon on the dock, finds apps on
-Flathub by name and installs them for your user, with no password. From a terminal, `sudo apt install <package>` for Debian's
+**Installing apps.** The Store, on the dock, shows recommended apps by
+category, searches Flathub and installs apps for your user, with no password. From a terminal, `sudo apt install <package>` for Debian's
 packages, or `sudo flatpak install flathub <app>` for Flatpak apps. Flathub is
 already set up as the Flatpak source (`/etc/flatpak/remotes.d/`); the first
 `sudo flatpak` command creates the Flatpak store. When Sengi OS is run from the USB stick without installing, every
