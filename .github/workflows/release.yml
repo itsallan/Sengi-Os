@@ -58,13 +58,12 @@ jobs:
           cp test-output/install-uefi/install-metrics.txt install-metrics-uefi.txt
           cp test-output/install/install-metrics.txt install-metrics-bios.txt
           scripts/release-notes.sh "$version" test-output/metrics.txt install-metrics-uefi.txt install-metrics-bios.txt >notes.md
-          for shot in desktop hover session-menu quick-settings settings terminal launcher lock lock-caps lock-wrong greeter greeter-wrong; do
-            cp "test-output/$shot.png" "sengi-os-$version-$shot.png"
-          done
-          for shot in installer-welcome installer-region-chosen installer-disk-chosen installer-you installer-review installer-confirm installer-progress installer-done installed-login installed-desktop installed-boot-menu; do
-            cp "test-output/install-uefi/$shot.png" "sengi-os-$version-$shot.png"
-          done
           gh release create "$GITHUB_REF_NAME" --title "Sengi OS $version" --notes-file notes.md \
             "out/sengi-os-$version-amd64.iso" "out/sengi-os-$version-amd64.iso.sha256" \
-            sengi-os-"$version"-*.png \
             test-output/metrics.txt install-metrics-uefi.txt install-metrics-bios.txt
+      # The test screenshots are kept with the run, not published.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-screenshots
+          path: test-output/**/*.png

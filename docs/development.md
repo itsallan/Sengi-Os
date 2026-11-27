@@ -88,6 +88,14 @@ firmware image to run either test through UEFI. Set
 `SENGI_COMPOSITOR=labwc` to run either test on labwc instead of
 sengi-compositor, the default, the installed system included.
 
+## Release notes
+
+A release publishes the ISO, its checksum and the measurements as files. Its
+pictures show only what changed or was added, inside the notes: put them in
+`docs/releases/VERSION/` and link them from that version's section of
+`CHANGELOG.md`, for example `![Store](docs/releases/1.1.0/store.png)`, before
+tagging.
+
 ## Repository layout
 
 | Path | Contents |

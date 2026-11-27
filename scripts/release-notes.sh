@@ -15,10 +15,22 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 value() { sed -n "s/^$1=//p" "$metrics"; }
 installed_value() { sed -n "s/^$1=//p" "$installed"; }
 
-awk -v v="$version" '
+section=$(awk -v v="$version" '
 	/^## / { on = ($2 == v || $2 == "[" v "]") }
 	on && !/^## / { print }
-' "$root/CHANGELOG.md"
+' "$root/CHANGELOG.md")
+
+# Pictures of what changed are shown in the notes, not attached as files. The
+# changelog links them under docs/, and the notes need the address they have
+# at the release's tag.
+printf '%s\n' "$section" | grep -o '](docs/[^)]*' | cut -c3- | while read -r image; do
+	[ -f "$root/$image" ] || {
+		echo "release-notes.sh: $image is not in the repository" >&2
+		exit 1
+	}
+done
+files=https://raw.githubusercontent.com/${GITHUB_REPOSITORY:-itsallan/Sengi-Os}/v$version
+printf '%s\n' "$section" | sed "s#](docs/#]($files/docs/#g"
 
 cat <<NOTES
 
