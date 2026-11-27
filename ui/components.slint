@@ -94,6 +94,92 @@ export component SengiSurface inherits Rectangle {
     border-color: Tokens.color-border;
 }
 
+// A name shown beside the control the pointer is on, as the dock names its
+// icons. The window places it, above everything else.
+export component SengiTooltip inherits Rectangle {
+    in property <string> text;
+    in property <length> limit: Tokens.menu-width;
+
+    width: Math.min(label.preferred-width + Tokens.space-sm * 2, root.limit);
+    height: Tokens.font-size-sm + Tokens.space-sm * 2;
+    border-radius: Tokens.radius;
+    border-width: Tokens.border-width;
+    border-color: Tokens.color-border;
+    background: Tokens.color-surface;
+
+    label := Text {
+        x: Tokens.space-sm;
+        width: parent.width - Tokens.space-sm * 2;
+        height: parent.height;
+        text: root.text;
+        color: Tokens.color-text;
+        font-family: Tokens.font-family;
+        font-size: Tokens.font-size-sm;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+// A flat square button that is only an icon, for a toolbar. It has no words,
+// so it says its name through `hover`, for the window to show in a
+// SengiTooltip. It is no stop for Tab: what it does has a key of its own.
+export component SengiToolButton inherits Rectangle {
+    in property <string> icon;
+    // What it is called, in the tooltip and to a screen reader.
+    in property <string> name;
+    in property <bool> enabled: true;
+    // A switch that is on keeps a fill.
+    in property <bool> checked: false;
+    in property <bool> danger: false;
+    out property <bool> has-hover: touch.has-hover;
+    callback clicked();
+    // The pointer came (true) or went; where the middle of the button's top
+    // and bottom edges are in the window.
+    callback hover(bool, length, length, length);
+
+    width: Tokens.button + Tokens.space-xs;
+    height: Tokens.button + Tokens.space-xs;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    border-radius: Tokens.radius;
+    background: !root.enabled ? transparent
+        : touch.has-hover ? Tokens.color-surface-hover
+        : root.checked ? Tokens.color-surface-raised : transparent;
+    animate background { duration: Tokens.motion-fast; easing: cubic-bezier(0.2, 0, 0, 1); }
+    accessible-role: button;
+    accessible-label: root.name;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+
+    SengiIcon {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        name: root.icon;
+        ink: !root.enabled ? Tokens.color-text-disabled
+            : root.danger ? Tokens.color-danger
+            : root.checked || touch.has-hover ? Tokens.color-text : Tokens.color-text-muted;
+    }
+
+    // Over a button that is off too, so that it can still be asked its name.
+    touch := TouchArea {
+        changed has-hover => {
+            root.hover(self.has-hover,
+                self.absolute-position.x + self.width / 2,
+                self.absolute-position.y,
+                self.absolute-position.y + self.height);
+        }
+        clicked => {
+            if root.enabled {
+                root.clicked();
+            }
+        }
+    }
+}
+
 // A button that cannot be used is drawn as an outline with no fill. A
 // fill in a surface colour would vanish on whichever surface has that
 // colour, leaving bare words that do not look like a button at all.
