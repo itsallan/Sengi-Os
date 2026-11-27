@@ -178,7 +178,7 @@ key() {
 # and then waits for the volume up key.
 wait_for 'SENGI-SOUND keys ready\|SENGI-DONE' || { stop; exit 1; }
 if ! grep -q SENGI-DONE "$out/serial.log"; then
-	key volumeup 0.2
+	key volumeup 0.7
 	shot volume-key
 fi
 wait_for SENGI-DONE || { stop; exit 1; }
