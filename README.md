@@ -19,6 +19,11 @@
   </a>
 </p>
 
+> [!IMPORTANT]
+> Sengi OS is not stable yet and still lacks features. Expect bugs, and do not
+> rely on it as your only system. In 1.0.0, sound does not work on some laptops
+> and the Store shows no install progress.
+
 ## Highlights
 
 - **Fast and light.** Boots in 7.7 s and idles at 236 MB.¹ A release over
@@ -26,8 +31,8 @@
 - **Its own desktop.** Compositor, shell and apps written in Rust and Slint.
 - **Lean base.** Debian stable, systemd, Wayland and PipeWire. No Qt,
   Electron or GNOME desktop.
-- **Ready to use.** Files, Store (Flathub), Settings, text editor, image
-  viewer and installer.
+- **Included.** Files, Store (Flathub), Settings, text editor, image viewer
+  and installer.
 
 <sub>¹ Live image in QEMU, 2 cores, 4 GB of RAM.</sub>
 
