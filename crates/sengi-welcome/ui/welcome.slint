@@ -2,7 +2,7 @@
 // Skip under them. Built from the shared components and Settings' kit;
 // nothing here has a colour or a size of its own.
 
-import { Tokens, ThemeSwitch, SengiText, SengiLabel, SengiSurface, SengiButton, SengiIcon } from "components.slint";
+import { Tokens, ThemeSwitch, SengiText, SengiLabel, SengiSurface, SengiButton, SengiIcon, SengiLogo } from "components.slint";
 import { TextField, ItemList, Item, Card, Divider, SettingRow, Metrics } from "kit.slint";
 
 export { ThemeSwitch } from "components.slint";
@@ -291,11 +291,11 @@ export component WelcomeWindow inherits Window {
                         alignment: center;
                         padding-top: Tokens.space-xl;
 
-                        SengiIcon {
-                            name: "house";
-                            ink: Tokens.color-accent;
-                            width: Tokens.desktop-icon;
-                            height: Tokens.desktop-icon;
+                        HorizontalLayout {
+                            alignment: start;
+                            SengiLogo {
+                                width: Tokens.logo-page;
+                            }
                         }
 
                         Heading {
