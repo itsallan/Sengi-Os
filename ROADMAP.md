@@ -65,5 +65,5 @@ each `- [ ]` line is an issue.
 
 ## 1.0
 
-- [ ] Polish pass across all components
-- [ ] First public release
+- [x] Polish pass across all components
+- [x] First public release
