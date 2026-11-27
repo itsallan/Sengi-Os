@@ -302,10 +302,10 @@ component Sidebar inherits Rectangle {
             x: parent.width - self.width - Tokens.space-xxs;
             y: (parent.height - self.height) / 2;
             icon: "eject";
-            name: "Eject " + device.name;
+            label: "Eject " + device.name;
             enabled: device.mounted;
             clicked => { Files.eject-device(index); }
-            hover(on, x, top, bottom) => { root.tip(on, self.name, x, top, bottom); }
+            hover(on, x, top, bottom) => { root.tip(on, self.label, x, top, bottom); }
         }
     }
 
@@ -670,38 +670,38 @@ export component FilesWindow inherits Window {
 
                     SengiToolButton {
                         icon: "arrow-left";
-                        name: "Back";
+                        label: "Back";
                         enabled: Files.can-back;
                         clicked => {
                             root.hide-tip();
                             scope.focus();
                             Files.back();
                         }
-                        hover(on, x, top, bottom) => { root.point-at(on, self.name, x, top, bottom); }
+                        hover(on, x, top, bottom) => { root.point-at(on, self.label, x, top, bottom); }
                     }
 
                     SengiToolButton {
                         icon: "arrow-right";
-                        name: "Forward";
+                        label: "Forward";
                         enabled: Files.can-forward;
                         clicked => {
                             root.hide-tip();
                             scope.focus();
                             Files.forward();
                         }
-                        hover(on, x, top, bottom) => { root.point-at(on, self.name, x, top, bottom); }
+                        hover(on, x, top, bottom) => { root.point-at(on, self.label, x, top, bottom); }
                     }
 
                     SengiToolButton {
                         icon: "arrow-up";
-                        name: "Up";
+                        label: "Up";
                         enabled: Files.can-up;
                         clicked => {
                             root.hide-tip();
                             scope.focus();
                             Files.up();
                         }
-                        hover(on, x, top, bottom) => { root.point-at(on, self.name, x, top, bottom); }
+                        hover(on, x, top, bottom) => { root.point-at(on, self.label, x, top, bottom); }
                     }
 
                     // The path, set a little apart from the buttons.
@@ -721,41 +721,41 @@ export component FilesWindow inherits Window {
 
                     if !Files.in-trash: SengiToolButton {
                         icon: "folder-plus";
-                        name: "New Folder";
+                        label: "New Folder";
                         clicked => {
                             root.hide-tip();
                             scope.focus();
                             Files.new-folder();
                         }
-                        hover(on, x, top, bottom) => { root.point-at(on, self.name, x, top, bottom); }
+                        hover(on, x, top, bottom) => { root.point-at(on, self.label, x, top, bottom); }
                     }
 
                     if !Files.in-trash: SengiToolButton {
                         icon: "file-plus";
-                        name: "New File";
+                        label: "New File";
                         clicked => {
                             root.hide-tip();
                             scope.focus();
                             Files.new-file();
                         }
-                        hover(on, x, top, bottom) => { root.point-at(on, self.name, x, top, bottom); }
+                        hover(on, x, top, bottom) => { root.point-at(on, self.label, x, top, bottom); }
                     }
 
                     if Files.in-trash: SengiToolButton {
                         icon: "arrow-counter-clockwise";
-                        name: "Restore";
+                        label: "Restore";
                         enabled: Files.has-selection && !Files.busy;
                         clicked => {
                             root.hide-tip();
                             scope.focus();
                             Files.restore();
                         }
-                        hover(on, x, top, bottom) => { root.point-at(on, self.name, x, top, bottom); }
+                        hover(on, x, top, bottom) => { root.point-at(on, self.label, x, top, bottom); }
                     }
 
                     if Files.in-trash: SengiToolButton {
                         icon: "trash";
-                        name: "Empty Trash";
+                        label: "Empty Trash";
                         enabled: Files.total > 0 && !Files.busy;
                         danger: true;
                         clicked => {
@@ -763,19 +763,19 @@ export component FilesWindow inherits Window {
                             scope.focus();
                             Files.empty-trash();
                         }
-                        hover(on, x, top, bottom) => { root.point-at(on, self.name, x, top, bottom); }
+                        hover(on, x, top, bottom) => { root.point-at(on, self.label, x, top, bottom); }
                     }
 
                     SengiToolButton {
                         icon: Files.show-hidden ? "eye" : "eye-slash";
-                        name: Files.show-hidden ? "Hide Hidden Files" : "Show Hidden Files";
+                        label: Files.show-hidden ? "Hide Hidden Files" : "Show Hidden Files";
                         checked: Files.show-hidden;
                         clicked => {
                             root.hide-tip();
                             scope.focus();
                             Files.toggle-hidden(!Files.show-hidden);
                         }
-                        hover(on, x, top, bottom) => { root.point-at(on, self.name, x, top, bottom); }
+                        hover(on, x, top, bottom) => { root.point-at(on, self.label, x, top, bottom); }
                     }
                 }
 
@@ -1008,12 +1008,12 @@ export component FilesWindow inherits Window {
                         SengiToolButton {
                             height: Tokens.button;
                             icon: "x";
-                            name: "Cancel";
+                            label: "Cancel";
                             clicked => {
                                 root.hide-tip();
                                 Files.cancel-job();
                             }
-                            hover(on, x, top, bottom) => { root.point-at(on, self.name, x, top, bottom); }
+                            hover(on, x, top, bottom) => { root.point-at(on, self.label, x, top, bottom); }
                         }
                     }
                 }

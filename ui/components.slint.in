@@ -127,7 +127,7 @@ export component SengiTooltip inherits Rectangle {
 export component SengiToolButton inherits Rectangle {
     in property <string> icon;
     // What it is called, in the tooltip and to a screen reader.
-    in property <string> name;
+    in property <string> label;
     in property <bool> enabled: true;
     // A switch that is on keeps a fill.
     in property <bool> checked: false;
@@ -148,7 +148,7 @@ export component SengiToolButton inherits Rectangle {
         : root.checked ? Tokens.color-surface-raised : transparent;
     animate background { duration: Tokens.motion-fast; easing: cubic-bezier(0.2, 0, 0, 1); }
     accessible-role: button;
-    accessible-label: root.name;
+    accessible-label: root.label;
     accessible-action-default => {
         if root.enabled {
             root.clicked();
