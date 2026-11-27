@@ -167,24 +167,21 @@ export component Desktop inherits Window {
     in property <int> selected: -1;
     // A line of text that says why something did not happen, or nothing.
     in property <string> notice;
+    // The name of the output this one is on, if it has one.
+    in property <string> output;
 
-    callback new-folder();
-    callback new-file();
-    callback open-terminal();
-    callback open-settings();
     callback select(int);
     callback open-item(int);
     callback begin-rename(int);
     callback commit-rename(int, string);
     callback cancel-rename();
     callback trash-item(int);
+    // A menu is wanted at this place: for the selected icon, or for the
+    // bare desktop.
+    callback menu(length, length, bool);
+    // A press that is not for a menu: one that is open goes away.
+    callback menu-done();
 
-    // Where the menu was asked for and what it is for: an item, or -1 for the
-    // desktop itself.
-    private property <bool> menu-open: false;
-    private property <length> menu-x;
-    private property <length> menu-y;
-    private property <int> menu-item: -1;
     // Icons fill a column from the top, then the next column to the right.
     // The surface is the whole output, so the bar above and the dock below
     // are kept clear of here.
@@ -200,11 +197,8 @@ export component Desktop inherits Window {
     main := FocusScope {
         key-pressed(event) => {
             if event.text == Key.Escape {
-                if root.menu-open {
-                    root.menu-open = false;
-                } else {
-                    root.select(-1);
-                }
+                root.menu-done();
+                root.select(-1);
                 return accept;
             }
             if root.selected >= 0 {
@@ -231,13 +225,10 @@ export component Desktop inherits Window {
                     return;
                 }
                 main.focus();
-                root.menu-open = false;
+                root.menu-done();
                 root.select(-1);
                 if event.button == PointerEventButton.right {
-                    root.menu-item = -1;
-                    root.menu-x = self.mouse-x;
-                    root.menu-y = self.mouse-y;
-                    root.menu-open = true;
+                    root.menu(self.mouse-x, self.mouse-y, false);
                 }
             }
         }
@@ -249,13 +240,10 @@ export component Desktop inherits Window {
 
             pressed(button, at-x, at-y) => {
                 main.focus();
-                root.menu-open = false;
+                root.menu-done();
                 root.select(index);
                 if button == PointerEventButton.right {
-                    root.menu-item = index;
-                    root.menu-x = at-x;
-                    root.menu-y = at-y;
-                    root.menu-open = true;
+                    root.menu(at-x, at-y, true);
                 }
             }
             opened => { root.open-item(index); }
@@ -283,71 +271,87 @@ export component Desktop inherits Window {
                 overflow: elide;
             }
         }
+    }
+}
 
-        if root.menu-open: SengiSurface {
+// A menu of the desktop, on a see-through surface over everything: a press
+// beside it, or Escape, puts it away.
+export component DesktopMenu inherits Window {
+    // Whether this surface shows the menu; on the other outputs it only
+    // waits for the press that puts it away.
+    in property <bool> shown: true;
+    // The menu of an icon, not that of the bare desktop.
+    in property <bool> for-item;
+    in property <length> menu-x;
+    in property <length> menu-y;
+
+    // A row was chosen, by its word.
+    callback chosen(string);
+    callback dismissed();
+
+    background: transparent;
+    default-font-family: Tokens.font-family;
+    forward-focus: keys;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.dismissed();
+            }
+            accept
+        }
+
+        TouchArea {
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    root.dismissed();
+                }
+            }
+        }
+
+        if root.shown: SengiSurface {
             raised: true;
             width: Math.clamp(list.preferred-width, Tokens.menu-width / 2, Tokens.menu-width);
             height: list.preferred-height;
             x: Math.max(Tokens.space-xs, Math.min(root.menu-x, root.width - self.width - Tokens.space-xs));
             y: Math.max(Tokens.space-xs, Math.min(root.menu-y, root.height - self.height - Tokens.space-xs));
 
-            // Clicks between the rows are not clicks on the desktop.
+            // A press between the rows does not put the menu away.
             TouchArea { }
 
             list := VerticalLayout {
                 padding: Tokens.menu-padding;
 
-                if root.menu-item < 0: MenuRow {
+                if !root.for-item: MenuRow {
                     label: "New Folder";
-                    chosen => {
-                        root.menu-open = false;
-                        root.new-folder();
-                    }
+                    chosen => { root.chosen("new-folder"); }
                 }
-                if root.menu-item < 0: MenuRow {
+                if !root.for-item: MenuRow {
                     label: "New File";
-                    chosen => {
-                        root.menu-open = false;
-                        root.new-file();
-                    }
+                    chosen => { root.chosen("new-file"); }
                 }
-                if root.menu-item < 0: MenuRow {
+                if !root.for-item: MenuRow {
                     label: "Open Terminal Here";
-                    chosen => {
-                        root.menu-open = false;
-                        root.open-terminal();
-                    }
+                    chosen => { root.chosen("terminal"); }
                 }
-                if root.menu-item < 0: MenuSeparator { }
-                if root.menu-item < 0: MenuRow {
+                if !root.for-item: MenuSeparator { }
+                if !root.for-item: MenuRow {
                     label: "Settings...";
-                    chosen => {
-                        root.menu-open = false;
-                        root.open-settings();
-                    }
+                    chosen => { root.chosen("settings"); }
                 }
 
-                if root.menu-item >= 0: MenuRow {
+                if root.for-item: MenuRow {
                     label: "Open";
-                    chosen => {
-                        root.menu-open = false;
-                        root.open-item(root.selected);
-                    }
+                    chosen => { root.chosen("open"); }
                 }
-                if root.menu-item >= 0: MenuRow {
+                if root.for-item: MenuRow {
                     label: "Rename";
-                    chosen => {
-                        root.menu-open = false;
-                        root.begin-rename(root.selected);
-                    }
+                    chosen => { root.chosen("rename"); }
                 }
-                if root.menu-item >= 0: MenuSeparator { }
-                if root.menu-item >= 0: MenuRow {
+                if root.for-item: MenuSeparator { }
+                if root.for-item: MenuRow {
                     label: "Move to Trash";
-                    chosen => {
-                        root.menu-open = false;
-                        root.trash-item(root.selected);
-                    }
+                    chosen => { root.chosen("trash"); }
                 }
             }
         }

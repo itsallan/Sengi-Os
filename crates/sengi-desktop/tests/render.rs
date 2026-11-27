@@ -3,12 +3,14 @@
 //! SENGI_RENDER_DIR set the pictures are written there as PNG files, to look
 //! at.
 
+use std::cell::RefCell;
 use std::fs;
 use std::rc::Rc;
 
 use sengi_apps::Env;
 use sengi_desktop::app::Shell;
 use sengi_desktop::desk::Desk;
+use sengi_desktop::menu::{Choice, Request};
 use sengi_desktop::ui::Desktop;
 use slint::platform::software_renderer::{
     MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType,
@@ -113,35 +115,40 @@ fn icons_menus_and_a_new_folder_in_rename() {
         "the desktop is not clear"
     );
 
-    // A right click on bare desktop opens the menu where it was clicked.
+    // A right click asks for the desktop's menu where it was, which is
+    // shown above the windows and so not drawn here (see tests/menu.rs).
+    let asked: Rc<RefCell<Vec<Option<Request>>>> = Rc::default();
+    shell.set_menus({
+        let asked = asked.clone();
+        move |request| {
+            asked.borrow_mut().push(request);
+            Ok(())
+        }
+    });
+    let last = || asked.borrow().last().cloned().flatten();
     click(&window, 600.0, 300.0, PointerEventButton::Right);
-    let menu = draw(&window);
-    save("menu.png", &menu);
-    assert!(painted(&menu, 600, 300, 160, 100) > 2000, "no menu");
+    let wanted = last().expect("no menu was asked for");
+    assert_eq!((wanted.x, wanted.y, wanted.item), (600.0, 300.0, false));
 
-    // A left click on bare desktop closes it again.
+    // A left click on bare desktop puts an open menu away.
     click(&window, 900.0, 600.0, PointerEventButton::Left);
-    let closed = draw(&window);
-    assert_eq!(painted(&closed, 600, 300, 160, 100), 0, "the menu stayed");
+    assert_eq!(asked.borrow().last(), Some(&None));
 
-    // A click on an icon selects it, and a right click on it opens a menu
-    // that is not the desktop's.
+    // A click on an icon selects it, and a right click on it asks for the
+    // icon's menu.
     click(&window, 48.0, 70.0, PointerEventButton::Left);
     let selected = draw(&window);
     save("selected.png", &selected);
     assert_ne!(selected, plain, "the click did not show");
     assert_eq!(desktop.get_selected(), 0);
     click(&window, 48.0, 70.0, PointerEventButton::Right);
-    let item_menu = draw(&window);
-    save("item-menu.png", &item_menu);
-    assert_ne!(item_menu, selected);
-    assert_ne!(item_menu, menu);
+    assert!(last().expect("no menu for the icon").item);
 
-    // "New Folder" is the first row of the desktop's menu: a folder is made,
-    // selected and ready for a new name.
+    // "New Folder" chosen: a folder is made, selected and ready for a new
+    // name.
     click(&window, 900.0, 600.0, PointerEventButton::Left);
-    click(&window, 600.0, 300.0, PointerEventButton::Right);
-    click(&window, 640.0, 315.0, PointerEventButton::Left);
+    let closed = draw(&window);
+    shell.chosen(Choice::NewFolder);
     assert!(dir.join("untitled folder").is_dir(), "no new folder");
     let rename = draw(&window);
     save("new-folder.png", &rename);
@@ -154,11 +161,8 @@ fn icons_menus_and_a_new_folder_in_rename() {
     assert!(dir.join("untitled folder").is_dir());
     assert_eq!(desktop.get_selected(), -1);
 
-    // "New File" is the second row: an empty file, in rename.
-    click(&window, 600.0, 300.0, PointerEventButton::Right);
-    let menu = draw(&window);
-    save("menu-new-file.png", &menu);
-    click(&window, 640.0, 339.0, PointerEventButton::Left);
+    // "New File": an empty file, in rename.
+    shell.chosen(Choice::NewFile);
     let made = dir.join("untitled file");
     assert!(made.is_file(), "no new file");
     assert_eq!(fs::metadata(&made).unwrap().len(), 0);

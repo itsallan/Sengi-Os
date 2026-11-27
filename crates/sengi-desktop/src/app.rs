@@ -6,9 +6,10 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use sengi_layer::Instances;
-use slint::{Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::desk::{Desk, Row};
+use crate::menu::{Choice, Request};
 use crate::ui::{Desktop, DesktopItem};
 
 /// How long a notice stays up.
@@ -18,7 +19,11 @@ pub struct Shell {
     desk: RefCell<Desk>,
     windows: Instances<Desktop>,
     notice: Timer,
+    /// Shows a menu, or with `None` takes away the one that is shown.
+    menus: RefCell<Option<Menus>>,
 }
+
+type Menus = Box<dyn FnMut(Option<Request>) -> Result<(), String>>;
 
 fn item(row: &Row) -> DesktopItem {
     DesktopItem {
@@ -60,7 +65,44 @@ impl Shell {
             desk: RefCell::new(desk),
             windows: Instances::new(),
             notice: Timer::default(),
+            menus: RefCell::new(None),
         })
+    }
+
+    /// Says how menus are shown and taken away.
+    pub fn set_menus(&self, menus: impl FnMut(Option<Request>) -> Result<(), String> + 'static) {
+        *self.menus.borrow_mut() = Some(Box::new(menus));
+    }
+
+    fn menu(&self, request: Option<Request>) {
+        let result = match self.menus.borrow_mut().as_mut() {
+            Some(menus) => menus(request),
+            None => Ok(()),
+        };
+        self.report(result);
+    }
+
+    /// A row of a menu was chosen. A menu of an icon is for the selected
+    /// one, which the press that asked for it selected.
+    pub fn chosen(&self, choice: Choice) {
+        let result = {
+            let mut desk = self.desk.borrow_mut();
+            let selected = desk.selected_index();
+            match choice {
+                Choice::NewFolder => desk.new_folder(),
+                Choice::NewFile => desk.new_file(),
+                Choice::Terminal => desk.terminal(),
+                Choice::Settings => desk.settings(),
+                Choice::Open => desk.open(selected),
+                Choice::Rename => {
+                    desk.begin_rename(selected);
+                    Ok(())
+                }
+                Choice::Trash => desk.trash(selected),
+            }
+        };
+        self.sync();
+        self.report(result);
     }
 
     /// Shows what the folder holds in every window.
@@ -145,35 +187,24 @@ impl Shell {
                 shell.report(result);
             }
         });
-        window.on_new_folder({
+        window.on_menu({
             let shell = self.clone();
-            move || {
-                let result = shell.desk.borrow_mut().new_folder();
-                shell.sync();
-                shell.report(result);
+            let window = window.as_weak();
+            move |x, y, item| {
+                let output = window
+                    .upgrade()
+                    .map_or_else(SharedString::new, |window| window.get_output());
+                shell.menu(Some(Request {
+                    output: output.into(),
+                    x,
+                    y,
+                    item,
+                }));
             }
         });
-        window.on_new_file({
+        window.on_menu_done({
             let shell = self.clone();
-            move || {
-                let result = shell.desk.borrow_mut().new_file();
-                shell.sync();
-                shell.report(result);
-            }
-        });
-        window.on_open_terminal({
-            let shell = self.clone();
-            move || {
-                let result = shell.desk.borrow().terminal();
-                shell.report(result);
-            }
-        });
-        window.on_open_settings({
-            let shell = self.clone();
-            move || {
-                let result = shell.desk.borrow().settings();
-                shell.report(result);
-            }
+            move || shell.menu(None)
         });
 
         let (rows, selected) = {

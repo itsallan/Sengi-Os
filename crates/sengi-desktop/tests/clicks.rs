@@ -2,7 +2,7 @@
 //! bare part of it has New Folder and New File, wherever the icons are and
 //! whatever happened before.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -11,7 +11,8 @@ use std::time::Duration;
 use sengi_apps::Env;
 use sengi_desktop::app::Shell;
 use sengi_desktop::desk::Desk;
-use sengi_desktop::ui::{Desktop, ThemeSwitch};
+use sengi_desktop::menu::{Choice, Request};
+use sengi_desktop::ui::{Desktop, DesktopMenu, ThemeSwitch};
 use slint::platform::software_renderer::{
     MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType,
 };
@@ -28,13 +29,19 @@ thread_local! {
     static NOW: Cell<u64> = const { Cell::new(0) };
 }
 
-/// A window with no display and a clock that moves only when told to, so
+/// The windows made so far, in order.
+type Windows = Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>;
+
+/// Windows with no display and a clock that moves only when told to, so
 /// that two clicks here are never taken for a double click.
-struct Headless(Rc<MinimalSoftwareWindow>);
+struct Headless(Windows);
 
 impl Platform for Headless {
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.0.clone())
+        let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+        window.set_size(PhysicalSize::new(WIDTH as u32, HEIGHT as u32));
+        self.0.borrow_mut().push(window.clone());
+        Ok(window)
     }
 
     fn duration_since_start(&self) -> Duration {
@@ -42,9 +49,18 @@ impl Platform for Headless {
     }
 }
 
+/// A menu that is up: its window, which covers everything, and what it said.
+struct Menu {
+    window: Rc<MinimalSoftwareWindow>,
+    component: DesktopMenu,
+    said: Rc<RefCell<Option<String>>>,
+}
+
 struct Screen {
     shell: Rc<Shell>,
     window: Rc<MinimalSoftwareWindow>,
+    /// The menu on screen, as `sengi-desktop --menu` would show it.
+    menu: Rc<RefCell<Option<Menu>>>,
     dir: PathBuf,
 }
 
@@ -53,22 +69,45 @@ impl Screen {
     fn settle(&self) {
         NOW.with(|now| now.set(now.get() + 1000));
         slint::platform::update_timers_and_animations();
-        let mut buffer = vec![PremultipliedRgbaColor::default(); (WIDTH * HEIGHT) as usize];
-        self.window.request_redraw();
-        self.window.draw_if_needed(|renderer| {
-            renderer.render(&mut buffer, WIDTH as usize);
-        });
+        paint(&self.window, WIDTH as u32, HEIGHT as u32);
+        if let Some(menu) = self.menu_window() {
+            paint(&menu, WIDTH as u32, HEIGHT as u32);
+        }
         slint::platform::update_timers_and_animations();
+    }
+
+    fn menu_window(&self) -> Option<Rc<MinimalSoftwareWindow>> {
+        self.menu.borrow().as_ref().map(|menu| menu.window.clone())
+    }
+
+    /// Where input goes: an open menu is over everything.
+    fn target(&self) -> Rc<MinimalSoftwareWindow> {
+        self.menu_window().unwrap_or_else(|| self.window.clone())
+    }
+
+    /// Takes the menu away if it has answered, and carries the answer out.
+    fn answer(&self) {
+        let said = self
+            .menu
+            .borrow()
+            .as_ref()
+            .and_then(|menu| menu.said.borrow_mut().take());
+        let Some(said) = said else { return };
+        if let Some(menu) = self.menu.borrow_mut().take() {
+            menu.component.hide().unwrap();
+        }
+        if let Some(choice) = Choice::parse(&said) {
+            self.shell.chosen(choice);
+        }
     }
 
     fn button(&self, x: f32, y: f32, button: PointerEventButton) {
         let position = LogicalPosition::new(x, y);
-        self.window
-            .dispatch_event(WindowEvent::PointerMoved { position });
-        self.window
-            .dispatch_event(WindowEvent::PointerPressed { position, button });
-        self.window
-            .dispatch_event(WindowEvent::PointerReleased { position, button });
+        let target = self.target();
+        target.dispatch_event(WindowEvent::PointerMoved { position });
+        target.dispatch_event(WindowEvent::PointerPressed { position, button });
+        target.dispatch_event(WindowEvent::PointerReleased { position, button });
+        self.answer();
         self.settle();
     }
 
@@ -81,10 +120,10 @@ impl Screen {
     }
 
     fn key(&self, text: &str) {
-        self.window
-            .dispatch_event(WindowEvent::KeyPressed { text: text.into() });
-        self.window
-            .dispatch_event(WindowEvent::KeyReleased { text: text.into() });
+        let target = self.target();
+        target.dispatch_event(WindowEvent::KeyPressed { text: text.into() });
+        target.dispatch_event(WindowEvent::KeyReleased { text: text.into() });
+        self.answer();
         self.settle();
     }
 
@@ -104,11 +143,21 @@ impl Screen {
         self.window.set_size(PhysicalSize::new(width, height));
         self.settle();
         self.right(width as f32 / 2.0, height as f32 / 2.0);
-        let mut buffer = vec![PremultipliedRgbaColor::default(); (width * height) as usize];
-        self.window.request_redraw();
-        self.window.draw_if_needed(|renderer| {
-            renderer.render(&mut buffer, width as usize);
-        });
+        let menu = self.menu_window().expect("no menu to take a picture of");
+        menu.set_size(PhysicalSize::new(width, height));
+        self.settle();
+        let mut buffer = paint(&self.window, width, height);
+        for (pixel, over) in buffer.iter_mut().zip(paint(&menu, width, height)) {
+            let under = |channel: u8| {
+                (u16::from(channel) * u16::from(255 - over.alpha) / 255) as u8
+            };
+            *pixel = PremultipliedRgbaColor {
+                red: over.red.saturating_add(under(pixel.red)),
+                green: over.green.saturating_add(under(pixel.green)),
+                blue: over.blue.saturating_add(under(pixel.blue)),
+                alpha: over.alpha.saturating_add(under(pixel.alpha)),
+            };
+        }
         let behind: [u8; 3] = if light {
             [0xc8, 0xcc, 0xd4]
         } else {
@@ -170,6 +219,15 @@ impl Screen {
     }
 }
 
+fn paint(window: &MinimalSoftwareWindow, width: u32, height: u32) -> Vec<PremultipliedRgbaColor> {
+    let mut buffer = vec![PremultipliedRgbaColor::default(); (width * height) as usize];
+    window.request_redraw();
+    window.draw_if_needed(|renderer| {
+        renderer.render(&mut buffer, width as usize);
+    });
+    buffer
+}
+
 fn names(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = fs::read_dir(dir)
         .unwrap()
@@ -187,9 +245,8 @@ fn icon(n: usize) -> (f32, f32) {
 
 #[test]
 fn bare_desktop_always_offers_new_folder_and_new_file() {
-    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
-    slint::platform::set_platform(Box::new(Headless(window.clone()))).unwrap();
-    window.set_size(PhysicalSize::new(WIDTH as u32, HEIGHT as u32));
+    let windows: Windows = Rc::default();
+    slint::platform::set_platform(Box::new(Headless(windows.clone()))).unwrap();
 
     let root = std::env::temp_dir().join(format!("sengi-desktop-clicks-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -206,9 +263,41 @@ fn bare_desktop_always_offers_new_folder_and_new_file() {
     let desktop = Desktop::new().unwrap();
     shell.attach(&desktop);
     desktop.show().unwrap();
+    let window = windows.borrow()[0].clone();
+    let menu: Rc<RefCell<Option<Menu>>> = Rc::default();
+    shell.set_menus({
+        let menu = menu.clone();
+        let windows = windows.clone();
+        move |request: Option<Request>| {
+            *menu.borrow_mut() = request.map(|request| {
+                let component = DesktopMenu::new().unwrap();
+                component.set_for_item(request.item);
+                component.set_menu_x(request.x);
+                component.set_menu_y(request.y);
+                let said: Rc<RefCell<Option<String>>> = Rc::default();
+                component.on_chosen({
+                    let said = said.clone();
+                    move |word| *said.borrow_mut() = Some(word.into())
+                });
+                component.on_dismissed({
+                    let said = said.clone();
+                    move || *said.borrow_mut() = Some("dismissed".into())
+                });
+                component.show().unwrap();
+                let window = windows.borrow().last().expect("a window for it").clone();
+                Menu {
+                    window,
+                    component,
+                    said,
+                }
+            });
+            Ok(())
+        }
+    });
     let screen = Screen {
         shell: shell.clone(),
         window,
+        menu,
         dir: dir.clone(),
     };
     screen.settle();
@@ -237,11 +326,15 @@ fn bare_desktop_always_offers_new_folder_and_new_file() {
         screen.offers_both(spot, what);
     }
 
-    // With a menu already open, a right-click elsewhere moves it.
+    // With a menu already open, a press elsewhere puts it away, and the
+    // next right-click has one again.
     screen.right(600.0, 300.0);
-    screen.offers_both((900.0, 500.0), "while a menu is open");
+    screen.right(900.0, 500.0);
+    assert!(screen.menu.borrow().is_none(), "the menu stayed");
+    screen.offers_both((900.0, 500.0), "after a press beside a menu");
     // After an icon's menu.
     screen.right(icon(0).0, icon(0).1);
+    screen.key(&String::from(char::from(Key::Escape)));
     screen.offers_both((700.0, 400.0), "after an icon's menu");
     // After Escape closed a menu.
     screen.right(600.0, 300.0);

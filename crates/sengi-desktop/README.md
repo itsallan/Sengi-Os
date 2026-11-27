@@ -14,9 +14,11 @@ It makes `~/Desktop` on the first run.
 ## What it does
 
 - A right click on bare desktop opens a menu: New Folder, New File, Open Terminal Here,
-  Settings.... A left click anywhere else closes it and clears the selection;
-  a right click elsewhere moves it. This holds on every bare part of the
-  desktop, and while a name is being typed (the name is kept).
+  Settings.... A press anywhere else, or Escape, closes it. This holds on
+  every bare part of the desktop, and while a name is being typed (the name is
+  kept). The menu is above every window: the desktop itself is below them, so
+  each menu is shown on the overlay layer by a second `sengi-desktop --menu`,
+  which lives as long as the menu does.
 - New Folder makes "untitled folder" ("untitled folder 2", ...) and puts it
   straight into rename. Return or a click elsewhere keeps the new name, Escape
   keeps the old one.
@@ -54,6 +56,7 @@ clicked and gives it back when a window is.
 - `open.rs`: starting a file manager, the terminal and Settings.
 - `watch.rs`: inotify.
 - `desk.rs`: the selection, the rename and the rules, with no window in it.
+- `menu.rs`: the menus above the windows.
 - `app.rs`: joins the desk to the Slint component in `ui/desktop.slint`.
 
 `tests/clicks.rs` drives the right button with pointer events. The render test
