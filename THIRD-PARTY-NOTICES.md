@@ -39,9 +39,9 @@ one asks to be kept. The licence text sits next to the files it covers.
   packages, and `intel-microcode`, from the `non-free-firmware` section. They
   are binary files that the kernel loads into Wi-Fi, Bluetooth, graphics and
   audio chips. Nothing of ours links them.
-- Licence: each maker's own, which allows redistribution; most are not free
-  software. The audio DSP firmware of `firmware-sof-signed` is built from the
-  Sound Open Firmware project, whose source is mostly BSD-3-Clause, and is
-  signed by Intel; Debian files it under `non-free-firmware` too. The texts are
-  in the image under `/usr/share/doc/<package>/copyright`. Build the image
-  without them with `SENGI_NONFREE_FIRMWARE=0 scripts/build-iso.sh`.
+- Licence: each maker's own, which is not free software but allows
+  redistribution. This includes `firmware-sof-signed`: the Sound Open Firmware
+  sources are public, but the binaries signed by Intel come under Intel's and
+  NXP's SOF firmware release licences. The texts are in the image under
+  `/usr/share/doc/<package>/copyright`. Build the image without them with
+  `SENGI_NONFREE_FIRMWARE=0 scripts/build-iso.sh`.
