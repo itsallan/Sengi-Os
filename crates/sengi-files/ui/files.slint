@@ -1023,7 +1023,7 @@ export component FilesWindow inherits Window {
 
     // The tooltip comes after the pointer has rested a moment.
     Timer {
-        interval: Tokens.motion-slow;
+        interval: Tokens.tooltip-delay;
         running: root.tip-wanted && !root.tip-shown;
         triggered => { root.tip-shown = true; }
     }

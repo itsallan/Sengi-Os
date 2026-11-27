@@ -455,13 +455,13 @@ fn toolbar(root: &Path, home: &Path) {
     // The name comes after a moment on the button, and goes with the pointer.
     assert!(!w.get_tip_shown());
     move_to(right_tool(888.0, 1));
-    harness::advance(500);
+    harness::advance(700);
     assert!(w.get_tip_shown());
     picture("files-tooltip-888x600.png");
     move_to((MIDDLE, 300.0));
     assert!(!w.get_tip_shown());
     move_to(left_tool(2));
-    harness::advance(500);
+    harness::advance(700);
     assert!(w.get_tip_shown());
     picture("files-tooltip-up-888x600.png");
 
