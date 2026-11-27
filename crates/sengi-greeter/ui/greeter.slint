@@ -1,10 +1,10 @@
 // The login screen. It is laid out as the lock screen is, so that the two
 // read as one: the time and the date, and under them who is logging in
-// and a field for the password. Added to that are the two things only a
-// login screen needs: a way to pick another user, and Restart and Shut
-// down in the bottom right corner.
+// and a field for the password. Added to that are the logo above the name,
+// and the two things only a login screen needs: a way to pick another
+// user, and Restart and Shut down in the bottom right corner.
 
-import { Tokens, SengiText, SengiLabel, SengiButton, SengiClockBlock, SengiPasswordField } from "components.slint";
+import { Tokens, SengiText, SengiLabel, SengiButton, SengiClockBlock, SengiPasswordField, SengiLogo } from "components.slint";
 export { ThemeSwitch } from "components.slint";
 
 export component GreeterWindow inherits Window {
@@ -99,6 +99,15 @@ export component GreeterWindow inherits Window {
             spacing: Tokens.space-md;
             opacity: root.prompt ? 1 : 0;
             animate opacity { duration: Tokens.motion-base; easing: Tokens.motion-easing; }
+
+            HorizontalLayout {
+                alignment: center;
+
+                SengiLogo {
+                    width: Tokens.logo-page;
+                    eye: Tokens.color-desktop;
+                }
+            }
 
             // The name, as wide as the field under it, with a button at
             // each end to step through the users, which the arrow keys do
