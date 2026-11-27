@@ -6,6 +6,9 @@ pub mod catalog;
 pub mod featured;
 pub mod flatpak;
 pub mod icons;
+pub mod nav;
+pub mod online;
+pub mod problem;
 pub mod progress;
 pub mod rows;
 
