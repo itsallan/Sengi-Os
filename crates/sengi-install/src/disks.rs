@@ -80,6 +80,9 @@ pub enum Refusal {
     Held,
     ReadOnly,
     TooSmall,
+    /// One of the disks of a RAID set the firmware makes, as Intel's
+    /// does: writing to it alone would break the set.
+    FirmwareRaid,
 }
 
 impl Refusal {
@@ -92,8 +95,19 @@ impl Refusal {
             Refusal::Held => "In use by another volume".to_string(),
             Refusal::ReadOnly => "Cannot be written to".to_string(),
             Refusal::TooSmall => format!("Too small, {} needed", size_words(MIN_BYTES)),
+            Refusal::FirmwareRaid => {
+                "Part of a firmware RAID set (such as Intel RST), which is not supported"
+                    .to_string()
+            }
         }
     }
+}
+
+/// Whether blkid names the disk a member of a RAID that firmware makes:
+/// `isw_raid_member` (Intel), `ddf_raid_member` and the others of their
+/// kind. Linux's own RAID is seen by what is built on it.
+fn firmware_raid(fstype: &str) -> bool {
+    fstype.ends_with("_raid_member") && fstype != "linux_raid_member"
 }
 
 /// Why `disk` must not be installed on, if there is a reason. The order
@@ -105,6 +119,9 @@ pub fn refusal(disk: &Disk) -> Option<Refusal> {
         Some(Refusal::Mounted(place.clone()))
     } else if disk.swap {
         Some(Refusal::Swap)
+    } else if firmware_raid(&disk.fstype) {
+        // Before "held": a set that was assembled holds its disks.
+        Some(Refusal::FirmwareRaid)
     } else if disk.held {
         Some(Refusal::Held)
     } else if disk.read_only {
@@ -559,6 +576,23 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_disk_of_a_firmware_raid_is_refused() {
+        let sys = TempDir::new();
+        add_disk(&sys, "sda", "8", 256 * GB, &[200 * GB]);
+        add_disk(&sys, "sdb", "8", 256 * GB, &[]);
+        add_disk(&sys, "sdc", "8", 256 * GB, &[200 * GB]);
+        // Assembled or not, a member says so itself.
+        sys.mkdir("block/sda/holders/md126");
+        let contents = "NAME=\"sda\" FSTYPE=\"isw_raid_member\"\nNAME=\"sdb\" FSTYPE=\"ddf_raid_member\"\nNAME=\"sdc\" FSTYPE=\"\"\n";
+        let disks = scan(&sources(&sys, "", "", contents), false);
+        assert_eq!(refusal(&disks[0]), Some(Refusal::FirmwareRaid));
+        assert_eq!(refusal(&disks[1]), Some(Refusal::FirmwareRaid));
+        assert_eq!(refusal(&disks[2]), None);
+        assert!(!firmware_raid("linux_raid_member"));
+        assert!(firmware_raid("nvidia_raid_member"));
+    }
+
+    #[test]
     fn small_and_read_only_disks_are_refused() {
         let sys = TempDir::new();
         add_disk(&sys, "sda", "8", 4 * GB, &[]);
@@ -718,6 +752,7 @@ pub(crate) mod tests {
             Refusal::Held,
             Refusal::ReadOnly,
             Refusal::TooSmall,
+            Refusal::FirmwareRaid,
         ] {
             assert!(!refusal.words().is_empty());
         }

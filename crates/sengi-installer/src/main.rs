@@ -24,7 +24,9 @@ use sengi_install::disks::{self, Disk};
 use sengi_install::progress::Event;
 use sengi_install::shrink::{Analysis, Refusal};
 use sengi_install::{PROGRESS, UNIT};
-use sengi_installer::model::{self, Form, Look, Outcome, Progress, Squeeze, StepState, Typed, Way};
+use sengi_installer::model::{
+    self, Asking, Form, Look, Outcome, Progress, Squeeze, StepState, Typed, Way,
+};
 use sengi_installer::ui::{
     ChooserState, DialogSpec, DialogState, InfoRow, InstallerWindow, Item, SengiStepState, StepRow,
     Wizard,
@@ -121,13 +123,10 @@ struct App {
     chosen: RefCell<Option<Disk>>,
     /// How the chosen disk is to be used.
     way: Cell<Way>,
-    /// What is known about making its Windows smaller, which look is the
-    /// latest, what was chosen to give Sengi OS, and whether the person
-    /// has said that there is a backup.
-    look: RefCell<Look>,
-    looks: Cell<u32>,
+    /// What is known about making a partition of it smaller and what the
+    /// person said about that, and what was chosen to give Sengi OS.
+    asking: RefCell<Asking>,
     room_gb: Cell<u64>,
-    backup: Cell<bool>,
     form: RefCell<Form>,
     password: RefCell<PasswordEntry>,
     again: RefCell<PasswordEntry>,
@@ -324,6 +323,7 @@ fn demo_analysis(disk: &Disk) -> Analysis {
             smallest_gb: 11,
             largest_gb: 11,
         },
+        windows: true,
     };
     if let Ok(room) = sengi_install::shrink::room(&analysis.entry(), analysis.used_bytes) {
         analysis.room = room;
@@ -392,7 +392,10 @@ impl App {
             match (page, way) {
                 ("review", Way::Erase) => "Erase disk and install\u{2026}",
                 ("review", Way::Beside) => "Install Sengi OS\u{2026}",
-                ("review", Way::Shrink) => "Shrink Windows and install\u{2026}",
+                ("review", Way::Shrink) if self.shrinks_windows() => {
+                    "Shrink Windows and install\u{2026}"
+                }
+                ("review", Way::Shrink) => "Shrink and install\u{2026}",
                 _ => "Continue",
             }
             .into(),
@@ -683,7 +686,7 @@ impl App {
         let mode_items: Vec<Item> = chosen
             .as_ref()
             .map(|disk| {
-                model::mode_rows(disk, uefi, self.way.get(), &self.look.borrow())
+                model::mode_rows(disk, uefi, self.way.get(), &self.asking.borrow().look)
                     .into_iter()
                     .map(|row| Item {
                         id: row.id.into(),
@@ -738,7 +741,7 @@ impl App {
             .borrow()
             .as_ref()
             .and_then(|disk| model::refused_at_sight(disk, self.uefi_now()));
-        let look = self.look.borrow().clone();
+        let look = self.asking.borrow().look.clone();
         let shrinking = self.way.get() == Way::Shrink;
         let (state, words) = match (at_sight, &look) {
             (Some(refusal), _) => ("refused", refusal.words()),
@@ -749,10 +752,15 @@ impl App {
         };
         wizard.set_shrink_state(state.into());
         wizard.set_shrink_words(words.into());
-        wizard.set_shrink_backup(self.backup.get());
+        wizard.set_shrink_backup(self.asking.borrow().backup);
         if let Some(squeeze) = self.squeeze() {
             let room = squeeze.analysis.room;
             let [uses, range, sengi, windows] = squeeze.words();
+            if let Some(disk) = self.chosen.borrow().as_ref() {
+                let short = squeeze.target(disk).short();
+                wizard.set_shrink_uses_title(format!("{short} uses").into());
+                wizard.set_shrink_keeps_title(format!("{short} keeps").into());
+            }
             wizard.set_shrink_uses(uses.into());
             wizard.set_shrink_range(range.into());
             wizard.set_shrink_sengi(sengi.into());
@@ -765,38 +773,40 @@ impl App {
 
     /// The size that is chosen, once Windows has been looked at.
     fn squeeze(&self) -> Option<Squeeze> {
-        match &*self.look.borrow() {
+        match &self.asking.borrow().look {
             Look::Ready(analysis) => Some(Squeeze::with(analysis.clone(), self.room_gb.get())),
             _ => None,
         }
     }
 
+    /// Whether what would be made smaller is known to hold Windows.
+    fn shrinks_windows(&self) -> bool {
+        self.way.get() == Way::Shrink
+            && self
+                .squeeze()
+                .is_some_and(|squeeze| squeeze.analysis.windows)
+    }
+
     fn disk_ready(&self) -> bool {
+        let asking = self.asking.borrow();
         model::disk_page_ready(
             self.chosen.borrow().is_some(),
             self.way.get(),
-            &self.look.borrow(),
-            self.backup.get(),
+            &asking.look,
+            asking.backup,
         )
     }
 
     /// Back to nothing chosen about how a disk is used.
     fn forget_way(&self) {
-        self.way.set(Way::Erase);
-        self.forget_look();
+        self.way.set(Way::Unchosen);
+        self.asking.borrow_mut().forget();
     }
 
-    /// What was found out about Windows no longer stands: it is looked at
-    /// again when it is wanted, and the backup is asked about again.
-    fn forget_look(&self) {
-        *self.look.borrow_mut() = Look::NotYet;
-        self.looks.set(self.looks.get().wrapping_add(1));
-        self.backup.set(false);
-    }
-
-    /// Look at the disks and at Windows again, as the button asks.
+    /// Look at the disks and at what would be made smaller again, as the
+    /// button asks.
     fn look_again(&self) {
-        self.forget_look();
+        self.asking.borrow_mut().forget();
         self.scan();
         if self.way.get() == Way::Shrink {
             self.look_at_windows();
@@ -810,9 +820,7 @@ impl App {
         let Some(disk) = self.chosen.borrow().clone() else {
             return;
         };
-        *self.look.borrow_mut() = Look::Looking;
-        let look = self.looks.get().wrapping_add(1);
-        self.looks.set(look);
+        let look = self.asking.borrow_mut().begin();
         self.render_disks();
         if self.demo != Demo::Off {
             post(move |app| app.looked(look, Ok(Ok(demo_analysis(&disk)))));
@@ -833,9 +841,6 @@ impl App {
     /// The answer to look number `look`. One that is not the latest is for
     /// a disk, or a state of one, that is no longer asked about.
     fn looked(&self, look: u32, answer: Result<Result<Analysis, Refusal>, String>) {
-        if look != self.looks.get() || *self.look.borrow() != Look::Looking {
-            return;
-        }
         // The disk the person is shown and the one root read are one.
         let shown = self
             .chosen
@@ -843,20 +848,16 @@ impl App {
             .as_ref()
             .and_then(|disk| sengi_install::beside::Table::from_disk(disk).ok())
             .map(|table| table.snapshot());
-        let found = match answer {
-            Ok(Ok(analysis)) if shown.as_deref() != Some(analysis.table.as_str()) => {
-                Look::Refused(Refusal::Other(
-                    "the partition table of the disk is not the one that was listed".to_string(),
-                ))
-            }
-            Ok(Ok(analysis)) => {
-                self.room_gb.set(Squeeze::new(analysis.clone()).gb);
-                Look::Ready(analysis)
-            }
-            Ok(Err(refusal)) => Look::Refused(refusal),
-            Err(why) => Look::Refused(Refusal::Other(sengi_text::line(&why, 300))),
-        };
-        *self.look.borrow_mut() = found;
+        if !self
+            .asking
+            .borrow_mut()
+            .answered(look, shown.as_deref(), answer)
+        {
+            return;
+        }
+        if let Look::Ready(analysis) = &self.asking.borrow().look {
+            self.room_gb.set(Squeeze::new(analysis.clone()).gb);
+        }
         self.render_disks();
     }
 
@@ -872,7 +873,7 @@ impl App {
     }
 
     fn backup_ticked(&self, ticked: bool) {
-        self.backup.set(ticked);
+        self.asking.borrow_mut().backup = ticked;
         self.render_shrink();
         self.set_can_next();
     }
@@ -909,7 +910,8 @@ impl App {
             _ => return,
         };
         self.way.set(way);
-        if way == Way::Shrink && *self.look.borrow() == Look::NotYet {
+        let not_looked = self.asking.borrow().look == Look::NotYet;
+        if way == Way::Shrink && not_looked {
             self.look_at_windows();
         } else {
             self.render_disks();
@@ -924,14 +926,14 @@ impl App {
             .find(|disk| disk.path == path && disks::refusal(disk).is_none())
             .cloned();
         if picked.is_some() {
-            // Another disk starts again from erasing it: beside is chosen
-            // on purpose, for the disk it was chosen on.
+            // Another disk starts again: beside is chosen on purpose, for
+            // the disk it was chosen on.
             if self.chosen.borrow().as_ref().map(|disk| &disk.path)
                 != picked.as_ref().map(|disk| &disk.path)
             {
                 self.forget_way();
                 if let Some(disk) = picked.as_ref() {
-                    self.way.set(model::first_way(disk, self.uefi_now()));
+                    self.way.set(model::first_way(disk));
                 }
             }
             *self.chosen.borrow_mut() = picked;
@@ -1026,13 +1028,14 @@ impl App {
     fn ask_to_erase(&self) {
         let chosen = self.chosen.borrow();
         let Some(disk) = chosen.as_ref() else { return };
-        let (title, body, confirm, danger) = match self.way.get() {
-            Way::Unchosen => return,
-            Way::Shrink => match self.squeeze() {
-                Some(squeeze) if self.backup.get() => model::shrink_question(disk, &squeeze),
-                _ => return,
-            },
-            _ => model::question(disk, self.offer_for(disk).as_ref()),
+        let Some((title, body, confirm, danger)) = model::confirmation(
+            disk,
+            self.way.get(),
+            self.offer_for(disk).as_ref(),
+            self.squeeze().as_ref(),
+            self.asking.borrow().backup,
+        ) else {
+            return;
         };
         let state = self.window.global::<DialogState>();
         state.set_spec(DialogSpec {
@@ -1061,21 +1064,16 @@ impl App {
         if !self.form_ready() {
             return;
         }
-        let way = self.way.get();
-        let beside = match way {
-            Way::Unchosen => return,
-            Way::Erase => None,
-            Way::Beside => self.offer_for(&disk).map(|offer| model::beside_of(&offer)),
-            Way::Shrink => self
-                .squeeze()
-                .filter(|_| self.backup.get())
-                .and_then(|squeeze| squeeze.beside()),
-        };
-        // Beside was chosen and cannot be done any more: nothing starts,
-        // and nothing is erased in its place.
-        if way != Way::Erase && beside.is_none() {
+        // What was chosen and cannot be done any more starts nothing, and
+        // nothing is erased in its place.
+        let Some(beside) = model::plan_way(
+            self.way.get(),
+            self.offer_for(&disk).as_ref(),
+            self.squeeze().as_ref(),
+            self.asking.borrow().backup,
+        ) else {
             return;
-        }
+        };
         let plan = self
             .form
             .borrow()
@@ -1143,7 +1141,10 @@ impl App {
     /// The page the installation is followed on, with nothing on it yet.
     fn show_progress(&self) {
         self.installing.set(true);
-        *self.progress.borrow_mut() = Progress::default();
+        *self.progress.borrow_mut() = Progress {
+            windows: self.shrinks_windows(),
+            ..Progress::default()
+        };
         let wizard = self.wizard();
         self.window.invoke_release();
         self.page.set("progress");
@@ -1277,6 +1278,7 @@ impl App {
         wizard.set_steps(rows(steps));
         wizard.set_warnings(progress.warnings.join(" ").into());
         wizard.set_shrinking(progress.shrinking());
+        wizard.set_shrinking_words(progress.shrinking_words().into());
         // While the program runs, the window waits for it. When it has
         // said how it ended and has gone, the buttons come back.
         if self.installing.get() {
@@ -1292,15 +1294,11 @@ impl App {
             Outcome::Running => {}
             Outcome::Done(seconds) => {
                 wizard.set_outcome("done".into());
-                let windows = if progress.shrinks.is_some() {
-                    " Windows was made smaller: the next time it starts it checks its disk first. That is expected; let it finish."
-                } else {
-                    ""
-                };
                 wizard.set_outcome_words(
                     format!(
-                        "Sengi OS is on {disk}. It took {}. Restart the computer, and take the USB stick out as soon as the screen goes dark: left in, the computer may start from the stick again. Then log in with the name and password you chose.{windows}",
-                        model::duration_words(*seconds)
+                        "Sengi OS is on {disk}. It took {}. Restart the computer, and take the USB stick out as soon as the screen goes dark: left in, the computer may start from the stick again. Then log in with the name and password you chose.{}",
+                        model::duration_words(*seconds),
+                        progress.done_words()
                     )
                     .into(),
                 );
@@ -1529,11 +1527,9 @@ fn main() -> ExitCode {
         page: Cell::new("welcome"),
         disks: RefCell::new(Vec::new()),
         chosen: RefCell::new(None),
-        way: Cell::new(Way::Erase),
-        look: RefCell::new(Look::NotYet),
-        looks: Cell::new(0),
+        way: Cell::new(Way::Unchosen),
+        asking: RefCell::new(Asking::default()),
         room_gb: Cell::new(0),
-        backup: Cell::new(false),
         form: RefCell::new(Form {
             host_name: model::DEFAULT_HOST_NAME.to_string(),
             ..Form::default()

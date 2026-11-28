@@ -51,11 +51,14 @@ export global Wizard {
     in-out property <int> mode-current: 0;
     callback mode-picked(string);
 
-    // Making Windows smaller to make room: "", "looking", "refused" with
-    // why in the words, or "ready" with the size control. The sizes are
-    // words; the control's own numbers are gigabytes.
+    // Making a partition smaller to make room: "", "looking", "refused"
+    // with why in the words, or "ready" with the size control. The sizes
+    // are words; the control's own numbers are gigabytes. The two titles
+    // name the partition: Windows, or its label.
     in property <string> shrink-state;
     in property <string> shrink-words;
+    in property <string> shrink-uses-title: "Windows uses";
+    in property <string> shrink-keeps-title: "Windows keeps";
     in property <string> shrink-uses;
     in property <string> shrink-range;
     in property <string> shrink-sengi;
@@ -94,8 +97,9 @@ export global Wizard {
 
     // Progress, and how it ended: "", "done" or "failed".
     in property <[StepRow]> steps;
-    // Windows is being changed at this moment.
+    // A partition is being changed at this moment, and what is said so.
     in property <bool> shrinking;
+    in property <string> shrinking-words: "Windows is being made smaller. Do not switch the computer off, unplug the charger or take out the USB stick: Windows could be lost. This cannot be cancelled.";
     in property <string> outcome;
     in property <string> outcome-words;
     in property <string> warnings;
@@ -162,7 +166,7 @@ component WelcomePage inherits Page {
 
         Note {
             warning: true;
-            text: "Sengi OS can take one whole disk and erase everything on it, or, on a computer that starts with UEFI, be added beside another system: in 10 GB or more of free space, or by making Windows smaller, which needs a backup first. Not offered yet: shrinking other systems, encryption, and partitions laid out by hand. To keep trying Sengi OS from the stick instead, close this window.";
+            text: "Sengi OS can take one whole disk and erase everything on it, or, on a computer that starts with UEFI, be added beside another system: in 10 GB or more of free space, or by making a Windows (NTFS) partition smaller, which needs a backup first. Not offered yet: shrinking other kinds of partition, encryption, and partitions laid out by hand. To keep trying Sengi OS from the stick instead, close this window.";
         }
     }
 }
@@ -269,7 +273,7 @@ component DiskPage inherits Page {
                 spacing: Tokens.space-sm;
 
                 SengiText {
-                    text: "Looking at Windows. Nothing is changed. On a large disk this can take a few minutes.";
+                    text: "Looking at the disk. Nothing is changed. On a large disk this can take a few minutes.";
                     color: Tokens.color-text-muted;
                     wrap: word-wrap;
                 }
@@ -289,7 +293,7 @@ component DiskPage inherits Page {
 
         if Wizard.disk-chosen && Wizard.shrink-state == "ready": room := Card {
             SettingRow {
-                title: "Windows uses";
+                title: Wizard.shrink-uses-title;
 
                 RowValue {
                     text: Wizard.shrink-uses;
@@ -324,7 +328,7 @@ component DiskPage inherits Page {
             Divider { }
 
             SettingRow {
-                title: "Windows keeps";
+                title: Wizard.shrink-keeps-title;
 
                 RowValue {
                     text: Wizard.shrink-windows;
@@ -537,7 +541,7 @@ component ProgressPage inherits Page {
         if Wizard.outcome == "": Note {
             warning: Wizard.shrinking;
             text: Wizard.shrinking
-                ? "Windows is being made smaller. Do not switch the computer off, unplug the charger or take out the USB stick: Windows could be lost. This cannot be cancelled."
+                ? Wizard.shrinking-words
                 : "Leave the computer on and the USB stick in until this is done.";
         }
     }

@@ -882,6 +882,12 @@ pub fn guard(argv: &[String], rules: &Rules) -> Result<(), String> {
                 // that opens the volume for writing runs.
                 argv == shrink::info_argv(node)
                     || argv == shrink::hiberfile_argv(node)
+                    || shrink::WINDOWS_KERNELS
+                        .iter()
+                        .any(|path| argv == shrink::kernel_argv(node, path))
+                    // Every partition of the disk may be asked, by reading
+                    // that one file, whether Windows is hibernated.
+                    || old.iter().any(|other| argv == shrink::hiberfile_argv(other))
                     || (bytes > 0 && argv == shrink::probe_argv(node))
                     || (bytes > 0 && argv == shrink::dry_run_argv(node, bytes))
                     || (bytes > 0
@@ -1608,9 +1614,12 @@ sector-size: 512
         )
     }
 
-    const LOOKS: [&str; 5] = [
+    const LOOKS: [&str; 7] = [
         "ntfs-3g.probe --readwrite /dev/disk/by-partuuid/win",
         "ntfscat /dev/disk/by-partuuid/win hiberfil.sys",
+        "ntfscat /dev/disk/by-partuuid/win Windows/System32/ntoskrnl.exe",
+        // Any other partition of the disk may be asked about hibernation.
+        "ntfscat /dev/vda2 hiberfil.sys",
         "ntfsresize --info --no-progress-bar /dev/disk/by-partuuid/win",
         "ntfsresize --no-action --no-progress-bar --size 5000 /dev/disk/by-partuuid/win",
         "blkid -s PARTUUID -o value /dev/vda3",
@@ -1671,6 +1680,13 @@ sector-size: 512
                 "ntfsresize --size 5000 /dev/disk/by-partuuid/other".to_string(),
                 "ntfsresize --info --no-progress-bar /dev/disk/by-partuuid/other".to_string(),
                 format!("ntfsresize --info --force --no-progress-bar {node}"),
+                // Of another partition nothing but that one file is read.
+                "ntfscat /dev/vda2 Windows/System32/ntoskrnl.exe".to_string(),
+                "ntfscat /dev/vda2 pagefile.sys".to_string(),
+                "ntfscat --force /dev/vda2 hiberfil.sys".to_string(),
+                "ntfscat /dev/vdb1 hiberfil.sys".to_string(),
+                "ntfsresize --info --no-progress-bar /dev/vda2".to_string(),
+                "ntfs-3g.probe --readwrite /dev/vda2".to_string(),
                 format!("ntfsfix {node}"),
                 format!("ntfsfix --clear-dirty {node}"),
                 format!("ntfsfix -d {node}"),

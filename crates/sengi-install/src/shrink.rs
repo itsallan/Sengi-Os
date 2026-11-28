@@ -32,8 +32,8 @@ use std::fs;
 use std::path::Path;
 
 use crate::beside::{Entry, Region, Table, ALIGN, MIN_BYTES};
-use crate::disks::{size_words, Disk, Part};
-use crate::install::{Command, Input, Output, System};
+use crate::disks::{partition_path, size_words, Disk, Part};
+use crate::install::{Command, Head, Input, Output, System};
 
 /// The partition type of a Windows data partition, C: among them. The
 /// recovery partition, the reserved one and the system partition have
@@ -166,6 +166,17 @@ pub enum Refusal {
     SectorSize,
     /// Another partition has the same identifier, as a copied disk has.
     Twin,
+    /// The target holds no Windows, and the partition of this number is
+    /// encrypted with BitLocker: Windows may be in it, hibernated.
+    OtherEncrypted(u32),
+    /// The partition of this number could not be asked whether Windows
+    /// is hibernated.
+    Unchecked(u32),
+    /// The file system ends so far before its partition that no size which
+    /// could be given to Sengi OS would fit it.
+    Short,
+    /// Looking took longer than it may.
+    Slow,
     /// A check ran and said something that is none of the above.
     Other(String),
 }
@@ -173,50 +184,65 @@ pub enum Refusal {
 /// What to do in Windows before shutting it down for this.
 const SHUT_DOWN: &str = "In Windows, turn off Fast Startup (Control Panel, Power Options, \u{201c}Choose what the power buttons do\u{201d}), then shut it down with Shut down, not Restart, Sleep or Hibernate.";
 
+/// What to do about a file system that ends before its partition does.
+pub const EXTEND: &str = "In Windows, open Command Prompt as administrator, run \u{201c}diskpart\u{201d}, choose the drive with \u{201c}list volume\u{201d} and \u{201c}select volume\u{201d}, and enter \u{201c}extend filesystem\u{201d}. Then shut down fully and look again.";
+
 impl Refusal {
     /// A few words, for the row of the choice.
     pub fn short(&self) -> &'static str {
         match self {
             Refusal::Battery => "Plug in the charger first",
-            Refusal::BitLocker => "Windows is encrypted with BitLocker",
-            Refusal::NotNtfs => "The Windows partition cannot be read",
+            Refusal::BitLocker => "It is encrypted with BitLocker",
+            Refusal::NotNtfs => "The partition cannot be read",
             Refusal::Hibernated => "Windows is hibernated or Fast Startup is on",
             Refusal::Unclean => "Windows was not shut down properly",
-            Refusal::Dirty => "Windows has a disk check waiting",
+            Refusal::Dirty => "A Windows disk check is waiting",
             Refusal::BadSectors => "The disk reports bad sectors",
-            Refusal::Busy => "The Windows partition is in use",
-            Refusal::Damaged => "The Windows file system has errors",
-            Refusal::NoRoom { .. } => "Windows does not have enough free space",
+            Refusal::Busy => "The partition is in use",
+            Refusal::Damaged => "The file system has errors",
+            Refusal::NoRoom { .. } => "It does not have enough free space",
             Refusal::SectorSize => "This kind of disk is not supported",
             Refusal::Twin => "Two partitions have the same identifier",
-            Refusal::Other(_) => "Windows cannot be made smaller",
+            Refusal::OtherEncrypted(_) => "Another partition is encrypted with BitLocker",
+            Refusal::Unchecked(_) => "Another partition could not be checked",
+            Refusal::Short => "The file system is smaller than its partition",
+            Refusal::Slow => "Looking took too long",
+            Refusal::Other(_) => "It cannot be made smaller",
         }
     }
 
     /// What is wrong and what to do about it.
     pub fn words(&self) -> String {
         match self {
-            Refusal::Battery => "This computer is running on its battery. Plug in the charger, then choose \u{201c}Look again\u{201d}. Losing power while Windows is being made smaller can destroy it.".to_string(),
-            Refusal::BitLocker => "The Windows partition is encrypted with BitLocker (Windows may call it device encryption), and Sengi OS does not change encrypted volumes. In Windows, save the recovery key, turn BitLocker off for this drive, wait until decryption has finished, then shut down fully.".to_string(),
+            Refusal::Battery => "This computer is running on its battery. Plug in the charger, then choose \u{201c}Look again\u{201d}. Losing power while a partition is being made smaller can destroy it.".to_string(),
+            Refusal::BitLocker => "The partition is encrypted with BitLocker (Windows may call it device encryption), and Sengi OS does not change encrypted volumes. In Windows, save the recovery key, turn BitLocker off for this drive, wait until decryption has finished, then shut down fully.".to_string(),
             Refusal::NotNtfs => "The partition does not look like a Windows (NTFS) volume that can be read: it may be encrypted or damaged. Nothing was changed. Check it in Windows.".to_string(),
-            Refusal::Hibernated => format!("Windows is hibernated, or Fast Startup saved part of it to disk. Changing the volume now would lose data. {SHUT_DOWN}"),
-            Refusal::Unclean => format!("Windows was not shut down properly and has unfinished writes. Start Windows, let it finish starting, then shut it down. {SHUT_DOWN}"),
-            Refusal::Dirty => "The Windows volume is marked for a disk check. Start Windows and let the check run (restart it twice if the mark stays), or run \u{201c}chkdsk C: /f\u{201d} as administrator, then shut down fully.".to_string(),
+            Refusal::Hibernated => format!("Windows is hibernated, or Fast Startup saved part of it to disk. Changing the disk now would lose data. {SHUT_DOWN}"),
+            Refusal::Unclean => format!("The volume has unfinished writes: Windows was not shut down properly. Start Windows, let it finish starting, then shut it down. {SHUT_DOWN}"),
+            Refusal::Dirty => "The volume is marked for a disk check. Start Windows and let the check run (restart it twice if the mark stays), or run \u{201c}chkdsk X: /f\u{201d} as administrator, with the drive's letter for X, then shut down fully.".to_string(),
             Refusal::BadSectors => "The file system records bad sectors on this disk. A failing disk must not be resized. Back up your files now, and consider replacing the disk.".to_string(),
-            Refusal::Busy => "The Windows partition is open in this session, for example in Files. Close it, eject it, and choose \u{201c}Look again\u{201d}.".to_string(),
-            Refusal::Damaged => "The check of the Windows file system found errors. In Windows, run \u{201c}chkdsk C: /f\u{201d} as administrator, restart, then shut down fully.".to_string(),
+            Refusal::Busy => "The partition is open in this session, for example in Files. Close it, eject it, and choose \u{201c}Look again\u{201d}.".to_string(),
+            Refusal::Damaged => "The check of the file system found errors. In Windows, run \u{201c}chkdsk X: /f\u{201d} as administrator, with the drive's letter for X, restart, then shut down fully.".to_string(),
             Refusal::NoRoom { used, size } => format!(
-                "Windows uses {} of its {}. It must keep {} free ({} GB, or {MARGIN_PERCENT}% of what it uses if that is more), and Sengi OS needs {}. Free up space in Windows, then try again.",
+                "It uses {} of its {}. At least {} must stay free ({} GB, or {MARGIN_PERCENT}% of what is used if that is more), and Sengi OS needs {}. Free up space in Windows, then try again.",
                 size_words(*used),
                 size_words(*size),
                 size_words(margin(*used)),
                 MARGIN_BYTES / GB,
                 size_words(smallest_gb() * GB),
             ),
-            Refusal::SectorSize => "This disk has sectors of 4096 bytes, on which making Windows smaller has not been tried. Make room from inside Windows instead (Disk Management, Shrink Volume).".to_string(),
-            Refusal::Twin => "Another partition has the same identifier as the Windows partition, as happens when a disk was copied. Unplug the copy and choose \u{201c}Look again\u{201d}.".to_string(),
+            Refusal::SectorSize => "This disk has sectors of 4096 bytes, on which making a partition smaller has not been tried. Make room from inside Windows instead (Disk Management, Shrink Volume).".to_string(),
+            Refusal::Twin => "Another partition has the same identifier as the one that would be made smaller, as happens when a disk was copied. Unplug the copy and choose \u{201c}Look again\u{201d}.".to_string(),
+            Refusal::OtherEncrypted(number) => format!(
+                "Partition {number} of this disk is encrypted with BitLocker, so whether Windows is hibernated cannot be checked. In Windows, save the recovery key, turn BitLocker off for every drive on this disk, wait until decryption has finished, then shut down fully."
+            ),
+            Refusal::Unchecked(number) => format!(
+                "Partition {number} of this disk could not be asked whether Windows is hibernated. In Windows, run \u{201c}chkdsk X: /f\u{201d} on that drive as administrator, then shut down fully and choose \u{201c}Look again\u{201d}."
+            ),
+            Refusal::Short => format!("The file system ends too far before its partition does, as an interrupted attempt to make it smaller can leave it, and it cannot be taken as it is. {EXTEND}"),
+            Refusal::Slow => "Looking at the disk took more than ten minutes and was stopped. Nothing was changed. The disk may be failing: in Windows, back up your files and run \u{201c}chkdsk X: /f\u{201d} as administrator.".to_string(),
             Refusal::Other(why) => format!(
-                "A check of the Windows partition did not pass: {why}. Nothing was changed. {SHUT_DOWN}"
+                "A check of the partition did not pass: {why}. Nothing was changed. {SHUT_DOWN}"
             ),
         }
     }
@@ -236,6 +262,10 @@ impl Refusal {
             Refusal::NoRoom { used, size } => format!("no-room {used} {size}"),
             Refusal::SectorSize => "sector-size".to_string(),
             Refusal::Twin => "twin".to_string(),
+            Refusal::OtherEncrypted(number) => format!("other-encrypted {number}"),
+            Refusal::Unchecked(number) => format!("unchecked {number}"),
+            Refusal::Short => "short".to_string(),
+            Refusal::Slow => "slow".to_string(),
             Refusal::Other(why) => format!(
                 "other {}",
                 why.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -264,6 +294,10 @@ impl Refusal {
             }
             "sector-size" => Refusal::SectorSize,
             "twin" => Refusal::Twin,
+            "other-encrypted" => Refusal::OtherEncrypted(rest.parse().ok()?),
+            "unchecked" => Refusal::Unchecked(rest.parse().ok()?),
+            "short" => Refusal::Short,
+            "slow" => Refusal::Slow,
             "other" => Refusal::Other(rest.to_string()),
             _ => return None,
         })
@@ -583,10 +617,27 @@ pub fn hiberfile_refusal(code: Option<i32>, head: &[u8], said: &str) -> Option<R
     }
 }
 
-/// The node of a partition by its identifier, which does not move when
-/// another disk is plugged in.
-pub fn by_identifier(uuid: &str) -> String {
-    format!("/dev/disk/by-partuuid/{}", uuid.to_ascii_lowercase())
+/// Where Windows keeps its kernel, as it spells it, and as old
+/// installations that were upgraded may.
+pub const WINDOWS_KERNELS: [&str; 2] = [
+    "Windows/System32/ntoskrnl.exe",
+    "WINDOWS/system32/ntoskrnl.exe",
+];
+
+/// Reads the start of a file that only a volume Windows is installed on
+/// has. `ntfscat` mounts the volume read-only.
+pub fn kernel_argv(node: &str, path: &str) -> Vec<String> {
+    ["ntfscat", node, path].map(String::from).to_vec()
+}
+
+/// How many partitions of all the disks have the identifier `uuid`. More
+/// than one means a disk that was copied.
+pub fn twins(disks: &[Disk], uuid: &str) -> usize {
+    disks
+        .iter()
+        .flat_map(|disk| &disk.parts)
+        .filter(|part| part.uuid.eq_ignore_ascii_case(uuid))
+        .count()
 }
 
 /// The partition of a disk that would be made smaller: its largest Windows
@@ -644,11 +695,13 @@ pub fn power(supplies: &Path) -> Result<(), Refusal> {
 /// What the looking found, when nothing speaks against it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Examined {
-    /// The partition by its identifier.
+    /// The kernel's node of the partition, of the disk it was looked up on.
     pub node: String,
     pub ntfs: Ntfs,
     pub info: Info,
     pub room: Room,
+    /// Windows is installed on this volume.
+    pub windows: bool,
 }
 
 /// Why the looking ended without an answer.
@@ -685,6 +738,11 @@ fn said(output: &Output) -> String {
 /// left in it, which nothing that only reads can tell, and the library may
 /// tidy one small record of the root folder as every such mount does.
 /// Without it nothing opens the volume for writing.
+///
+/// Everything is done on the kernel's own node of the partition. A name
+/// under `/dev/disk` can come to mean another disk's partition when a copy
+/// of this disk is plugged in; the kernel's node of a disk that is held
+/// cannot.
 pub fn examine(
     sys: &mut dyn System,
     allow: &Allow,
@@ -703,27 +761,16 @@ pub fn examine(
             entry.number
         )));
     }
-    let node = by_identifier(&entry.uuid);
-    let plain = crate::disks::partition_path(device, entry.number);
-    // The identifier leads to this partition and to no other.
-    let twins = sys
-        .disks(false)
-        .iter()
-        .flat_map(|disk| &disk.parts)
-        .filter(|part| part.uuid.eq_ignore_ascii_case(&entry.uuid))
-        .count();
-    if twins > 1 {
+    let node = partition_path(device, entry.number);
+    if twins(&sys.disks(false), &entry.uuid) > 1 {
         return Err(Refusal::Twin.into());
     }
-    let command = Command::new(&["blkid", "-s", "PARTUUID", "-o", "value", &plain]);
+    let command = Command::new(&["blkid", "-s", "PARTUUID", "-o", "value", &node]);
     let output = run(sys, allow, &command)?;
     if output.code != Some(0) || !output.stdout.trim().eq_ignore_ascii_case(&entry.uuid) {
         return Err(Stop::Failed(format!(
-            "{plain} is not the partition that was chosen"
+            "{node} is not the partition that was chosen"
         )));
-    }
-    if !sys.same_device(&node, &plain) {
-        return Err(Stop::Failed(format!("{node} does not lead to {plain}")));
     }
     // The signature of the volume, read as it is.
     let first = sys.read_sector0(&node).map_err(Stop::Failed)?;
@@ -751,18 +798,106 @@ pub fn examine(
     let info = parse_info(&output.stdout)
         .ok_or_else(|| Refusal::Other("ntfsresize did not say how much is in use".to_string()))?;
     // After the check above, which refuses a volume that ntfscat would too.
-    let command = command_of(hiberfile_argv(&node));
-    allow(&command.argv).map_err(Stop::Failed)?;
-    let head = sys.head(&command, HIBERFILE_HEAD).map_err(Stop::Failed)?;
-    if let Some(refusal) = hiberfile_refusal(head.code, &head.bytes, &head.said) {
+    if let Some(refusal) = hibernation(sys, allow, &node)? {
         return Err(refusal.into());
     }
-    let room = room(entry, info.used_bytes)?;
+    let windows = holds_windows(sys, allow, &node)?;
+    check_others(sys, allow, device, table, entry.number, windows)?;
+    let room = fitting(room(entry, info.used_bytes)?, entry, &ntfs)?;
     Ok(Examined {
         node,
         ntfs,
         info,
         room,
+        windows,
+    })
+}
+
+/// The start of a file of the volume at `command`'s node.
+fn head(
+    sys: &mut dyn System,
+    allow: &Allow,
+    argv: Vec<String>,
+    bytes: usize,
+) -> Result<Head, Stop> {
+    let command = command_of(argv);
+    allow(&command.argv).map_err(Stop::Failed)?;
+    sys.head(&command, bytes).map_err(Stop::Failed)
+}
+
+/// What speaks against the volume at `node` in its hibernation file.
+fn hibernation(sys: &mut dyn System, allow: &Allow, node: &str) -> Result<Option<Refusal>, Stop> {
+    let found = head(sys, allow, hiberfile_argv(node), HIBERFILE_HEAD)?;
+    Ok(hiberfile_refusal(found.code, &found.bytes, &found.said))
+}
+
+fn holds_windows(sys: &mut dyn System, allow: &Allow, node: &str) -> Result<bool, Stop> {
+    for path in WINDOWS_KERNELS {
+        if head(sys, allow, kernel_argv(node, path), 2)?
+            .bytes
+            .starts_with(b"MZ")
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Every other partition of the disk that holds NTFS is asked whether
+/// Windows is hibernated: the one that is made smaller need not be the one
+/// Windows is on, and a hibernated Windows would write what it remembers of
+/// the disk when it wakes. Where the target holds no Windows, a partition
+/// that cannot be looked into because BitLocker encrypts it may be the one
+/// that does.
+fn check_others(
+    sys: &mut dyn System,
+    allow: &Allow,
+    device: &str,
+    table: &Table,
+    target: u32,
+    windows: bool,
+) -> Result<(), Stop> {
+    for other in table.entries.iter().filter(|entry| entry.number != target) {
+        let node = partition_path(device, other.number);
+        match boot_sector(&sys.read_sector0(&node).map_err(Stop::Failed)?) {
+            BootSector::BitLocker if !windows => {
+                return Err(Refusal::OtherEncrypted(other.number).into())
+            }
+            BootSector::Ntfs(_) => match hibernation(sys, allow, &node)? {
+                None => {}
+                Some(Refusal::Hibernated) => return Err(Refusal::Hibernated.into()),
+                Some(_) => return Err(Refusal::Unchecked(other.number).into()),
+            },
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// `room` without the sizes that the file system as it is cannot take. A
+/// partition is made no larger than a cluster or two beyond where its file
+/// system ends, unless the file system is made smaller too: where it already
+/// ends well before the partition, as an attempt that stopped between the
+/// two leaves it, Sengi OS has to be given at least what lies beyond it.
+pub fn fitting(room: Room, entry: &Entry, ntfs: &Ntfs) -> Result<Room, Refusal> {
+    let end = ntfs.end_bytes().ok_or(Refusal::Damaged)?;
+    let reach = end.saturating_add(2 * ntfs.cluster_bytes);
+    // How large the partition would be if Sengi OS got nothing.
+    let whole = (entry.end() / ALIGN * ALIGN)
+        .saturating_sub(entry.start)
+        .saturating_mul(512);
+    let mut smallest_gb = room.smallest_gb.max(whole.saturating_sub(reach) / GB);
+    while smallest_gb <= room.largest_gb
+        && place(entry, smallest_gb).is_some_and(|(shrink, _)| shrink.file_system_bytes() > reach)
+    {
+        smallest_gb += 1;
+    }
+    if smallest_gb > room.largest_gb {
+        return Err(Refusal::Short);
+    }
+    Ok(Room {
+        smallest_gb,
+        ..room
     })
 }
 
@@ -832,6 +967,9 @@ pub struct Analysis {
     pub sectors: u64,
     pub used_bytes: u64,
     pub room: Room,
+    /// Windows is installed on the partition. Where it is not, the
+    /// partition is called by its label and size.
+    pub windows: bool,
 }
 
 impl Analysis {
@@ -850,7 +988,7 @@ impl Analysis {
 
     pub fn render(&self) -> String {
         format!(
-            "table {}\nesp {}\npartition {} {} {}\nused {}\nroom {} {} {}\n",
+            "table {}\nesp {}\npartition {} {} {}\nused {}\nroom {} {} {}\nwindows {}\n",
             self.table,
             self.esp,
             self.number,
@@ -860,6 +998,7 @@ impl Analysis {
             self.room.keep_bytes,
             self.room.smallest_gb,
             self.room.largest_gb,
+            u8::from(self.windows),
         )
     }
 
@@ -899,6 +1038,7 @@ impl Analysis {
                 smallest_gb: room[1],
                 largest_gb: room[2],
             },
+            windows: numbers("windows", 1)?[0] == 1,
         }))
     }
 }
@@ -1079,6 +1219,10 @@ pub(crate) mod tests {
             },
             Refusal::SectorSize,
             Refusal::Twin,
+            Refusal::OtherEncrypted(3),
+            Refusal::Unchecked(4),
+            Refusal::Short,
+            Refusal::Slow,
             Refusal::Other("it said nothing".to_string()),
         ]
     }
@@ -1100,6 +1244,39 @@ pub(crate) mod tests {
         assert!(Refusal::Battery.words().contains("charger"));
         assert_eq!(Refusal::from_code("no-room 1"), None);
         assert_eq!(Refusal::from_code("fine"), None);
+    }
+
+    #[test]
+    fn a_file_system_that_ends_early_raises_the_least_sengi_os_may_be_given() {
+        let entry = windows();
+        let room = room(&entry, 50 * GB).unwrap();
+        let volume = |sectors: u64| Ntfs {
+            sector_bytes: 512,
+            cluster_bytes: 4096,
+            sectors,
+            serial: 1,
+        };
+        // A volume that fills its partition leaves the choice as it is.
+        assert_eq!(fitting(room, &entry, &volume(entry.sectors - 1)), Ok(room));
+        // An earlier attempt made it ready for 40 GB of Sengi OS: less
+        // than that would leave the partition ending far beyond it, and
+        // that size is still offered, and gives exactly the same.
+        let (earlier, _) = place(&entry, 40).unwrap();
+        let ended = volume(earlier.sectors - 8);
+        let fitted = fitting(room, &entry, &ended).unwrap();
+        assert_eq!(fitted.smallest_gb, 40);
+        for gb in [fitted.smallest_gb, fitted.largest_gb] {
+            let (shrink, _) = place(&entry, gb).unwrap();
+            assert!(shrink.file_system_bytes() <= ended.end_bytes().unwrap() + 2 * 4096);
+        }
+        let (less, _) = place(&entry, 39).unwrap();
+        assert!(less.file_system_bytes() > ended.end_bytes().unwrap() + 2 * 4096);
+        // So far before it that nothing can be offered.
+        assert_eq!(
+            fitting(room, &entry, &volume(1_000_000)),
+            Err(Refusal::Short)
+        );
+        assert!(Refusal::Short.words().contains("extend filesystem"));
     }
 
     #[test]
@@ -1557,6 +1734,7 @@ pub(crate) mod tests {
             sectors: 390_625_000,
             used_bytes: 50 * GB,
             room: room(&windows(), 50 * GB).unwrap(),
+            windows: true,
         };
         assert_eq!(
             Analysis::parse(&analysis.render()),
@@ -1568,7 +1746,12 @@ pub(crate) mod tests {
             assert_eq!(Analysis::parse(&text), Ok(Err(refusal)));
         }
         let text = analysis.render();
-        for word in ["table", "esp", "partition", "used", "room"] {
+        let data = Analysis {
+            windows: false,
+            ..analysis.clone()
+        };
+        assert_eq!(Analysis::parse(&data.render()), Ok(Ok(data)));
+        for word in ["table", "esp", "partition", "used", "room", "windows"] {
             let cut: String = text
                 .lines()
                 .filter(|line| !line.starts_with(word))

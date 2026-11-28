@@ -15,13 +15,16 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::atomic::Ordering;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use sengi_install::install::{self, Paths, System};
 use sengi_install::names::{self, MAX_PASSWORD_BYTES};
 use sengi_install::plan::Plan;
 use sengi_install::progress::Event;
-use sengi_install::real::{Real, INTERRUPTED};
+use sengi_install::real::{end_programs, Real, INTERRUPTED};
+use sengi_install::shrink::Refusal;
 use sengi_install::{beside, disks, ANALYZE_LOG, LOCK, LOG, PROGRESS, REQUEST, TARGET, UNIT};
 use sengi_system::secret::{self, Secret};
 
@@ -293,6 +296,26 @@ fn service_arguments(shrinks: bool) -> Vec<String> {
     arguments
 }
 
+/// The longest a look at a disk may take: a volume with millions of files
+/// on a slow disk takes minutes, and a failing disk can take for ever.
+const ANALYZE_LIMIT: Duration = Duration::from_secs(600);
+
+/// What `work` gives, or `Err(true)` if it has not given it within
+/// `limit`, and `Err(false)` if it came to nothing. In the first case its
+/// thread is left behind, and the caller has to end the program.
+fn within<T: Send + 'static>(
+    limit: Duration,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, bool> {
+    let (send, receive) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = send.send(work());
+    });
+    receive
+        .recv_timeout(limit)
+        .map_err(|error| error == RecvTimeoutError::Timeout)
+}
+
 /// `analyze`: look at the Windows partition of a disk, writing nothing.
 fn analyze(device: &str) -> ExitCode {
     if let Some(refused) = needs_root() {
@@ -307,7 +330,28 @@ fn analyze(device: &str) -> ExitCode {
         }
     };
     let mut system = Real::new(Path::new(ANALYZE_LOG));
-    let answer = install::analyze(&mut system, device, false);
+    let device = device.to_string();
+    let looked = within(ANALYZE_LIMIT, move || {
+        let answer = install::analyze(&mut system, &device, false);
+        (answer, system)
+    });
+    let (answer, mut system) = match looked {
+        Ok(looked) => looked,
+        Err(false) => {
+            eprintln!("sengi-install: the look at the disk came to nothing");
+            return ExitCode::FAILURE;
+        }
+        Err(true) => {
+            // Nothing the look runs writes: it may all be ended.
+            end_programs();
+            let line = format!("refused {}", Refusal::Slow.code());
+            if let Ok(mut log) = fs::OpenOptions::new().append(true).open(ANALYZE_LOG) {
+                let _ = writeln!(log, "[  limit] analyzed {line}");
+            }
+            println!("{line}");
+            return ExitCode::SUCCESS;
+        }
+    };
     let (said, line) = match &answer {
         Ok(Ok(analysis)) => (analysis.render(), "analyzed ok".to_string()),
         Ok(Err(refusal)) => {
@@ -323,6 +367,22 @@ fn analyze(device: &str) -> ExitCode {
     system.log(&line);
     print!("{said}");
     ExitCode::SUCCESS
+}
+
+/// Whether the plan makes a partition smaller first.
+fn shrinks(plan: &Plan) -> bool {
+    plan.beside
+        .as_ref()
+        .is_some_and(|beside| beside.shrink.is_some())
+}
+
+/// Everything `systemd-run` is told to run the installation of `plan` with
+/// `program`.
+fn service_command(plan: &Plan, program: &Path) -> Vec<String> {
+    let mut command = service_arguments(shrinks(plan));
+    command.push(program.to_string_lossy().into_owned());
+    command.extend(["run", "--request", REQUEST].map(String::from));
+    command
 }
 
 /// `start`: hand the installation to a service of its own.
@@ -366,10 +426,6 @@ fn start() -> ExitCode {
         Ok(plan) => plan,
         Err(problem) => return fail(problem),
     };
-    let shrinks = plan
-        .beside
-        .as_ref()
-        .is_some_and(|beside| beside.shrink.is_some());
     if let Err(problem) = names::password(password.expose()) {
         return fail(problem);
     }
@@ -408,9 +464,7 @@ fn start() -> ExitCode {
     let program =
         std::env::current_exe().unwrap_or_else(|_| PathBuf::from("/usr/bin/sengi-install"));
     let started = Command::new("systemd-run")
-        .args(service_arguments(shrinks))
-        .arg(&program)
-        .args(["run", "--request", REQUEST])
+        .args(service_command(&plan, &program))
         .stdin(Stdio::null())
         .status();
     match started {
@@ -534,6 +588,40 @@ mod tests {
             // The program comes right after what systemd-inhibit is told.
             assert_eq!(arguments.last().map(String::as_str), Some("--mode=block"));
         }
+    }
+
+    #[test]
+    fn the_service_of_a_plan_that_shrinks_is_the_one_that_cannot_be_stopped() {
+        let erase = "[plan]\nversion = 1\n[disk]\ndevice = \"/dev/sda\"\nmode = \"erase\"\nsize = 256060514304\nmodel = \"X\"\n[user]\nname = \"allan\"\nfull-name = \"A\"\n[system]\nhost-name = \"sengi\"\ntime-zone = \"Europe/Paris\"\nkeyboard = \"fr\"\n";
+        let shrink = format!(
+            "{}[beside]\nstart = 42182656\nsectors = 25165824\nesp = 1\ntable = \"gpt abc;1:2048:204800:c12a:u1\"\n[shrink]\npartition = 3\nsectors = 16777216\nbackup = true\n",
+            erase.replace("\"erase\"", "\"beside\"")
+        );
+        for (text, shrinking) in [(erase, false), (shrink.as_str(), true)] {
+            let plan = Plan::parse(text).unwrap();
+            let command = service_command(&plan, Path::new("/usr/bin/sengi-install"));
+            assert_eq!(shrinks(&plan), shrinking);
+            assert_eq!(
+                command.contains(&"--property=RefuseManualStop=yes".to_string()),
+                shrinking
+            );
+            assert_eq!(
+                command[command.len() - 4..],
+                ["/usr/bin/sengi-install", "run", "--request", REQUEST]
+            );
+        }
+    }
+
+    #[test]
+    fn a_look_that_takes_too_long_is_given_up() {
+        assert_eq!(within(Duration::from_secs(5), || 7), Ok(7));
+        let slow = within(Duration::from_millis(20), || {
+            std::thread::sleep(Duration::from_secs(5))
+        });
+        assert_eq!(slow, Err(true));
+        let broken: Result<(), bool> = within(Duration::from_secs(5), || panic!("broken"));
+        assert_eq!(broken, Err(false));
+        assert_eq!(ANALYZE_LIMIT, Duration::from_secs(600));
     }
 
     #[test]

@@ -12,7 +12,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -28,6 +28,20 @@ pub const PATH: &str = "/usr/sbin:/usr/bin:/sbin:/bin";
 /// ended and the installation fails where it is, which unmounts.
 pub static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
+/// The process group of the program that is running, or zero.
+static RUNNING: AtomicI32 = AtomicI32::new(0);
+
+/// Stop: no further program is started, and the one that is running and
+/// what it started are ended. Not for one that must run to its end.
+pub fn end_programs() {
+    INTERRUPTED.store(true, Ordering::Relaxed);
+    let running = RUNNING.load(Ordering::Relaxed);
+    if running > 0 {
+        // SAFETY: kill takes a process group and a signal.
+        unsafe { libc::kill(-running, libc::SIGKILL) };
+    }
+}
+
 /// The most that is kept of what one program prints, per stream.
 const KEPT_BYTES: usize = 64 * 1024;
 
@@ -36,6 +50,8 @@ pub struct Real {
     held: Option<File>,
     log: Option<File>,
     started: Instant,
+    /// Set when it is time to stop.
+    stop: &'static AtomicBool,
 }
 
 impl Real {
@@ -59,6 +75,7 @@ impl Real {
             log: file.ok(),
             started: Instant::now(),
             held: None,
+            stop: &INTERRUPTED,
         }
     }
 }
@@ -213,7 +230,7 @@ impl System for Real {
             return Err("there is no program to run".to_string());
         };
         self.log(&format!("$ {}", command.argv.join(" ")));
-        if INTERRUPTED.load(Ordering::Relaxed) && !command.cleanup {
+        if self.stop.load(Ordering::Relaxed) && !command.cleanup {
             return Err("the installation was told to stop".to_string());
         }
         let has_input = !matches!(command.input, Input::None);
@@ -238,6 +255,7 @@ impl System for Real {
         let mut child = child
             .spawn()
             .map_err(|error| format!("{program} could not be started: {error}"))?;
+        RUNNING.store(child.id() as i32, Ordering::Relaxed);
         let stdout = child.stdout.take().map(drain);
         let stderr = child.stderr.take().map(drain);
         if let Some(mut stdin) = child.stdin.take() {
@@ -258,7 +276,7 @@ impl System for Real {
                 Ok(None) => {}
                 Err(error) => break Err(format!("{program} was lost: {error}")),
             }
-            if INTERRUPTED.load(Ordering::Relaxed) && !command.cleanup && !command.whole {
+            if self.stop.load(Ordering::Relaxed) && !command.cleanup && !command.whole {
                 // The whole group: a script's children too.
                 // SAFETY: kill takes a process group and a signal.
                 unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) };
@@ -271,6 +289,7 @@ impl System for Real {
                 tick(&stdout.as_ref().map(Drain::so_far).unwrap_or_default());
             }
         };
+        RUNNING.store(0, Ordering::Relaxed);
         let collect = |stream: Option<Drain>| stream.map(Drain::finish).unwrap_or_default();
         let output = Output {
             code: status.as_ref().ok().and_then(|status| status.code()),
@@ -295,7 +314,7 @@ impl System for Real {
             "$ {} (the first {bytes} bytes)",
             command.argv.join(" ")
         ));
-        if INTERRUPTED.load(Ordering::Relaxed) {
+        if self.stop.load(Ordering::Relaxed) {
             return Err("the installation was told to stop".to_string());
         }
         let mut child = std::process::Command::new(program)
@@ -309,6 +328,7 @@ impl System for Real {
             .process_group(0)
             .spawn()
             .map_err(|error| format!("{program} could not be started: {error}"))?;
+        RUNNING.store(child.id() as i32, Ordering::Relaxed);
         let stderr = child.stderr.take().map(drain);
         let mut taken = Vec::new();
         let mut stdout = child.stdout.take();
@@ -326,6 +346,7 @@ impl System for Real {
         let status = child
             .wait()
             .map_err(|error| format!("{program} was lost: {error}"))?;
+        RUNNING.store(0, Ordering::Relaxed);
         let said = stderr.map(Drain::finish).unwrap_or_default();
         read.map_err(|error| format!("what {program} printed could not be read: {error}"))?;
         for line in said.lines() {
@@ -427,11 +448,20 @@ impl System for Real {
         Ok(sector)
     }
 
-    fn same_device(&mut self, one: &str, other: &str) -> bool {
-        match (fs::canonicalize(one), fs::canonicalize(other)) {
-            (Ok(one), Ok(other)) => one == other,
-            _ => false,
+    fn still_held(&mut self, device: &str) -> Result<(), String> {
+        use std::os::unix::fs::{FileExt, MetadataExt};
+        let held = self
+            .held
+            .as_ref()
+            .ok_or_else(|| format!("{device} is not held"))?;
+        let gone = || format!("{device} is no longer the disk that is held");
+        let ours = held.metadata().map_err(|_| gone())?;
+        let named = fs::metadata(device).map_err(|_| gone())?;
+        if (ours.dev(), ours.ino(), ours.rdev()) != (named.dev(), named.ino(), named.rdev()) {
+            return Err(gone());
         }
+        // A disk that was pulled out answers no read.
+        held.read_exact_at(&mut [0u8; 512], 0).map_err(|_| gone())
     }
 
     fn power(&mut self) -> Result<(), Refusal> {
@@ -532,6 +562,53 @@ mod tests {
         let command = Command::new(&["sh", "-c", script]);
         let output = sys.run(&command, &mut |_| {}).unwrap();
         assert_eq!(output.code, None);
+    }
+
+    #[test]
+    fn a_program_that_must_run_to_its_end_is_not_ended_when_told_to_stop() {
+        static STOP: AtomicBool = AtomicBool::new(false);
+        let tmp = TempDir::new();
+        let mut sys = real(&tmp);
+        sys.stop = &STOP;
+        let stop_soon = || {
+            std::thread::spawn(|| {
+                std::thread::sleep(Duration::from_millis(200));
+                STOP.store(true, Ordering::Relaxed);
+            })
+        };
+        let mut command = Command::new(&["sh", "-c", "sleep 1; echo done"]);
+        command.whole = true;
+        let teller = stop_soon();
+        let output = sys.run(&command, &mut |_| {}).unwrap();
+        teller.join().unwrap();
+        assert_eq!((output.code, output.stdout.as_str()), (Some(0), "done\n"));
+        // Any other is ended where it is.
+        STOP.store(false, Ordering::Relaxed);
+        let command = Command::new(&["sh", "-c", "sleep 30; echo done"]);
+        let teller = stop_soon();
+        let started = Instant::now();
+        let why = sys.run(&command, &mut |_| {}).unwrap_err();
+        teller.join().unwrap();
+        assert!(why.contains("told to stop"), "{why}");
+        assert!(started.elapsed() < Duration::from_secs(20));
+    }
+
+    #[test]
+    fn the_held_disk_has_to_be_the_one_its_name_still_leads_to() {
+        let tmp = TempDir::new();
+        let mut sys = real(&tmp);
+        let disk = tmp.join("disk");
+        let name = disk.to_string_lossy().into_owned();
+        fs::write(&disk, [0u8; 1024]).unwrap();
+        assert!(sys.still_held(&name).unwrap_err().contains("not held"));
+        sys.hold(&name).unwrap();
+        sys.still_held(&name).unwrap();
+        // Another takes the name.
+        fs::write(tmp.join("other"), [0u8; 1024]).unwrap();
+        fs::rename(tmp.join("other"), &disk).unwrap();
+        assert!(sys.still_held(&name).unwrap_err().contains("no longer"));
+        fs::remove_file(&disk).unwrap();
+        assert!(sys.still_held(&name).is_err());
     }
 
     #[test]

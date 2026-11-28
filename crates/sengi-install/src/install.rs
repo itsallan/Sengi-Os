@@ -81,11 +81,11 @@ pub const STEPS: [Step; 9] = [
     },
 ];
 
-/// The step that comes after the check where Windows is made smaller
+/// The step that comes after the check where a partition is made smaller
 /// first.
 pub const SHRINK_STEP: Step = Step {
     id: "shrink",
-    title: "Making Windows smaller",
+    title: "Making room",
 };
 
 /// The steps of an installation, with or without making room first.
@@ -258,8 +258,9 @@ pub trait System {
     /// they are; it is ended once it has given that much. For reading the
     /// start of a file that can be many gigabytes long.
     fn head(&mut self, command: &Command, bytes: usize) -> Result<Head, String>;
-    /// Whether two names are of one device node.
-    fn same_device(&mut self, one: &str, other: &str) -> bool;
+    /// That the disk that is held is still the one the node `device`
+    /// names, and still answers.
+    fn still_held(&mut self, device: &str) -> Result<(), String>;
     /// Whether the power can be relied on: no battery, or a charger.
     fn power(&mut self) -> Result<(), shrink::Refusal>;
     /// A point at which a test may have the installation wait, so that it
@@ -304,8 +305,12 @@ struct Installer<'a> {
     new_uuid: String,
     /// The table as it was after the new partition was written.
     after: Option<Table>,
-    /// Sector 0 of the disk, as it was before anything was written.
+    /// Sector 0 of the disk as it is held to: as it was, and after a
+    /// write of the table as that left it.
     sector0: Option<Vec<u8>>,
+    /// The first listing of the table `sfdisk` gave, which is the table
+    /// as it was before this installation.
+    listing: String,
     /// What was put on the EFI system partition and in the firmware, so
     /// that a failure can take it out again: whether the folder was made
     /// by this installation, and the firmware entry it made.
@@ -577,6 +582,9 @@ impl Installer<'_> {
         let command = reading_table(&self.plan.device);
         self.guard(&command.argv)?;
         let output = self.sys.run(&command, &mut |_| {})?;
+        if self.listing.is_empty() {
+            self.listing = output.stdout.clone();
+        }
         table_from(&command, output, &self.plan.device)
     }
 
@@ -707,17 +715,21 @@ impl Installer<'_> {
                 disks::size_words(self.source_bytes)
             ));
         }
+        let shrink = beside.as_ref().and_then(|beside| beside.shrink);
         if let Some(beside) = beside {
             self.check_beside(&beside)?;
-            if let Some(shrink) = beside.shrink {
-                self.look_at_windows(&shrink)?;
-            }
         }
-        // Last, and kept until the new table is written: the disk, opened
-        // so that nothing else can open it to mount it or build on it.
-        // If something already has, this is where it shows, whatever the
+        // Kept until the new table is written: the disk, opened so that
+        // nothing else can open it to mount it or build on it. If
+        // something already has, this is where it shows, whatever the
         // tables read above said.
         self.sys.hold(&plan.device)?;
+        if let Some(shrink) = shrink {
+            // Looked at with the disk held, so that the nodes of its
+            // partitions cannot come to be another disk's meanwhile.
+            self.verify_unchanged()?;
+            self.look_at_windows(&shrink)?;
+        }
         Ok(())
     }
 
@@ -779,8 +791,9 @@ impl Installer<'_> {
     /// it by looking: whether it may be, and whether `ntfsresize` can go
     /// through the whole of the resize to the size asked for without
     /// writing. Gives what was found, and whether the file system has to
-    /// change at all (it does not where it is already small enough, as it
-    /// is when an earlier attempt stopped after it).
+    /// change at all. It does not where it already is as large as asked,
+    /// as an attempt that stopped after it leaves it; it then has to pass
+    /// the same check as after a resize.
     fn look_at_windows(&mut self, shrink: &Shrink) -> Result<(Examined, bool), String> {
         let before = self
             .before
@@ -792,7 +805,7 @@ impl Installer<'_> {
             .ok_or("there is no partition to make smaller")?;
         let bytes = shrink.file_system_bytes();
         self.windows = Some(Windows {
-            node: shrink::by_identifier(&entry.uuid),
+            node: self.part(entry.number),
             number: entry.number,
             bytes,
             writing: Writing::Nothing,
@@ -800,9 +813,10 @@ impl Installer<'_> {
         let guard = self.guarding().ok_or("there is nothing to guard with")?;
         let allow = |argv: &[String]| guard.judge(argv);
         let device = self.plan.device.clone();
-        let stopped = |stop: Stop| match stop {
+        let number = entry.number;
+        let stopped = move |stop: Stop| match stop {
             Stop::Refused(refusal) => format!(
-                "Windows cannot be made smaller: {}. {}",
+                "partition {number} cannot be made smaller: {}. {}",
                 refusal.short(),
                 refusal.words()
             ),
@@ -813,7 +827,7 @@ impl Installer<'_> {
         let kept = shrink.sectors.saturating_mul(512);
         if kept < examined.room.keep_bytes {
             return Err(format!(
-                "Windows would be left {}, and it needs {} for what it uses and room to work in",
+                "partition {number} would be left {}, and it needs {} for what it uses and room to work in",
                 disks::size_words(kept),
                 disks::size_words(examined.room.keep_bytes)
             ));
@@ -822,8 +836,57 @@ impl Installer<'_> {
         let resize = end > bytes;
         if resize {
             shrink::dry_run(self.sys, &allow, &examined.node, bytes).map_err(stopped)?;
+        } else {
+            let (first, last) = self.volume_ends(&examined, bytes)?;
+            shrink::check_volume(&examined.ntfs, &first, &last, shrink).map_err(|why| {
+                format!(
+                    "the file system on partition {number} already ends before the size asked for, and cannot be taken as it is: {why}. Nothing was changed. {}",
+                    shrink::EXTEND
+                )
+            })?;
         }
         Ok((examined, resize))
+    }
+
+    /// The first sector of the volume, and the last sector of the `bytes`
+    /// it is to fit in, where the copy of the first belongs.
+    fn volume_ends(
+        &mut self,
+        examined: &Examined,
+        bytes: u64,
+    ) -> Result<(Vec<u8>, Vec<u8>), String> {
+        let first = self.sys.read_sector0(&examined.node)?;
+        let last = self.sys.read_sector(
+            &examined.node,
+            bytes.saturating_sub(examined.ntfs.sector_bytes),
+        )?;
+        Ok((first, last))
+    }
+
+    /// Immediately before the partition that is made smaller is written to
+    /// or opened for writing: the disk that is held is still the one of
+    /// this name and the one that was chosen, no other partition has the
+    /// identifier of this one, as one on a copy of the disk would, and the
+    /// node still holds it.
+    fn confirm_target(&mut self, number: u32) -> Result<(), String> {
+        let device = self.plan.device.clone();
+        self.sys.still_held(&device)?;
+        self.same_disk()?;
+        let uuid = self
+            .before
+            .as_ref()
+            .and_then(|table| table.entry(number))
+            .map(|entry| entry.uuid.clone())
+            .ok_or("there is no partition to make smaller")?;
+        if shrink::twins(&self.sys.disks(self.plan.allow_loop), &uuid) > 1 {
+            return Err(shrink::Refusal::Twin.words());
+        }
+        let node = self.part(number);
+        let found = self.run(&["blkid", "-s", "PARTUUID", "-o", "value", &node])?;
+        if !found.trim().eq_ignore_ascii_case(&uuid) {
+            return Err(format!("{node} is not the partition that was chosen"));
+        }
+        Ok(())
     }
 
     /// The disk, its table and its first sector are still what they were,
@@ -871,13 +934,27 @@ impl Installer<'_> {
         }
     }
 
+    /// After sfdisk has written the table of a disk with sectors of
+    /// `sector_size` bytes: sector 0 is as it may be
+    /// ([`beside::check_sector0`]), and is what it is held to from now on.
+    fn sector0_after_writing(&mut self, sector_size: u64) -> Result<(), String> {
+        let sector0 = self.sys.read_sector0(&self.plan.device)?;
+        beside::check_sector0(
+            self.sector0.as_deref().unwrap_or_default(),
+            &sector0,
+            self.plan.size / sector_size,
+        )?;
+        self.sector0 = Some(sector0);
+        Ok(())
+    }
+
     fn may_write(&mut self, writing: Writing) {
         if let Some(windows) = self.windows.as_mut() {
             windows.writing = writing;
         }
     }
 
-    /// Make the Windows partition smaller: first its file system, to less
+    /// Make a partition smaller: first its file system, to less
     /// than the partition is going to be, then the partition. What each
     /// stage leaves is said as it goes, so that a failure can be answered
     /// with what state the disk is in.
@@ -893,6 +970,7 @@ impl Installer<'_> {
         let bytes = shrink.file_system_bytes();
 
         if resize {
+            self.confirm_target(shrink.partition)?;
             self.may_write(Writing::FileSystem);
             let command = Command {
                 argv: shrink::resize_argv(&node, bytes),
@@ -917,19 +995,19 @@ impl Installer<'_> {
             self.may_write(Writing::Nothing);
             Self::judge(&command, output?)?;
         }
-        self.tell(Event::Resize(Resize::FileSystem));
-        self.sys.test_hold("after-filesystem");
 
-        // What was done to the file system, read from the disk.
-        let first = self.sys.read_sector0(&node)?;
-        if resize {
-            let last = self
-                .sys
-                .read_sector(&node, bytes.saturating_sub(examined.ntfs.sector_bytes))?;
-            shrink::check_volume(&examined.ntfs, &first, &last, &shrink).map_err(|why| {
-                format!("the Windows file system did not pass the check after the resize: {why}")
-            })?;
-        }
+        // What is on the disk now, read from it. Until it has passed, a
+        // resize leaves a file system that may be damaged.
+        let failed = |why: String| {
+            if resize {
+                format!("the file system did not pass the check after the resize: {why}")
+            } else {
+                why
+            }
+        };
+        let (first, last) = self.volume_ends(&examined, bytes)?;
+        shrink::check_volume(&examined.ntfs, &first, &last, &shrink).map_err(failed)?;
+        self.confirm_target(shrink.partition).map_err(failed)?;
         let probe = Command {
             argv: shrink::probe_argv(&node),
             input: Input::None,
@@ -939,14 +1017,26 @@ impl Installer<'_> {
         self.guard(&probe.argv)?;
         let output = self.sys.run(&probe, &mut |_| {})?;
         if let Some(refusal) = shrink::probe_refusal(output.code) {
-            return Err(format!(
-                "the Windows file system did not pass the check after the resize: {}",
-                refusal.short()
-            ));
+            return Err(failed(refusal.short().to_string()));
+        }
+        if resize {
+            self.tell(Event::Resize(Resize::FileSystem));
+            self.sys.test_hold("after-filesystem");
         }
 
         // The partition, and only its size.
         self.verify_unchanged()?;
+        self.confirm_target(shrink.partition)?;
+        // The table as it was, together, in the record of the installation,
+        // for whoever has to put it back.
+        let listing = self.listing.clone();
+        self.sys.log(&format!(
+            "the partition table of {} as it is before the one change, as sfdisk lists it:",
+            self.plan.device
+        ));
+        for line in listing.lines() {
+            self.sys.log(&format!("    {line}"));
+        }
         let before = self
             .before
             .clone()
@@ -967,10 +1057,7 @@ impl Installer<'_> {
         Self::judge(&command, output?)?;
         let after = self.read_table()?;
         shrink::check_shrunk(&before, &after, &shrink)?;
-        if self.sys.read_sector0(&device)?.as_slice() != self.sector0.as_deref().unwrap_or_default()
-        {
-            return Err("sector 0 of the disk changed when the table was written".to_string());
-        }
+        self.sector0_after_writing(before.sector_size)?;
         // The kernel is told of the one new size.
         self.sys.release();
         self.may_write(Writing::Kernel);
@@ -1000,7 +1087,9 @@ impl Installer<'_> {
         }
         let last = self.sys.read_sector0(&node)?;
         if last.get(..512) != first.get(..512) {
-            return Err("the first sector of the Windows partition changed".to_string());
+            return Err(
+                "the first sector of the partition that was made smaller changed".to_string(),
+            );
         }
         self.tell(Event::Resize(Resize::Done));
 
@@ -1113,13 +1202,7 @@ impl Installer<'_> {
         let after = self.read_table()?;
         let uuid = self.new_uuid.clone();
         let new = beside::check_after(&before, &after, &beside, &uuid)?;
-        let sector0 = self.sys.read_sector0(&device)?;
-        beside::check_sector0(
-            self.sector0.as_deref().unwrap_or_default(),
-            &sector0,
-            self.plan.size / before.sector_size,
-        )?;
-        self.sector0 = Some(sector0);
+        self.sector0_after_writing(before.sector_size)?;
         self.root_number = new;
         self.made = true;
         self.tell(Event::Made(new));
@@ -1942,10 +2025,16 @@ pub fn analyze(
     let number = beside::squeeze(disk, firmware)
         .map(|part| part.number)
         .ok_or("there is nothing on this disk that would be made smaller")?;
+    // Said at once, before anything that takes long.
+    if let Err(refusal) = sys.power() {
+        return Ok(Err(refusal));
+    }
     let command = reading_table(device);
     let output = sys.run(&command, &mut |_| {})?;
     let table = table_from(&command, output, device)?;
-    beside::mbr_is_plain(&sys.read_sector0(device)?)?;
+    let sector0 = sys.read_sector0(device)?;
+    beside::mbr_is_plain(&sector0)?;
+    beside::mbr_stays(&sector0)?;
     let esp = table
         .entries
         .iter()
@@ -1956,7 +2045,7 @@ pub fn analyze(
         .entry(number)
         .cloned()
         .ok_or("the partition table is not the one the system shows")?;
-    let node = shrink::by_identifier(&entry.uuid);
+    let node = partition_path(device, number);
     let guard = Guard {
         device: device.to_string(),
         old: beside::nodes(device, &table),
@@ -1983,6 +2072,7 @@ pub fn analyze(
             sectors: entry.sectors,
             used_bytes: examined.info.used_bytes,
             room: examined.room,
+            windows: examined.windows,
         })),
         Err(Stop::Refused(refusal)) => Ok(Err(refusal)),
         Err(Stop::Failed(why)) => Err(why),
@@ -2018,6 +2108,7 @@ pub fn install(
         new_uuid: String::new(),
         after: None,
         sector0: None,
+        listing: String::new(),
         made_dir: false,
         new_bootnum: None,
         create_ran: false,
@@ -2092,6 +2183,8 @@ mod tests {
         /// What the probe says once the volume has been resized.
         probe_after: i32,
         dry_run: Option<&'static str>,
+        /// The dry run ends well and does not say that it did.
+        dry_run_silent: bool,
         resize: i32,
         /// The resize says it worked and left the volume as it was, or
         /// left no copy of the first sector at the new end.
@@ -2103,7 +2196,20 @@ mod tests {
         /// The charger is pulled once a command with this in it has run.
         unplugged_after: Option<&'static str>,
         twin: bool,
-        wrong_link: bool,
+        /// Once so many commands with this in them have run: a copy of the
+        /// disk is plugged in, the held disk is gone from its name, or the
+        /// node holds another partition.
+        twin_after: Option<(&'static str, usize)>,
+        gone_after: Option<(&'static str, usize)>,
+        moved_after: Option<(&'static str, usize)>,
+        /// The disk has another serial number once this has run.
+        swapped_after: Option<&'static str>,
+        /// The volume holds data only: no Windows is installed on it.
+        data: bool,
+        /// Other partitions: their first sectors, and what reading the
+        /// hibernation file gives where it has something to say.
+        others: Vec<(&'static str, Vec<u8>)>,
+        other_hiberfile: Vec<(&'static str, &'static [u8], &'static str)>,
         /// sfdisk moves another partition as it writes the new size.
         tamper: bool,
         /// The kernel does not take the new size.
@@ -2198,6 +2304,13 @@ mod tests {
             self.commands
                 .iter()
                 .any(|command| command.starts_with(start))
+        }
+
+        /// Whether `after.1` commands with `after.0` in them have run.
+        fn happened(&self, after: Option<(&str, usize)>) -> bool {
+            after.is_some_and(|(what, times)| {
+                self.commands.iter().filter(|c| c.contains(what)).count() >= times
+            })
         }
 
         fn position(&self, start: &str) -> usize {
@@ -2311,6 +2424,9 @@ mod tests {
                         code = Some(1);
                         stderr = why.to_string();
                     }
+                    None if self.windows.dry_run_silent => {
+                        stdout = "Resizing nothing.\n".to_string()
+                    }
                     None => stdout = "The read-only test run ended successfully.\n".to_string(),
                 },
                 "ntfsresize" => {
@@ -2350,6 +2466,7 @@ mod tests {
                         })
                         .collect();
                     self.dump = Some(dump);
+                    self.appended = true;
                 }
                 "partx" if inner.contains(&"--update") => {
                     if !self.windows.stale {
@@ -2357,18 +2474,6 @@ mod tests {
                     }
                 }
                 "partx" if !self.stale_table => self.kernel_dump = self.dump.clone(),
-                "blkid"
-                    if inner.contains(&"PARTUUID")
-                        && inner.last().unwrap().starts_with("/dev/disk/by-partuuid/") =>
-                {
-                    stdout = format!(
-                        "{}\n",
-                        inner
-                            .last()
-                            .unwrap()
-                            .trim_start_matches("/dev/disk/by-partuuid/")
-                    );
-                }
                 "blkid" if inner.contains(&"PARTUUID") => {
                     let node = inner.last().unwrap();
                     let number: u32 = node
@@ -2384,7 +2489,9 @@ mod tests {
                     let table =
                         crate::beside::Table::parse_dump(self.dump.as_ref().unwrap()).unwrap();
                     let uuid = table.entry(number).map(|entry| entry.uuid.clone());
-                    stdout = if self.wrong_partuuid && number >= 3 {
+                    stdout = if (self.wrong_partuuid && number >= 3)
+                        || (number == 2 && self.happened(self.windows.moved_after))
+                    {
                         "ffffffff-ffff-4fff-8fff-ffffffffffff\n".to_string()
                     } else {
                         format!("{}\n", uuid.unwrap_or_default())
@@ -2478,7 +2585,7 @@ mod tests {
         }
 
         fn read_sector(&mut self, device: &str, at: u64) -> Result<Vec<u8>, String> {
-            assert!(device.starts_with("/dev/disk/by-partuuid/"), "{device}");
+            assert_eq!(device, WINDOWS_NODE);
             if at > 0 && self.windows.no_copy {
                 return Ok(vec![0; 512]);
             }
@@ -2489,21 +2596,41 @@ mod tests {
             let line = command.argv.join(" ");
             self.commands.push(line);
             assert_eq!(command.argv[0], "ntfscat");
-            Ok(match self.windows.hiberfile {
-                None => Head {
+            let (node, file) = (command.argv[1].as_str(), command.argv[2].as_str());
+            let missing = Head {
+                code: Some(1),
+                bytes: Vec::new(),
+                said: "ERROR: Couldn't open inode: No such file or directory\n".to_string(),
+            };
+            let found = |start: &[u8]| {
+                let mut head = vec![0; bytes];
+                head[..start.len()].copy_from_slice(start);
+                Head {
+                    code: None,
+                    bytes: head,
+                    said: String::new(),
+                }
+            };
+            if file != "hiberfil.sys" {
+                let kernel = !self.windows.data && file == shrink::WINDOWS_KERNELS[0];
+                return Ok(if kernel { found(b"MZ") } else { missing });
+            }
+            if node == WINDOWS_NODE {
+                return Ok(self.windows.hiberfile.map_or(missing, found));
+            }
+            let other = self
+                .windows
+                .other_hiberfile
+                .iter()
+                .find(|(one, _, _)| *one == node);
+            Ok(match other {
+                None => missing,
+                Some((_, start, "")) => found(start),
+                Some((_, _, said)) => Head {
                     code: Some(1),
                     bytes: Vec::new(),
-                    said: "ERROR: Couldn't open inode: No such file or directory\n".to_string(),
+                    said: said.to_string(),
                 },
-                Some(start) => {
-                    let mut head = vec![0; bytes];
-                    head[..start.len()].copy_from_slice(start);
-                    Head {
-                        code: None,
-                        bytes: head,
-                        said: String::new(),
-                    }
-                }
             })
         }
 
@@ -2520,11 +2647,45 @@ mod tests {
                     disks[0].parts.push(part);
                 }
             }
+            if self.happened(self.windows.twin_after) {
+                // A copy of the disk, plugged in.
+                let mut copy = disks[0].clone();
+                copy.name = "sdb".to_string();
+                copy.path = "/dev/sdb".to_string();
+                let mut part =
+                    disks[0]
+                        .parts
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| crate::disks::Part {
+                            name: String::new(),
+                            number: 2,
+                            start: 0,
+                            size: 0,
+                            kind: String::new(),
+                            uuid: String::new(),
+                            fstype: String::new(),
+                            label: String::new(),
+                        });
+                part.uuid = "DD068BA6-D1DF-4FE6-9721-13FC754E035F".to_string();
+                copy.parts = vec![part.clone()];
+                disks.push(copy);
+                // And the one it is a copy of, as udev lists it.
+                disks[0].parts.push(part);
+            }
+            if let Some(what) = self.windows.swapped_after {
+                if self.commands.iter().any(|c| c.contains(what)) {
+                    disks[0].serial = "another disk".to_string();
+                }
+            }
             disks
         }
 
-        fn same_device(&mut self, _one: &str, _other: &str) -> bool {
-            !self.windows.wrong_link
+        fn still_held(&mut self, device: &str) -> Result<(), String> {
+            if !self.held || self.happened(self.windows.gone_after) {
+                return Err(format!("{device} is no longer the disk that is held"));
+            }
+            Ok(())
         }
 
         fn power(&mut self) -> Result<(), Refusal> {
@@ -2616,8 +2777,13 @@ mod tests {
         }
 
         fn read_sector0(&mut self, device: &str) -> Result<Vec<u8>, String> {
-            if device.starts_with("/dev/disk/by-partuuid/") {
+            if device == WINDOWS_NODE {
                 return Ok(self.windows.first.clone());
+            }
+            if device != "/dev/sda" {
+                assert!(device.starts_with("/dev/sda"), "{device}");
+                let other = self.windows.others.iter().find(|(one, _)| *one == device);
+                return Ok(other.map_or_else(|| vec![0; 512], |(_, sector)| sector.clone()));
             }
             let mut sector = self.sector0.clone();
             if self.appended {
@@ -3957,7 +4123,7 @@ mod tests {
     /// A Windows that has all of the 256 GB disk but for the EFI system
     /// partition, and uses 80 GB of it.
     const SHRINK_DUMP: &str = "label: gpt\nlabel-id: AAAAAAAA-0000-4000-8000-000000000001\ndevice: /dev/sda\nunit: sectors\nfirst-lba: 2048\nlast-lba: 499999966\nsector-size: 512\n\n/dev/sda1 : start=        2048, size=      204800, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, uuid=62516844-55D2-4917-A468-C8A0FBB8B6CD, name=\"EFI System Partition\"\n/dev/sda2 : start=      206848, size=   499793119, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, uuid=DD068BA6-D1DF-4FE6-9721-13FC754E035F, name=\"Basic data partition\"\n";
-    const WINDOWS_NODE: &str = "/dev/disk/by-partuuid/dd068ba6-d1df-4fe6-9721-13fc754e035f";
+    const WINDOWS_NODE: &str = "/dev/sda2";
 
     fn chosen_shrink() -> (Shrink, Region) {
         let table = Table::parse_dump(SHRINK_DUMP).unwrap();
@@ -4182,7 +4348,7 @@ mod tests {
             ),
             // Room to shrink, but not by as much as was asked.
             (
-                "Windows would be left",
+                "would be left",
                 Box::new(|w| {
                     w.fake.windows.info =
                         crate::shrink::tests::info_text(499_793_119 * 512 - 4096, 170_000)
@@ -4195,9 +4361,38 @@ mod tests {
                 }),
             ),
             ("identifier", Box::new(|w| w.fake.windows.twin = true)),
+            // A dry run that does not say it went through.
             (
-                "does not lead",
-                Box::new(|w| w.fake.windows.wrong_link = true),
+                "ntfsresize said",
+                Box::new(|w| w.fake.windows.dry_run_silent = true),
+            ),
+            // Another partition of the disk holds a hibernated Windows,
+            // cannot be asked, or may hold one that nobody can look into.
+            (
+                "hibernated",
+                Box::new(|w| {
+                    let ntfs = crate::shrink::tests::ntfs_sector(200_000);
+                    w.fake.windows.others = vec![("/dev/sda1", ntfs)];
+                    w.fake.windows.other_hiberfile = vec![("/dev/sda1", b"hibr", "")];
+                }),
+            ),
+            (
+                "could not be asked",
+                Box::new(|w| {
+                    let ntfs = crate::shrink::tests::ntfs_sector(200_000);
+                    w.fake.windows.others = vec![("/dev/sda1", ntfs)];
+                    w.fake.windows.other_hiberfile =
+                        vec![("/dev/sda1", b"", "Volume is scheduled for check.\n")];
+                }),
+            ),
+            (
+                "encrypted with BitLocker",
+                Box::new(|w| {
+                    let mut locked = crate::shrink::tests::ntfs_sector(200_000);
+                    locked[3..11].copy_from_slice(b"-FVE-FS-");
+                    w.fake.windows.others = vec![("/dev/sda1", locked)];
+                    w.fake.windows.data = true;
+                }),
             ),
             (
                 "not the partition that was chosen",
@@ -4279,6 +4474,140 @@ mod tests {
         }
     }
 
+    /// How many commands with `what` in them were run.
+    fn times(world: &World, what: &str) -> usize {
+        let commands = &world.fake.commands;
+        commands.iter().filter(|c| c.contains(what)).count()
+    }
+
+    #[test]
+    fn a_disk_that_changes_is_not_opened_for_writing_again() {
+        // Between the look at the other partitions and the hold: another
+        // disk has the name, and the probe, which opens the volume for
+        // writing, is never run on it.
+        let mut world = world_shrink();
+        world.fake.windows.swapped_after = Some("umount");
+        let (result, _) = run(&mut world);
+        let (step, why) = result.unwrap_err();
+        assert_eq!(step, "check");
+        assert!(why.contains("no longer the disk"), "{why}");
+        assert_eq!(times(&world, "ntfs-3g.probe"), 0);
+        not_written(&world);
+        // Between the check and the shrink, whose first act is to look
+        // that nothing changed: no second probe.
+        let mut world = world_shrink();
+        let changed = SHRINK_DUMP.replace("name=\"Basic data partition\"", "name=\"x\"");
+        world.fake.windows.table_later = Some(("--no-action", changed));
+        let (result, _) = run(&mut world);
+        let (step, why) = result.unwrap_err();
+        assert_eq!(step, "shrink", "{why}");
+        assert!(why.contains("partition table of the disk changed"), "{why}");
+        assert_eq!(times(&world, "ntfs-3g.probe"), 1);
+        not_written(&world);
+    }
+
+    #[test]
+    fn every_command_on_the_volume_names_the_held_disks_own_node() {
+        // A copy of the disk that is plugged in takes over the names under
+        // /dev/disk. None is used for the partition that is made smaller.
+        let mut world = world_shrink();
+        let (result, _) = run(&mut world);
+        assert_eq!(result.map(|_| ()), Ok(()));
+        let on_volume: Vec<&String> = world
+            .fake
+            .commands
+            .iter()
+            .filter(|c| c.starts_with("ntfs"))
+            .collect();
+        assert!(on_volume.len() >= 8, "{on_volume:#?}");
+        for command in on_volume {
+            assert!(command.contains(" /dev/sda2"), "{command}");
+            assert!(!command.contains("/dev/disk/"), "{command}");
+        }
+    }
+
+    #[test]
+    fn immediately_before_each_write_the_target_is_confirmed() {
+        // What appears right after the last look: before the resize, before
+        // the probe that follows it, and before the table is written. A
+        // copy of the disk, the held disk gone from its name, another
+        // partition on the node.
+        type When = (&'static str, usize);
+        let moments: [(When, usize, usize); 3] = [
+            // (when, resizes that ran, probes that ran)
+            (("--no-action", 2), 0, 2),
+            (("ntfsresize --size", 1), 1, 2),
+            (("ntfs-3g.probe", 3), 1, 3),
+        ];
+        for (when, resized, probes) in moments {
+            for (word, kind) in [("identifier", 0), ("held", 1), ("not the partition", 2)] {
+                let mut world = world_shrink();
+                match kind {
+                    0 => world.fake.windows.twin_after = Some(when),
+                    1 => world.fake.windows.gone_after = Some(when),
+                    _ => world.fake.windows.moved_after = Some(when),
+                }
+                let (result, _) = run(&mut world);
+                let (step, why) = result.unwrap_err();
+                let at = format!("{word} after {when:?}: {why}");
+                assert_eq!(step, "shrink", "{at}");
+                assert!(why.contains(word), "{at}");
+                assert_eq!(times(&world, "ntfsresize --size"), resized, "{at}");
+                assert_eq!(times(&world, "ntfs-3g.probe"), probes, "{at}");
+                assert!(!world.fake.ran("sfdisk --lock"), "{at}");
+                assert!(!world.fake.ran("mkfs"), "{at}");
+            }
+        }
+    }
+
+    #[test]
+    fn sector_zero_is_held_to_after_the_size_is_written_too() {
+        // As Windows writes it, the size is all ones, and sfdisk puts the
+        // disk's own there: the run goes through (the test of the order).
+        // Anything else that changes stops it before the kernel is told.
+        for tamper in [(440, 1), (458, 0x12), (446 + 20, 0x83)] {
+            let mut world = world_shrink();
+            world.fake.tamper_mbr = Some(tamper);
+            let (result, events) = run(&mut world);
+            let (step, why) = result.unwrap_err();
+            assert_eq!(step, "shrink", "{tamper:?}");
+            assert!(why.contains("sector 0"), "{why}");
+            assert_eq!(resizes(&events).last(), Some(&Resize::Table));
+            assert!(!world.fake.ran("partx"));
+            assert!(!world.fake.ran("mkfs"));
+        }
+    }
+
+    #[test]
+    fn a_new_partition_that_is_not_where_windows_gives_up_room_is_refused_at_once() {
+        let mut world = world_shrink();
+        let beside = world.plan.beside.as_mut().unwrap();
+        beside.start += 2048;
+        let (result, _) = run(&mut world);
+        let (step, why) = result.unwrap_err();
+        assert_eq!(step, "check");
+        assert!(why.contains("does not begin where"), "{why}");
+        assert!(!world.fake.ran("ntfs"));
+        not_written(&world);
+    }
+
+    #[test]
+    fn the_table_as_it_was_is_put_in_the_record_before_it_is_changed() {
+        let mut world = world_shrink();
+        run(&mut world).0.unwrap();
+        let log = &world.fake.log;
+        let at = log
+            .iter()
+            .position(|line| line.contains("as sfdisk lists it"))
+            .unwrap();
+        for line in SHRINK_DUMP.lines() {
+            assert!(
+                log[at..].iter().any(|said| said.trim() == line.trim()),
+                "{line}"
+            );
+        }
+    }
+
     #[test]
     fn a_resize_that_fails_leaves_the_table_alone() {
         let mut world = world_shrink();
@@ -4296,7 +4625,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_system_that_does_not_check_out_leaves_the_table_alone() {
+    fn a_file_system_that_does_not_check_out_is_not_said_to_be_sound() {
         let changes: Vec<Case> = vec![
             (
                 "beyond",
@@ -4310,6 +4639,28 @@ mod tests {
                 "not shut down",
                 Box::new(|w| w.fake.windows.probe_after = 15),
             ),
+        ];
+        for (word, change) in changes {
+            let mut world = world_shrink();
+            change(&mut world);
+            let (result, events) = run(&mut world);
+            let (step, why) = result.unwrap_err();
+            assert_eq!(step, "shrink", "{word}: {why}");
+            assert!(why.contains("did not pass the check"), "{word}: {why}");
+            assert!(why.contains(word), "{word}: {why}");
+            // As far as anybody is told, the resize was under way: the
+            // volume may be damaged. A test is not made to wait there.
+            assert_eq!(resizes(&events), [Resize::Writing], "{word}");
+            assert!(world.fake.holds.is_empty());
+            assert!(!world.fake.ran("sfdisk --lock"), "{word}");
+            assert!(!world.fake.ran("partx"));
+            assert!(!world.fake.ran("mkfs"));
+        }
+    }
+
+    #[test]
+    fn what_goes_wrong_after_the_check_leaves_the_table_alone() {
+        let changes: Vec<Case> = vec![
             (
                 "charger",
                 Box::new(|w| w.fake.windows.unplugged_after = Some("ntfsresize --size")),
@@ -4374,24 +4725,55 @@ mod tests {
         assert!(!world.fake.ran("mkfs"));
     }
 
-    #[test]
-    fn a_file_system_that_is_small_enough_already_is_left_alone() {
-        // As after an attempt that stopped between the two writes, once
-        // Windows has checked the disk.
-        let mut world = world_shrink();
+    /// A volume that ends `short` sectors before where a resize to the
+    /// chosen size would leave it.
+    fn already_resized(world: &mut World, short: u64) {
         let (shrink, _) = chosen_shrink();
-        let sectors = (shrink.file_system_bytes() - 512) / 4096 * 8 - 8000;
+        let sectors = (shrink.file_system_bytes() - 512) / 4096 * 8 - short;
         world.fake.windows.first = crate::shrink::tests::ntfs_sector(sectors);
         world.fake.windows.info = crate::shrink::tests::info_text(sectors * 512, 80_000);
+    }
+
+    #[test]
+    fn a_file_system_that_has_the_size_already_only_has_its_partition_made_to_fit() {
+        // As after an attempt that stopped between the two writes, once
+        // Windows has checked the disk, with the same size chosen.
+        let mut world = world_shrink();
+        already_resized(&mut world, 0);
         let (result, events) = run(&mut world);
         assert_eq!(result.map(|_| ()), Ok(()));
         assert!(!world.fake.ran("ntfsresize --size"));
         assert!(!world.fake.ran("ntfsresize --no-action"));
         assert!(world.fake.ran("sfdisk --lock --no-reread --no-tell-kernel --wipe never --wipe-partitions never -N 2 /dev/sda"));
-        assert_eq!(
-            resizes(&events),
-            [Resize::FileSystem, Resize::Table, Resize::Done]
-        );
+        // Nothing is said of a file system that was made smaller.
+        assert_eq!(resizes(&events), [Resize::Table, Resize::Done]);
+        assert!(world.fake.holds.is_empty());
+    }
+
+    #[test]
+    fn a_file_system_that_ends_early_or_lacks_its_copy_is_refused_with_what_to_do() {
+        let cases: Vec<Case> = vec![
+            ("much smaller", Box::new(|w| already_resized(w, 8000))),
+            (
+                "copy of its first sector",
+                Box::new(|w| {
+                    already_resized(w, 0);
+                    w.fake.windows.no_copy = true;
+                }),
+            ),
+        ];
+        for (word, change) in cases {
+            let mut world = world_shrink();
+            change(&mut world);
+            let (result, events) = run(&mut world);
+            let (step, why) = result.unwrap_err();
+            assert_eq!(step, "check", "{word}: {why}");
+            assert!(why.contains(word), "{word}: {why}");
+            assert!(why.contains("Nothing was changed"), "{why}");
+            assert!(why.contains("extend filesystem"), "{why}");
+            assert!(resizes(&events).is_empty());
+            not_written(&world);
+        }
     }
 
     #[test]
@@ -4402,9 +4784,10 @@ mod tests {
         let (step, why) = result.unwrap_err();
         assert_eq!(step, "shrink");
         assert!(why.contains("told to stop"), "{why}");
-        // The resize ran to its end, and says so.
+        // The resize ran to its end. It was not checked, so it is not
+        // said to be sound.
         assert!(world.fake.windows.resized);
-        assert_eq!(resizes(&events), [Resize::Writing, Resize::FileSystem]);
+        assert_eq!(resizes(&events), [Resize::Writing]);
         assert!(!world.fake.ran("sfdisk --lock"));
         assert!(!world.fake.held);
     }
@@ -4471,6 +4854,48 @@ mod tests {
             .fake
             .ran(&format!("ntfscat {WINDOWS_NODE} hiberfil.sys")));
         assert!(world.fake.whole.is_empty());
+        // A file system that an earlier attempt left ready for 60 GB:
+        // less than that is not offered.
+        let (first, info) = (
+            world.fake.windows.first.clone(),
+            world.fake.windows.info.clone(),
+        );
+        already_resized(&mut world, 0);
+        let early = analyze(&mut world.fake, "/dev/sda", false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(early.room.smallest_gb, 60);
+        (world.fake.windows.first, world.fake.windows.info) = (first, info);
+        // Whether Windows is on the partition, which decides its name.
+        assert!(answer.windows);
+        world.fake.windows.data = true;
+        let data = analyze(&mut world.fake, "/dev/sda", false)
+            .unwrap()
+            .unwrap();
+        assert!(!data.windows);
+        // Every NTFS partition of the disk is asked about hibernation.
+        let ntfs = crate::shrink::tests::ntfs_sector(200_000);
+        world.fake.windows.others = vec![("/dev/sda1", ntfs)];
+        world.fake.commands.clear();
+        analyze(&mut world.fake, "/dev/sda", false)
+            .unwrap()
+            .unwrap();
+        assert!(world.fake.ran("ntfscat /dev/sda1 hiberfil.sys"));
+        world.fake.windows.other_hiberfile = vec![("/dev/sda1", b"HIBR", "")];
+        assert_eq!(
+            analyze(&mut world.fake, "/dev/sda", false),
+            Ok(Err(Refusal::Hibernated))
+        );
+        world.fake.windows.other_hiberfile.clear();
+        // Without the charger nothing is even listed.
+        world.fake.windows.unplugged_after = Some("");
+        world.fake.commands = vec!["anything".to_string()];
+        assert_eq!(
+            analyze(&mut world.fake, "/dev/sda", false),
+            Ok(Err(Refusal::Battery))
+        );
+        assert_eq!(world.fake.commands, ["anything"]);
+        world.fake.windows.unplugged_after = None;
         // A refusal is an answer, and so is a disk in use.
         world.fake.windows.hiberfile = Some(b"hibr");
         assert_eq!(
