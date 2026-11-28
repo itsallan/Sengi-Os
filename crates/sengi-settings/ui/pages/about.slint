@@ -30,8 +30,13 @@ export component AboutPage inherits Page {
 
     // Tab can reach a button that is scrolled out of sight.
     function reveal-report() {
-        root.reveal-below-title(report.y, report.height);
+        root.reveal-below-title(report.y, report.height + Tokens.space-xl);
     }
+
+    // What became of the report makes its card taller, and its buttons
+    // would otherwise end up below the window.
+    private property <ReportState> report-state: AboutData.report-state;
+    changed report-state => { root.reveal-report(); }
 
     column := PageColumn {
         Card {

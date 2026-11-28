@@ -1106,6 +1106,61 @@ fn about_system_report() {
     }
 }
 
+/// Saving the report from the bottom of the page: what is added under it
+/// comes into view, buttons and all, as if one had scrolled down to it.
+#[test]
+fn about_system_report_stays_in_view() {
+    harness::install();
+    for state in [ReportState::Saved, ReportState::Failed] {
+        for (width, height) in SIZES {
+            // The page scrolled to its end, with the report idle or done
+            // before, and how it looks once the report is done.
+            let draw = |before: ReportState| {
+                let w = themed(SettingsWindow::new().unwrap());
+                w.set_pages(pages());
+                w.set_page("about".into());
+                about(&w);
+                let d = w.global::<AboutData>();
+                d.set_report_state(before);
+                d.set_report_file("sengi-os-report-2026-11-28.txt".into());
+                d.set_report_error("No space left on device (os error 28)".into());
+                w.show().unwrap();
+                let win = harness::window();
+                harness::resize(&win, width, height);
+                w.invoke_focus_sidebar();
+                harness::advance(300);
+                harness::draw(&win, BACKDROP);
+                for _ in 0..4 {
+                    harness::key(&win, &SharedString::from(Key::PageDown));
+                    harness::advance(300);
+                    harness::draw(&win, BACKDROP);
+                }
+                if before != state {
+                    for next in [ReportState::Saving, state] {
+                        d.set_report_state(next);
+                        harness::advance(300);
+                        harness::draw(&win, BACKDROP);
+                    }
+                }
+                harness::advance(300);
+                let picture = harness::draw(&win, BACKDROP);
+                w.hide().unwrap();
+                picture
+            };
+            let end = draw(state);
+            let saved = draw(ReportState::Idle);
+            for y in 0..end.height {
+                for x in 0..width as usize {
+                    assert!(
+                        saved.at(x, y) == end.at(x, y),
+                        "{width}x{height}: the end of the report card is out of view"
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// The About page is opened empty and filled a moment later, when the
 /// worker thread has read the system, and again when Measure again is
 /// pressed. However it got there, every row is where it should be.
