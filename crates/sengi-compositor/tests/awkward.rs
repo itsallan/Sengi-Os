@@ -329,6 +329,8 @@ fn the_lock_closes_an_open_menu() {
     let lock = locker.lock().unwrap();
     app.roundtrip().unwrap();
     assert!(held.dismissed.load(Ordering::Relaxed));
+    // It may unlock once it has been told the screen is covered.
+    assert!(locker.wait(SOON, |seen| seen.locked > 0));
     lock.unlock_and_destroy();
     locker.roundtrip().unwrap();
     held.destroy();
