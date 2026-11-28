@@ -18,13 +18,13 @@ use crate::secret::Secret;
 use crate::services::{Notify, Refusal, WifiService};
 use crate::wifi::{self, JoinError, Link, Network, Request, Security, Wifi};
 
-const SERVICE: &str = "net.connman.iwd";
+pub(crate) const SERVICE: &str = "net.connman.iwd";
 const ADAPTER: &str = "net.connman.iwd.Adapter";
-const DEVICE: &str = "net.connman.iwd.Device";
-const STATION: &str = "net.connman.iwd.Station";
-const NETWORK: &str = "net.connman.iwd.Network";
+pub(crate) const DEVICE: &str = "net.connman.iwd.Device";
+pub(crate) const STATION: &str = "net.connman.iwd.Station";
+pub(crate) const NETWORK: &str = "net.connman.iwd.Network";
 #[cfg(feature = "settings")]
-const KNOWN: &str = "net.connman.iwd.KnownNetwork";
+pub(crate) const KNOWN: &str = "net.connman.iwd.KnownNetwork";
 const AGENT_MANAGER: &str = "net.connman.iwd.AgentManager";
 const MANAGER_PATH: &str = "/net/connman/iwd";
 // One name for whichever program of the shell is asking: the panel and

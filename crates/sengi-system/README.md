@@ -43,8 +43,37 @@ The features add:
   Bluetooth devices one by one, searching, pairing with an agent,
   connecting and removing (`pairing`, the `DeviceService` trait); the
   audio outputs and inputs one by one and a watch for their changes
-  (`audio`, the `AudioDevices` trait). The panel is built without it and
-  carries none of that code.
+  (`audio`, the `AudioDevices` trait); the system report (`report`). The
+  panel is built without it and carries none of that code.
+
+## The system report
+
+`report::make()` writes one text file about this computer into the person's
+Documents folder, to attach to a problem report. It takes some seconds, so a
+window calls it from another thread. It opens no network connection, needs no
+privilege and leaves nothing running.
+
+It reads `/proc`, `/sys` and a few files under `/etc`, asks iwd and BlueZ (as
+everywhere, without starting them), and runs `wpctl status`, `systemctl`,
+`journalctl` and, if the journal is closed, `dmesg`. Each command has ten
+seconds and each section thirty; what is missing, refused or too slow is
+written in the file, with a list at the top. On Sengi OS no account is in the
+`systemd-journal` or `adm` group and Debian closes the kernel's buffer to
+ordinary users, so the journal and kernel messages are listed as refused.
+
+`report::redact` takes out of the whole text: the names of accounts and
+people, the computer's name, Wi-Fi network names iwd knows, Bluetooth names
+BlueZ and PipeWire know, paths into home folders and drive mount points, MAC
+and IP addresses, serial numbers, UUIDs and other long identifiers. Serial
+numbers and displays' EDID are not read from `/sys` in the first place.
+Messages of iwd or bluetoothd are left out of a log when that service could
+not be asked for its names. It cannot know a name that nothing lists and that
+stands in a message with nothing to mark it as one, which is why the file asks
+to be read before it is shared.
+
+    cargo test -p sengi-system --features settings -- --ignored --nocapture this_machine
+
+saves and prints the report of the machine it runs on.
 
 ## Services
 

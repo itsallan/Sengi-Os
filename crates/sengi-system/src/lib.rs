@@ -28,7 +28,8 @@
 //! on top of that and the panel does not: leaving and forgetting
 //! networks, the cabled interfaces and addresses ([`links`]), and the
 //! Bluetooth devices one by one with the agent for pairing ([`pairing`]),
-//! and the audio devices one by one ([`audio`]).
+//! and the audio devices one by one ([`audio`]), and the system report
+//! that Settings saves for a problem report ([`report`]).
 //!
 //! Nothing here starts a service that is not running: every call on the
 //! system bus carries the no-auto-start flag.
@@ -62,6 +63,8 @@ pub mod names;
 pub mod pairing;
 #[cfg(feature = "services")]
 pub mod programs;
+#[cfg(feature = "settings")]
+pub mod report;
 pub mod secret;
 #[cfg(feature = "services")]
 pub mod services;
