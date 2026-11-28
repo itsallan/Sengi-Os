@@ -200,6 +200,16 @@ the ISO:
       -drive file=out/sengi-os-1.0.0-amd64.iso,format=raw,if=virtio,readonly=on \
       -drive file=/tmp/sengi-disk.qcow2,format=qcow2,if=virtio
 
+## The dock
+
+Click an icon to start the app, or to bring its window to the front. Right-click
+an icon (two fingers on a touchpad) for its menu: Open, Keep in Dock or Remove
+from Dock, and Quit. The menu stays until you choose a row, click somewhere
+else or press Escape. A click outside the menu only closes it, except on
+another dock icon, which does what that icon does. Drag a kept icon left or
+right to move it, or up out of the dock to remove it. Right-clicking an app in
+the launcher offers Keep in Dock too.
+
 ## Keyboard
 
 | Keys | Action |

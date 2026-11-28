@@ -86,6 +86,36 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let region = surface.clone();
         app.on_input_region(move |rects| region.set_input_region(Some(rects)));
 
+        // A menu stays until something is chosen, Escape or a click
+        // elsewhere. Escape needs the keyboard. For the clicks an invisible
+        // surface covers the screen, with the dock moved above it.
+        app.on_menu({
+            let handle = handle.clone();
+            let dock = app.clone();
+            move |open| {
+                if open {
+                    handle.set_layer(Layer::Overlay);
+                    handle.set_keyboard(KeyboardMode::Exclusive);
+                    let dock = dock.clone();
+                    handle.catch_clicks(move || dock.dismiss_menu());
+                } else {
+                    handle.release_clicks();
+                    handle.set_keyboard(KeyboardMode::None);
+                    handle.set_layer(Layer::Top);
+                }
+            }
+        });
+        // The keyboard going elsewhere (the launcher, the lock screen)
+        // is the user going elsewhere.
+        surface.on_focus_changed({
+            let dock = app.clone();
+            move |focused| {
+                if !focused {
+                    dock.dismiss_menu();
+                }
+            }
+        });
+
         // The dock may be as wide as its output, less the gap it keeps from
         // the bottom edge on either side. The output is often not known
         // until the surface is on screen.

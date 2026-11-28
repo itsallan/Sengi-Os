@@ -352,7 +352,10 @@ export component Dock inherits Window {
     callback context-clicked(int);
     // A row of the menu was chosen. The program closes the menu.
     callback menu-chosen(int);
-    // The menu closed itself because the pointer left it.
+    // The menu closed itself: Escape, a click on the panel beside the
+    // tiles, or a drag beginning. Clicks outside the dock never reach this
+    // surface; the program hears of those some other way and closes the
+    // menu itself.
     callback menu-closed();
     // A pinned tile was dragged onto the place of another and let go: the
     // rows it left and arrived at.
@@ -389,15 +392,23 @@ export component Dock inherits Window {
     }
 
     // The rows of the menu, and the tile it belongs to, or -1 for no menu.
+    // It stays until a row is chosen, something else is clicked or Escape
+    // is pressed; where the pointer is does not matter.
     in property <[string]> menu-rows;
     in-out property <int> menu-index: -1;
+
+    function dismiss-menu() {
+        if root.menu-index >= 0 {
+            root.menu-index = -1;
+            root.menu-closed();
+        }
+    }
     // Where the menu is, for the program to open the surface to it.
     out property <length> menu-x: menu.x;
     out property <length> menu-y: menu.y;
     out property <length> menu-width: menu.width;
     out property <length> menu-height: menu.height;
-    // The gap between the menu and the panel, which is part of the menu's
-    // reach.
+    // The gap between the menu and the panel.
     out property <length> menu-gap: Tokens.space-xs;
 
     // The width one item takes, and the padding at each end of the panel:
@@ -409,8 +420,6 @@ export component Dock inherits Window {
     // which at most two are there at once.
     property <length> menu-space: Tokens.menu-row * 2 + Tokens.menu-padding * 2 + Tokens.space-xs;
     property <length> menu-centre;
-    property <bool> menu-near: menu.hovered || bridge.has-hover
-        || (root.hovered >= 0 && root.hovered == root.menu-index);
     property <int> hovered: -1;
     property <string> hovered-name;
     property <length> hovered-centre;
@@ -422,6 +431,21 @@ export component Dock inherits Window {
 
     changed physical-pixel => { root.rescaled(); }
 
+    // Keys arrive only while the program has asked for the keyboard, which
+    // it does for as long as the menu is open.
+    forward-focus: keys;
+    keys := FocusScope {
+        width: 0;
+        height: 0;
+        key-pressed(event) => {
+            if event.text == Key.Escape && root.menu-index >= 0 {
+                root.dismiss-menu();
+                return accept;
+            }
+            reject
+        }
+    }
+
     panel := Rectangle {
         x: (parent.width - self.width) / 2;
         y: parent.height - self.height;
@@ -431,6 +455,16 @@ export component Dock inherits Window {
         border-width: Tokens.border-width;
         border-color: Tokens.color-border;
         border-radius: Tokens.radius;
+
+        // A click between or beside the tiles closes the menu.
+        TouchArea {
+            clicked => { root.dismiss-menu(); }
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                    root.dismiss-menu();
+                }
+            }
+        }
 
         row := HorizontalLayout {
             // Taller than the panel by the height of the launch bounce, which
@@ -457,10 +491,7 @@ export component Dock inherits Window {
                     }
                 }
                 drag-begun => {
-                    if root.menu-index >= 0 {
-                        root.menu-index = -1;
-                        root.menu-closed();
-                    }
+                    root.dismiss-menu();
                     root.drag-from = index;
                     root.drop-index = index;
                     root.drag-changed(true);
@@ -496,36 +527,6 @@ export component Dock inherits Window {
         x: clamp(root.menu-centre - self.width / 2, 0, root.width - self.width);
         y: root.height - root.panel-height - Tokens.space-xs - self.height;
         chosen(row) => { root.menu-chosen(row); }
-    }
-
-    // The gap between the menu and the panel: crossing it is not leaving.
-    bridge := TouchArea {
-        x: menu.x;
-        y: menu.y + menu.height;
-        width: menu.width;
-        height: Tokens.space-xs;
-        enabled: root.menu-index >= 0;
-    }
-
-    // The menu goes when the pointer has been away from it and its tile for
-    // a moment.
-    close-timer := Timer {
-        interval: Tokens.motion-base;
-        running: false;
-        triggered => {
-            self.running = false;
-            if root.menu-index >= 0 && !root.menu-near {
-                root.menu-index = -1;
-                root.menu-closed();
-            }
-        }
-    }
-
-    changed menu-near => {
-        close-timer.running = root.menu-index >= 0 && !root.menu-near;
-    }
-    changed menu-index => {
-        close-timer.running = root.menu-index >= 0 && !root.menu-near;
     }
 
     if root.show-labels: NameLabel {

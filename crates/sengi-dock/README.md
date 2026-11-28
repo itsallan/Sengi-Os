@@ -41,10 +41,17 @@ Right-click a tile (not the search button) for a small menu above it:
   does not kill anything.
 
 Pinning and unpinning take effect at once. The menu is drawn inside the
-dock's own surface, in the room above the panel that the name label uses, so
-there is no second surface. The surface only takes the pointer over the panel
-and, while open, the menu. The menu closes when you choose a row, click a
-tile, right-click the same tile again, or move the pointer away from it.
+dock's own surface, in the room above the panel that the name label uses. The
+surface only takes the pointer over the panel and, while open, the menu.
+
+The menu stays until you choose a row, click anywhere else, or press Escape;
+moving the pointer away does not close it. While it is open the dock is on
+the overlay layer and holds the keyboard, for Escape, and an invisible
+surface on every output (`Handle::catch_clicks` in sengi-layer) hears the
+clicks elsewhere; such a click closes the menu and does nothing more. A click
+on another tile does what that tile does, and a right click on the same tile
+closes the menu. It also closes when something else takes the keyboard, such
+as the launcher or the lock screen.
 
 The launcher has the same two rows on its own right-click menu ("Keep in
 Dock", "Remove from Dock"). It writes `dock.toml` itself; the dock looks at

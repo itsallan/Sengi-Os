@@ -40,6 +40,7 @@ use wayland_client::protocol::{
 };
 use wayland_client::{Connection, Dispatch, QueueHandle};
 
+use crate::backdrop::Backdrop;
 use crate::config::{Anchor, Config, KeyboardMode, Layer, Outputs};
 use crate::convert::{
     is_modifier, is_special, is_typed_text, key_repeats, key_text, modifier_fixes, pointer_button,
@@ -93,6 +94,9 @@ pub(crate) struct Shared {
     pub text_hook: Option<TextHook>,
     /// Told when Caps Lock or the keyboard layout changes.
     pub keyboard_hook: Option<Box<dyn FnMut(Keyboard)>>,
+    /// The app wants to hear of clicks outside its surfaces.
+    pub backdrop: bool,
+    pub backdrop_hook: Option<Box<dyn FnMut()>>,
 }
 
 pub(crate) type TextHook = Box<dyn FnMut(&str) -> bool>;
@@ -276,6 +280,8 @@ pub(crate) struct State {
     keyboard_state: Keyboard,
     /// Alt or the logo key is held: what is typed is a shortcut, not text.
     chord: bool,
+    /// The click-catching surfaces, one for each output while wanted.
+    backdrops: Vec<Backdrop>,
 }
 
 impl From<Layer> for WlrLayer {
@@ -385,6 +391,7 @@ impl State {
             locking: None,
             keyboard_state: Keyboard::default(),
             chord: false,
+            backdrops: Vec::new(),
         }
     }
 
@@ -780,6 +787,66 @@ impl State {
                 }
             }
         }
+        drop(shared);
+        self.sync_backdrops();
+    }
+
+    /// Lays down or takes away the click-catching surfaces.
+    fn sync_backdrops(&mut self) {
+        if !(self.shown && self.shared.borrow().backdrop) {
+            self.backdrops.clear();
+            return;
+        }
+        let outputs: Vec<wl_output::WlOutput> = self.outputs.outputs().collect();
+        self.backdrops
+            .retain(|backdrop| outputs.contains(&backdrop.output));
+        for output in outputs {
+            if self.backdrops.iter().any(|held| held.output == output) {
+                continue;
+            }
+            let namespace = format!("{}-backdrop", self.shared.borrow().config.namespace);
+            self.backdrops.push(Backdrop::new(
+                &self.layer_shell,
+                &self.queue,
+                self.compositor.create_surface(&self.queue),
+                namespace,
+                output,
+            ));
+        }
+    }
+
+    fn backdrop_of(&mut self, surface: &wl_surface::WlSurface) -> Option<&mut Backdrop> {
+        self.backdrops
+            .iter_mut()
+            .find(|backdrop| backdrop.is(surface))
+    }
+
+    /// A pointer event on a click-catching surface.
+    fn backdrop_event(&mut self, connection: &Connection, event: &PointerEvent) {
+        if let PointerEventKind::Enter { .. } = event.kind {
+            if let Some(pointer) = &self.pointer {
+                let _ = pointer.set_cursor(connection, CursorIcon::Default);
+            }
+        }
+        let Some(backdrop) = self.backdrop_of(&event.surface) else {
+            return;
+        };
+        match event.kind {
+            PointerEventKind::Leave { .. } => backdrop.pressed = false,
+            PointerEventKind::Press { .. } => backdrop.pressed = true,
+            // A release alone is the end of a press made elsewhere.
+            PointerEventKind::Release { .. } if std::mem::take(&mut backdrop.pressed) => {
+                let Some(mut hook) = self.shared.borrow_mut().backdrop_hook.take() else {
+                    return;
+                };
+                hook();
+                let mut shared = self.shared.borrow_mut();
+                if shared.backdrop {
+                    shared.backdrop_hook.get_or_insert(hook);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Asks for the keyboard once the app wants key presses. A bar never
@@ -1138,6 +1205,12 @@ impl LayerShellHandler for State {
     // with it, and if it is still there the surface is put back, with a
     // longer wait each time the compositor closes it again.
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
+        if let Some(backdrop) = self.backdrop_of(layer.wl_surface()) {
+            // Its output is going. The entry stays until that is known, so
+            // that no other is made for the output meanwhile.
+            backdrop.close();
+            return;
+        }
         let Some(index) = self.index_of(layer.wl_surface()) else {
             return;
         };
@@ -1159,6 +1232,14 @@ impl LayerShellHandler for State {
         configure: LayerSurfaceConfigure,
         _: u32,
     ) {
+        if let Some(backdrop) = self
+            .backdrops
+            .iter_mut()
+            .find(|backdrop| backdrop.is(layer.wl_surface()))
+        {
+            backdrop.configure(&self.shm, configure.new_size);
+            return;
+        }
         let Some(index) = self.index_of(layer.wl_surface()) else {
             return;
         };
@@ -1284,6 +1365,7 @@ impl PointerHandler for State {
     ) {
         for event in events {
             let Some(index) = self.index_of(&event.surface) else {
+                self.backdrop_event(connection, event);
                 continue;
             };
             let position = LogicalPosition::new(event.position.0 as f32, event.position.1 as f32);

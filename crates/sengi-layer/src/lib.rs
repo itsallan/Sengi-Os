@@ -90,10 +90,13 @@
 //!   output, anchored to all four edges with size `(0, 0)`, drawing its box
 //!   in the middle and handling the click around it in its own UI. Closing
 //!   when the keyboard goes elsewhere is [`SurfaceHandle::on_focus_changed`].
+//!   A program that cannot grow its surface like that, such as the dock with
+//!   a menu open, uses [`Handle::catch_clicks`] instead.
 //! * Sizes can come from the component: read them in the build closure and
 //!   call [`SurfaceHandle::set_size`] on [`Context::surface`] before
 //!   returning. The surface is created after the closure returns.
 
+mod backdrop;
 mod backend;
 mod config;
 mod convert;
@@ -304,6 +307,8 @@ impl App {
             unlock: false,
             text_hook: None,
             keyboard_hook: None,
+            backdrop: false,
+            backdrop_hook: None,
         }));
         let handle = Handle {
             shared: shared.clone(),
@@ -591,6 +596,27 @@ impl Handle {
     /// False between [`Handle::hide`] and [`Handle::show`].
     pub fn is_visible(&self) -> bool {
         self.shared.borrow().visible
+    }
+
+    /// Lays an invisible surface over every output, on the top layer, and
+    /// calls `clicked` when a button is pressed and let go on it. A layer
+    /// surface is never told about clicks outside itself, so this is how
+    /// a menu hears that the user has clicked somewhere else: move the
+    /// app's surface to [`Layer::Overlay`], so that it stays above, and
+    /// call this.
+    ///
+    /// It never takes the keyboard. A second call replaces the hook.
+    pub fn catch_clicks(&self, clicked: impl FnMut() + 'static) {
+        let mut shared = self.shared.borrow_mut();
+        shared.backdrop = true;
+        shared.backdrop_hook = Some(Box::new(clicked));
+    }
+
+    /// Takes away what [`Handle::catch_clicks`] laid down.
+    pub fn release_clicks(&self) {
+        let mut shared = self.shared.borrow_mut();
+        shared.backdrop = false;
+        shared.backdrop_hook = None;
     }
 
     /// Ends the loop; [`run`] returns `Ok`. Under [`App::run_locked`] it

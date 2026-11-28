@@ -181,11 +181,14 @@ fn docks() {
     }
 }
 
-/// A right click on a tile opens the menu above it, and it goes when the
-/// pointer has left it.
+/// A right click on a tile opens the menu above it, and it stays wherever
+/// the pointer goes: on its rows, off it altogether. Escape and a click on
+/// the panel close it.
 fn dock_menu() {
     use slint::platform::{PointerEventButton, WindowEvent};
     use slint::LogicalPosition;
+    use std::cell::Cell;
+    use std::rc::Rc;
 
     let w = dock::themed(dock::Dock::new().unwrap());
     let tile = |name: &str, k: usize| dock::DockItem {
@@ -249,15 +252,86 @@ fn dock_menu() {
     let menu_x = (w.get_menu_x() + w.get_menu_width() / 2.0) as usize;
     assert_ne!(inside.at(menu_x, menu_y), BACKDROP, "the menu is drawn");
 
-    // Away from the menu and its tile it closes by itself.
+    // Moved as a hand moves it, a little at a time and not quite straight,
+    // from the tile up to each row, and left resting there.
+    let rows_top = height - w.get_panel_height() - w.get_menu_gap() - w.get_menu_height();
+    let row = w.get_menu_height() / 2.0;
+    let mut from = at;
+    for to_y in [rows_top + row * 1.5, rows_top + row * 0.5] {
+        let to = LogicalPosition::new(menu_x as f32, to_y);
+        for step in 1..=20 {
+            let t = step as f32 / 20.0;
+            let jitter = if step % 2 == 0 { 1.5 } else { -1.5 };
+            let position = LogicalPosition::new(
+                from.x + (to.x - from.x) * t + jitter,
+                from.y + (to.y - from.y) * t,
+            );
+            win.dispatch_event(WindowEvent::PointerMoved { position });
+            harness::advance(48);
+        }
+        harness::advance(1000);
+        assert_eq!(w.get_menu_index(), 2, "the menu stays under the pointer");
+        from = to;
+    }
+    // Off the menu, off its tile and off the surface altogether.
     let away = LogicalPosition::new(2.0, 2.0);
     win.dispatch_event(WindowEvent::PointerMoved { position: away });
-    harness::advance(600);
+    harness::advance(1000);
+    win.dispatch_event(WindowEvent::PointerExited);
+    harness::advance(1000);
     assert_eq!(
         w.get_menu_index(),
-        -1,
-        "the menu closes when the pointer leaves"
+        2,
+        "the menu stays when the pointer goes"
     );
+
+    // The right button held down on the tile and let go over a row.
+    let closed = Rc::new(Cell::new(0));
+    w.on_menu_closed({
+        let closed = closed.clone();
+        move || closed.set(closed.get() + 1)
+    });
+    w.set_menu_index(-1);
+    harness::advance(400);
+    win.dispatch_event(WindowEvent::PointerMoved { position: at });
+    win.dispatch_event(WindowEvent::PointerPressed {
+        position: at,
+        button: PointerEventButton::Right,
+    });
+    harness::advance(800);
+    win.dispatch_event(WindowEvent::PointerMoved { position: from });
+    harness::advance(800);
+    win.dispatch_event(WindowEvent::PointerReleased {
+        position: from,
+        button: PointerEventButton::Right,
+    });
+    harness::advance(800);
+    assert_eq!(w.get_menu_index(), 2, "the menu stays after a held button");
+
+    win.dispatch_event(WindowEvent::KeyPressed {
+        text: slint::platform::Key::Escape.into(),
+    });
+    assert_eq!(w.get_menu_index(), -1, "Escape closes the menu");
+    assert_eq!(closed.get(), 1, "and the program is told");
+
+    // A click on the panel beside the tiles.
+    w.invoke_context_clicked(2);
+    let beside = LogicalPosition::new(w.get_side_padding() / 2.0, y);
+    for button in [PointerEventButton::Left, PointerEventButton::Right] {
+        w.set_menu_index(2);
+        harness::advance(100);
+        win.dispatch_event(WindowEvent::PointerMoved { position: beside });
+        win.dispatch_event(WindowEvent::PointerPressed {
+            position: beside,
+            button,
+        });
+        win.dispatch_event(WindowEvent::PointerReleased {
+            position: beside,
+            button,
+        });
+        assert_eq!(w.get_menu_index(), -1, "a click beside the tiles closes it");
+    }
+    assert_eq!(closed.get(), 3);
     w.hide().unwrap();
 }
 

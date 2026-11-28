@@ -28,15 +28,13 @@ component MenuRow inherits Rectangle {
 
 export component DockMenu inherits SengiSurface {
     in property <[string]> rows;
-    // The pointer is on the menu.
-    out property <bool> hovered: area.has-hover;
     callback chosen(int);
 
     width: Tokens.menu-width / 2;
     height: root.rows.length * Tokens.menu-row + Tokens.menu-padding * 2;
 
     // Clicks between rows are not clicks on the dock behind.
-    area := TouchArea { }
+    TouchArea { }
 
     VerticalLayout {
         padding: Tokens.menu-padding;

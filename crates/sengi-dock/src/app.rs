@@ -54,6 +54,8 @@ enum IconState {
 
 type InputCallback = Box<dyn Fn(&[Rect])>;
 
+type MenuCallback = Box<dyn Fn(bool)>;
+
 /// How often the pinned list's file and the applications directories are
 /// looked at for changes made by another program. A stat call each.
 const WATCH_EVERY: Duration = Duration::from_secs(2);
@@ -118,6 +120,8 @@ struct Inner {
     on_resize: Box<dyn Fn(u32, u32)>,
     /// Told which parts of the surface take the pointer.
     on_input: RefCell<Option<InputCallback>>,
+    /// Told when a menu opens and when it goes.
+    on_menu: RefCell<Option<MenuCallback>>,
 }
 
 /// The running dock. Cloning gives another handle to the same dock.
@@ -242,6 +246,7 @@ impl App {
                 deliver,
                 on_resize: Box::new(on_resize),
                 on_input: RefCell::new(None),
+                on_menu: RefCell::new(None),
             }),
         };
 
@@ -421,6 +426,26 @@ impl App {
         self.apply_input();
     }
 
+    /// Sets who is told that a menu has opened (`true`) or gone (`false`).
+    /// While one is open the program has to get the dock the keyboard, for
+    /// Escape, and call [`App::dismiss_menu`] for a click anywhere else:
+    /// the surface hears of neither by itself. The menu stays until then,
+    /// or until a row is chosen.
+    pub fn on_menu(&self, f: impl Fn(bool) + 'static) {
+        *self.inner.on_menu.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Closes the open menu, if there is one.
+    pub fn dismiss_menu(&self) {
+        self.close_menu();
+    }
+
+    fn tell_menu(&self, open: bool) {
+        if let Some(f) = self.inner.on_menu.borrow().as_ref() {
+            f(open);
+        }
+    }
+
     fn apply_input(&self) {
         let guard = self.inner.on_input.borrow();
         let Some(f) = guard.as_ref() else { return };
@@ -442,7 +467,8 @@ impl App {
                 ui.get_menu_height().round() as i32,
             );
             let x = (ui.get_menu_x().round() as i32).clamp(0, (width - w).max(0));
-            rects.push(Rect::new(x, height - panel_height - gap - h, w, h + gap));
+            // Not the gap under it: a click there is a click elsewhere.
+            rects.push(Rect::new(x, height - panel_height - gap - h, w, h));
         }
         f(&rects);
     }
@@ -741,6 +767,7 @@ impl App {
                 self.show_rows(&rows);
                 self.inner.ui.set_menu_index(index);
                 self.apply_input();
+                self.tell_menu(true);
             }
             None => self.close_menu(),
         }
@@ -754,9 +781,12 @@ impl App {
     }
 
     fn close_menu(&self) {
-        self.inner.state.borrow_mut().menu = None;
+        let open = self.inner.state.borrow_mut().menu.take().is_some();
         self.inner.ui.set_menu_index(-1);
         self.apply_input();
+        if open {
+            self.tell_menu(false);
+        }
     }
 
     /// Keeps the menu on its tile when the rows move, and drops it when

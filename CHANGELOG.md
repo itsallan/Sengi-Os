@@ -36,6 +36,9 @@ and the measured idle RAM and boot time.
 
 ### Fixed
 
+- The dock's right-click menu stays until you choose a row, click somewhere
+  else or press Escape. It disappeared as soon as the pointer reached its rows,
+  so that Keep in Dock and Quit could hardly be chosen.
 - Battery: the bar reads it as quick settings and Settings do, so a mouse's
   or pen's battery and empty slots are left out, and a driver that gives no
   percentage, or 0 while its energy counters say otherwise, no longer shows as
