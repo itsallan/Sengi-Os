@@ -1,7 +1,10 @@
 // The About page: what this is and what it runs on.
 
 import { Tokens, SengiText, SengiLabel, SengiButton, SengiLogo } from "components.slint";
-import { InfoRow, InfoCard, Page, PageColumn, Card, SettingRow, RowValue, SectionLabel, Gap } from "../kit.slint";
+import { InfoRow, InfoCard, Page, PageColumn, Card, Divider, SettingRow, RowValue, SectionLabel, Gap, BusyBar } from "../kit.slint";
+
+// Where the system report the person asked for has got to.
+export enum ReportState { idle, saving, saved, failed }
 
 export global AboutData {
     in property <string> name: "Sengi OS";
@@ -9,13 +12,26 @@ export global AboutData {
     in property <[InfoRow]> system;
     in property <[InfoRow]> hardware;
     in property <string> memory-used;
+    in property <ReportState> report-state: ReportState.idle;
+    // Once saved, the name of the file in Documents. If it could not be
+    // saved, why.
+    in property <string> report-file;
+    in property <string> report-error;
 
     callback refresh();
+    callback save-report();
+    // Open the folder the report is in.
+    callback show-report();
 }
 
 export component AboutPage inherits Page {
     title: "About";
     content-height: column.preferred-height;
+
+    // Tab can reach a button that is scrolled out of sight.
+    function reveal-report() {
+        root.reveal-below-title(report.y, report.height);
+    }
 
     column := PageColumn {
         Card {
@@ -82,6 +98,79 @@ export component AboutPage inherits Page {
                         text: "Measure again";
                         quiet: true;
                         clicked => { AboutData.refresh(); }
+                    }
+                }
+            }
+        }
+
+        Gap { }
+
+        SectionLabel {
+            text: "Reporting a problem";
+        }
+
+        // The words above and the buttons under them, so that large text
+        // and a narrow window never squeeze one into the other.
+        report := Card {
+            SettingRow {
+                title: "System report";
+                detail: "A text file about this computer's hardware and recent errors. Names, addresses and serial numbers are hidden. It stays on this computer: nothing is sent.";
+            }
+
+            if AboutData.report-state != ReportState.idle: Divider { }
+
+            if AboutData.report-state == ReportState.saving: VerticalLayout {
+                SettingRow {
+                    title: "Saving the report\u{2026}";
+                    detail: "This can take a few seconds";
+                }
+
+                HorizontalLayout {
+                    padding-left: Tokens.space-md;
+                    padding-right: Tokens.space-md;
+                    padding-bottom: Tokens.space-md;
+
+                    BusyBar { }
+                }
+            }
+
+            if AboutData.report-state == ReportState.saved: SettingRow {
+                title: "Saved in your Documents folder";
+                detail: AboutData.report-file + ". Read it before you share it.";
+            }
+
+            if AboutData.report-state == ReportState.failed: SettingRow {
+                title: "The report was not saved";
+                detail: AboutData.report-error;
+                alert: true;
+            }
+
+            Divider { }
+
+            HorizontalLayout {
+                padding: Tokens.space-md;
+                spacing: Tokens.space-sm;
+                alignment: end;
+
+                if AboutData.report-state == ReportState.saved: SengiButton {
+                    text: "Show in Files";
+                    quiet: true;
+                    clicked => { AboutData.show-report(); }
+                    changed has-focus => {
+                        if self.has-focus {
+                            root.reveal-report();
+                        }
+                    }
+                }
+
+                SengiButton {
+                    text: AboutData.report-state == ReportState.saving ? "Saving\u{2026}" : "Save system report";
+                    enabled: AboutData.report-state != ReportState.saving;
+                    clicked => { AboutData.save-report(); }
+                    changed has-focus => {
+                        if self.has-focus {
+                            root.reveal-report();
+                        }
                     }
                 }
             }

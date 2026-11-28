@@ -2,16 +2,23 @@
 //! from files the kernel and the system keep: `/etc/os-release`, `/proc`
 //! and `/sys`. Their contents are shown, so they are cleaned like any
 //! other text from outside.
+//!
+//! The page also saves the system report, which sengi-system collects, on
+//! a thread of its own, and opens the folder it is in.
 
+use std::ffi::OsString;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::rc::Rc;
 
+use sengi_system::programs::find_program;
+use sengi_system::report;
 use slint::ComponentHandle;
 
 use crate::app::{self, App, Controller};
 use crate::text;
-use crate::ui::{AboutData, InfoRow};
+use crate::ui::{AboutData, InfoRow, ReportState};
 
 const MAX_FILE: u64 = 4 << 20;
 
@@ -233,13 +240,94 @@ fn row(title: &str, value: String) -> InfoRow {
     }
 }
 
+/// The command that opens `folder` in Files: through `sengi-run` where
+/// there is one, so that Files gets a scope of its own like every app
+/// started from the desktop.
+fn files_command(path: &str, folder: &Path) -> Vec<OsString> {
+    let mut command = Vec::new();
+    if find_program("sengi-run", path).is_some() {
+        command.push("sengi-run".into());
+    }
+    command.push("sengi-files".into());
+    command.push(folder.into());
+    command
+}
+
+/// Start Files on the folder the report was saved in.
+fn open_report_folder() -> std::io::Result<()> {
+    let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
+    let path = std::env::var("PATH").unwrap_or_default();
+    let command = files_command(&path, &report::folder(&home));
+    let mut child = Command::new(&command[0]).args(&command[1..]).spawn()?;
+    // Waited for, so that it does not stay behind as a dead process.
+    std::thread::Builder::new()
+        .name("settings-files".to_string())
+        .spawn(move || {
+            let _ = child.wait();
+        })?;
+    Ok(())
+}
+
+/// Put what became of saving the report on the page.
+fn report_saved(data: &AboutData, saved: Result<PathBuf, String>) {
+    match saved {
+        Ok(path) => {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            data.set_report_file(text::clean(&name, 64).into());
+            data.set_report_state(ReportState::Saved);
+        }
+        Err(why) => {
+            data.set_report_error(text::clean(&why, 200).into());
+            data.set_report_state(ReportState::Failed);
+        }
+    }
+}
+
 pub struct AboutPage;
 
 impl AboutPage {
     pub fn attach(app: &Rc<App>) -> Rc<AboutPage> {
         let data = app.window.global::<AboutData>();
         data.on_refresh(AboutPage::refresh);
+        let weak_app = Rc::downgrade(app);
+        data.on_save_report(move || {
+            if let Some(app) = weak_app.upgrade() {
+                AboutPage::save_report(&app);
+            }
+        });
+        let weak_app = Rc::downgrade(app);
+        data.on_show_report(move || {
+            let Some(app) = weak_app.upgrade() else {
+                return;
+            };
+            if let Err(error) = open_report_folder() {
+                eprintln!("sengi-settings: could not start Files: {error}");
+                app.tell(
+                    "Files did not open",
+                    "The report is in the Documents folder in your home folder.",
+                );
+            }
+        });
         Rc::new(AboutPage)
+    }
+
+    fn save_report(app: &Rc<App>) {
+        let data = app.window.global::<AboutData>();
+        if data.get_report_state() == ReportState::Saving {
+            return;
+        }
+        data.set_report_state(ReportState::Saving);
+        let spawned = std::thread::Builder::new()
+            .name("settings-report".to_string())
+            .spawn(|| {
+                let saved = report::make();
+                app::post(move |app| {
+                    report_saved(&app.window.global::<AboutData>(), saved);
+                });
+            });
+        if let Err(error) = spawned {
+            report_saved(&data, Err(error.to_string()));
+        }
     }
 
     fn refresh() {
@@ -294,6 +382,27 @@ ID=sengios
 ID_LIKE=debian
 HOME_URL='https://example.org/'
 ";
+
+    #[test]
+    fn files_is_asked_for_the_folder() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new();
+        let path = tmp.path().display().to_string();
+        let folder = Path::new("/home/ada/Documents");
+        // Without sengi-run, Files is started as it is.
+        assert_eq!(
+            files_command(&path, folder),
+            ["sengi-files", "/home/ada/Documents"].map(OsString::from)
+        );
+        tmp.write("sengi-run", "#!/bin/sh\n");
+        let runner = tmp.path().join("sengi-run");
+        fs::set_permissions(runner, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            files_command(&path, folder),
+            ["sengi-run", "sengi-files", "/home/ada/Documents"].map(OsString::from)
+        );
+    }
 
     #[test]
     fn the_name_and_version_come_from_os_release() {

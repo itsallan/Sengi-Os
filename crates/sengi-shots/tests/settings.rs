@@ -1,8 +1,12 @@
 //! Every Settings page, drawn at three window sizes with made-up data.
 //! SENGI_RENDER_DIR names where the pictures go.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use sengi_shots::harness::{self, Look, BACKDROP};
 use sengi_shots::settings::*;
+use slint::platform::Key;
 use slint::{
     ComponentHandle, Image, ModelRc, Rgb8Pixel, SharedPixelBuffer, SharedString, VecModel,
 };
@@ -1031,6 +1035,75 @@ fn about_is_laid_out(picture: &harness::Picture, width: usize, what: &str) {
         "{what}: the hardware card is {} px tall",
         bottom - top
     );
+}
+
+/// The system report on the About page, before it is asked for, while it
+/// is collected and after, drawn scrolled to the bottom; and its buttons
+/// reached and pressed with the keyboard alone, which also brings them into
+/// view.
+#[test]
+fn about_system_report() {
+    harness::install();
+    for (variant, state) in [
+        ("idle", ReportState::Idle),
+        ("saving", ReportState::Saving),
+        ("saved", ReportState::Saved),
+        ("failed", ReportState::Failed),
+    ] {
+        for (width, height) in SIZES {
+            let w = themed(SettingsWindow::new().unwrap());
+            w.set_pages(pages());
+            w.set_page("about".into());
+            about(&w);
+            let d = w.global::<AboutData>();
+            d.set_report_state(state);
+            d.set_report_file("sengi-os-report-2026-11-28.txt".into());
+            d.set_report_error("No space left on device (os error 28)".into());
+            let saves = Rc::new(Cell::new(0));
+            let shows = Rc::new(Cell::new(0));
+            let counted = saves.clone();
+            d.on_save_report(move || counted.set(counted.get() + 1));
+            let counted = shows.clone();
+            d.on_show_report(move || counted.set(counted.get() + 1));
+            w.show().unwrap();
+            let win = harness::window();
+            harness::resize(&win, width, height);
+            w.invoke_focus_sidebar();
+            harness::advance(300);
+            harness::draw(&win, BACKDROP);
+            for _ in 0..4 {
+                harness::key(&win, &SharedString::from(Key::PageDown));
+                harness::advance(300);
+                harness::draw(&win, BACKDROP);
+            }
+            harness::draw(&win, BACKDROP).save(&format!(
+                "settings-about-report-{variant}-{width}x{height}.png"
+            ));
+
+            // Back to the top, then down the page with Tab: Measure again
+            // comes first.
+            for _ in 0..4 {
+                harness::key(&win, &SharedString::from(Key::PageUp));
+                harness::advance(300);
+                harness::draw(&win, BACKDROP);
+            }
+            harness::key(&win, "\t");
+            harness::key(&win, "\t");
+            if state == ReportState::Saved {
+                harness::key(&win, "\n");
+                assert_eq!((shows.get(), saves.get()), (1, 0), "{variant} {width}");
+                harness::key(&win, "\t");
+            }
+            harness::advance(300);
+            harness::draw(&win, BACKDROP).save(&format!(
+                "settings-about-report-{variant}-focus-{width}x{height}.png"
+            ));
+            harness::key(&win, "\n");
+            let expected = i32::from(state != ReportState::Saving);
+            assert_eq!(saves.get(), expected, "{variant} {width}");
+            w.hide().unwrap();
+        }
+    }
 }
 
 /// The About page is opened empty and filled a moment later, when the

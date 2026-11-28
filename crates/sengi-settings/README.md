@@ -389,6 +389,13 @@ in use at this moment: `MemTotal` less `MemAvailable`, the figure the
 idle budget is measured in. It is measured when the page opens and when
 asked, not on a timer.
 
+Save system report writes a text file for a problem report into
+`~/Documents`, as `sengi-os-report-DATE.txt` (then `-2`, `-3`: a file is
+never written over), readable by its owner only. It is collected on a thread
+of its own by `sengi-system`'s `report` module, which says what is in it and
+what is taken out. Nothing is sent anywhere. Show in Files starts
+`sengi-files` on that folder.
+
 ## Building and testing
 
     cargo build -p sengi-settings

@@ -1243,6 +1243,12 @@ export component Page inherits Rectangle {
         scroll.reveal(top, height);
     }
 
+    // The same for a band counted from the top of the content below the
+    // title.
+    public function reveal-below-title(top: length, height: length) {
+        scroll.reveal(head.height + top, height);
+    }
+
     scroll := Scroll {
         content-height: root.content-height + head.height + Tokens.space-xl;
         nudged-down: Nudge.down;
