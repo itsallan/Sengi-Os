@@ -1614,7 +1614,7 @@ impl Run {
             }
         }
         self.listed_as_it_is();
-        self.try_the_front_window();
+        self.try_the_front_window(true);
     }
 
     /// The dock is told of every window there is, and of no other.
@@ -1641,7 +1641,11 @@ impl Run {
 
     /// A click on the window in front gives it the keyboard, and a key
     /// then reaches it.
-    fn try_the_front_window(&mut self) {
+    ///
+    /// A window that was asked to shrink is shown a second later if it has
+    /// not answered, over what was in front a moment ago: `again` says
+    /// whether another one may have come forward meanwhile.
+    fn try_the_front_window(&mut self, again: bool) {
         let Some(front) = self
             .view
             .windows
@@ -1682,6 +1686,13 @@ impl Run {
             let (clicked, typed) = (seen.more.button_serial != presses, seen.keys > keys);
             let report = self.compositor.control("inspect");
             self.note(format!("the click was at {px} {py}; {report}"));
+            self.look();
+            let now = self.view.windows.iter().rev().find(|window| window.mapped);
+            if again && now.is_some_and(|now| now.title != front.title) {
+                self.note("another window came forward".into());
+                self.try_the_front_window(false);
+                return;
+            }
             self.wrong(format!(
                 "{} in front does not answer: click {clicked}, key {typed}",
                 front.title

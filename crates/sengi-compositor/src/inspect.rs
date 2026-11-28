@@ -270,7 +270,13 @@ impl State {
         let outputs = self.output_rects();
         if !outputs.is_empty() {
             for window in &mapped {
-                if window::is_override(window) {
+                // While it is resized the window goes where the edge does;
+                // it is looked at again once let go of.
+                let resized = matches!(
+                    &self.drag,
+                    Some(Drag::Resize { window: of, .. }) if of == *window
+                );
+                if window::is_override(window) || resized {
                     continue;
                 }
                 let Some(frame) = self.frame_rect(window) else {
