@@ -64,8 +64,10 @@ written, and the session does not start it again. Delete the file, or run
 `image/rootfs/usr/lib/sengi-os/session-start.in` starts it at the end of the
 session start. A subshell waits 3 seconds, then, on the live image (kernel
 command line `boot=sengi`), runs `sengi-run sengi-welcome --live`, and on an
-installed system, when the file is missing, `nice -n 19 sengi-run sengi-welcome
---first-run`. The program checks the same things again. Nothing is resident
+installed system, when the file is missing, `sengi-run --background
+sengi-welcome --first-run`, which puts the welcome in `background.slice` so
+that it gives way to the desktop; what it opens runs in `app.slice` as any app
+does. The program checks the same things again. Nothing is resident
 before or after. The boot test fails if the live image does not ask, or has it
 running after the answer; the install test fails if an installed system asks.
 

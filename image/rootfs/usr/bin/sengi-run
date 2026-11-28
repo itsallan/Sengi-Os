@@ -1,7 +1,14 @@
 #!/bin/sh
 # Launch an app in its own scope under app.slice, so the compositor and the
 # shell keep CPU and I/O priority over it and oomd can act on it alone.
-[ $# -gt 0 ] || { echo "usage: sengi-run COMMAND [ARGS...]" >&2; exit 2; }
+# --background puts it under background.slice, which gives way to both. Unlike
+# a nice value, that is not passed on to what the program opens in turn.
+slice=app.slice
+if [ "${1:-}" = --background ]; then
+	slice=background.slice
+	shift
+fi
+[ $# -gt 0 ] || { echo "usage: sengi-run [--background] COMMAND [ARGS...]" >&2; exit 2; }
 name=$(basename "$1" | tr -c 'A-Za-z0-9\n' '_')
-exec systemd-run --user --quiet --collect --scope --slice=app.slice \
+exec systemd-run --user --quiet --collect --scope --slice="$slice" \
 	--unit="app-$name-$$" -- "$@"

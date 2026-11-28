@@ -35,6 +35,8 @@ jobs:
         run: scripts/test-compositor-sh.sh
       - name: Wallpaper start-up
         run: scripts/test-wallpaper-sh.sh
+      - name: Welcome start-up
+        run: scripts/test-welcome-sh.sh
       - name: Generated files are current
         run: scripts/render-tokens.sh --check
       - name: No one-off styles
