@@ -674,10 +674,10 @@ fi
 if grep -q SENGI-FAIL "$out"/serial-*.log; then
 	sed -n 's/.*SENGI-FAIL /FAIL: /p' "$out"/serial-*.log >&2
 	fail=1
+fi
 if [ -n "$menu_fail" ]; then
 	echo "FAIL: $menu_fail" >&2
 	fail=1
-fi
 fi
 root_node=/dev/vda3
 [ "$mode" = beside ] && root_node=/dev/vda5
