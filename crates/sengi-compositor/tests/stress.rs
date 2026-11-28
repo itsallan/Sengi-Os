@@ -336,6 +336,14 @@ impl View {
     }
 }
 
+/// Whether a line speaks of a window called `x` and a number.
+fn names_an_x_window(line: &str) -> bool {
+    line.split_whitespace().any(|word| {
+        word.strip_prefix('x')
+            .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+    })
+}
+
 fn numbers(text: &str) -> Vec<i32> {
     text.split(',').filter_map(|n| n.parse().ok()).collect()
 }
@@ -443,7 +451,7 @@ impl Run {
         self.compositor.input(step);
     }
 
-    fn look(&mut self) {
+    fn inspect(&mut self) {
         let report = self.compositor.control("inspect");
         if !report.starts_with("ok") {
             let log = self.compositor.said_all("");
@@ -451,6 +459,17 @@ impl Run {
             panic!("the compositor did not answer (`{report}`); it said: {tail:#?}");
         }
         self.view = parse(&report);
+    }
+
+    fn look(&mut self) {
+        self.inspect();
+        // An X11 program is heard on two connections, and for a moment one
+        // may be ahead of the other: a window smaller than what it has
+        // drawn, say. What is said about such a window has to stay so.
+        if self.view.broken.iter().any(|line| names_an_x_window(line)) {
+            sleep(Duration::from_millis(200));
+            self.inspect();
+        }
         for broken in std::mem::take(&mut self.view.broken) {
             self.wrong(broken);
         }
