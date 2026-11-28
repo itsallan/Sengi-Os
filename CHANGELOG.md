@@ -12,6 +12,9 @@ and the measured idle RAM and boot time.
   system's question about installing.
 - The live USB system asks, once per start, whether to install Sengi OS or try
   it first, and says that nothing is installed yet.
+- Settings, About: Save system report writes one text file in Documents about
+  the hardware and what failed, to attach to a problem report, with names,
+  addresses and serial numbers hidden. Nothing is sent anywhere.
 
 ### Fixed
 

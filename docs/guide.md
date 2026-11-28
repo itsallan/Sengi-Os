@@ -122,8 +122,10 @@ volume keys and quick settings change the output in use. Speakers, headphones,
 HDMI, USB and Bluetooth devices are meant to appear there on their own. "No
 sound device" means that the system found no output at all.
 
-If there is no sound, run these in a terminal and keep what they print. The
-last one asks for your password (on the live system it is `live`).
+If there is no sound, save a system report ([Reporting a
+problem](#reporting-a-problem)). The kernel's messages are not in it, so also
+run these in a terminal and keep what they print. The last one asks for your
+password (on the live system it is `live`).
 
 ```sh
 cat /proc/asound/cards
@@ -143,6 +145,31 @@ starts, press `e` on the first menu entry, add
 `linux`, and press Ctrl+X. To keep it on an installed system, put the same
 words between the quotes of `GRUB_CMDLINE_LINUX=""` in `/etc/default/grub`
 and run `sudo update-grub`.
+
+## Reporting a problem
+
+Open Settings, About and press Save system report. After some seconds a text
+file named `sengi-os-report-` and the date is in your Documents folder; Show in
+Files opens it there. An earlier report is never overwritten. Attach the file to
+your problem report and say what you did and what went wrong. Nothing is sent
+anywhere by Sengi OS. On the live system the file is in memory and gone at the
+next restart, so copy it to a USB stick first.
+
+The file holds the system and kernel versions, the processor, memory, disks,
+PCI and USB devices with their drivers, the state of sound, Wi-Fi, Bluetooth,
+graphics and the battery, and services that failed. User, computer, network and
+Bluetooth device names, personal file paths, network addresses, serial numbers
+and unique identifiers are replaced with markers such as `<user>` or `<mac>`.
+A program does this and it can miss things, so read the file before sharing it.
+
+Ordinary accounts may not read the kernel's messages or the system log, so these
+are missing, and the file says so at the top. If someone asks for them, run this
+in a terminal. Its output is not cleaned of names or addresses: read it, and
+remove what you do not want to share.
+
+```sh
+sudo journalctl -b -p warning > ~/Documents/messages.txt
+```
 
 ## Accessibility
 
