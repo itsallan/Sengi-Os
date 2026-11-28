@@ -344,7 +344,8 @@ impl State {
                     }
                 }
             }
-            (false, Some(location)) => {
+            // One that closed while hidden is not brought back.
+            (false, Some(location)) if self.minimised.contains(window) => {
                 data.minimised.set(None);
                 self.minimised.retain(|w| w != window);
                 // Asked to fill the screen while it was hidden: it comes

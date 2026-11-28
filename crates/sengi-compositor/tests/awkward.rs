@@ -252,6 +252,48 @@ fn handle(dock: &mut Client, handles: &Handles, title: &str) -> ZwlrForeignTople
         .unwrap_or_else(|| panic!("{title} is not listed"))
 }
 
+/// Sends the compositor a window that closes and, in the same turn of its
+/// loop, the dock's click on it.
+fn click_the_dock_on_a_window_as_it_closes(minimised: bool) {
+    let compositor = Compositor::start(None);
+    let mut other = a_program(&compositor);
+    let _other = window(&mut other, "other", RED);
+    let mut app = a_program(&compositor);
+    let closing = window(&mut app, "closing", GREEN);
+    let (mut dock, handles) = dock(&compositor);
+    let seat = dock.seat().unwrap();
+    let wanted = handle(&mut dock, &handles, "closing");
+    if minimised {
+        wanted.set_minimized();
+        dock.roundtrip().unwrap();
+    }
+    compositor.signal("STOP");
+    closing.toplevel.destroy();
+    closing.shell.destroy();
+    closing.surface.destroy();
+    app.queue.flush().unwrap();
+    wanted.activate(&seat);
+    dock.queue.flush().unwrap();
+    compositor.signal("CONT");
+    app.roundtrip().unwrap();
+    dock.roundtrip().unwrap();
+    sound(&compositor);
+    assert!(
+        types_into(&compositor, &mut other),
+        "the keyboard went with the window that closed"
+    );
+}
+
+#[test]
+fn a_click_in_the_dock_on_a_window_that_is_closing_changes_nothing() {
+    click_the_dock_on_a_window_as_it_closes(false);
+}
+
+#[test]
+fn a_click_in_the_dock_on_a_minimised_window_that_is_closing_changes_nothing() {
+    click_the_dock_on_a_window_as_it_closes(true);
+}
+
 impl Dispatch<XdgPositioner, ()> for Seen {
     fn event(
         _: &mut Self,

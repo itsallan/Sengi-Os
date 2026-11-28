@@ -39,6 +39,8 @@ and the measured idle RAM and boot time.
   the only screen goes away, as when its cable is pulled.
 - A program can no longer leave its window stuck to the pointer by asking for
   a move with the click that opened a menu.
+- Clicking a window in the dock just as it closes no longer leaves the
+  keyboard going nowhere.
 
 ## 1.0.0 - 2026-11-27
 

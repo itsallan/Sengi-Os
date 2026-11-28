@@ -824,8 +824,10 @@ impl State {
 
     /// Raises `window`, marks it active and gives it the keyboard.
     pub fn focus_window(&mut self, window: &Window) {
-        // A menu of an X11 toolkit is never focused by the compositor.
-        if window::is_override(window) {
+        // A menu of an X11 toolkit is never focused by the compositor. Nor
+        // is a window that is not on the desktop: the dock may still ask for
+        // one that closed a moment ago.
+        if window::is_override(window) || self.space.element_location(window).is_none() {
             return;
         }
         if let Some(old) = self.focus_stack.current().cloned() {
