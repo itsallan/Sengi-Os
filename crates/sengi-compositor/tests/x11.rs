@@ -1000,6 +1000,46 @@ fn an_x11_window_can_be_minimised() {
     );
 }
 
+/// The frame of the window called `title`: left, top, width, height.
+fn frame_of(compositor: &Compositor, title: &str) -> Option<[i32; 4]> {
+    let report = compositor.control("inspect");
+    let wanted = format!("window title={title} ");
+    let line = report.lines().find(|line| line.starts_with(&wanted))?;
+    let numbers: Vec<i32> = line
+        .split(' ')
+        .find_map(|pair| pair.strip_prefix("frame="))?
+        .split(',')
+        .filter_map(|n| n.parse().ok())
+        .collect();
+    numbers.try_into().ok()
+}
+
+#[test]
+fn the_left_edge_of_an_x11_window_is_the_one_that_moves_when_dragged() {
+    if !xwayland_installed("the_left_edge_of_an_x11_window_is_the_one_that_moves_when_dragged") {
+        return;
+    }
+    let compositor = Compositor::start(None);
+    let display = wait_for_display(&compositor);
+    let mut list = WindowList::connect(&compositor);
+    let mut x = XClient::connect(display);
+    x.window(400, 300, 200, X_GREEN, "edge", "SengiXTest");
+    assert!(list.lists("edge", "SengiXTest", SOON));
+    let [left, top, width, height] = frame_of(&compositor, "edge").expect("a frame");
+
+    compositor.input(&format!("move {left} {}", top + height / 2));
+    compositor.input("press left");
+    compositor.input(&format!("move {} {}", left - 100, top + height / 2));
+    compositor.input("release left");
+
+    let moved = [left - 100, top, width + 100, height];
+    let end = Instant::now() + SOON;
+    while Instant::now() < end && frame_of(&compositor, "edge") != Some(moved) {
+        x.pump(Duration::from_millis(50));
+    }
+    assert_eq!(frame_of(&compositor, "edge"), Some(moved));
+}
+
 #[test]
 fn nothing_of_the_x11_session_shows_or_hears_while_the_session_is_locked() {
     if !xwayland_installed("nothing_of_the_x11_session_shows_or_hears_while_the_session_is_locked")

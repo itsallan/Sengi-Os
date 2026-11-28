@@ -87,6 +87,8 @@ impl CompositorHandler for State {
                 // commit, and a focus that waited for it is given now.
                 if window::is_x11(&window) {
                     self.update_keyboard_focus();
+                    // What `toplevel_commit` does for the others.
+                    self.apply_resize_anchor(&window);
                     self.keep_in_reach(&window);
                 }
             }

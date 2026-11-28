@@ -53,6 +53,8 @@ and the measured idle RAM and boot time.
   place afterwards, not with its title bar above the screen.
 - A window that makes itself smaller while it hangs over the edge of the
   screen no longer disappears off it.
+- Dragging the left or top edge of an X11 program's window moves that edge, not
+  the one opposite.
 
 ## 1.0.0 - 2026-11-27
 
