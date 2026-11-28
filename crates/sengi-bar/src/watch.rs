@@ -29,12 +29,44 @@ pub struct Readers<V, W, T> {
     pub toggle_mute: T,
 }
 
+/// While there is no volume to show at the start, how long to wait before
+/// each further look. PipeWire and WirePlumber come up with the session,
+/// often after the bar has first asked, and nothing announces them. These
+/// are some fourteen seconds in all; after them a machine with no sound
+/// device is asked only every full reading.
+const SETTLE: [Duration; 9] = [
+    Duration::from_millis(250),
+    Duration::from_millis(500),
+    Duration::from_millis(500),
+    Duration::from_secs(1),
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(2),
+    Duration::from_secs(3),
+    Duration::from_secs(4),
+];
+
 /// Reads everything every `interval`, and the volume whenever asked, and
 /// gives `send` each reading that differs from the one before. Returns
 /// when `send` refuses one or nobody is left to ask.
 pub fn run<V, W, T>(
     asks: &Receiver<Ask>,
     interval: Duration,
+    machine: &Readers<V, W, T>,
+    send: impl FnMut(Slow) -> bool,
+) where
+    V: Fn() -> Option<Volume>,
+    W: Fn() -> Option<String>,
+    T: Fn(),
+{
+    run_settling(asks, interval, &SETTLE, machine, send);
+}
+
+/// [`run`] with the waits of [`SETTLE`] given.
+fn run_settling<V, W, T>(
+    asks: &Receiver<Ask>,
+    interval: Duration,
+    settle: &[Duration],
     machine: &Readers<V, W, T>,
     mut send: impl FnMut(Slow) -> bool,
 ) where
@@ -51,9 +83,15 @@ pub fn run<V, W, T>(
     }
     // Being asked for the volume must not put the full reading off.
     let mut due = Instant::now() + interval;
+    let mut waits = settle.iter();
+    let mut soon = match last.volume {
+        None => waits.next().map(|&wait| Instant::now() + wait),
+        Some(_) => None,
+    };
     loop {
         let mut slow = last.clone();
-        match asks.recv_timeout(due.saturating_duration_since(Instant::now())) {
+        let wake = soon.map_or(due, |soon| soon.min(due));
+        match asks.recv_timeout(wake.saturating_duration_since(Instant::now())) {
             Ok(first) => {
                 // A held key asks many times over: one reading answers all
                 // that is waiting.
@@ -71,6 +109,17 @@ pub fn run<V, W, T>(
             due = Instant::now() + interval;
         }
         slow.volume = (machine.volume)();
+        // The first volume ends the settling for good.
+        soon = match soon {
+            Some(at) if slow.volume.is_none() => {
+                if Instant::now() >= at {
+                    waits.next().map(|&wait| Instant::now() + wait)
+                } else {
+                    Some(at)
+                }
+            }
+            _ => None,
+        };
         if slow != last {
             if !send(slow.clone()) {
                 return;
@@ -177,6 +226,57 @@ mod tests {
             thread::sleep(Duration::from_millis(20));
         }
         assert!(machine.wifi_reads.load(Ordering::SeqCst) >= 3);
+    }
+
+    /// At login the bar can ask before PipeWire has a device: nothing
+    /// announces its arrival, and the volume must not wait for the next
+    /// full reading.
+    #[test]
+    fn sound_that_comes_up_late_is_shown_soon() {
+        let (_ask, asks) = mpsc::channel();
+        let (send, readings) = mpsc::channel();
+        let reads = Arc::new(AtomicU32::new(0));
+        let counted = reads.clone();
+        thread::spawn(move || {
+            let readers = Readers {
+                volume: || {
+                    (counted.fetch_add(1, Ordering::SeqCst) >= 3).then_some(Volume {
+                        percent: 40,
+                        muted: false,
+                    })
+                },
+                wifi_name: || None,
+                toggle_mute: || {},
+            };
+            run(&asks, NEVER, &readers, |slow| send.send(slow).is_ok());
+        });
+        let first: Slow = readings.recv_timeout(SOON).unwrap();
+        assert_eq!(first.volume, None);
+        assert_eq!(percent(readings.recv_timeout(SOON).unwrap()), 40);
+        // Once there is a volume, the asking stops.
+        thread::sleep(SOON);
+        assert_eq!(reads.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn a_machine_with_no_sound_is_not_asked_for_ever() {
+        let (_ask, asks) = mpsc::channel();
+        let reads = Arc::new(AtomicU32::new(0));
+        let counted = reads.clone();
+        thread::spawn(move || {
+            let readers = Readers {
+                volume: || {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    None
+                },
+                wifi_name: || None,
+                toggle_mute: || {},
+            };
+            let waits = [Duration::from_millis(10); 3];
+            run_settling(&asks, NEVER, &waits, &readers, |_| true);
+        });
+        thread::sleep(Duration::from_millis(500));
+        assert_eq!(reads.load(Ordering::SeqCst), 4);
     }
 
     #[test]

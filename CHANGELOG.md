@@ -88,6 +88,8 @@ and the measured idle RAM and boot time.
 - Settings: the list of pages scrolls where the window is too short for all of
   it, as at 800x600, so Accessibility and About can be reached, and the
   keyboard brings the page it is on into view.
+- The volume appears in the bar as soon as sound is ready after logging in,
+  not up to 15 seconds later.
 
 ## 1.0.0 - 2026-11-27
 
