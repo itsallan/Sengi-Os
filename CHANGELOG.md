@@ -43,6 +43,9 @@ and the measured idle RAM and boot time.
   keyboard going nowhere.
 - A window that is restored without being chosen, as X11 programs can do,
   comes back in front and Alt+Tab finds it.
+- A window restored, or leaving fullscreen, after its screen was unplugged
+  comes back where it can be reached, and a fullscreen window is no longer
+  pushed down when the bar or the screens change.
 
 ## 1.0.0 - 2026-11-27
 

@@ -312,6 +312,71 @@ fn a_window_the_dock_restores_comes_back_in_front() {
     assert!(types_into(&compositor, &mut app));
 }
 
+#[test]
+fn a_minimised_window_comes_back_onto_a_screen_that_is_there() {
+    let compositor = Compositor::start_args(&["--outputs", "1280x720,800x600"], None);
+    let mut app = a_program(&compositor);
+    let _window = window(&mut app, "wanderer", GREEN);
+    // To the second screen by its title bar, then out of sight.
+    let frame = numbers(&window_line(&compositor, "wanderer"), "frame");
+    let (x, y) = (frame[0] + frame[2] / 2, frame[1] + 12);
+    compositor.input(&format!("move {x} {y}"));
+    compositor.input("press left");
+    compositor.input("move 1700 300");
+    compositor.input("release left");
+    assert!(numbers(&window_line(&compositor, "wanderer"), "frame")[0] >= 1280);
+    let (mut dock, handles) = dock(&compositor);
+    let seat = dock.seat().unwrap();
+    let wanted = handle(&mut dock, &handles, "wanderer");
+    wanted.set_minimized();
+    dock.roundtrip().unwrap();
+    compositor.unplug("HEADLESS-2");
+    wanted.activate(&seat);
+    dock.roundtrip().unwrap();
+    let frame = numbers(&window_line(&compositor, "wanderer"), "frame");
+    assert!(frame[0] + frame[2] <= 1280, "it came back at {frame:?}");
+    sound(&compositor);
+}
+
+#[test]
+fn a_window_leaving_fullscreen_after_its_screen_went_is_within_reach() {
+    let compositor = Compositor::start_args(&["--outputs", "1280x720,800x600"], None);
+    let mut app = a_program(&compositor);
+    let shown = window(&mut app, "film", GREEN);
+    let frame = numbers(&window_line(&compositor, "film"), "frame");
+    let (x, y) = (frame[0] + frame[2] / 2, frame[1] + 12);
+    compositor.input(&format!("move {x} {y}"));
+    compositor.input("press left");
+    compositor.input("move 1700 300");
+    compositor.input("release left");
+    shown.toplevel.set_fullscreen(None);
+    app.roundtrip().unwrap();
+    compositor.unplug("HEADLESS-2");
+    shown.toplevel.unset_fullscreen();
+    app.roundtrip().unwrap();
+    let frame = numbers(&window_line(&compositor, "film"), "frame");
+    assert!(frame[0] + frame[2] <= 1280, "it is at {frame:?}");
+    sound(&compositor);
+}
+
+#[test]
+fn a_window_that_fills_the_screen_stays_there_when_a_bar_appears() {
+    let compositor = Compositor::start(None);
+    let mut app = a_program(&compositor);
+    let shown = window(&mut app, "film", GREEN);
+    shown.toplevel.set_fullscreen(None);
+    app.roundtrip().unwrap();
+    app.paint(&shown.surface, 1280, 720, GREEN).unwrap();
+    let mut bar = compositor.connect();
+    let _bar = bar.bar(28, RED).unwrap();
+    let client = numbers(&window_line(&compositor, "film"), "client");
+    assert_eq!(client, [0, 0, 1280, 720]);
+    // The same when the screens change.
+    compositor.plug("800x600");
+    let client = numbers(&window_line(&compositor, "film"), "client");
+    assert_eq!(client, [0, 0, 1280, 720]);
+}
+
 impl Dispatch<XdgPositioner, ()> for Seen {
     fn event(
         _: &mut Self,

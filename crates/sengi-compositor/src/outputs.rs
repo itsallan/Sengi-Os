@@ -909,20 +909,25 @@ impl State {
     pub fn refit_fullscreen(&mut self) {
         let windows: Vec<Window> = self.space.elements().cloned().collect();
         for window in windows {
-            if window::data(&window).fullscreen.get().is_none() {
-                continue;
-            }
-            let asked = window::data(&window)
-                .fullscreen_on
-                .borrow()
-                .clone()
-                .filter(|output| self.head(output).is_some_and(|head| head.enabled));
-            let Some(screen) = self.fullscreen_rect(&window, asked) else {
-                continue;
-            };
-            window::request_size(&window, (screen.w, screen.h), false);
-            self.move_window(&window, screen.x, screen.y);
+            self.refit_fullscreen_window(&window);
         }
+    }
+
+    /// Sizes `window` to its screen again, if it fills one.
+    pub fn refit_fullscreen_window(&mut self, window: &Window) {
+        if window::data(window).fullscreen.get().is_none() {
+            return;
+        }
+        let asked = window::data(window)
+            .fullscreen_on
+            .borrow()
+            .clone()
+            .filter(|output| self.head(output).is_some_and(|head| head.enabled));
+        let Some(screen) = self.fullscreen_rect(window, asked) else {
+            return;
+        };
+        window::request_size(window, (screen.w, screen.h), false);
+        self.move_window(window, screen.x, screen.y);
     }
 }
 

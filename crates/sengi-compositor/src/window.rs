@@ -28,7 +28,7 @@ use crate::{
     frame::{self, Edges},
     input::Drag,
     keys::Edge,
-    layout::Rect,
+    layout::{self, Rect},
     outputs::scale_key,
     snap::Snap,
     state::{set_activated, State},
@@ -358,6 +358,13 @@ impl State {
                     location
                 };
                 self.space.map_element(window.clone(), location, true);
+                // The screens, the bar or the dock may have changed while it
+                // was away.
+                if data.fullscreen.get().is_some() {
+                    self.refit_fullscreen_window(window);
+                } else {
+                    self.bring_back(window);
+                }
                 // Back on the desktop it is the one in front, whoever asked
                 // for it: every window there has its place in the focus
                 // order.
@@ -649,6 +656,8 @@ impl State {
                 }
                 if let (true, Some(rect)) = (mapped, restore) {
                     self.move_window(window, rect.x, rect.y);
+                    // Its screen, the bar or the dock may have changed.
+                    self.bring_back(window);
                 }
             }
             // Already as asked; still owed an answer once it can have one.
@@ -798,14 +807,47 @@ impl State {
     pub fn usable_area_changed(&mut self) {
         let windows: Vec<Window> = self.space.elements().cloned().collect();
         for window in windows {
-            if data(&window).restore.get().is_some() {
-                let target = self.maximised_rect(&window);
-                data(&window).resize_anchor.set(None);
-                request_size(&window, (target.w, target.h), false);
-                self.move_window(&window, target.x, target.y);
-            } else if let Some(frame) = self.frame_rect(&window) {
-                self.move_frame_to(&window, frame.x, frame.y);
+            self.fit_window(&window);
+        }
+    }
+
+    /// Puts a window that shows again where it can be used: one whose
+    /// place is on no screen any more comes wholly onto one that is there.
+    fn bring_back(&mut self, window: &Window) {
+        let screens = self.output_rects();
+        if let Some(frame) = self.frame_rect(window) {
+            let bar = self.theme.metrics.titlebar;
+            let lost = !screens.iter().any(|screen| {
+                frame.x < screen.right()
+                    && screen.x < frame.right()
+                    && frame.y < screen.bottom()
+                    && screen.y < frame.y.saturating_add(bar)
+            });
+            let usable = self.usable_area_near(frame);
+            if let Some((x, y)) = lost
+                .then(|| layout::rehome(frame, &screens, usable))
+                .flatten()
+            {
+                self.move_frame_to(window, x, y);
             }
+        }
+        self.fit_window(window);
+    }
+
+    /// Gives a maximised window the usable area as it is now, and pulls any
+    /// other back within reach. One that fills its screen is left where it
+    /// is: the bar and the dock are under it.
+    fn fit_window(&mut self, window: &Window) {
+        if data(window).fullscreen.get().is_some() {
+            return;
+        }
+        if data(window).restore.get().is_some() {
+            let target = self.maximised_rect(window);
+            data(window).resize_anchor.set(None);
+            request_size(window, (target.w, target.h), false);
+            self.move_window(window, target.x, target.y);
+        } else if let Some(frame) = self.frame_rect(window) {
+            self.move_frame_to(window, frame.x, frame.y);
         }
     }
 
