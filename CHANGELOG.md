@@ -55,6 +55,7 @@ and the measured idle RAM and boot time.
   screen no longer disappears off it.
 - Dragging the left or top edge of an X11 program's window moves that edge, not
   the one opposite.
+- Windows are fitted to a screen that is plugged in after the last one went.
 
 ## 1.0.0 - 2026-11-27
 

@@ -487,6 +487,12 @@ impl State {
         self.refresh_painters();
         self.scales_dirty = true;
         self.output_management_changed();
+        if enabled {
+            // Windows left from before the last screen went are brought
+            // onto this one, and sized for it.
+            self.refit_fullscreen();
+            self.usable_area_changed();
+        }
         output
     }
 

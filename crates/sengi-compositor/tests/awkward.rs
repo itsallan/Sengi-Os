@@ -520,6 +520,23 @@ fn a_window_that_shrinks_while_over_the_edge_stays_within_reach() {
 }
 
 #[test]
+fn a_window_that_fills_the_screen_is_sized_for_the_next_one_plugged_in() {
+    let compositor = Compositor::start(None);
+    let mut app = a_program(&compositor);
+    let shown = window(&mut app, "film", GREEN);
+    shown.toplevel.set_fullscreen(None);
+    app.roundtrip().unwrap();
+    compositor.unplug("HEADLESS-1");
+    compositor.plug("800x600");
+    assert!(
+        app.wait(SOON, |seen| seen.more.toplevel == Some((800, 600, true))),
+        "it was told {:?}",
+        app.seen.more.toplevel
+    );
+    sound(&compositor);
+}
+
+#[test]
 fn a_window_that_fills_the_screen_stays_there_when_a_bar_appears() {
     let compositor = Compositor::start(None);
     let mut app = a_program(&compositor);
