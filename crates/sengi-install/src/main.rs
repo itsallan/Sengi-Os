@@ -17,30 +17,35 @@ use std::process::{Command, ExitCode, Stdio};
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 
-use sengi_install::install::{self, Paths};
+use sengi_install::install::{self, Paths, System};
 use sengi_install::names::{self, MAX_PASSWORD_BYTES};
 use sengi_install::plan::Plan;
 use sengi_install::progress::Event;
 use sengi_install::real::{Real, INTERRUPTED};
-use sengi_install::{beside, disks, LOCK, LOG, PROGRESS, REQUEST, TARGET, UNIT};
+use sengi_install::{beside, disks, ANALYZE_LOG, LOCK, LOG, PROGRESS, REQUEST, TARGET, UNIT};
 use sengi_system::secret::{self, Secret};
 
 const USAGE: &str = "\
 usage: sengi-install start
        sengi-install run [--plan FILE]
        sengi-install disks
+       sengi-install analyze DISK
        sengi-install --help | --version
 
 start   Install Sengi OS as the plan says: erase a disk and take it, or
         add one partition in free space beside another system and
-        change nothing else. Runs in a service of its own (sengi-install.service) that goes on whatever
-        becomes of whoever started it. Returns as soon as it is started.
+        change nothing else, making its Windows partition smaller first
+        where the plan says to. Runs in a service of its own
+        (sengi-install.service) that goes on whatever becomes of whoever
+        started it. Returns as soon as it is started.
         Follow it in /run/sengi-install/progress.
 run     The same, here and now, until it is done.
 disks   List the disks of this machine and whether each can be installed
         on, and whether beside what is on it.
+analyze Look at the Windows partition of DISK and say whether, and how
+        far, it could be made smaller. Writes nothing.
 
-start and run need root. For both, the first line of standard input is
+start, run and analyze need root. For both, the first line of standard input is
 the password of the account to create, and the plan follows it; run can
 read the plan from FILE instead.
 ";
@@ -245,6 +250,81 @@ fn run_request(path: &Path) -> ExitCode {
     }
 }
 
+/// What systemd-run is told, before the program it is to run.
+fn service_arguments(shrinks: bool) -> Vec<String> {
+    let mut arguments = vec![
+        format!("--unit={UNIT}"),
+        "--quiet".to_string(),
+        "--collect".to_string(),
+        "--no-block".to_string(),
+        "--description=Install Sengi OS".to_string(),
+        "--slice=system.slice".to_string(),
+        "--property=ManagedOOMPreference=omit".to_string(),
+    ];
+    if shrinks {
+        // A resize that is cut short can destroy what it was resizing. The
+        // service cannot be stopped by hand, is never killed for taking
+        // too long to stop, and is the last the kernel would pick if
+        // memory ran out.
+        arguments.extend(
+            [
+                "--property=RefuseManualStop=yes",
+                "--property=TimeoutStopSec=infinity",
+                "--property=OOMScoreAdjust=-1000",
+            ]
+            .map(String::from),
+        );
+    } else {
+        arguments.push("--property=TimeoutStopSec=120".to_string());
+    }
+    arguments.extend(
+        [
+            "--",
+            "systemd-inhibit",
+            // Sleep, the idle action and shutting down, and the lid and
+            // the keys that would ask for them.
+            "--what=sleep:idle:shutdown:handle-power-key:handle-suspend-key:handle-hibernate-key:handle-lid-switch",
+            "--who=Sengi OS installer",
+            "--why=Sengi OS is being installed",
+            "--mode=block",
+        ]
+        .map(String::from),
+    );
+    arguments
+}
+
+/// `analyze`: look at the Windows partition of a disk, writing nothing.
+fn analyze(device: &str) -> ExitCode {
+    if let Some(refused) = needs_root() {
+        return refused;
+    }
+    // Not while an installation runs, and no installation while it looks.
+    let _lock = match lock() {
+        Ok(lock) => lock,
+        Err(problem) => {
+            eprintln!("sengi-install: {problem}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut system = Real::new(Path::new(ANALYZE_LOG));
+    let answer = install::analyze(&mut system, device, false);
+    let (said, line) = match &answer {
+        Ok(Ok(analysis)) => (analysis.render(), "analyzed ok".to_string()),
+        Ok(Err(refusal)) => {
+            let line = format!("refused {}", refusal.code());
+            (format!("{line}\n"), format!("analyzed {line}"))
+        }
+        Err(why) => {
+            eprintln!("sengi-install: {why}");
+            system.log(&format!("analyzed failed {why}"));
+            return ExitCode::FAILURE;
+        }
+    };
+    system.log(&line);
+    print!("{said}");
+    ExitCode::SUCCESS
+}
+
 /// `start`: hand the installation to a service of its own.
 ///
 /// The service is a transient unit under the system's slice. It is no
@@ -282,9 +362,14 @@ fn start() -> ExitCode {
         Ok(text) => text,
         Err(problem) => return fail(problem),
     };
-    if let Err(problem) = Plan::parse(&text) {
-        return fail(problem);
-    }
+    let plan = match Plan::parse(&text) {
+        Ok(plan) => plan,
+        Err(problem) => return fail(problem),
+    };
+    let shrinks = plan
+        .beside
+        .as_ref()
+        .is_some_and(|beside| beside.shrink.is_some());
     if let Err(problem) = names::password(password.expose()) {
         return fail(problem);
     }
@@ -323,22 +408,7 @@ fn start() -> ExitCode {
     let program =
         std::env::current_exe().unwrap_or_else(|_| PathBuf::from("/usr/bin/sengi-install"));
     let started = Command::new("systemd-run")
-        .arg(format!("--unit={UNIT}"))
-        .args([
-            "--quiet",
-            "--collect",
-            "--no-block",
-            "--description=Install Sengi OS",
-            "--slice=system.slice",
-            "--property=ManagedOOMPreference=omit",
-            "--property=TimeoutStopSec=120",
-            "--",
-            "systemd-inhibit",
-            "--what=sleep:idle:shutdown",
-            "--who=Sengi OS installer",
-            "--why=Sengi OS is being installed",
-            "--mode=block",
-        ])
+        .args(service_arguments(shrinks))
         .arg(&program)
         .args(["run", "--request", REQUEST])
         .stdin(Stdio::null())
@@ -393,6 +463,12 @@ fn list_disks() -> ExitCode {
                     ),
                     Err(why) => println!("    Not beside what is on it: {}", why.words()),
                 }
+                if let Some(part) = beside::squeeze(&disk, uefi) {
+                    println!(
+                        "    /dev/{} may be made smaller to make room: see sengi-install analyze {}",
+                        part.name, disk.path
+                    );
+                }
             }
         }
     }
@@ -416,6 +492,7 @@ fn main() -> ExitCode {
         ["run", "--plan", file] => run(Some(PathBuf::from(file))),
         ["run", "--request", file] => run_request(Path::new(file)),
         ["disks"] => list_disks(),
+        ["analyze", disk] => analyze(disk),
         ["--help" | "-h"] => {
             print!("{USAGE}");
             ExitCode::SUCCESS
@@ -428,5 +505,51 @@ fn main() -> ExitCode {
             eprint!("{USAGE}");
             ExitCode::from(2)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_service_holds_off_sleep_shutdown_and_the_lid() {
+        for shrinks in [false, true] {
+            let arguments = service_arguments(shrinks);
+            let what = arguments
+                .iter()
+                .find_map(|argument| argument.strip_prefix("--what="))
+                .unwrap();
+            for held in [
+                "sleep",
+                "idle",
+                "shutdown",
+                "handle-power-key",
+                "handle-suspend-key",
+                "handle-hibernate-key",
+                "handle-lid-switch",
+            ] {
+                assert!(what.split(':').any(|one| one == held), "{held}");
+            }
+            // The program comes right after what systemd-inhibit is told.
+            assert_eq!(arguments.last().map(String::as_str), Some("--mode=block"));
+        }
+    }
+
+    #[test]
+    fn a_service_that_resizes_cannot_be_stopped_or_timed_out() {
+        let has = |shrinks: bool, argument: &str| {
+            service_arguments(shrinks).contains(&argument.to_string())
+        };
+        for argument in [
+            "--property=RefuseManualStop=yes",
+            "--property=TimeoutStopSec=infinity",
+            "--property=OOMScoreAdjust=-1000",
+        ] {
+            assert!(has(true, argument), "{argument}");
+            assert!(!has(false, argument), "{argument}");
+        }
+        assert!(has(false, "--property=TimeoutStopSec=120"));
+        assert!(!has(true, "--property=TimeoutStopSec=120"));
     }
 }

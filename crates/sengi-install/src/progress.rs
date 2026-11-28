@@ -13,6 +13,8 @@
 //! disk /dev/sda
 //! beside
 //! made 3
+//! shrinks 3
+//! resize writing
 //! ```
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +41,41 @@ pub enum Event {
     /// Beside another system: the new partition exists, and has this
     /// number. Said as soon as it does.
     Made(u32),
+    /// The installation first makes the Windows partition of this number
+    /// smaller. Said right after `beside`.
+    Shrinks(u32),
+    /// How far that has got, said before and after each change, so that
+    /// whoever watches knows the state of the disk if it stops.
+    Resize(Resize),
+}
+
+/// The state of a partition that is being made smaller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Resize {
+    /// The file system is being changed. Stopped now, it may be damaged.
+    Writing,
+    /// The file system is smaller; the partition is as it was.
+    FileSystem,
+    /// The partition table is being written.
+    Table,
+    /// File system and partition are both smaller, and were checked.
+    Done,
+}
+
+impl Resize {
+    const WORDS: [(Resize, &'static str); 4] = [
+        (Resize::Writing, "writing"),
+        (Resize::FileSystem, "files"),
+        (Resize::Table, "table"),
+        (Resize::Done, "done"),
+    ];
+
+    fn word(self) -> &'static str {
+        Resize::WORDS
+            .iter()
+            .find(|(stage, _)| *stage == self)
+            .map_or("", |(_, word)| word)
+    }
 }
 
 /// One line: what is said never breaks the framing.
@@ -59,6 +96,8 @@ impl Event {
             Event::Disk(path) => format!("disk {path}"),
             Event::Beside => "beside".to_string(),
             Event::Made(number) => format!("made {number}"),
+            Event::Shrinks(number) => format!("shrinks {number}"),
+            Event::Resize(stage) => format!("resize {}", stage.word()),
         }
     }
 
@@ -94,6 +133,15 @@ impl Event {
                 .ok()
                 .filter(|n| *n > 0 && *n <= 128)
                 .map(Event::Made),
+            "shrinks" => rest
+                .parse()
+                .ok()
+                .filter(|n| *n > 0 && *n <= 128)
+                .map(Event::Shrinks),
+            "resize" => Resize::WORDS
+                .iter()
+                .find(|(_, word)| *word == rest)
+                .map(|(stage, _)| Event::Resize(*stage)),
             "disk" if rest.starts_with("/dev/") && !rest.contains(char::is_whitespace) => {
                 Some(Event::Disk(rest.to_string()))
             }
@@ -124,6 +172,11 @@ mod tests {
             Event::Disk("/dev/nvme0n1".to_string()),
             Event::Beside,
             Event::Made(3),
+            Event::Shrinks(3),
+            Event::Resize(Resize::Writing),
+            Event::Resize(Resize::FileSystem),
+            Event::Resize(Resize::Table),
+            Event::Resize(Resize::Done),
         ] {
             assert_eq!(
                 Event::parse(&event.line()),
@@ -165,6 +218,10 @@ mod tests {
             "made 0",
             "made 129",
             "made three",
+            "shrinks 0",
+            "shrinks",
+            "resize",
+            "resize sideways",
             "warning",
             "failed",
             "begin ../../x",

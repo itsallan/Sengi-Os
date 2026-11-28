@@ -31,6 +31,16 @@ one asks to be kept. The licence text sits next to the files it covers.
 - Licence: none is stated by Flathub for the file. It is configuration, not
   a program, and carries no code of ours.
 
+## ntfs-3g
+
+- What: the live image includes Debian's `ntfs-3g` and `libntfs-3g89t64`
+  packages, whose `ntfsresize` and `ntfs-3g.probe` the installer runs to make
+  a Windows partition smaller. The programs are run, not linked, and are not
+  put on the installed system. Debian's copyright file is in the image at
+  `/usr/share/doc/ntfs-3g/copyright`.
+- Licence: GNU GPL version 2 or later for the programs, GNU LGPL version 2 or
+  later for the library.
+
 ## Hardware firmware
 
 - What: the image includes Debian's `firmware-iwlwifi`, `firmware-realtek`,

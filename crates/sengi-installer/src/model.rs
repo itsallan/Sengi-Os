@@ -4,10 +4,11 @@
 use sengi_config::settings::Layout;
 use sengi_install::beside::{self, Beside, Firmware, Offer};
 use sengi_install::disks::{self, Disk};
-use sengi_install::install::STEPS;
+use sengi_install::install::{SHRINK_STEP, STEPS};
 use sengi_install::names;
 use sengi_install::plan::{Mode, Plan, LIVE_KERNEL, LIVE_ROOT};
-use sengi_install::progress::Event;
+use sengi_install::progress::{Event, Resize};
+use sengi_install::shrink::{self, Analysis, Refusal};
 
 /// The pages before the installation starts, in order.
 pub const PAGES: [&str; 5] = ["welcome", "region", "disk", "you", "review"];
@@ -153,6 +154,7 @@ pub struct ModeRow {
 
 pub const ERASE: &str = "erase";
 pub const BESIDE: &str = "beside";
+pub const SHRINK: &str = "shrink";
 
 /// What installing beside another system would use on `disk`, or why it
 /// cannot be offered.
@@ -173,37 +175,299 @@ pub fn beside_of(offer: &Offer) -> Beside {
         sectors: region.sectors,
         esp: offer.esp,
         table: offer.snapshot.clone(),
+        shrink: None,
     }
 }
 
-/// The two rows: erase the disk, and install beside what is there. The
-/// second is switched off, with the reason, where it cannot be done.
-pub fn mode_rows(disk: &Disk, firmware: impl Into<Firmware>, beside_chosen: bool) -> Vec<ModeRow> {
-    let (beside_detail, beside_enabled) = match beside_offer(disk, firmware) {
-        Ok(offer) => (
-            format!(
+/// How the chosen disk is to be used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Way {
+    /// Not said yet.
+    Unchosen,
+    #[default]
+    Erase,
+    /// Beside what is there, in free space.
+    Beside,
+    /// Beside Windows, which is made smaller first.
+    Shrink,
+}
+
+/// What is known about making Windows smaller on the chosen disk.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Look {
+    #[default]
+    NotYet,
+    /// sengi-install is looking, which writes nothing.
+    Looking,
+    Ready(Analysis),
+    Refused(Refusal),
+}
+
+/// What a disk starts with when it is chosen. A disk on which Windows
+/// has all the room starts with nothing chosen, so that going on cannot
+/// erase a Windows somebody meant to keep; the others start with erasing,
+/// which the review and its question still have to get past.
+pub fn first_way(disk: &Disk, firmware: impl Into<Firmware>) -> Way {
+    if beside::squeeze(disk, firmware).is_some() {
+        Way::Unchosen
+    } else {
+        Way::Erase
+    }
+}
+
+/// Why making Windows smaller is refused before root has even looked:
+/// what the disk list already says.
+pub fn refused_at_sight(disk: &Disk, firmware: impl Into<Firmware>) -> Option<Refusal> {
+    beside::squeeze(disk, firmware)
+        .filter(|part| part.fstype == "BitLocker")
+        .map(|_| Refusal::BitLocker)
+}
+
+/// The two rows: erase the disk, and install beside what is there, in
+/// free space or, where there is none, by making Windows smaller. The
+/// second is switched off, with the reason, where it cannot be done. A
+/// choice that turns out not to be possible leaves nothing chosen: erasing
+/// is never picked for anyone who picked something else.
+pub fn mode_rows(
+    disk: &Disk,
+    firmware: impl Into<Firmware>,
+    way: Way,
+    look: &Look,
+) -> Vec<ModeRow> {
+    let firmware = firmware.into();
+    let offer = beside_offer(disk, firmware);
+    let squeeze = beside::squeeze(disk, firmware);
+    let possible_beside = offer.is_ok();
+    let erase = ModeRow {
+        id: ERASE,
+        title: "Erase the whole disk".to_string(),
+        detail: "Everything on the disk is removed and Sengi OS takes all of it.".to_string(),
+        enabled: true,
+        checked: way == Way::Erase || (way == Way::Beside && !possible_beside),
+    };
+    let beside = match (offer, squeeze) {
+        (Ok(offer), _) => ModeRow {
+            id: BESIDE,
+            title: "Install beside the existing system".to_string(),
+            detail: format!(
                 "Adds one partition of {} in free space and a Sengi OS folder on the EFI system partition. Your other files are not touched.",
                 disks::size_words(offer.region().bytes())
             ),
-            true,
-        ),
-        Err(why) => (why.words(), false),
-    };
-    vec![
-        ModeRow {
-            id: ERASE,
-            title: "Erase the whole disk".to_string(),
-            detail: "Everything on the disk is removed and Sengi OS takes all of it.".to_string(),
             enabled: true,
-            checked: !(beside_chosen && beside_enabled),
+            checked: way == Way::Beside,
         },
-        ModeRow {
+        (Err(_), Some(_)) => {
+            let refusal = match look {
+                Look::Refused(refusal) => Some(refusal.clone()),
+                _ => refused_at_sight(disk, firmware),
+            };
+            let detail = match (&refusal, look) {
+                (Some(refusal), _) => refusal.short().to_string(),
+                (None, Look::Looking) => "Looking at Windows\u{2026}".to_string(),
+                (None, Look::Ready(analysis)) => format!(
+                    "Makes Windows smaller to make room. It uses {} of its {}",
+                    disks::size_words(analysis.used_bytes),
+                    disks::size_words(analysis.sectors.saturating_mul(512))
+                ),
+                (None, _) => "Makes Windows smaller to make room. Back up your files first".to_string(),
+            };
+            ModeRow {
+                id: SHRINK,
+                title: "Install beside Windows".to_string(),
+                detail,
+                enabled: refusal.is_none(),
+                checked: way == Way::Shrink && refusal.is_none(),
+            }
+        }
+        (Err(why), None) => ModeRow {
             id: BESIDE,
             title: "Install beside the existing system".to_string(),
-            detail: beside_detail,
-            enabled: beside_enabled,
-            checked: beside_chosen && beside_enabled,
+            detail: why.words(),
+            enabled: false,
+            checked: false,
         },
+    };
+    vec![erase, beside]
+}
+
+/// Whether the Disk page can be left.
+pub fn disk_page_ready(chosen: bool, way: Way, look: &Look, backup: bool) -> bool {
+    chosen
+        && match way {
+            Way::Unchosen => false,
+            Way::Shrink => matches!(look, Look::Ready(_)) && backup,
+            Way::Erase | Way::Beside => true,
+        }
+}
+
+/// A size chosen for Sengi OS on a Windows that is made smaller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Squeeze {
+    pub analysis: Analysis,
+    /// What Sengi OS gets, in gigabytes.
+    pub gb: u64,
+}
+
+impl Squeeze {
+    /// Half of what could be taken, and at least what is needed.
+    pub fn new(analysis: Analysis) -> Squeeze {
+        let room = analysis.room;
+        Squeeze {
+            gb: (room.largest_gb / 2).clamp(room.smallest_gb, room.largest_gb),
+            analysis,
+        }
+    }
+
+    pub fn with(analysis: Analysis, gb: u64) -> Squeeze {
+        let room = analysis.room;
+        Squeeze {
+            gb: gb.clamp(room.smallest_gb, room.largest_gb),
+            analysis,
+        }
+    }
+
+    /// The plan's part.
+    pub fn beside(&self) -> Option<Beside> {
+        let (shrink, region) = shrink::place(&self.analysis.entry(), self.gb)?;
+        Some(Beside {
+            start: region.start,
+            sectors: region.sectors,
+            esp: self.analysis.esp,
+            table: self.analysis.table.clone(),
+            shrink: Some(shrink),
+        })
+    }
+
+    /// How large the Windows partition is, how large it will be, and how
+    /// large the new one, in bytes.
+    pub fn sizes(&self) -> (u64, u64, u64) {
+        let before = self.analysis.sectors.saturating_mul(512);
+        let (after, new) = shrink::place(&self.analysis.entry(), self.gb)
+            .map_or((before, 0), |(shrink, region)| {
+                (shrink.sectors.saturating_mul(512), region.bytes())
+            });
+        (before, after, new)
+    }
+
+    /// What the size control says: what Windows uses, what Sengi OS may
+    /// take, what it takes, and what Windows keeps.
+    pub fn words(&self) -> [String; 4] {
+        let (before, after, new) = self.sizes();
+        let used = self.analysis.used_bytes;
+        let room = self.analysis.room;
+        [
+            format!(
+                "{} of {}",
+                disks::size_words(used),
+                disks::size_words(before)
+            ),
+            format!("From {} GB to {} GB", room.smallest_gb, room.largest_gb),
+            disks::size_words(new),
+            format!(
+                "{}, with {} free",
+                disks::size_words(after),
+                disks::size_words(after.saturating_sub(used))
+            ),
+        ]
+    }
+}
+
+/// The warning under the size control and above the review.
+pub fn shrink_note(disk: &Disk, squeeze: &Squeeze) -> String {
+    let (before, after, _) = squeeze.sizes();
+    format!(
+        "Back up your files before you go on. Windows on {} will be made smaller, from {} to {}. If the power fails or the computer is switched off while that happens, Windows and your files can be lost.",
+        disk.path,
+        disks::size_words(before),
+        disks::size_words(after)
+    )
+}
+
+/// The question before Windows is made smaller.
+pub fn shrink_question(
+    disk: &Disk,
+    squeeze: &Squeeze,
+) -> (&'static str, String, &'static str, bool) {
+    let (before, after, new) = squeeze.sizes();
+    (
+        "Make Windows smaller and install?",
+        format!(
+            "This makes partition {} of {} ({}), which holds Windows, smaller, from {} to {}, creates one partition of {} for Sengi OS in the space it gives up, adds a Sengi OS folder to the EFI system partition, and puts Sengi OS first in the firmware boot list. Keep the charger plugged in and do not switch the computer off.",
+            squeeze.analysis.number,
+            disk_title(disk),
+            disk_place(disk),
+            disks::size_words(before),
+            disks::size_words(after),
+            disks::size_words(new)
+        ),
+        "Shrink and install",
+        true,
+    )
+}
+
+/// The rows of the review page where Windows is made smaller: the exact
+/// change in plain sizes.
+pub fn review_shrink(
+    form: &Form,
+    disk: &Disk,
+    squeeze: &Squeeze,
+    keyboard: &str,
+    time_zone: &str,
+) -> Vec<(&'static str, String)> {
+    let (before, after, new) = squeeze.sizes();
+    let used = squeeze.analysis.used_bytes;
+    let number = squeeze.analysis.number;
+    let name = form.full_name.trim();
+    vec![
+        (
+            "Disk",
+            format!("{} ({})", disk_title(disk), disk_place(disk)),
+        ),
+        ("On it now", disk_contents(disk)),
+        (
+            "Windows",
+            format!(
+                "Partition {number} is made smaller, from {} to {}. It uses {} and will have {} free",
+                disks::size_words(before),
+                disks::size_words(after),
+                disks::size_words(used),
+                disks::size_words(after.saturating_sub(used))
+            ),
+        ),
+        (
+            "New partition",
+            format!(
+                "{} for Sengi OS, in the space Windows gives up, not encrypted",
+                disks::size_words(new)
+            ),
+        ),
+        (
+            "Not changed",
+            "The other partitions. A Sengi OS folder, EFI/sengios, is added to the EFI system partition, and Sengi OS is put first in the firmware boot list".to_string(),
+        ),
+        (
+            "Backup",
+            "You said you have one".to_string(),
+        ),
+        (
+            "Next Windows start",
+            "Windows checks its disk first. That is expected: let it finish".to_string(),
+        ),
+        (
+            "Good to know",
+            "If the other system uses BitLocker or a TPM, it may ask for its recovery key after the boot list changes. Have the key at hand.".to_string(),
+        ),
+        (
+            "Your account",
+            if name.is_empty() {
+                form.user_name.clone()
+            } else {
+                format!("{name} ({})", form.user_name)
+            },
+        ),
+        ("Computer name", form.host_name.clone()),
+        ("Keyboard layout", keyboard.to_string()),
+        ("Time zone", time_zone.replace('_', " ")),
     ]
 }
 
@@ -513,6 +777,10 @@ pub struct Progress {
     /// Beside another system: the number of the partition it made, once
     /// it has.
     pub made: Option<u32>,
+    /// It first makes the Windows partition of this number smaller, and
+    /// how far that has got once it has begun to write.
+    pub shrinks: Option<u32>,
+    pub resize: Option<Resize>,
     pub outcome: Outcome,
 }
 
@@ -533,6 +801,8 @@ impl Default for Progress {
             disk: String::new(),
             beside: false,
             made: None,
+            shrinks: None,
+            resize: None,
             outcome: Outcome::Running,
         }
     }
@@ -570,6 +840,21 @@ impl Progress {
             Event::Disk(path) => self.disk = sengi_text::line(&path, 64),
             Event::Beside => self.beside = true,
             Event::Made(number) => self.made = Some(number),
+            Event::Shrinks(number) => {
+                self.shrinks = Some(number);
+                if self.step(SHRINK_STEP.id).is_none() {
+                    self.steps.insert(
+                        1.min(self.steps.len()),
+                        StepRow {
+                            id: SHRINK_STEP.id,
+                            title: SHRINK_STEP.title,
+                            state: StepState::Waiting,
+                            percent: None,
+                        },
+                    );
+                }
+            }
+            Event::Resize(stage) => self.resize = Some(stage),
             Event::Done(seconds) => self.outcome = Outcome::Done(seconds),
             Event::Failed(id, why) => {
                 if let Some(step) = self.step(&id) {
@@ -608,12 +893,62 @@ impl Progress {
     }
 
     /// Whether the disk had been touched when it failed. The first step
-    /// only looks.
+    /// only looks, and so does the step that makes Windows smaller until
+    /// it says that it writes.
     pub fn disk_was_touched(&self) -> bool {
+        let looking = if self.shrinks.is_some() { 2 } else { 1 };
+        self.resize.is_some()
+            || self
+                .steps
+                .iter()
+                .skip(looking)
+                .any(|step| step.state != StepState::Waiting)
+    }
+
+    /// Whether Windows is being changed at this moment.
+    pub fn shrinking(&self) -> bool {
+        self.outcome == Outcome::Running
+            && matches!(
+                self.resize,
+                Some(Resize::Writing | Resize::FileSystem | Resize::Table)
+            )
+    }
+
+    /// Where Windows is made smaller: what state it was left in, and what
+    /// to do about it.
+    fn shrink_left(&self) -> String {
+        let disk = if self.disk.is_empty() {
+            "the disk"
+        } else {
+            &self.disk
+        };
+        let number = self.shrinks.unwrap_or_default();
+        match self.resize {
+            None => "Nothing on the computer was changed.".to_string(),
+            Some(Resize::Writing) => format!(
+                "The Windows file system on partition {number} of {disk} was being made smaller and may be damaged. The partition table was not changed. Remove the USB stick, start Windows and let it check the disk; do not switch it off while it does. If Windows does not start or files are missing, restore your backup. Do not run this installer on this disk again before Windows has finished its check."
+            ),
+            Some(Resize::FileSystem) => format!(
+                "The Windows file system was made smaller, and partition {number} of {disk} was not changed; the two agree. Windows should start, and will check the disk first, which is expected: let it finish. To give it the room back, in Windows open Disk Management, right-click the Windows drive and choose Extend Volume."
+            ),
+            Some(Resize::Table) => format!(
+                "The Windows file system was made smaller, and the partition table was being changed when this stopped. Start Windows; it checks the disk first, which is expected. If it does not start, do not format anything: the record named below holds the table of {disk} as it was, for whoever repairs it."
+            ),
+            Some(Resize::Done) => {
+                let after = "Windows was made smaller and checked: it keeps its files and its new size, and checks the disk at its next start, which is expected.";
+                if self.made.is_some() || self.step_started("partition") {
+                    format!("{after} {}", self.beside_left())
+                } else {
+                    format!("{after} The space it gave up is free: this installer can now install in it. This live session is as it was.")
+                }
+            }
+        }
+    }
+
+    fn step_started(&self, id: &str) -> bool {
         self.steps
             .iter()
-            .skip(1)
-            .any(|step| step.state != StepState::Waiting)
+            .any(|step| step.id == id && step.state != StepState::Waiting)
     }
 
     /// The step it stopped in, by the words the list shows it with.
@@ -629,11 +964,7 @@ impl Progress {
     /// by the installer: deleting a partition is the one thing it is built
     /// never to do, and a person can see what they are removing.
     fn beside_left(&self) -> String {
-        let step_started = |id: &str| {
-            self.steps
-                .iter()
-                .any(|step| step.id == id && step.state != StepState::Waiting)
-        };
+        let step_started = |id: &str| self.step_started(id);
         let disk = if self.disk.is_empty() {
             "the disk".to_string()
         } else {
@@ -674,10 +1005,13 @@ impl Progress {
             );
         }
         if step_started("format") {
-            said.push(
+            said.push(if self.shrinks.is_some() {
+                "The other partitions were checked before the new one was formatted and had not changed since Windows was made smaller."
+                    .to_string()
+            } else {
                 "Your other partitions were checked before the new one was formatted and were as they had been."
-                    .to_string(),
-            );
+                    .to_string()
+            });
         }
         said.push("This live session is as it was.".to_string());
         format!("{}{remove}", said.join(" "))
@@ -701,7 +1035,9 @@ impl Progress {
             Some(step) => format!("Installing on {on} stopped at \u{201c}{step}\u{201d}"),
             None => format!("Installing on {on} did not start"),
         };
-        let left: String = if self.disk_was_touched() && self.beside {
+        let left: String = if self.shrinks.is_some() && self.resize.is_some() {
+            self.shrink_left()
+        } else if self.disk_was_touched() && self.beside {
             self.beside_left()
         } else if self.disk_was_touched() {
             "The disk was being written and no longer holds what it did. This live session is as it was, and the installer can be run again.".to_string()
@@ -1115,7 +1451,7 @@ mod tests {
     #[test]
     fn the_second_way_of_installing_is_offered_where_it_can_be_done() {
         let disk = windows_disk();
-        let rows = mode_rows(&disk, true, false);
+        let rows = mode_rows(&disk, true, Way::Erase, &Look::NotYet);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].id, ERASE);
         assert_eq!(rows[0].title, "Erase the whole disk");
@@ -1130,40 +1466,302 @@ mod tests {
         );
         assert!(rows[1].detail.contains("Your other files are not touched."));
         // Chosen, it is the checked one.
-        let chosen = mode_rows(&disk, true, true);
+        let chosen = mode_rows(&disk, true, Way::Beside, &Look::NotYet);
         assert!(chosen[1].checked && !chosen[0].checked);
     }
 
     #[test]
     fn where_it_cannot_be_done_the_row_says_why_and_cannot_be_chosen() {
         // BIOS.
-        let rows = mode_rows(&windows_disk(), false, true);
+        let rows = mode_rows(&windows_disk(), false, Way::Beside, &Look::NotYet);
         assert!(!rows[1].enabled && !rows[1].checked && rows[0].checked);
         assert!(rows[1].detail.contains("UEFI"));
         // An MBR disk.
         let mut mbr = windows_disk();
         mbr.pttype = "dos".to_string();
-        let rows = mode_rows(&mbr, true, false);
+        let rows = mode_rows(&mbr, true, Way::Erase, &Look::NotYet);
         assert!(!rows[1].enabled);
         assert!(rows[1].detail.contains("GPT"));
         // No EFI system partition.
         let mut none = windows_disk();
         none.parts.remove(0);
-        assert!(mode_rows(&none, true, false)[1]
+        assert!(mode_rows(&none, true, Way::Erase, &Look::NotYet)[1]
             .detail
             .contains("EFI system partition"));
-        // No room: shrink the other system first.
+        // No room, and what fills the disk is not Windows: shrink the
+        // other system first.
         let mut full = windows_disk();
         full.parts[1].size = 250_000_000_000;
-        let rows = mode_rows(&full, true, false);
+        full.parts[1].fstype = "ext4".to_string();
+        let rows = mode_rows(&full, true, Way::Erase, &Look::NotYet);
         assert!(!rows[1].enabled);
         assert!(rows[1]
             .detail
             .contains("Shrink the other system first, from inside it"));
         // An empty disk has nothing to install beside.
-        assert!(!mode_rows(&disk(), true, false)[1].enabled);
+        assert!(!mode_rows(&disk(), true, Way::Erase, &Look::NotYet)[1].enabled);
         // Erasing is always there.
         assert!(rows[0].enabled);
+    }
+
+    /// A computer on which Windows has all of the disk.
+    fn full_windows_disk() -> Disk {
+        let mut disk = windows_disk();
+        disk.parts[1].size = 250_000_000_000;
+        disk
+    }
+
+    fn analysis(disk: &Disk) -> Analysis {
+        let part = &disk.parts[1];
+        let mut analysis = Analysis {
+            table: sengi_install::beside::Table::from_disk(disk)
+                .unwrap()
+                .snapshot(),
+            esp: 1,
+            number: part.number,
+            start: part.start,
+            sectors: part.size / 512,
+            used_bytes: 80_000_000_000,
+            room: shrink::Room {
+                keep_bytes: 0,
+                smallest_gb: 0,
+                largest_gb: 0,
+            },
+        };
+        analysis.room = shrink::room(&analysis.entry(), analysis.used_bytes).unwrap();
+        analysis
+    }
+
+    #[test]
+    fn a_full_windows_disk_offers_to_make_windows_smaller() {
+        let disk = full_windows_disk();
+        // Nothing is chosen for anyone on such a disk, and nothing goes on
+        // until somebody has.
+        assert_eq!(first_way(&disk, true), Way::Unchosen);
+        assert_eq!(first_way(&windows_disk(), true), Way::Erase);
+        assert_eq!(first_way(&disk, false), Way::Erase);
+        let rows = mode_rows(&disk, true, Way::Unchosen, &Look::NotYet);
+        assert_eq!(rows[1].id, SHRINK);
+        assert_eq!(rows[1].title, "Install beside Windows");
+        assert!(rows[1].enabled && !rows[1].checked && !rows[0].checked);
+        assert!(rows[1].detail.contains("Back up"), "{}", rows[1].detail);
+        assert!(!disk_page_ready(true, Way::Unchosen, &Look::NotYet, true));
+        // While it is looked at, and once it has been.
+        let rows = mode_rows(&disk, true, Way::Shrink, &Look::Looking);
+        assert!(rows[1].checked && !rows[0].checked);
+        assert!(rows[1].detail.contains("Looking"));
+        let ready = Look::Ready(analysis(&disk));
+        let rows = mode_rows(&disk, true, Way::Shrink, &ready);
+        assert!(rows[1].checked);
+        assert!(
+            rows[1].detail.ends_with("It uses 80 GB of its 250 GB"),
+            "{}",
+            rows[1].detail
+        );
+        // With free space there already, nothing is made smaller.
+        assert_eq!(
+            mode_rows(&windows_disk(), true, Way::Erase, &Look::NotYet)[1].id,
+            BESIDE
+        );
+        // Not under BIOS, nor with Secure Boot on.
+        let rows = mode_rows(&disk, false, Way::Erase, &Look::NotYet);
+        assert!(!rows[1].enabled && rows[1].detail.contains("UEFI"));
+    }
+
+    #[test]
+    fn a_refused_windows_says_why_and_erasing_is_never_chosen_instead() {
+        let disk = full_windows_disk();
+        let refused = Look::Refused(Refusal::Hibernated);
+        let rows = mode_rows(&disk, true, Way::Shrink, &refused);
+        assert!(!rows[1].enabled && !rows[1].checked);
+        assert_eq!(
+            rows[1].detail,
+            "Windows is hibernated or Fast Startup is on"
+        );
+        // Nothing is checked: erasing is not picked for anyone.
+        assert!(!rows[0].checked);
+        assert!(!disk_page_ready(true, Way::Shrink, &refused, true));
+        // BitLocker is seen without looking inside.
+        let mut locked = full_windows_disk();
+        locked.parts[1].fstype = "BitLocker".to_string();
+        assert_eq!(first_way(&locked, true), Way::Unchosen);
+        let rows = mode_rows(&locked, true, Way::Unchosen, &Look::NotYet);
+        assert!(!rows[1].enabled && !rows[0].checked);
+        assert_eq!(rows[1].detail, "Windows is encrypted with BitLocker");
+        assert_eq!(refused_at_sight(&locked, true), Some(Refusal::BitLocker));
+        assert_eq!(refused_at_sight(&disk, true), None);
+    }
+
+    #[test]
+    fn the_disk_page_waits_for_the_look_and_the_backup() {
+        let disk = full_windows_disk();
+        let ready = Look::Ready(analysis(&disk));
+        assert!(disk_page_ready(true, Way::Erase, &Look::NotYet, false));
+        assert!(disk_page_ready(true, Way::Beside, &Look::NotYet, false));
+        assert!(!disk_page_ready(false, Way::Erase, &Look::NotYet, true));
+        for look in [Look::NotYet, Look::Looking, Look::Refused(Refusal::Dirty)] {
+            assert!(!disk_page_ready(true, Way::Shrink, &look, true));
+        }
+        assert!(!disk_page_ready(true, Way::Shrink, &ready, false));
+        assert!(disk_page_ready(true, Way::Shrink, &ready, true));
+    }
+
+    #[test]
+    fn the_size_chosen_stays_in_what_may_be_chosen_and_makes_the_plan() {
+        let disk = full_windows_disk();
+        let analysis = analysis(&disk);
+        let room = analysis.room;
+        assert_eq!(room.smallest_gb, 11);
+        let half = Squeeze::new(analysis.clone());
+        assert_eq!(half.gb, room.largest_gb / 2);
+        assert_eq!(Squeeze::with(analysis.clone(), 0).gb, room.smallest_gb);
+        assert_eq!(Squeeze::with(analysis.clone(), 10_000).gb, room.largest_gb);
+        let chosen = Squeeze::with(analysis.clone(), 60);
+        let [uses, range, sengi, windows] = chosen.words();
+        assert_eq!(uses, "80 GB of 250 GB");
+        assert_eq!(range, format!("From 11 GB to {} GB", room.largest_gb));
+        assert_eq!(sengi, "60 GB");
+        assert_eq!(windows, "189 GB, with 109 GB free");
+        let beside = chosen.beside().unwrap();
+        let shrink = beside.shrink.unwrap();
+        assert_eq!(shrink.partition, 2);
+        assert_eq!(disk.parts[1].start + shrink.sectors, beside.start);
+        let layout = Layout::parse("fr(azerty)").unwrap();
+        let plan = filled().plan_with(&disk, &layout, "Europe/Paris", Some(beside));
+        assert_eq!(Plan::parse(&plan.render()), Ok(plan.clone()));
+        assert!(plan.render().contains("[shrink]"));
+        assert!(plan.render().contains("backup = true"));
+    }
+
+    #[test]
+    fn the_review_and_the_question_say_the_exact_change() {
+        let disk = full_windows_disk();
+        let chosen = Squeeze::with(analysis(&disk), 60);
+        let rows = review_shrink(&filled(), &disk, &chosen, "x", "UTC");
+        let value = |title: &str| {
+            rows.iter()
+                .find(|(row, _)| *row == title)
+                .map(|(_, value)| value.as_str())
+                .unwrap()
+        };
+        assert_eq!(
+            value("Windows"),
+            "Partition 2 is made smaller, from 250 GB to 189 GB. It uses 80 GB and will have 109 GB free"
+        );
+        assert!(value("New partition").starts_with("60 GB for Sengi OS"));
+        assert!(value("Not changed").contains("other partitions"));
+        assert!(value("Next Windows start").contains("checks its disk"));
+        assert!(value("Backup").contains("You said"));
+        let all: String = rows.iter().map(|(_, value)| value.as_str()).collect();
+        assert!(!all.to_lowercase().contains("erase"));
+        let (title, body, confirm, danger) = shrink_question(&disk, &chosen);
+        assert_eq!(title, "Make Windows smaller and install?");
+        assert!(body.contains("from 250 GB to 189 GB"), "{body}");
+        assert!(body.contains("partition of 60 GB"));
+        assert!(body.contains("charger"));
+        assert_eq!(confirm, "Shrink and install");
+        assert!(danger);
+        let note = shrink_note(&disk, &chosen);
+        assert!(note.starts_with("Back up your files"));
+        assert!(note.contains("from 250 GB to 189 GB"));
+    }
+
+    /// Progress of an installation that makes room, fed `lines`.
+    fn shrinking(lines: &[&str]) -> Progress {
+        let mut progress = Progress::default();
+        for line in ["disk /dev/sda", "beside", "shrinks 2"].iter().chain(lines) {
+            progress.apply(Event::parse(line).unwrap());
+        }
+        progress
+    }
+
+    #[test]
+    fn the_step_that_makes_room_is_listed_after_the_check() {
+        let progress = shrinking(&[]);
+        assert_eq!(progress.steps.len(), STEPS.len() + 1);
+        assert_eq!(progress.steps[1].title, "Making Windows smaller");
+        let mut twice = shrinking(&["shrinks 2"]);
+        assert_eq!(twice.steps.len(), STEPS.len() + 1);
+        twice.apply(Event::parse("begin shrink").unwrap());
+        twice.apply(Event::parse("percent shrink 40").unwrap());
+        assert_eq!(twice.steps[1].percent, Some(40));
+        // Only looking is not changing.
+        assert!(!twice.shrinking() && !twice.disk_was_touched());
+        twice.apply(Event::parse("resize writing").unwrap());
+        assert!(twice.shrinking() && twice.disk_was_touched());
+        twice.apply(Event::parse("resize done").unwrap());
+        assert!(!twice.shrinking());
+    }
+
+    #[test]
+    fn a_failure_says_what_state_windows_and_the_disk_are_in() {
+        let failed = |lines: &[&str], step: &str| {
+            let mut progress = shrinking(lines);
+            progress.apply(Event::Failed(step.to_string(), "why".to_string()));
+            progress.failure_words("")
+        };
+        let check = failed(&["begin check"], "check");
+        assert!(
+            check.ends_with("Nothing on the computer was changed."),
+            "{check}"
+        );
+        let looking = failed(&["begin check", "end check", "begin shrink"], "shrink");
+        assert!(
+            looking.ends_with("Nothing on the computer was changed."),
+            "{looking}"
+        );
+        let before = ["begin check", "end check", "begin shrink"];
+        let with = |extra: &[&str], step: &str| {
+            let lines: Vec<&str> = before.iter().chain(extra).copied().collect();
+            failed(&lines, step)
+        };
+        let writing = with(&["resize writing"], "shrink");
+        assert!(writing.contains("may be damaged"), "{writing}");
+        assert!(writing.contains("partition table was not changed"));
+        assert!(writing.contains("restore your backup"));
+        let files = with(&["resize writing", "resize files"], "shrink");
+        assert!(
+            files.contains("partition 2 of /dev/sda was not changed"),
+            "{files}"
+        );
+        assert!(files.contains("check the disk first, which is expected"));
+        assert!(files.contains("Extend Volume"));
+        let table = with(
+            &["resize writing", "resize files", "resize table"],
+            "shrink",
+        );
+        assert!(table.contains("table was being changed"), "{table}");
+        assert!(table.contains("do not format"));
+        let done = [
+            "resize writing",
+            "resize files",
+            "resize table",
+            "resize done",
+        ];
+        let early = with(&done, "shrink");
+        assert!(early.contains("made smaller and checked"), "{early}");
+        assert!(early.contains("space it gave up is free"));
+        let lines: Vec<&str> = done
+            .iter()
+            .copied()
+            .chain([
+                "end shrink",
+                "begin partition",
+                "made 3",
+                "end partition",
+                "begin format",
+                "end format",
+                "begin copy",
+            ])
+            .collect();
+        let later = with(&lines, "copy");
+        assert!(later.contains("made smaller and checked"), "{later}");
+        assert!(later.contains("sudo sfdisk --delete /dev/sda 3"));
+        assert!(!later.contains("Your other partitions were checked"));
+        for words in [writing, files, table, early, later] {
+            assert!(!words.contains("Nothing on the computer was changed"));
+            assert!(!words.contains("no longer holds what it did"));
+        }
     }
 
     #[test]
@@ -1386,7 +1984,7 @@ mod tests {
         }
         // The old promise, which was untrue, is gone everywhere.
         assert!(!all.contains("Nothing that is already on the disk is changed"));
-        let rows = mode_rows(&disk, true, false);
+        let rows = mode_rows(&disk, true, Way::Erase, &Look::NotYet);
         assert!(rows[1]
             .detail
             .contains("a Sengi OS folder on the EFI system partition"));
@@ -1395,7 +1993,7 @@ mod tests {
             uefi: true,
             secure_boot: true,
         };
-        let rows = mode_rows(&disk, on, true);
+        let rows = mode_rows(&disk, on, Way::Beside, &Look::NotYet);
         assert!(!rows[1].enabled && rows[1].detail.contains("Secure Boot is on"));
     }
 }

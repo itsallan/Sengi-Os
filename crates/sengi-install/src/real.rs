@@ -5,6 +5,7 @@
 //! starts can be ended together. What it prints is kept for the log,
 //! which never sees what was written to it.
 
+use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -12,10 +13,12 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::disks::{self, Disk};
-use crate::install::{Command, Input, Output, System};
+use crate::install::{Command, Head, Input, Output, System};
+use crate::shrink::{self, Refusal};
 
 /// Where programs are looked for, and all the programs started here are
 /// told.
@@ -60,26 +63,89 @@ impl Real {
     }
 }
 
-/// Everything `stream` says, of which the first `KEPT_BYTES` are kept.
-/// Read to the end either way, so the program never blocks on a full
-/// pipe.
-fn drain(mut stream: impl Read + Send + 'static) -> std::thread::JoinHandle<String> {
-    std::thread::spawn(move || {
-        let mut kept = Vec::new();
+/// What is kept of one stream: its beginning and its end, since a long
+/// program says what it did at the one and how it ended at the other.
+#[derive(Default)]
+struct Kept {
+    head: Vec<u8>,
+    tail: VecDeque<u8>,
+}
+
+impl Kept {
+    fn add(&mut self, bytes: &[u8]) {
+        let room = (KEPT_BYTES / 2).saturating_sub(self.head.len());
+        let (first, rest) = bytes.split_at(bytes.len().min(room));
+        self.head.extend_from_slice(first);
+        self.tail.extend(rest);
+        let over = self.tail.len().saturating_sub(KEPT_BYTES / 2);
+        self.tail.drain(..over);
+    }
+
+    fn text(&self) -> String {
+        let mut all = self.head.clone();
+        all.extend(&self.tail);
+        String::from_utf8_lossy(&all).into_owned()
+    }
+}
+
+/// A stream being read.
+struct Drain {
+    kept: Arc<Mutex<Kept>>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+impl Drain {
+    fn so_far(&self) -> String {
+        self.kept.lock().map(|kept| kept.text()).unwrap_or_default()
+    }
+
+    fn finish(self) -> String {
+        let all = Arc::clone(&self.kept);
+        let _ = self.thread.join();
+        all.lock().map(|kept| kept.text()).unwrap_or_default()
+    }
+}
+
+/// Everything `stream` says, of which [`Kept`] is kept. Read to the end
+/// either way, so the program never blocks on a full pipe.
+fn drain(mut stream: impl Read + Send + 'static) -> Drain {
+    let kept = Arc::new(Mutex::new(Kept::default()));
+    let into = Arc::clone(&kept);
+    let thread = std::thread::spawn(move || {
         let mut buffer = [0u8; 4096];
         loop {
             match stream.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(count) => {
-                    let room = KEPT_BYTES.saturating_sub(kept.len());
-                    kept.extend_from_slice(&buffer[..count.min(room)]);
+                    if let Ok(mut kept) = into.lock() {
+                        kept.add(&buffer[..count]);
+                    }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(_) => break,
             }
         }
-        String::from_utf8_lossy(&kept).into_owned()
-    })
+    });
+    Drain { kept, thread }
+}
+
+/// Signals a program that must run to its end does not hear: being told
+/// to stop, the terminal going away, and nobody reading what it says.
+fn deaf_to_stopping() -> std::io::Result<()> {
+    for signal in [
+        libc::SIGTERM,
+        libc::SIGINT,
+        libc::SIGHUP,
+        libc::SIGQUIT,
+        libc::SIGPIPE,
+    ] {
+        // SAFETY: signal is async-signal-safe, and ignoring is kept across
+        // the exec that follows.
+        if unsafe { libc::signal(signal, libc::SIG_IGN) } == libc::SIG_ERR {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
 }
 
 /// A mount point as the kernel's table writes it, with its escapes for
@@ -142,7 +208,7 @@ pub fn partitions_in(disk: &Path) -> Vec<(u32, u64, u64)> {
 }
 
 impl System for Real {
-    fn run(&mut self, command: &Command, tick: &mut dyn FnMut()) -> Result<Output, String> {
+    fn run(&mut self, command: &Command, tick: &mut dyn FnMut(&str)) -> Result<Output, String> {
         let Some((program, args)) = command.argv.split_first() else {
             return Err("there is no program to run".to_string());
         };
@@ -151,7 +217,8 @@ impl System for Real {
             return Err("the installation was told to stop".to_string());
         }
         let has_input = !matches!(command.input, Input::None);
-        let mut child = std::process::Command::new(program)
+        let mut child = std::process::Command::new(program);
+        child
             .args(args)
             .env_clear()
             .env("PATH", PATH)
@@ -163,7 +230,12 @@ impl System for Real {
             })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .process_group(0)
+            .process_group(0);
+        if command.whole {
+            // SAFETY: the closure only calls signal, between fork and exec.
+            unsafe { child.pre_exec(deaf_to_stopping) };
+        }
+        let mut child = child
             .spawn()
             .map_err(|error| format!("{program} could not be started: {error}"))?;
         let stdout = child.stdout.take().map(drain);
@@ -186,7 +258,7 @@ impl System for Real {
                 Ok(None) => {}
                 Err(error) => break Err(format!("{program} was lost: {error}")),
             }
-            if INTERRUPTED.load(Ordering::Relaxed) && !command.cleanup {
+            if INTERRUPTED.load(Ordering::Relaxed) && !command.cleanup && !command.whole {
                 // The whole group: a script's children too.
                 // SAFETY: kill takes a process group and a signal.
                 unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) };
@@ -196,14 +268,10 @@ impl System for Real {
             std::thread::sleep(Duration::from_millis(50));
             waited += 1;
             if waited.is_multiple_of(10) {
-                tick();
+                tick(&stdout.as_ref().map(Drain::so_far).unwrap_or_default());
             }
         };
-        let collect = |handle: Option<std::thread::JoinHandle<String>>| {
-            handle
-                .and_then(|handle| handle.join().ok())
-                .unwrap_or_default()
-        };
+        let collect = |stream: Option<Drain>| stream.map(Drain::finish).unwrap_or_default();
         let output = Output {
             code: status.as_ref().ok().and_then(|status| status.code()),
             stdout: collect(stdout),
@@ -217,6 +285,58 @@ impl System for Real {
             self.log(&format!("  ({status})"));
         }
         Ok(output)
+    }
+
+    fn head(&mut self, command: &Command, bytes: usize) -> Result<Head, String> {
+        let Some((program, args)) = command.argv.split_first() else {
+            return Err("there is no program to run".to_string());
+        };
+        self.log(&format!(
+            "$ {} (the first {bytes} bytes)",
+            command.argv.join(" ")
+        ));
+        if INTERRUPTED.load(Ordering::Relaxed) {
+            return Err("the installation was told to stop".to_string());
+        }
+        let mut child = std::process::Command::new(program)
+            .args(args)
+            .env_clear()
+            .env("PATH", PATH)
+            .env("LC_ALL", "C")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0)
+            .spawn()
+            .map_err(|error| format!("{program} could not be started: {error}"))?;
+        let stderr = child.stderr.take().map(drain);
+        let mut taken = Vec::new();
+        let mut stdout = child.stdout.take();
+        let read = match stdout.as_mut() {
+            Some(stdout) => Read::take(stdout, bytes as u64).read_to_end(&mut taken),
+            None => Ok(0),
+        };
+        // It has given enough, and no more of it is wanted: it is ended
+        // while the pipe is still open.
+        if taken.len() >= bytes {
+            // SAFETY: kill takes a process group and a signal.
+            unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) };
+        }
+        drop(stdout);
+        let status = child
+            .wait()
+            .map_err(|error| format!("{program} was lost: {error}"))?;
+        let said = stderr.map(Drain::finish).unwrap_or_default();
+        read.map_err(|error| format!("what {program} printed could not be read: {error}"))?;
+        for line in said.lines() {
+            self.log(&format!("  {line}"));
+        }
+        self.log(&format!("  ({} bytes, {status})", taken.len()));
+        Ok(Head {
+            code: status.code(),
+            bytes: taken,
+            said,
+        })
     }
 
     fn disks(&mut self, allow_loop: bool) -> Vec<Disk> {
@@ -295,12 +415,37 @@ impl System for Real {
     }
 
     fn read_sector0(&mut self, device: &str) -> Result<Vec<u8>, String> {
-        use std::io::Read;
+        self.read_sector(device, 0)
+    }
+
+    fn read_sector(&mut self, device: &str, at: u64) -> Result<Vec<u8>, String> {
+        use std::os::unix::fs::FileExt;
         let mut sector = vec![0u8; 512];
         fs::File::open(device)
-            .and_then(|mut file| file.read_exact(&mut sector))
-            .map_err(|error| format!("sector 0 of {device} could not be read: {error}"))?;
+            .and_then(|file| file.read_exact_at(&mut sector, at))
+            .map_err(|error| format!("{device} could not be read at byte {at}: {error}"))?;
         Ok(sector)
+    }
+
+    fn same_device(&mut self, one: &str, other: &str) -> bool {
+        match (fs::canonicalize(one), fs::canonicalize(other)) {
+            (Ok(one), Ok(other)) => one == other,
+            _ => false,
+        }
+    }
+
+    fn power(&mut self) -> Result<(), Refusal> {
+        shrink::power(Path::new("/sys/class/power_supply"))
+    }
+
+    fn test_hold(&mut self, point: &str) {
+        // Only whoever controls the machine's firmware tables can set this:
+        // the install test, to cut the power between two steps.
+        let credential = format!("/run/credentials/@system/sengi.test.hold-{point}");
+        if Path::new(&credential).exists() {
+            self.log(&format!("test: holding at {point}"));
+            std::thread::sleep(Duration::from_secs(600));
+        }
     }
 
     fn log(&mut self, line: &str) {
@@ -325,7 +470,7 @@ mod tests {
         let tmp = TempDir::new();
         let mut sys = real(&tmp);
         let command = Command::new(&["sh", "-c", "echo out; echo err >&2; exit 3"]);
-        let output = sys.run(&command, &mut || {}).unwrap();
+        let output = sys.run(&command, &mut |_| {}).unwrap();
         assert_eq!(output.code, Some(3));
         assert_eq!(output.stdout, "out\n");
         assert_eq!(output.stderr, "err\n");
@@ -344,17 +489,19 @@ mod tests {
             argv: vec!["sh".to_string(), "-c".to_string(), "wc -c".to_string()],
             input: Input::Secret(&secret),
             cleanup: false,
+            whole: false,
         };
-        let output = sys.run(&command, &mut || {}).unwrap();
+        let output = sys.run(&command, &mut |_| {}).unwrap();
         assert_eq!(output.stdout.trim(), "14");
         assert!(!tmp.read("install.log").contains("hunter2"));
         let command = Command {
             argv: vec!["cat".to_string()],
             input: Input::Text("label: gpt\n"),
             cleanup: false,
+            whole: false,
         };
         assert_eq!(
-            sys.run(&command, &mut || {}).unwrap().stdout,
+            sys.run(&command, &mut |_| {}).unwrap().stdout,
             "label: gpt\n"
         );
     }
@@ -363,10 +510,71 @@ mod tests {
     fn programs_get_a_fixed_path_and_nothing_else() {
         let tmp = TempDir::new();
         let mut sys = real(&tmp);
-        let output = sys.run(&Command::new(&["env"]), &mut || {}).unwrap();
+        let output = sys.run(&Command::new(&["env"]), &mut |_| {}).unwrap();
         let mut lines: Vec<&str> = output.stdout.lines().collect();
         lines.sort();
         assert_eq!(lines, ["LC_ALL=C", "PATH=/usr/sbin:/usr/bin:/sbin:/bin"]);
+    }
+
+    #[test]
+    fn a_program_that_must_run_to_its_end_does_not_hear_signals_to_stop() {
+        let tmp = TempDir::new();
+        let mut sys = real(&tmp);
+        // It sends itself every signal that would stop it, writes to a
+        // pipe nobody reads, and goes on.
+        let script = "for s in TERM INT HUP QUIT PIPE; do kill -$s $$; done; echo went on";
+        let mut command = Command::new(&["sh", "-c", script]);
+        command.whole = true;
+        let output = sys.run(&command, &mut |_| {}).unwrap();
+        assert_eq!(output.code, Some(0), "{output:?}");
+        assert_eq!(output.stdout, "went on\n");
+        // Any other is ended by the first of them.
+        let command = Command::new(&["sh", "-c", script]);
+        let output = sys.run(&command, &mut |_| {}).unwrap();
+        assert_eq!(output.code, None);
+    }
+
+    #[test]
+    fn only_the_start_of_what_a_program_prints_is_taken() {
+        let tmp = TempDir::new();
+        let mut sys = real(&tmp);
+        // It would go on for ever.
+        let command = Command::new(&["sh", "-c", "printf hibr; cat /dev/zero"]);
+        let head = sys.head(&command, 4096).unwrap();
+        assert_eq!(head.bytes.len(), 4096);
+        assert_eq!(&head.bytes[..5], b"hibr\0");
+        assert_eq!(head.code, None);
+        // A shorter one is taken whole, with how it ended.
+        let command = Command::new(&["sh", "-c", "printf abc; echo no >&2; exit 1"]);
+        let head = sys.head(&command, 4096).unwrap();
+        assert_eq!((head.code, head.bytes.as_slice()), (Some(1), &b"abc"[..]));
+        assert_eq!(head.said, "no\n");
+    }
+
+    #[test]
+    fn the_beginning_and_the_end_of_what_is_said_are_kept() {
+        let tmp = TempDir::new();
+        let mut sys = real(&tmp);
+        let command = Command::new(&[
+            "sh",
+            "-c",
+            "echo first; head -c 300000 /dev/zero | tr '\\0' x; echo; echo last",
+        ]);
+        let output = sys.run(&command, &mut |_| {}).unwrap();
+        assert!(output.stdout.starts_with("first\n"));
+        assert!(output.stdout.ends_with("x\nlast\n"));
+        assert_eq!(output.stdout.len(), KEPT_BYTES);
+    }
+
+    #[test]
+    fn what_has_been_said_so_far_is_passed_on() {
+        let tmp = TempDir::new();
+        let mut sys = real(&tmp);
+        let command = Command::new(&["sh", "-c", "echo half way; sleep 1.2"]);
+        let mut heard = String::new();
+        sys.run(&command, &mut |said| heard = said.to_string())
+            .unwrap();
+        assert_eq!(heard, "half way\n");
     }
 
     #[test]
@@ -374,7 +582,7 @@ mod tests {
         let tmp = TempDir::new();
         let mut sys = real(&tmp);
         let problem = sys
-            .run(&Command::new(&["/no/such/program"]), &mut || {})
+            .run(&Command::new(&["/no/such/program"]), &mut |_| {})
             .unwrap_err();
         assert!(problem.contains("could not be started"));
         assert!(sys.has_program("sh"));
@@ -391,7 +599,7 @@ mod tests {
             "-c",
             "head -c 300000 /dev/zero | tr '\\0' x; sleep 1.2",
         ]);
-        let output = sys.run(&command, &mut || ticks += 1).unwrap();
+        let output = sys.run(&command, &mut |_| ticks += 1).unwrap();
         assert_eq!(output.code, Some(0));
         assert!(ticks >= 1);
         assert_eq!(output.stdout.len(), KEPT_BYTES);

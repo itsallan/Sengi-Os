@@ -28,6 +28,15 @@ installation. It never writes to a disk itself: that is
    read-only, or under 8 GB. Nothing is chosen for you. "Look again" reads
    the disks again. The kernel's "removable" flag is not used for
    anything: it does not say what is external.
+   Where the disk has no free space and its largest Windows data partition is
+   NTFS or BitLocker, the second choice is "Install beside Windows", and neither
+   choice is made to begin with, so Continue waits. Choosing it runs
+   `sudo -n sengi-install analyze DISK`, which only looks, and then shows what
+   Windows uses, a slider for what Sengi OS gets (in whole gigabytes), what
+   Windows keeps, a warning, and a switch "I have a backup" that must be on
+   before Continue. A refusal (BitLocker is seen from the disk list alone) says why
+   in the row and what to do in Windows under it; erasing is never picked in its
+   place.
 4. **You.** Your name, a user name (offered from the name until one is
    typed), the password twice, and a name for the computer. What is wrong
    with a field is said under it once something has been typed.
@@ -147,7 +156,7 @@ A release build has neither.
 
 ## What this does not do
 
-- Shrink another system to make room, encrypt, or lay out partitions by hand.
+- Shrink anything but a Windows partition, encrypt, or lay out partitions by hand.
 - Guess the time zone or the keyboard layout.
 - Offer a language: it is in English.
 - Ask about the strength of the password. An empty one is refused.

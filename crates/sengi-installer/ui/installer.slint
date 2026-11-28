@@ -3,9 +3,9 @@
 // The pages are built from the shared components and from Settings' kit;
 // nothing here has a colour or a size of its own.
 
-import { Tokens, SengiText, SengiButton, SengiSurface, SengiPasswordField, SengiStep, SengiStepState, SengiLogo } from "components.slint";
+import { Tokens, SengiText, SengiButton, SengiSurface, SengiPasswordField, SengiStep, SengiStepState, SengiToggle, SengiLogo } from "components.slint";
 export { ThemeSwitch } from "components.slint";
-import { Metrics, Nudge, Item, ItemList, InfoRow, InfoCard, DialogSpec, DialogLayer, ChooserLayer, Page, PageColumn, Card, Divider, SettingRow, Note, Gap, SectionLabel, ChoiceButton, TextField } from "kit.slint";
+import { Metrics, Nudge, Item, ItemList, InfoRow, InfoCard, DialogSpec, DialogLayer, ChooserLayer, Page, PageColumn, Card, Divider, SettingRow, RowValue, Note, Gap, SectionLabel, ChoiceButton, TextField, Slider, BusyBar } from "kit.slint";
 
 export { Item, InfoRow, DialogSpec, SengiStepState }
 
@@ -51,6 +51,22 @@ export global Wizard {
     in-out property <int> mode-current: 0;
     callback mode-picked(string);
 
+    // Making Windows smaller to make room: "", "looking", "refused" with
+    // why in the words, or "ready" with the size control. The sizes are
+    // words; the control's own numbers are gigabytes.
+    in property <string> shrink-state;
+    in property <string> shrink-words;
+    in property <string> shrink-uses;
+    in property <string> shrink-range;
+    in property <string> shrink-sengi;
+    in property <string> shrink-windows;
+    in property <int> shrink-min;
+    in property <int> shrink-max;
+    in-out property <int> shrink-gb;
+    in-out property <bool> shrink-backup;
+    callback shrink-picked(int);
+    callback backup-ticked(bool);
+
     // You.
     in-out property <string> full-name;
     in-out property <string> user-name;
@@ -78,6 +94,8 @@ export global Wizard {
 
     // Progress, and how it ended: "", "done" or "failed".
     in property <[StepRow]> steps;
+    // Windows is being changed at this moment.
+    in property <bool> shrinking;
     in property <string> outcome;
     in property <string> outcome-words;
     in property <string> warnings;
@@ -144,7 +162,7 @@ component WelcomePage inherits Page {
 
         Note {
             warning: true;
-            text: "Sengi OS can take one whole disk and erase everything on it, or, on a computer that starts with UEFI and has 10 GB or more of free space beside another system, be added beside it without changing what is there. Not offered yet: shrinking another system, encryption, and partitions laid out by hand. To keep trying Sengi OS from the stick instead, close this window.";
+            text: "Sengi OS can take one whole disk and erase everything on it, or, on a computer that starts with UEFI, be added beside another system: in 10 GB or more of free space, or by making Windows smaller, which needs a backup first. Not offered yet: shrinking other systems, encryption, and partitions laid out by hand. To keep trying Sengi OS from the stick instead, close this window.";
         }
     }
 }
@@ -207,6 +225,9 @@ component DiskPage inherits Page {
     title: "Disk";
     content-height: column.preferred-height;
 
+    // The head of a page, above its column.
+    private property <length> head: Tokens.font-size-xl + Tokens.space-xl * 2;
+
     init => {
         if Wizard.disks.length > 0 {
             list.take-focus();
@@ -242,9 +263,99 @@ component DiskPage inherits Page {
             }
         }
 
-        if Wizard.disk-chosen: Note {
+        if Wizard.disk-chosen && Wizard.shrink-state == "looking": Card {
+            VerticalLayout {
+                padding: Tokens.space-md;
+                spacing: Tokens.space-sm;
+
+                SengiText {
+                    text: "Looking at Windows. Nothing is changed. On a large disk this can take a few minutes.";
+                    color: Tokens.color-text-muted;
+                    wrap: word-wrap;
+                }
+
+                BusyBar { }
+            }
+        }
+
+        if Wizard.disk-chosen && Wizard.shrink-state == "refused": Note {
+            warning: true;
+            text: Wizard.shrink-words;
+        }
+
+        if Wizard.disk-chosen && Wizard.shrink-state == "ready": SectionLabel {
+            text: "Room for Sengi OS";
+        }
+
+        if Wizard.disk-chosen && Wizard.shrink-state == "ready": room := Card {
+            SettingRow {
+                title: "Windows uses";
+
+                RowValue {
+                    text: Wizard.shrink-uses;
+                }
+            }
+
+            Divider { }
+
+            SettingRow {
+                title: "Sengi OS gets " + Wizard.shrink-sengi;
+                detail: Wizard.shrink-range;
+
+                VerticalLayout {
+                    alignment: center;
+
+                    Slider {
+                        width: Metrics.control-wide;
+                        minimum: Wizard.shrink-min;
+                        maximum: Wizard.shrink-max;
+                        step: Math.max(1, Math.floor((Wizard.shrink-max - Wizard.shrink-min) / 50));
+                        value <=> Wizard.shrink-gb;
+                        changed(gb) => { Wizard.shrink-picked(gb); }
+                        changed has-focus => {
+                            if self.has-focus {
+                                root.reveal(root.head + room.y, room.height);
+                            }
+                        }
+                    }
+                }
+            }
+
+            Divider { }
+
+            SettingRow {
+                title: "Windows keeps";
+
+                RowValue {
+                    text: Wizard.shrink-windows;
+                }
+            }
+        }
+
+        if Wizard.disk-chosen && Wizard.erase-warning != "": Note {
             warning: Wizard.note-warns;
             text: Wizard.erase-warning;
+        }
+
+        if Wizard.disk-chosen && Wizard.shrink-state == "ready": backup := Card {
+            SettingRow {
+                title: "I have a backup";
+                detail: "A copy of everything I need from this computer, kept somewhere else";
+
+                VerticalLayout {
+                    alignment: center;
+
+                    SengiToggle {
+                        checked <=> Wizard.shrink-backup;
+                        toggled(on) => { Wizard.backup-ticked(on); }
+                        changed has-focus => {
+                            if self.has-focus {
+                                root.reveal(root.head + backup.y, backup.height);
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         if Wizard.disk-chosen: Gap { }
@@ -424,7 +535,10 @@ component ProgressPage inherits Page {
         }
 
         if Wizard.outcome == "": Note {
-            text: "Leave the computer on and the USB stick in until this is done.";
+            warning: Wizard.shrinking;
+            text: Wizard.shrinking
+                ? "Windows is being made smaller. Do not switch the computer off, unplug the charger or take out the USB stick: Windows could be lost. This cannot be cancelled."
+                : "Leave the computer on and the USB stick in until this is done.";
         }
     }
 }

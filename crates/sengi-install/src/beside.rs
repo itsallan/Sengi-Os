@@ -1,12 +1,14 @@
 //! Installing beside another system: what is free on a disk that is
 //! already in use, and the rules that keep everything else as it is.
 //!
-//! Only one thing is ever written to such a disk: one new partition, in
-//! free space, and a directory and a boot entry for Sengi OS on the EFI
-//! system partition that is already there. Nothing is shrunk, moved,
-//! formatted or wiped. The checks here are what holds the installation
-//! to that, and each of them stops it before anything is written or, if
-//! it can only be known afterwards, before anything is formatted:
+//! One thing is written to such a disk: one new partition, in free space,
+//! and a directory and a boot entry for Sengi OS on the EFI system
+//! partition that is already there. Nothing is moved, formatted or wiped,
+//! and nothing is made smaller unless the plan says to make room: then
+//! one Windows partition is, first, and only as [`crate::shrink`] says.
+//! The checks here are what holds the installation to that, and each of
+//! them stops it before anything is written or, if it can only be known
+//! afterwards, before anything is formatted:
 //!
 //! - the table is read again as root, just before it is written, and must
 //!   be the one the person was shown ([`check_before`]);
@@ -23,7 +25,8 @@
 //! for a disk whose own sectors are larger; [`Table::parse_dump`] and
 //! [`append_input`] convert.
 
-use crate::disks::{partition_path, size_words, Disk};
+use crate::disks::{partition_path, size_words, Disk, Part};
+use crate::shrink::{self, Shrink};
 
 /// The least free space that is offered: Sengi OS and room to use it.
 pub const MIN_BYTES: u64 = 10 * 1024 * 1024 * 1024;
@@ -482,9 +485,9 @@ impl Offer {
     }
 }
 
-/// Whether Sengi OS can go beside what is on `disk`, and where.
-pub fn offer(disk: &Disk, firmware: impl Into<Firmware>) -> Result<Offer, Why> {
-    let firmware = firmware.into();
+/// Whether anything at all can go beside what is on `disk`: its table,
+/// and the number of its EFI system partition.
+fn qualifies(disk: &Disk, firmware: Firmware) -> Result<(Table, u32), Why> {
     if !firmware.uefi {
         return Err(Why::NotUefi);
     }
@@ -511,16 +514,34 @@ pub fn offer(disk: &Disk, firmware: impl Into<Firmware>) -> Result<Offer, Why> {
             Why::NoEsp
         });
     };
+    Ok((table, esp.number))
+}
+
+/// Whether Sengi OS can go beside what is on `disk`, and where.
+pub fn offer(disk: &Disk, firmware: impl Into<Firmware>) -> Result<Offer, Why> {
+    let (table, esp) = qualifies(disk, firmware.into())?;
     let mut regions = table.free_regions();
     if regions.is_empty() {
         return Err(Why::NoRoom);
     }
     regions.sort_by_key(|region| std::cmp::Reverse(region.sectors));
     Ok(Offer {
-        esp: esp.number,
+        esp,
         regions,
         snapshot: table.snapshot(),
     })
+}
+
+/// The partition that might be made smaller on a disk that has no free
+/// space for Sengi OS but would otherwise do: [`shrink::candidate`]. Where
+/// there is free space already it is used, and nothing is made smaller.
+/// Whether it can be is only known once root has looked at it.
+pub fn squeeze(disk: &Disk, firmware: impl Into<Firmware>) -> Option<&Part> {
+    let (table, _) = qualifies(disk, firmware.into()).ok()?;
+    if !table.free_regions().is_empty() {
+        return None;
+    }
+    shrink::candidate(disk)
 }
 
 /// What the plan carries of a choice made beside another system.
@@ -531,6 +552,9 @@ pub struct Beside {
     pub esp: u32,
     /// The table as it was shown: [`Table::snapshot`].
     pub table: String,
+    /// The partition that is made smaller first; `start` and `sectors`
+    /// are then in what it gives up.
+    pub shrink: Option<Shrink>,
 }
 
 impl Beside {
@@ -544,7 +568,7 @@ impl Beside {
 
 /// Before anything is written: the table as root reads it now is the one
 /// that was shown, the EFI system partition is still one, and the free
-/// space is still free.
+/// space is still free, or will be once the one partition is smaller.
 pub fn check_before(table: &Table, beside: &Beside) -> Result<(), String> {
     if table.snapshot() != beside.table {
         return Err(
@@ -556,7 +580,10 @@ pub fn check_before(table: &Table, beside: &Beside) -> Result<(), String> {
         Some(entry) if entry.kind == ESP_TYPE => {}
         _ => return Err("the EFI system partition is not what it was".to_string()),
     }
-    table.region_is_free(&beside.region())
+    match &beside.shrink {
+        None => table.region_is_free(&beside.region()),
+        Some(shrink) => shrink::check_place(table, shrink, &beside.region()),
+    }
 }
 
 /// After sfdisk has written, before the kernel is asked to read it:
@@ -790,6 +817,33 @@ pub struct Rules<'a> {
     /// The firmware's boot order as it is now, which a new order must
     /// be a permutation of.
     pub boot_order: &'a [String],
+    /// The Windows partition that is looked at, and may be made smaller.
+    pub shrink: Option<ShrinkRules<'a>>,
+}
+
+/// What may be done to the one partition that is made smaller.
+#[derive(Debug, Clone, Copy)]
+pub struct ShrinkRules<'a> {
+    /// The partition by its identifier, and its number.
+    pub node: &'a str,
+    pub number: u32,
+    /// The size the file system is made, in bytes: the dry run and the
+    /// resize are for this size and no other. Zero while only looking.
+    pub bytes: u64,
+    /// Which of the three writes may happen now, if any.
+    pub writing: Writing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Writing {
+    #[default]
+    Nothing,
+    /// `ntfsresize` may make the file system smaller.
+    FileSystem,
+    /// `sfdisk` may change the size of the partition.
+    Table,
+    /// `partx` may tell the kernel of the new size.
+    Kernel,
 }
 
 pub fn guard(argv: &[String], rules: &Rules) -> Result<(), String> {
@@ -801,9 +855,11 @@ pub fn guard(argv: &[String], rules: &Rules) -> Result<(), String> {
         deletable,
         ..
     } = *rules;
-    let argv: &[String] = match argv.first().map(String::as_str) {
-        Some("chroot") => argv.get(2..).unwrap_or_default(),
-        _ => argv,
+    let chrooted = argv.first().is_some_and(|first| first == "chroot");
+    let argv: &[String] = if chrooted {
+        argv.get(2..).unwrap_or_default()
+    } else {
+        argv
     };
     let Some(program) = argv
         .first()
@@ -815,6 +871,29 @@ pub fn guard(argv: &[String], rules: &Rules) -> Result<(), String> {
     let names = |node: &str| args.iter().any(|arg| arg == node);
     let refuse = |why: &str| Err(format!("{} was not run: {why}", argv.join(" ")));
 
+    // The programs for Windows volumes: the exact commands that look at
+    // the one partition, and the one that makes it smaller. No other
+    // option, no other size, no other partition, and none of the others.
+    if program.starts_with("ntfs") || program == "mkntfs" {
+        let fine = !chrooted
+            && rules.shrink.is_some_and(|rules| {
+                let (node, bytes) = (rules.node, rules.bytes);
+                // No size is known while only looking, and then nothing
+                // that opens the volume for writing runs.
+                argv == shrink::info_argv(node)
+                    || argv == shrink::hiberfile_argv(node)
+                    || (bytes > 0 && argv == shrink::probe_argv(node))
+                    || (bytes > 0 && argv == shrink::dry_run_argv(node, bytes))
+                    || (bytes > 0
+                        && rules.writing == Writing::FileSystem
+                        && argv == shrink::resize_argv(node, bytes))
+            });
+        return if fine {
+            Ok(())
+        } else {
+            refuse("only the exact looks at the Windows partition, and the one resize, may run")
+        };
+    }
     // The boot sector of the whole disk belongs to whatever starts it.
     if program == "grub-install" {
         if args.iter().any(|arg| arg.contains("i386-pc")) {
@@ -843,8 +922,12 @@ pub fn guard(argv: &[String], rules: &Rules) -> Result<(), String> {
                 "--append",
                 device,
             ];
-        if !reading && !appending {
-            return refuse("sfdisk may only read the table (-d DISK) or append the one partition, in exactly the form the installer uses");
+        let resizing = !chrooted
+            && rules.shrink.is_some_and(|rules| {
+                rules.writing == Writing::Table && argv == shrink::sfdisk_argv(device, rules.number)
+            });
+        if !reading && !appending && !resizing {
+            return refuse("sfdisk may only read the table (-d DISK), append the one partition, or change the one size, in exactly the form the installer uses");
         }
     }
     // Only the exact forms that an installation uses of the programs
@@ -854,7 +937,7 @@ pub fn guard(argv: &[String], rules: &Rules) -> Result<(), String> {
             return refuse("the kernel is told of the new partition only, not of the whole table")
         }
         "partx" => {
-            let fine = rules.new_number.is_some_and(|number| {
+            let adding = rules.new_number.is_some_and(|number| {
                 args == [
                     "--add".to_string(),
                     "--nr".to_string(),
@@ -862,8 +945,13 @@ pub fn guard(argv: &[String], rules: &Rules) -> Result<(), String> {
                     device.to_string(),
                 ]
             });
-            if !fine {
-                return refuse("partx may only add the new partition");
+            let updating = !chrooted
+                && rules.shrink.is_some_and(|rules| {
+                    rules.writing == Writing::Kernel
+                        && argv == shrink::partx_argv(device, rules.number)
+                });
+            if !adding && !updating {
+                return refuse("partx may only add the new partition, or update the shrunk one");
             }
         }
         "efibootmgr" => {
@@ -907,6 +995,15 @@ pub fn guard(argv: &[String], rules: &Rules) -> Result<(), String> {
         if names(device) || old.iter().any(|node| names(node)) {
             return refuse("it names a disk or an old partition");
         }
+    }
+    // A partition by a name under /dev/disk is one that was there unless
+    // it is the new one.
+    if args
+        .iter()
+        .any(|arg| arg.contains("/dev/disk/") && new != Some(arg.as_str()))
+        && !LOOKERS.contains(&program)
+    {
+        return refuse("it names a partition that was there before");
     }
     // The old partitions: looked at, and the EFI system partition
     // mounted. Never anything that writes.
@@ -969,6 +1066,7 @@ sector-size: 512
             sectors: region.sectors,
             esp: 1,
             table: table.snapshot(),
+            shrink: None,
         }
     }
 
@@ -1404,6 +1502,7 @@ sector-size: 512
                 new_number: Some(4),
                 deletable: &["0003".to_string()],
                 boot_order: &order,
+                shrink: None,
             },
         )
     }
@@ -1482,6 +1581,212 @@ sector-size: 512
         }
     }
 
+    /// A command judged while partition 3 may be looked at, or written to
+    /// in the way `writing` says.
+    fn judged_shrinking(line: &str, writing: Writing) -> Result<(), String> {
+        let old: Vec<String> = ["/dev/vda1", "/dev/vda2", "/dev/vda3"]
+            .map(String::from)
+            .to_vec();
+        guard(
+            &argv(line),
+            &Rules {
+                device: "/dev/vda",
+                old: &old,
+                esp: "/dev/vda1",
+                esp_number: 1,
+                new: None,
+                new_number: None,
+                deletable: &[],
+                boot_order: &[],
+                shrink: Some(ShrinkRules {
+                    node: "/dev/disk/by-partuuid/win",
+                    number: 3,
+                    bytes: 5000,
+                    writing,
+                }),
+            },
+        )
+    }
+
+    const LOOKS: [&str; 5] = [
+        "ntfs-3g.probe --readwrite /dev/disk/by-partuuid/win",
+        "ntfscat /dev/disk/by-partuuid/win hiberfil.sys",
+        "ntfsresize --info --no-progress-bar /dev/disk/by-partuuid/win",
+        "ntfsresize --no-action --no-progress-bar --size 5000 /dev/disk/by-partuuid/win",
+        "blkid -s PARTUUID -o value /dev/vda3",
+    ];
+    const WRITES: [(&str, Writing); 3] = [
+        (
+            "ntfsresize --size 5000 /dev/disk/by-partuuid/win",
+            Writing::FileSystem,
+        ),
+        (
+            "sfdisk --lock --no-reread --no-tell-kernel --wipe never --wipe-partitions never -N 3 /dev/vda",
+            Writing::Table,
+        ),
+        ("partx --update --nr 3 /dev/vda", Writing::Kernel),
+    ];
+
+    #[test]
+    fn each_write_to_windows_is_allowed_at_its_own_moment_and_no_other() {
+        let all = [
+            Writing::Nothing,
+            Writing::FileSystem,
+            Writing::Table,
+            Writing::Kernel,
+        ];
+        for writing in all {
+            for line in LOOKS {
+                assert_eq!(judged_shrinking(line, writing), Ok(()), "{line}");
+            }
+            for (line, when) in WRITES {
+                assert_eq!(
+                    judged_shrinking(line, writing).is_ok(),
+                    writing == when,
+                    "{line} while {writing:?}"
+                );
+                // Never without the rules for it, and never in a chroot.
+                assert!(judged(line).is_err(), "{line}");
+                assert!(judged_shrinking(&format!("chroot /run/x {line}"), writing).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn nothing_else_is_ever_done_to_windows() {
+        let node = "/dev/disk/by-partuuid/win";
+        for writing in [Writing::FileSystem, Writing::Table, Writing::Kernel] {
+            for line in [
+                format!("ntfsresize --force --size 5000 {node}"),
+                format!("ntfsresize -f --size 5000 {node}"),
+                format!("ntfsresize -ff --size 5000 {node}"),
+                format!("ntfsresize --size 5000 -f {node}"),
+                format!("ntfsresize --bad-sectors --size 5000 {node}"),
+                format!("ntfsresize -b --size 5000 {node}"),
+                format!("ntfsresize --size 4999 {node}"),
+                format!("ntfsresize --size 5k {node}"),
+                format!("ntfsresize --expand {node}"),
+                format!("ntfsresize {node}"),
+                "ntfsresize --size 5000 /dev/vda3".to_string(),
+                "ntfsresize --size 5000 /dev/disk/by-partuuid/other".to_string(),
+                "ntfsresize --info --no-progress-bar /dev/disk/by-partuuid/other".to_string(),
+                format!("ntfsresize --info --force --no-progress-bar {node}"),
+                format!("ntfsfix {node}"),
+                format!("ntfsfix --clear-dirty {node}"),
+                format!("ntfsfix -d {node}"),
+                format!("ntfsfix --no-action {node}"),
+                format!("ntfsclone --overwrite {node} x"),
+                format!("ntfswipe --all {node}"),
+                format!("ntfslabel {node} x"),
+                format!("mkntfs -Q {node}"),
+                format!("mkfs.ntfs -Q {node}"),
+                format!("ntfs-3g {node} /mnt"),
+                format!("mount {node} /mnt"),
+                format!("mount -t ntfs3 {node} /mnt"),
+                format!("mkfs.ext4 -F {node}"),
+                format!("wipefs --all {node}"),
+                format!("dd of={node}"),
+                "sfdisk --lock --no-reread --no-tell-kernel --wipe never --wipe-partitions never -N 2 /dev/vda".to_string(),
+                "sfdisk --lock --no-reread --no-tell-kernel --wipe never --wipe-partitions never -N 4 /dev/vda".to_string(),
+                "sfdisk --lock --no-reread --no-tell-kernel --wipe never --wipe-partitions always -N 3 /dev/vda".to_string(),
+                "sfdisk --lock --no-reread --no-tell-kernel --wipe always --wipe-partitions never -N 3 /dev/vda".to_string(),
+                "sfdisk --lock --no-reread --no-tell-kernel --wipe never --wipe-partitions never --force -N 3 /dev/vda".to_string(),
+                "sfdisk -N 3 /dev/vda".to_string(),
+                "sfdisk --move-data -N 3 /dev/vda".to_string(),
+                "sfdisk --delete /dev/vda 3".to_string(),
+                "partx --update --nr 2 /dev/vda".to_string(),
+                "partx --update /dev/vda".to_string(),
+                "partx --delete --nr 3 /dev/vda".to_string(),
+                "resizepart /dev/vda 3 5000".to_string(),
+                "parted /dev/vda resizepart 3 5000".to_string(),
+            ] {
+                assert!(
+                    judged_shrinking(&line, writing).is_err(),
+                    "{line} was allowed while {writing:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn while_only_looking_nothing_opens_the_volume_for_writing() {
+        let node = "/dev/disk/by-partuuid/win";
+        let looking = |line: &str, writing: Writing| {
+            guard(
+                &argv(line),
+                &Rules {
+                    device: "/dev/vda",
+                    old: &[],
+                    esp: "/dev/vda1",
+                    esp_number: 1,
+                    new: None,
+                    new_number: None,
+                    deletable: &[],
+                    boot_order: &[],
+                    shrink: Some(ShrinkRules {
+                        node,
+                        number: 3,
+                        bytes: 0,
+                        writing,
+                    }),
+                },
+            )
+        };
+        for line in [
+            format!("ntfsresize --info --no-progress-bar {node}"),
+            format!("ntfscat {node} hiberfil.sys"),
+        ] {
+            assert_eq!(looking(&line, Writing::Nothing), Ok(()), "{line}");
+        }
+        for line in [
+            format!("ntfs-3g.probe --readwrite {node}"),
+            format!("ntfsresize --no-action --no-progress-bar --size 0 {node}"),
+            format!("ntfsresize --size 0 {node}"),
+            format!("ntfscat {node} pagefile.sys"),
+            format!("ntfscat --force {node} hiberfil.sys"),
+        ] {
+            assert!(looking(&line, Writing::FileSystem).is_err(), "{line}");
+        }
+    }
+
+    #[test]
+    fn windows_is_offered_to_be_made_smaller_only_where_there_is_no_room() {
+        let free = disk();
+        assert!(squeeze(&free, true).is_none());
+        let mut full = disk();
+        full.parts[2].size = 134_000_000 * 512;
+        assert_eq!(squeeze(&full, true).map(|part| part.number), Some(3));
+        assert!(squeeze(&full, false).is_none());
+        let on = Firmware {
+            uefi: true,
+            secure_boot: true,
+        };
+        assert!(squeeze(&full, on).is_none());
+        let mut mbr = full.clone();
+        mbr.pttype = "dos".to_string();
+        assert!(squeeze(&mbr, true).is_none());
+        let mut linux = full;
+        linux.parts[2].fstype = "ext4".to_string();
+        assert!(squeeze(&linux, true).is_none());
+    }
+
+    #[test]
+    fn the_table_is_checked_for_the_shrunk_place_before_anything_is_written() {
+        let before = table();
+        let (shrink, region) = crate::shrink::place(before.entry(3).unwrap(), 11).unwrap();
+        let mut beside = Beside {
+            start: region.start,
+            sectors: region.sectors,
+            esp: 1,
+            table: before.snapshot(),
+            shrink: Some(shrink),
+        };
+        assert_eq!(check_before(&before, &beside), Ok(()));
+        // The same place without the shrink is not free.
+        beside.shrink = None;
+        assert!(check_before(&before, &beside).is_err());
+    }
+
     #[test]
     fn a_guard_without_a_new_partition_yet_allows_no_formatting_at_all() {
         let old = vec!["/dev/vda1".to_string()];
@@ -1496,6 +1801,7 @@ sector-size: 512
                 new_number: None,
                 deletable: &[],
                 boot_order: &[],
+                shrink: None,
             }
         )
         .is_err());
@@ -1660,6 +1966,7 @@ sector-size: 512
                     new_number: None,
                     deletable: &[],
                     boot_order: &order,
+                    shrink: None,
                 },
             )
         };

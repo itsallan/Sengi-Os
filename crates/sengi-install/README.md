@@ -7,11 +7,15 @@ each step as a line on standard output. The installer's window,
 
 **It erases the disk the plan names**, or, when the plan says `beside`, adds one
 partition in free space of it, adds a Sengi OS folder to its EFI system partition and a
-boot entry to the firmware, and changes nothing else. It is meant to run in the live session.
+boot entry to the firmware, and changes nothing else. A `beside` plan with a `[shrink]`
+section first makes one Windows partition smaller to make that free space. It is meant
+to run in the live session.
 
     sengi-install start                 install in a service of its own, as root
     sengi-install run [--plan FILE]     install here and now, as root
     sengi-install disks                 list the disks and why some are refused
+    sengi-install analyze DISK          whether Windows on DISK can be made smaller;
+                                        writes nothing, as root
 
 For `start` and `run` the first line of standard input is the password of
 the account to create and the plan follows it; `run` can read the plan from
@@ -86,6 +90,15 @@ showed the person:
 number, start, length, type and own identifier. `erase` with a `[beside]` section, and
 `beside` without one, are refused.
 
+To make room first, a `beside` plan also has:
+
+    [shrink]
+    partition = 3         # the Windows partition that is made smaller
+    sectors = 390000000   # its new length; start and the free space above follow it
+    backup = true         # the person said there is a backup; without it, refused
+
+`[beside] start` is then where the shrunk partition ends.
+
 `size`, `model`, `serial` and `wwn` are what the disk was when the person
 chose it; the last two are empty for a disk that has none (a virtual disk,
 some card readers). If `device` is no longer a disk with all four the same,
@@ -132,6 +145,69 @@ one, the menu is shown for three seconds, and else stays hidden; and a firmware 
 "Sengi OS" is made and put first in the boot order, the others after it in their order.
 Where whole-disk installs let the firmware refuse an entry (the fallback path starts the
 disk), here it is a failure, since there is no fallback. There is no swap partition.
+
+## Making Windows smaller
+
+The one thing the installer does to data that is already on a disk (`shrink.rs`).
+NTFS only, with `ntfsresize` and `ntfs-3g.probe` from Debian's `ntfs-3g` (about
+1.5 MB installed, 2 MB with `libntfs-3g`; GPL-2.0-or-later, the library
+LGPL-2.0-or-later). The package is in the live image and taken off what is
+installed. No ext4 or other file system is ever made smaller, no partition is
+moved, and no other partition is written to.
+
+The looks, all of them by `analyze` (the window's question), and again in the
+`check` step and in the `shrink` step right before writing:
+
+1. Power: a computer with a battery needs a charger (`/sys/class/power_supply`).
+2. The partition: GPT type "Windows data", 512-byte sectors, its identifier on one
+   partition only, the `/dev/disk/by-partuuid` name leading to the same node, and
+   the table still the one that was shown. A mounted or busy disk is refused.
+3. Its first sector: `-FVE-FS-` (BitLocker) and anything but NTFS is refused.
+4. `ntfsresize --info`: refuses a volume marked for a disk check, with bad sectors
+   or inconsistent. Windows keeps what it uses plus the larger of 15 GB or 20% of
+   that; Sengi OS gets at least 10 GiB.
+5. The first 4 KiB of `hiberfil.sys`, read with `ntfscat`: a hibernation
+   signature (hibernation or Fast Startup) is refused. `ntfsresize` does not
+   refuse such a volume when it only looks.
+
+None of those opens the volume for writing. In the `check` and `shrink` steps,
+which come after the person said yes, there are two more:
+
+6. `ntfs-3g.probe --readwrite` (after 3): anything but status 0 is refused (14
+   hibernated, 15 a journal with unfinished work, which nothing read-only can
+   tell). It opens the volume as a read-write mount does; on a volume that passes,
+   libntfs-3g may rewrite one small attribute of the root folder (`$TXF_DATA`)
+   that Windows left outside the file table, as every such mount does.
+7. `ntfsresize --no-action --size BYTES`, the exact dry run.
+
+Then, with the disk held (`O_EXCL`, which also keeps anything from mounting it):
+
+8. `ntfsresize --size BYTES`, its question answered `y`, never forced. BYTES is the
+   new size of the partition: the volume ends a few kilobytes short of it, with the
+   copy of its first sector in the last sector of that size, where Windows and
+   `ntfsfix` look for it. It runs to its end whatever is asked of the service: it
+   ignores the signals that stop, the service refuses manual stops, is never timed
+   out and is the last the OOM killer would take, and sleep, shutdown, the lid and
+   the power, suspend and hibernate keys are held off. Its dirty mark, which makes
+   Windows check the disk, stays.
+9. The volume is read back: the same volume, ending inside the new size, the copy of
+   its first sector in place, and the probe passes.
+10. `sfdisk -N` with only `size=`, which keeps start, type, identifier, name and
+    attributes; the whole table is compared with the old one, allowing that one
+    size to differ.
+11. `partx --update --nr N`, the kernel's view compared, and then the installation
+    goes on as in free space.
+
+Between 9 and 10 a power cut leaves a disk that agrees with itself: a file system
+may be smaller than its partition. If an earlier attempt stopped there and Windows
+has since checked the disk, step 8 is skipped when the volume is already small
+enough. Interrupting step 8 itself can damage the volume: `ntfsresize` moves data
+and is not journalled. That is why the window asks for a backup.
+
+The guard allows exactly those commands, in those forms, each write only at its
+moment (`each_write_to_windows_is_allowed_at_its_own_moment_and_no_other`,
+`nothing_else_is_ever_done_to_windows`,
+`while_only_looking_nothing_opens_the_volume_for_writing`).
 
 ## What is refused
 
@@ -280,8 +356,11 @@ against a file; the window never writes it.
 ## Known limits beside another system
 
 - Only tried on virtual disks, with stand-ins for the other system's files. Not tried
-  on a real Windows disk, on real firmware, on a 4Kn disk, or on a BIOS machine (where it
-  is not offered).
+  on a real Windows disk or installation, on real firmware, on a 4Kn disk, or on a BIOS
+  machine (where it is not offered).
+- Making Windows smaller has only been tried on NTFS volumes made and filled by
+  Linux's tools. Windows' own volumes can hold things those do not make, and no
+  `chkdsk` has ever run on one of the results.
 - Not offered with Secure Boot on (the GRUB put on the EFI system partition is not
   signed), with a hybrid MBR, with more than one EFI system partition on the disk, or
   where sfdisk says anything about the table besides the table (a backup copy not at the
@@ -322,7 +401,7 @@ against a file; the window never writes it.
 
 ## Not done here
 
-- Encryption, shrinking another system to make room, partitions by hand.
+- Encryption, shrinking anything but NTFS, partitions by hand.
 - Reinstalling the boot loader when a GRUB package is updated. The `grub-pc`
   and `grub-efi-amd64` packages, which would do that, are not in the image;
   `update-grub` still runs when a kernel is installed.

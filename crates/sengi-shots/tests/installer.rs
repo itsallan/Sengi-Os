@@ -147,6 +147,69 @@ fn scene(page: &str, variant: &str, w: &InstallerWindow) {
                 }.into());
             }
         }
+        ("shrink", v) => {
+            g.set_page("disk".into());
+            g.set_place("Step 2 of 4".into());
+            g.set_disk_note("Choose the disk to install on. Then say whether to erase it, or to install beside what is on it.".into());
+            g.set_disks(list(vec![Item {
+                checked: true,
+                action: "".into(),
+                ..disk(
+                    "a",
+                    "Micron 1100 512GB · 512 GB",
+                    "/dev/sda · SATA · serial …2B3C4D · now on it: 2 partitions: 512 GB Windows (NTFS)",
+                )
+            }]));
+            g.set_disk_chosen(true);
+            let refused = v == "refused";
+            let mut erase = disk(
+                "erase",
+                "Erase the whole disk",
+                "Everything on the disk is removed and Sengi OS takes all of it.",
+            );
+            erase.icon = "".into();
+            let mut beside = disk(
+                "shrink",
+                "Install beside Windows",
+                match v {
+                    "looking" => "Looking at Windows…",
+                    "refused" => "Windows is hibernated or Fast Startup is on",
+                    _ => "Makes Windows smaller to make room. It uses 184 GB of its 512 GB",
+                },
+            );
+            beside.icon = "".into();
+            beside.enabled = !refused;
+            beside.checked = !refused;
+            if beside.checked {
+                beside.action = "".into();
+            }
+            g.set_modes(list(vec![erase, beside]));
+            g.set_shrink_state(
+                match v {
+                    "looking" => "looking",
+                    "refused" => "refused",
+                    _ => "ready",
+                }
+                .into(),
+            );
+            g.set_shrink_words("Windows is hibernated, or Fast Startup saved part of it to disk. Changing the volume now would lose data. In Windows, turn off Fast Startup (Control Panel, Power Options, “Choose what the power buttons do”), then shut it down with Shut down, not Restart, Sleep or Hibernate.".into());
+            g.set_shrink_uses("184 GB of 512 GB".into());
+            g.set_shrink_range("From 11 GB to 290 GB".into());
+            g.set_shrink_sengi("145 GB".into());
+            g.set_shrink_windows("366 GB, with 182 GB free".into());
+            g.set_shrink_min(11);
+            g.set_shrink_max(290);
+            g.set_shrink_gb(145);
+            g.set_shrink_backup(v == "ticked");
+            g.set_can_next(v == "ticked");
+            g.set_note_warns(true);
+            g.set_erase_warning(if v == "ready" || v == "ticked" {
+                "Back up your files before you go on. Windows on /dev/sda will be made smaller, from 512 GB to 366 GB. If the power fails or the computer is switched off while that happens, Windows and your files can be lost."
+            } else {
+                ""
+            }
+            .into());
+        }
         ("you", v) => {
             g.set_place("Step 3 of 4".into());
             g.set_full_name("Allan Smith".into());
@@ -179,6 +242,54 @@ fn scene(page: &str, variant: &str, w: &InstallerWindow) {
                 g.set_next_erases(false);
                 g.set_note_warns(false);
             }
+            if v == "shrink" {
+                g.set_next_label("Shrink Windows and install…".into());
+                g.set_erase_warning("Back up your files before you go on. Windows on /dev/sda will be made smaller, from 512 GB to 366 GB. If the power fails or the computer is switched off while that happens, Windows and your files can be lost.".into());
+                g.set_review(list(vec![
+                    info("Disk", "Micron 1100 512GB · 512 GB (/dev/sda · SATA · serial …2B3C4D)"),
+                    info("On it now", "2 partitions: 512 GB Windows (NTFS), 104 MB FAT"),
+                    info("Windows", "Partition 2 is made smaller, from 512 GB to 366 GB. It uses 184 GB and will have 182 GB free"),
+                    info("New partition", "145 GB for Sengi OS, in the space Windows gives up, not encrypted"),
+                    info("Not changed", "The other partitions. A Sengi OS folder, EFI/sengios, is added to the EFI system partition, and Sengi OS is put first in the firmware boot list"),
+                    info("Backup", "You said you have one"),
+                    info("Next Windows start", "Windows checks its disk first. That is expected: let it finish"),
+                    info("Good to know", "If the other system uses BitLocker or a TPM, it may ask for its recovery key after the boot list changes. Have the key at hand."),
+                    info("Your account", "Allan Smith (allan)"),
+                    info("Computer name", "zenbook"),
+                    info("Keyboard layout", "French (AZERTY)"),
+                    info("Time zone", "Africa/Kigali"),
+                ]));
+            }
+        }
+        ("progress", "shrinking") => {
+            g.set_place("".into());
+            g.set_back_label("".into());
+            g.set_next_label("".into());
+            g.set_shrinking(true);
+            g.set_steps(list(vec![
+                step("Checking the disk and the plan", SengiStepState::Done, -1),
+                step("Making Windows smaller", SengiStepState::Running, 37),
+                step("Preparing the disk", SengiStepState::Waiting, -1),
+                step("Making the file systems", SengiStepState::Waiting, -1),
+                step("Copying Sengi OS", SengiStepState::Waiting, -1),
+            ]));
+        }
+        ("progress", "shrink-failed") => {
+            g.set_place("".into());
+            g.set_back_label("".into());
+            g.set_next_label("Close".into());
+            g.set_outcome("failed".into());
+            g.set_outcome_words("Installing on Micron 1100 512GB · 512 GB (/dev/sda) stopped at “Making Windows smaller”: ntfsresize ended with status 1: ERROR: Write failed. The Windows file system on partition 2 of /dev/sda was being made smaller and may be damaged. The partition table was not changed. Remove the USB stick, start Windows and let it check the disk; do not switch it off while it does. If Windows does not start or files are missing, restore your backup. Do not run this installer on this disk again before Windows has finished its check.".into());
+            g.set_outcome_facts(list(vec![
+                info("Disk", "/dev/sda"),
+                info("Stopped at", "Making Windows smaller"),
+                info("Full record", "/var/log/sengi-install.log"),
+            ]));
+            g.set_steps(list(vec![
+                step("Checking the disk and the plan", SengiStepState::Done, -1),
+                step("Making Windows smaller", SengiStepState::Failed, -1),
+                step("Preparing the disk", SengiStepState::Waiting, -1),
+            ]));
         }
         ("progress", v) => {
             g.set_place("".into());
@@ -225,6 +336,13 @@ fn every_page() {
         ("you", "problems"),
         ("review", "erase"),
         ("review", "beside"),
+        ("shrink", "looking"),
+        ("shrink", "ready"),
+        ("shrink", "ticked"),
+        ("shrink", "refused"),
+        ("review", "shrink"),
+        ("progress", "shrinking"),
+        ("progress", "shrink-failed"),
         ("progress", "running"),
         ("progress", "done"),
         ("progress", "failed"),

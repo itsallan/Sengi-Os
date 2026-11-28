@@ -22,8 +22,9 @@ use sengi_config::settings::Layout;
 use sengi_config::{Dirs, Value};
 use sengi_install::disks::{self, Disk};
 use sengi_install::progress::Event;
+use sengi_install::shrink::{Analysis, Refusal};
 use sengi_install::{PROGRESS, UNIT};
-use sengi_installer::model::{self, Form, Outcome, Progress, StepState, Typed};
+use sengi_installer::model::{self, Form, Look, Outcome, Progress, Squeeze, StepState, Typed, Way};
 use sengi_installer::ui::{
     ChooserState, DialogSpec, DialogState, InfoRow, InstallerWindow, Item, SengiStepState, StepRow,
     Wizard,
@@ -118,8 +119,15 @@ struct App {
     page: Cell<&'static str>,
     disks: RefCell<Vec<Disk>>,
     chosen: RefCell<Option<Disk>>,
-    /// The chosen disk is to be installed beside what is on it, not erased.
-    beside: Cell<bool>,
+    /// How the chosen disk is to be used.
+    way: Cell<Way>,
+    /// What is known about making its Windows smaller, which look is the
+    /// latest, what was chosen to give Sengi OS, and whether the person
+    /// has said that there is a backup.
+    look: RefCell<Look>,
+    looks: Cell<u32>,
+    room_gb: Cell<u64>,
+    backup: Cell<bool>,
     form: RefCell<Form>,
     password: RefCell<PasswordEntry>,
     again: RefCell<PasswordEntry>,
@@ -262,6 +270,23 @@ fn demo_disks() -> Vec<Disk> {
         "0fc63daf-8483-4772-8e79-3d69d8477de4",
     )];
     second.mounted = vec!["/media/live/data".to_string()];
+    // A computer that came with Windows, which has all of the disk.
+    let mut full = disk("sdd", 512_110_190_592, "Micron 1100 512GB");
+    full.tran = "sata".to_string();
+    full.serial = "17241A2B3C4D".to_string();
+    full.parts = vec![
+        part("sdd1", 104_857_600, "vfat", "", esp),
+        part(
+            "sdd2",
+            512_000_000_000,
+            "ntfs",
+            "Windows",
+            sengi_install::shrink::BASIC_DATA_TYPE,
+        ),
+    ];
+    // Placed from the start of its own disk, so that nothing is free.
+    full.parts[0].start = 2048;
+    full.parts[1].start = 206_848;
     // A computer that came with Windows and has most of its disk free.
     let mut third = disk("sdc", 1_000_204_886_016, "WD Blue SN570 1TB");
     third.tran = "sata".to_string();
@@ -276,7 +301,53 @@ fn demo_disks() -> Vec<Disk> {
             "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7",
         ),
     ];
-    vec![main, third, second, stick, card]
+    vec![main, third, full, second, stick, card]
+}
+
+/// What a look at the Windows of a demo finds.
+fn demo_analysis(disk: &Disk) -> Analysis {
+    let part = sengi_install::shrink::candidate(disk);
+    let (number, start, size) = part.map_or((2, 206_848, disk.size), |part| {
+        (part.number, part.start, part.size)
+    });
+    let mut analysis = Analysis {
+        table: sengi_install::beside::Table::from_disk(disk)
+            .map(|table| table.snapshot())
+            .unwrap_or_default(),
+        esp: 1,
+        number,
+        start,
+        sectors: size / 512,
+        used_bytes: 184_300_000_000,
+        room: sengi_install::shrink::Room {
+            keep_bytes: 0,
+            smallest_gb: 11,
+            largest_gb: 11,
+        },
+    };
+    if let Ok(room) = sengi_install::shrink::room(&analysis.entry(), analysis.used_bytes) {
+        analysis.room = room;
+    }
+    analysis
+}
+
+/// Ask sengi-install, as root, about the Windows partition of `disk`.
+fn analyze(disk: &str) -> Result<Result<Analysis, Refusal>, String> {
+    let output = Command::new("sudo")
+        .args(["-n", "/usr/bin/sengi-install", "analyze", disk])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("it could not be looked at: {error}"))?;
+    if !output.status.success() {
+        let said = String::from_utf8_lossy(&output.stderr).into_owned();
+        let last = said
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("it said nothing");
+        return Err(last.trim_start_matches("sengi-install: ").to_string());
+    }
+    Analysis::parse(&String::from_utf8_lossy(&output.stdout))
 }
 
 /// What stands in for sengi-install in a demo: it says what the real
@@ -315,12 +386,13 @@ impl App {
             }
             .into(),
         );
-        let beside = self.beside.get();
-        wizard.set_next_erases(page == "review" && !beside);
+        let way = self.way.get();
+        wizard.set_next_erases(page == "review" && way != Way::Beside);
         wizard.set_next_label(
-            match (page, beside) {
-                ("review", false) => "Erase disk and install\u{2026}",
-                ("review", true) => "Install Sengi OS\u{2026}",
+            match (page, way) {
+                ("review", Way::Erase) => "Erase disk and install\u{2026}",
+                ("review", Way::Beside) => "Install Sengi OS\u{2026}",
+                ("review", Way::Shrink) => "Shrink Windows and install\u{2026}",
                 _ => "Continue",
             }
             .into(),
@@ -339,7 +411,7 @@ impl App {
     fn set_can_next(&self) {
         let can = match self.page.get() {
             "region" => !self.zone.borrow().is_empty(),
-            "disk" => self.chosen.borrow().is_some(),
+            "disk" => self.disk_ready(),
             "you" => self.form_ready(),
             "progress" => self.progress.borrow().outcome != Outcome::Running,
             _ => true,
@@ -566,7 +638,7 @@ impl App {
                 .cloned()
         });
         if kept.is_none() {
-            self.beside.set(false);
+            self.forget_way();
         }
         *self.chosen.borrow_mut() = kept;
         *self.disks.borrow_mut() = found;
@@ -611,7 +683,7 @@ impl App {
         let mode_items: Vec<Item> = chosen
             .as_ref()
             .map(|disk| {
-                model::mode_rows(disk, uefi, self.beside.get())
+                model::mode_rows(disk, uefi, self.way.get(), &self.look.borrow())
                     .into_iter()
                     .map(|row| Item {
                         id: row.id.into(),
@@ -636,14 +708,172 @@ impl App {
         wizard.set_modes(rows(mode_items));
         let (note, warns) = chosen
             .as_ref()
-            .map(|disk| {
-                let offer = self.offer_for(disk);
-                model::change_note(disk, offer.as_ref())
-            })
+            .map(|disk| self.note_for(disk))
             .unwrap_or_default();
         wizard.set_erase_warning(note.into());
         wizard.set_note_warns(warns);
         drop(chosen);
+        self.render_shrink();
+        self.set_can_next();
+    }
+
+    /// What is said about the change to `disk` that is chosen.
+    fn note_for(&self, disk: &Disk) -> (String, bool) {
+        match self.way.get() {
+            Way::Unchosen => (String::new(), false),
+            Way::Shrink => match self.squeeze() {
+                Some(squeeze) => (model::shrink_note(disk, &squeeze), true),
+                None => (String::new(), true),
+            },
+            _ => model::change_note(disk, self.offer_for(disk).as_ref()),
+        }
+    }
+
+    /// The size control and what goes with it, as far as the chosen disk
+    /// has them.
+    fn render_shrink(&self) {
+        let wizard = self.wizard();
+        let at_sight = self
+            .chosen
+            .borrow()
+            .as_ref()
+            .and_then(|disk| model::refused_at_sight(disk, self.uefi_now()));
+        let look = self.look.borrow().clone();
+        let shrinking = self.way.get() == Way::Shrink;
+        let (state, words) = match (at_sight, &look) {
+            (Some(refusal), _) => ("refused", refusal.words()),
+            (None, Look::Refused(refusal)) if shrinking => ("refused", refusal.words()),
+            (None, Look::Looking) if shrinking => ("looking", String::new()),
+            (None, Look::Ready(_)) if shrinking => ("ready", String::new()),
+            _ => ("", String::new()),
+        };
+        wizard.set_shrink_state(state.into());
+        wizard.set_shrink_words(words.into());
+        wizard.set_shrink_backup(self.backup.get());
+        if let Some(squeeze) = self.squeeze() {
+            let room = squeeze.analysis.room;
+            let [uses, range, sengi, windows] = squeeze.words();
+            wizard.set_shrink_uses(uses.into());
+            wizard.set_shrink_range(range.into());
+            wizard.set_shrink_sengi(sengi.into());
+            wizard.set_shrink_windows(windows.into());
+            wizard.set_shrink_min(room.smallest_gb as i32);
+            wizard.set_shrink_max(room.largest_gb as i32);
+            wizard.set_shrink_gb(squeeze.gb as i32);
+        }
+    }
+
+    /// The size that is chosen, once Windows has been looked at.
+    fn squeeze(&self) -> Option<Squeeze> {
+        match &*self.look.borrow() {
+            Look::Ready(analysis) => Some(Squeeze::with(analysis.clone(), self.room_gb.get())),
+            _ => None,
+        }
+    }
+
+    fn disk_ready(&self) -> bool {
+        model::disk_page_ready(
+            self.chosen.borrow().is_some(),
+            self.way.get(),
+            &self.look.borrow(),
+            self.backup.get(),
+        )
+    }
+
+    /// Back to nothing chosen about how a disk is used.
+    fn forget_way(&self) {
+        self.way.set(Way::Erase);
+        self.forget_look();
+    }
+
+    /// What was found out about Windows no longer stands: it is looked at
+    /// again when it is wanted, and the backup is asked about again.
+    fn forget_look(&self) {
+        *self.look.borrow_mut() = Look::NotYet;
+        self.looks.set(self.looks.get().wrapping_add(1));
+        self.backup.set(false);
+    }
+
+    /// Look at the disks and at Windows again, as the button asks.
+    fn look_again(&self) {
+        self.forget_look();
+        self.scan();
+        if self.way.get() == Way::Shrink {
+            self.look_at_windows();
+        }
+    }
+
+    /// Have sengi-install look at the Windows partition of the chosen
+    /// disk, which writes nothing, on a thread of its own: on a large
+    /// volume it takes a while.
+    fn look_at_windows(&self) {
+        let Some(disk) = self.chosen.borrow().clone() else {
+            return;
+        };
+        *self.look.borrow_mut() = Look::Looking;
+        let look = self.looks.get().wrapping_add(1);
+        self.looks.set(look);
+        self.render_disks();
+        if self.demo != Demo::Off {
+            post(move |app| app.looked(look, Ok(Ok(demo_analysis(&disk)))));
+            return;
+        }
+        let path = disk.path.clone();
+        let spawned = std::thread::Builder::new()
+            .name("installer-windows".to_string())
+            .spawn(move || {
+                let answer = analyze(&path);
+                post(move |app| app.looked(look, answer));
+            });
+        if let Err(error) = spawned {
+            self.looked(look, Err(error.to_string()));
+        }
+    }
+
+    /// The answer to look number `look`. One that is not the latest is for
+    /// a disk, or a state of one, that is no longer asked about.
+    fn looked(&self, look: u32, answer: Result<Result<Analysis, Refusal>, String>) {
+        if look != self.looks.get() || *self.look.borrow() != Look::Looking {
+            return;
+        }
+        // The disk the person is shown and the one root read are one.
+        let shown = self
+            .chosen
+            .borrow()
+            .as_ref()
+            .and_then(|disk| sengi_install::beside::Table::from_disk(disk).ok())
+            .map(|table| table.snapshot());
+        let found = match answer {
+            Ok(Ok(analysis)) if shown.as_deref() != Some(analysis.table.as_str()) => {
+                Look::Refused(Refusal::Other(
+                    "the partition table of the disk is not the one that was listed".to_string(),
+                ))
+            }
+            Ok(Ok(analysis)) => {
+                self.room_gb.set(Squeeze::new(analysis.clone()).gb);
+                Look::Ready(analysis)
+            }
+            Ok(Err(refusal)) => Look::Refused(refusal),
+            Err(why) => Look::Refused(Refusal::Other(sengi_text::line(&why, 300))),
+        };
+        *self.look.borrow_mut() = found;
+        self.render_disks();
+    }
+
+    fn size_picked(&self, gb: i32) {
+        self.room_gb.set(gb.max(0) as u64);
+        self.render_shrink();
+        if let Some(disk) = self.chosen.borrow().as_ref() {
+            let (note, warns) = self.note_for(disk);
+            let wizard = self.wizard();
+            wizard.set_erase_warning(note.into());
+            wizard.set_note_warns(warns);
+        }
+    }
+
+    fn backup_ticked(&self, ticked: bool) {
+        self.backup.set(ticked);
+        self.render_shrink();
         self.set_can_next();
     }
 
@@ -657,7 +887,7 @@ impl App {
     /// What installing beside what is on `disk` would use, if that is what
     /// was chosen and it can be done.
     fn offer_for(&self, disk: &Disk) -> Option<sengi_install::beside::Offer> {
-        if !self.beside.get() {
+        if self.way.get() != Way::Beside {
             return None;
         }
         model::beside_offer(disk, self.uefi_now()).ok()
@@ -667,13 +897,23 @@ impl App {
         let Some(disk) = self.chosen.borrow().clone() else {
             return;
         };
-        let beside = match id {
-            model::BESIDE => model::beside_offer(&disk, self.uefi_now()).is_ok(),
-            model::ERASE => false,
+        let way = match id {
+            model::BESIDE if model::beside_offer(&disk, self.uefi_now()).is_ok() => Way::Beside,
+            model::SHRINK
+                if sengi_install::beside::squeeze(&disk, self.uefi_now()).is_some()
+                    && model::refused_at_sight(&disk, self.uefi_now()).is_none() =>
+            {
+                Way::Shrink
+            }
+            model::ERASE => Way::Erase,
             _ => return,
         };
-        self.beside.set(beside);
-        self.render_disks();
+        self.way.set(way);
+        if way == Way::Shrink && *self.look.borrow() == Look::NotYet {
+            self.look_at_windows();
+        } else {
+            self.render_disks();
+        }
     }
 
     fn pick_disk(&self, path: &str) {
@@ -689,7 +929,10 @@ impl App {
             if self.chosen.borrow().as_ref().map(|disk| &disk.path)
                 != picked.as_ref().map(|disk| &disk.path)
             {
-                self.beside.set(false);
+                self.forget_way();
+                if let Some(disk) = picked.as_ref() {
+                    self.way.set(model::first_way(disk, self.uefi_now()));
+                }
             }
             *self.chosen.borrow_mut() = picked;
             self.render_disks();
@@ -748,15 +991,23 @@ impl App {
         let Some(disk) = chosen.as_ref() else { return };
         let wizard = self.wizard();
         let offer = self.offer_for(disk);
-        let rows = match &offer {
-            Some(offer) => model::review_beside(
+        let squeeze = self.squeeze().filter(|_| self.way.get() == Way::Shrink);
+        let rows = match (&offer, &squeeze) {
+            (_, Some(squeeze)) => model::review_shrink(
+                &self.form.borrow(),
+                disk,
+                squeeze,
+                &self.layout_name(),
+                &self.zone.borrow(),
+            ),
+            (Some(offer), None) => model::review_beside(
                 &self.form.borrow(),
                 disk,
                 offer,
                 &self.layout_name(),
                 &self.zone.borrow(),
             ),
-            None => model::review(
+            (None, None) => model::review(
                 &self.form.borrow(),
                 disk,
                 &self.layout_name(),
@@ -765,7 +1016,7 @@ impl App {
             ),
         };
         wizard.set_review(facts(rows));
-        let (note, warns) = model::change_note(disk, offer.as_ref());
+        let (note, warns) = self.note_for(disk);
         wizard.set_erase_warning(note.into());
         wizard.set_note_warns(warns);
     }
@@ -775,8 +1026,14 @@ impl App {
     fn ask_to_erase(&self) {
         let chosen = self.chosen.borrow();
         let Some(disk) = chosen.as_ref() else { return };
-        let offer = self.offer_for(disk);
-        let (title, body, confirm, danger) = model::question(disk, offer.as_ref());
+        let (title, body, confirm, danger) = match self.way.get() {
+            Way::Unchosen => return,
+            Way::Shrink => match self.squeeze() {
+                Some(squeeze) if self.backup.get() => model::shrink_question(disk, &squeeze),
+                _ => return,
+            },
+            _ => model::question(disk, self.offer_for(disk).as_ref()),
+        };
         let state = self.window.global::<DialogState>();
         state.set_spec(DialogSpec {
             title: title.into(),
@@ -804,9 +1061,19 @@ impl App {
         if !self.form_ready() {
             return;
         }
-        let beside = self.offer_for(&disk).map(|offer| model::beside_of(&offer));
-        // Beside was chosen and cannot be done any more: nothing starts.
-        if self.beside.get() && beside.is_none() {
+        let way = self.way.get();
+        let beside = match way {
+            Way::Unchosen => return,
+            Way::Erase => None,
+            Way::Beside => self.offer_for(&disk).map(|offer| model::beside_of(&offer)),
+            Way::Shrink => self
+                .squeeze()
+                .filter(|_| self.backup.get())
+                .and_then(|squeeze| squeeze.beside()),
+        };
+        // Beside was chosen and cannot be done any more: nothing starts,
+        // and nothing is erased in its place.
+        if way != Way::Erase && beside.is_none() {
             return;
         }
         let plan = self
@@ -1009,6 +1276,7 @@ impl App {
             .collect();
         wizard.set_steps(rows(steps));
         wizard.set_warnings(progress.warnings.join(" ").into());
+        wizard.set_shrinking(progress.shrinking());
         // While the program runs, the window waits for it. When it has
         // said how it ended and has gone, the buttons come back.
         if self.installing.get() {
@@ -1024,9 +1292,14 @@ impl App {
             Outcome::Running => {}
             Outcome::Done(seconds) => {
                 wizard.set_outcome("done".into());
+                let windows = if progress.shrinks.is_some() {
+                    " Windows was made smaller: the next time it starts it checks its disk first. That is expected; let it finish."
+                } else {
+                    ""
+                };
                 wizard.set_outcome_words(
                     format!(
-                        "Sengi OS is on {disk}. It took {}. Restart the computer, and take the USB stick out as soon as the screen goes dark: left in, the computer may start from the stick again. Then log in with the name and password you chose.",
+                        "Sengi OS is on {disk}. It took {}. Restart the computer, and take the USB stick out as soon as the screen goes dark: left in, the computer may start from the stick again. Then log in with the name and password you chose.{windows}",
                         model::duration_words(*seconds)
                     )
                     .into(),
@@ -1079,7 +1352,7 @@ impl App {
             page => {
                 let ready = match page {
                     "region" => !self.zone.borrow().is_empty(),
-                    "disk" => self.chosen.borrow().is_some(),
+                    "disk" => self.disk_ready(),
                     "you" => self.form_ready(),
                     _ => true,
                 };
@@ -1123,7 +1396,9 @@ impl App {
         on!(on_choose_zone, |app| app.choose_zone());
         on!(on_disk_picked, |app, id| app.pick_disk(&id));
         on!(on_mode_picked, |app, id| app.pick_mode(&id));
-        on!(on_look_again, |app| app.scan());
+        on!(on_look_again, |app| app.look_again());
+        on!(on_shrink_picked, |app, gb| app.size_picked(gb));
+        on!(on_backup_ticked, |app, ticked| app.backup_ticked(ticked));
         on!(on_full_name_edited, |app, text| {
             app.form.borrow_mut().set_full_name(&text);
             app.render_form();
@@ -1254,7 +1529,11 @@ fn main() -> ExitCode {
         page: Cell::new("welcome"),
         disks: RefCell::new(Vec::new()),
         chosen: RefCell::new(None),
-        beside: Cell::new(false),
+        way: Cell::new(Way::Erase),
+        look: RefCell::new(Look::NotYet),
+        looks: Cell::new(0),
+        room_gb: Cell::new(0),
+        backup: Cell::new(false),
         form: RefCell::new(Form {
             host_name: model::DEFAULT_HOST_NAME.to_string(),
             ..Form::default()

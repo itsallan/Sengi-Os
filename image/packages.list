@@ -101,3 +101,6 @@ efibootmgr
 # Installing beside another system: update-grub runs os-prober to put
 # Windows and other systems in the boot menu.
 os-prober
+# Making Windows smaller to install beside it: ntfsresize and ntfs-3g.probe.
+# For the live system only; sengi-install takes it off what it installs.
+ntfs-3g

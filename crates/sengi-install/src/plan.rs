@@ -51,6 +51,7 @@ use sengi_config::{Document, Value};
 
 use crate::beside::{self, Beside};
 use crate::names;
+use crate::shrink::Shrink;
 
 pub const VERSION: i64 = 1;
 
@@ -60,7 +61,7 @@ pub const LIVE_ROOT: &str = "/run/sengi/rootfs";
 pub const LIVE_KERNEL: &str = "/run/sengi/medium/live/vmlinuz";
 
 /// Every key a plan may have.
-const KEYS: [(&str, &str); 19] = [
+const KEYS: [(&str, &str); 22] = [
     ("plan", "version"),
     ("disk", "device"),
     ("disk", "mode"),
@@ -80,6 +81,9 @@ const KEYS: [(&str, &str); 19] = [
     ("beside", "sectors"),
     ("beside", "esp"),
     ("beside", "table"),
+    ("shrink", "partition"),
+    ("shrink", "sectors"),
+    ("shrink", "backup"),
 ];
 /// And one more, kept apart because it is not text.
 const ALLOW_LOOP: (&str, &str) = ("source", "allow-loop");
@@ -124,8 +128,13 @@ fn parse_beside(document: &Document, mode: Mode, size: u64) -> Result<Option<Bes
         .iter()
         .any(|(section, key)| *section == "beside" && document.get(section, key).is_some());
     if mode == Mode::Erase {
+        let shrinks = KEYS
+            .iter()
+            .any(|(section, key)| *section == "shrink" && document.get(section, key).is_some());
         return if has_any {
             Err("the plan erases the disk and also has a [beside] section".to_string())
+        } else if shrinks {
+            Err("the plan erases the disk and also has a [shrink] section".to_string())
         } else {
             Ok(None)
         };
@@ -155,11 +164,45 @@ fn parse_beside(document: &Document, mode: Mode, size: u64) -> Result<Option<Bes
     if start.saturating_add(sectors) > size / 512 {
         return Err("the free space is not on the disk".to_string());
     }
+    let shrink = parse_shrink(document, esp)?;
     Ok(Some(Beside {
         start,
         sectors,
         esp: esp as u32,
         table,
+        shrink,
+    }))
+}
+
+/// The `[shrink]` section: all of it or none, and never without the
+/// person having said that there is a backup.
+fn parse_shrink(document: &Document, esp: u64) -> Result<Option<Shrink>, String> {
+    if !KEYS
+        .iter()
+        .any(|(section, key)| *section == "shrink" && document.get(section, key).is_some())
+    {
+        return Ok(None);
+    }
+    let number = |key: &str| match document.get("shrink", key) {
+        Some(Value::Number(number)) if *number > 0 => Ok(*number as u64),
+        _ => Err(format!(
+            "the plan has no shrink.{key}, or it is not a number"
+        )),
+    };
+    let partition = number("partition")?;
+    let sectors = number("sectors")?;
+    if partition > 128 || partition == esp {
+        return Err("shrink.partition is not a partition that may be made smaller".to_string());
+    }
+    if document.get("shrink", "backup") != Some(&Value::Flag(true)) {
+        return Err(
+            "the plan makes a partition smaller and does not say that there is a backup (shrink.backup)"
+                .to_string(),
+        );
+    }
+    Ok(Some(Shrink {
+        partition: partition as u32,
+        sectors,
     }))
 }
 
@@ -312,6 +355,12 @@ impl Plan {
                 beside.esp,
                 text(&beside.table)
             ));
+            if let Some(shrink) = &beside.shrink {
+                out.push_str(&format!(
+                    "\n[shrink]\npartition = {}\nsectors = {}\nbackup = true\n",
+                    shrink.partition, shrink.sectors
+                ));
+            }
         }
         let root = self.source_root.to_string_lossy();
         let kernel = self.kernel.to_string_lossy();
@@ -512,6 +561,47 @@ keyboard = \"fr(azerty)\"
         assert_eq!(erase.mode, Mode::Erase);
         assert_eq!(erase.beside, None);
         assert!(!erase.render().contains("[beside]"));
+    }
+
+    const SHRINK: &str = "\n[shrink]\npartition = 3\nsectors = 16777216\nbackup = true\n";
+
+    #[test]
+    fn a_plan_that_makes_room_says_which_partition_how_small_and_that_there_is_a_backup() {
+        let plan = Plan::parse(&format!("{}{SHRINK}", beside_plan())).unwrap();
+        let shrink = plan.beside.as_ref().unwrap().shrink.unwrap();
+        assert_eq!((shrink.partition, shrink.sectors), (3, 16_777_216));
+        assert!(plan.render().contains("backup = true"));
+        assert_eq!(Plan::parse(&plan.render()), Ok(plan));
+        // Without it nothing is made smaller, and nothing says so.
+        assert!(!Plan::parse(&beside_plan())
+            .unwrap()
+            .render()
+            .contains("[shrink]"));
+    }
+
+    #[test]
+    fn a_plan_to_make_room_that_is_not_whole_is_refused() {
+        for (old, new, word) in [
+            ("backup = true\n", "", "backup"),
+            ("backup = true", "backup = false", "backup"),
+            ("backup = true", "backup = \"yes\"", "backup"),
+            ("partition = 3\n", "", "shrink.partition"),
+            ("sectors = 16777216\n", "", "shrink.sectors"),
+            ("sectors = 16777216", "sectors = 0", "shrink.sectors"),
+            ("partition = 3", "partition = 0", "shrink.partition"),
+            ("partition = 3", "partition = 200", "may be made smaller"),
+            // The EFI system partition.
+            ("partition = 3", "partition = 1", "may be made smaller"),
+        ] {
+            let text = format!("{}{}", beside_plan(), SHRINK.replace(old, new));
+            let problem = Plan::parse(&text).unwrap_err();
+            assert!(problem.contains(word), "{new}: {problem}");
+        }
+        let forced = format!("{}{SHRINK}force = true\n", beside_plan());
+        assert!(Plan::parse(&forced).unwrap_err().contains("shrink.force"));
+        // Never with a plan that erases.
+        let erase = format!("{PLAN}{SHRINK}");
+        assert!(Plan::parse(&erase).unwrap_err().contains("[shrink]"));
     }
 
     #[test]
