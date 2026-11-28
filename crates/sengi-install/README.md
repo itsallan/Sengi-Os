@@ -172,11 +172,14 @@ fallback path.
 
 The installed system's menu is hidden and waits one second. Press Esc in
 that second, or keep pressing it from power-on, and the menu is shown.
-With no wait at all, as on the live image, GRUB looks once for a key that
-is already there: tried in QEMU, Esc then showed the menu under BIOS but
-not under UEFI, and Shift under neither. With the second it shows under
-both. The install test presses Esc on every run and fails if the menu
-does not hold the system.
+Some firmware uses Esc for a menu of its own while it still has the
+keyboard: close that menu and keep pressing. With no wait at all, as on the
+live image, GRUB looks once for a key that is already there: tried in QEMU,
+Esc then showed the menu under BIOS but not under UEFI, and Shift under
+neither. With the second Esc shows it under both. Tapping Shift does so
+under BIOS only. The install test waits for the firmware to say it is
+starting the boot loader, presses Esc until the menu is on the screen, and
+fails if the menu does not appear, stay and start the system.
 
 The menu has an entry "Sengi OS, text mode (if the desktop does not
 start)". It starts the same kernel with `sengi.text

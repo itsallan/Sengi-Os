@@ -602,29 +602,84 @@ stop
 report=$serial
 
 # Third start: the way in when the desktop does not start. GRUB's menu is
-# hidden and waits a second for Esc. Esc is pressed all through the hand-
-# over from the firmware; the menu then has to be up, which shows as the
-# system not starting by itself, and on the screen. Return starts it.
-menu_fail=
-start_qemu "$out/serial-menu.log" "$out/monitor-menu.log" \
-	-drive "file=$disk,format=qcow2,if=virtio,cache=unsafe"
-tries=60
-while [ "$tries" -gt 0 ]; do
-	echo "sendkey esc" >&3
-	tries=$((tries - 1))
+# hidden and waits a second for Esc. Nothing is pressed while the firmware
+# has the keyboard: some firmware has a use of its own for Esc (OVMF opens
+# its boot menu), and where that leaves the machine depends on how fast it
+# is. Once the firmware says it is starting the boot loader, Esc is pressed
+# until the menu is seen on the screen. It then has to stay there, and
+# Return has to start the system.
+
+# Whether the screen shows GRUB's menu: the blue of its box at three places
+# that no entry reaches.
+menu_on_screen() {
+	rm -f "$out/menu.ppm"
+	echo "screendump $out/menu.ppm" >&3
 	sleep 0.2
-done
-sleep 8
-shot installed-boot-menu
-if grep -q SENGI-LOGIN "$serial"; then
-	menu_fail="Esc at start-up did not show GRUB's menu: the system started by itself"
+	[ -s "$out/menu.ppm" ] || return 1
+	header=$(head -n 3 "$out/menu.ppm" | wc -c)
+	width=$(sed -n '2{s/ .*//p;q;}' "$out/menu.ppm")
+	height=$(sed -n '2{s/.* //p;q;}' "$out/menu.ppm")
+	[ "$(wc -c <"$out/menu.ppm")" -eq $((header + width * height * 3)) ] || return 1
+	for at in "40 50" "50 55" "60 50"; do
+		offset=$((header + (height * ${at#* } / 100 * width + width * ${at% *} / 100) * 3))
+		od -An -tu1 -j "$offset" -N 3 "$out/menu.ppm" |
+			awk '{ exit !($1 < 40 && $2 < 40 && $3 > 100) }' || return 1
+	done
+}
+
+menu_fail=
+rm -f "$out/firmware.log"
+if [ "$firmware" = uefi ]; then
+	handover_log=$out/serial-menu.log
+	handover='BdsDxe: starting Boot'
+	set --
 else
+	handover_log=$out/firmware.log
+	handover='Booting from 0000:7c00'
+	set -- -chardev "file,id=firmware,path=$handover_log" \
+		-device isa-debugcon,iobase=0x402,chardev=firmware
+fi
+start_qemu "$out/serial-menu.log" "$out/monitor-menu.log" \
+	-drive "file=$disk,format=qcow2,if=virtio,cache=unsafe" "$@"
+tries=3000
+until grep -a -q "$handover" "$handover_log" 2>/dev/null; do
+	tries=$((tries - 1))
+	if [ "$tries" -le 0 ] || ! kill -0 "$qemu" 2>/dev/null; then
+		menu_fail="the firmware did not say it was starting the boot loader"
+		break
+	fi
+	sleep 0.02
+done
+if [ -z "$menu_fail" ]; then
+	tries=200
+	until menu_on_screen; do
+		tries=$((tries - 1))
+		if grep -q SENGI-LOGIN "$serial"; then
+			menu_fail="Esc did not show GRUB's menu: the system started by itself"
+			break
+		elif [ "$tries" -le 0 ]; then
+			menu_fail="Esc did not show GRUB's menu"
+			break
+		fi
+		echo "sendkey esc" >&3
+	done
+fi
+if [ -z "$menu_fail" ]; then
+	# A key stops the count of a menu that is shown for a few seconds only.
+	key esc 8
+	if grep -q SENGI-LOGIN "$serial" || ! menu_on_screen; then
+		menu_fail="GRUB's menu did not stay on the screen"
+	fi
+fi
+shot installed-boot-menu
+if [ -z "$menu_fail" ]; then
 	key ret 0
 	wait_serial SENGI-LOGIN "$timeout_s" ||
 		menu_fail="the system did not start from GRUB's menu after Return"
 	grep -q 'sengi.text' "$report" && menu_fail="the kernel's command line of an ordinary start says text mode"
 fi
 stop
+rm -f "$out/menu.ppm"
 serial=$report
 
 ram_mb=$(tr -d '\r' <"$serial" | sed -n 's/.*SENGI-IDLE ram_mb=\([0-9]*\).*/\1/p' | head -1)
@@ -677,6 +732,10 @@ if grep -q SENGI-FAIL "$out"/serial-*.log; then
 fi
 if [ -n "$menu_fail" ]; then
 	echo "FAIL: $menu_fail" >&2
+	# CI's logs need a sign-in; what the third start said last does not.
+	said=$(grep -a -o -E 'BdsDxe: starting Boot[0-9A-F]+ "[^"]*"|Loading [A-Za-z]+|SENGI-[A-Z]+' \
+		"$out/serial-menu.log" 2>/dev/null | tail -n 3 | tr '\n' ' ')
+	annotate "FAIL: $menu_fail (last said: $said)"
 	fail=1
 fi
 root_node=/dev/vda3
