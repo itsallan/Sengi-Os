@@ -54,8 +54,8 @@ enum IconState {
 
 type InputCallback = Box<dyn Fn(&[Rect])>;
 
-/// How often the pinned list's file is looked at for changes made by
-/// another program. One stat call.
+/// How often the pinned list's file and the applications directories are
+/// looked at for changes made by another program. A stat call each.
 const WATCH_EVERY: Duration = Duration::from_secs(2);
 
 /// When a file was last changed, and how long it is.
@@ -360,8 +360,9 @@ impl App {
         state.save_to = path;
     }
 
-    /// Starts looking at the pinned list's file for changes made by another
-    /// program, such as "Keep in Dock" in the launcher.
+    /// Starts looking for changes made by other programs: to the pinned
+    /// list's file, such as "Keep in Dock" in the launcher, and to what is
+    /// installed, such as an app removed in the Store.
     pub fn watch_config(&self) {
         let weak = Rc::downgrade(&self.inner);
         let state = self.inner.state.borrow();
@@ -369,9 +370,25 @@ impl App {
             .watch
             .start(slint::TimerMode::Repeated, WATCH_EVERY, move || {
                 if let Some(inner) = weak.upgrade() {
-                    App { inner }.reload_pins();
+                    let app = App { inner };
+                    app.reload_pins();
+                    app.reload_apps();
                 }
             });
+    }
+
+    /// Reads the installed apps again if any were added or removed, so that
+    /// a pinned app that is gone leaves the dock. Its pin stays in the file,
+    /// and it is back when the app is.
+    pub fn reload_apps(&self) {
+        let windows = {
+            let mut state = self.inner.state.borrow_mut();
+            if !state.dock.reload_if_changed() {
+                return;
+            }
+            state.windows.clone()
+        };
+        self.set_windows(&windows);
     }
 
     /// Takes in the pinned list again if the file changed since the dock

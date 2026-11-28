@@ -13,7 +13,13 @@ terminal (`foot`), as it always has. An empty list pins nothing.
 
 The dock reads the file at start, and again when another program changes it,
 and writes the user's file whenever you pin, unpin or reorder. It replaces
-only the `pinned` entry and keeps comments and other keys. The file is written under another name and renamed, so a crash
+only the `pinned` entry and keeps comments and other keys.
+
+A pinned app that is not installed has no tile, but stays in the list. When an
+app is removed its tile goes within two seconds, and it is back in its place
+when the app is installed again. For that the dock also looks, every two
+seconds, at when each `applications` directory last changed (one `stat` each)
+and reads the apps again only if one has. The file is written under another name and renamed, so a crash
 cannot leave half a list. A user file the dock cannot read is kept as
 `dock.toml.bak` before it is replaced. If the file cannot be written (no
 home, read-only) the change still takes effect until the dock exits, and an

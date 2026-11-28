@@ -352,15 +352,18 @@ impl Dock {
     }
 
     /// Re-reads the desktop entries if an applications directory has changed
-    /// since they were last read.
-    fn reload_if_changed(&mut self) {
+    /// since they were last read, and says whether it did. It costs one
+    /// stat call a directory when nothing has.
+    pub fn reload_if_changed(&mut self) -> bool {
         let now = stamps(&self.data_dirs);
-        if now != self.stamps {
-            self.stamps = now;
-            self.apps = AppIndex::load(&self.data_dirs, &self.env);
-            self.keys.clear();
-            self.generation += 1;
+        if now == self.stamps {
+            return false;
         }
+        self.stamps = now;
+        self.apps = AppIndex::load(&self.data_dirs, &self.env);
+        self.keys.clear();
+        self.generation += 1;
+        true
     }
 
     pub fn load(pinned: Vec<String>, data_dirs: Vec<PathBuf>, env: Env) -> Self {
@@ -472,8 +475,8 @@ impl Dock {
     /// their focus. So an app with one window and an open dialog still has
     /// one window, and a portal's file chooser does not get a tile.
     pub fn items(&mut self, windows: &[Window]) -> Vec<Item> {
-        // A window opening is the moment a newly installed app matters, and
-        // the only time the directories are looked at: never on a timer.
+        // A newly installed app matters the moment its window opens, which
+        // is not left to the dock's next look at the directories.
         let newest = windows.iter().map(|w| w.id).max().unwrap_or(0);
         if newest > self.newest_window {
             self.newest_window = newest;
@@ -755,6 +758,32 @@ mod tests {
             .unwrap()
             .set_modified(time)
             .unwrap();
+    }
+
+    #[test]
+    fn a_removed_app_leaves_the_dock_and_its_pin_waits_for_it() {
+        let dir = temp_dir("removed");
+        let apps_dir = dir.join("applications");
+        let entry = apps_dir.join("paint.desktop");
+        let text = "[Desktop Entry]\nType=Application\nName=Paint\nExec=paint\n";
+        write(&entry, text);
+        touch(&apps_dir, 1_000);
+        let mut dock = Dock::load(vec!["paint".into()], vec![dir.clone()], env());
+        assert_eq!(keys(&dock.items(&[])), ["", "paint"]);
+        assert!(!dock.reload_if_changed());
+
+        std::fs::remove_file(&entry).unwrap();
+        touch(&apps_dir, 2_000);
+        // No window has opened: the dock's own look finds it.
+        assert!(dock.reload_if_changed());
+        assert_eq!(keys(&dock.items(&[])), [""]);
+        assert_eq!(dock.pinned(), ["paint"]);
+
+        write(&entry, text);
+        touch(&apps_dir, 3_000);
+        assert!(dock.reload_if_changed());
+        assert_eq!(keys(&dock.items(&[])), ["", "paint"]);
+        assert_eq!(dock.generation(), 2);
     }
 
     #[test]
