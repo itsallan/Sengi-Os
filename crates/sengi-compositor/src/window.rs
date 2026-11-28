@@ -358,6 +358,10 @@ impl State {
                     location
                 };
                 self.space.map_element(window.clone(), location, true);
+                // Back on the desktop it is the one in front, whoever asked
+                // for it: every window there has its place in the focus
+                // order.
+                self.focus_window(window);
             }
             _ => {}
         }

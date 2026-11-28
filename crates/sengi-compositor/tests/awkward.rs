@@ -294,6 +294,24 @@ fn a_click_in_the_dock_on_a_minimised_window_that_is_closing_changes_nothing() {
     click_the_dock_on_a_window_as_it_closes(true);
 }
 
+#[test]
+fn a_window_the_dock_restores_comes_back_in_front() {
+    let compositor = Compositor::start(None);
+    let mut other = a_program(&compositor);
+    let _other = window(&mut other, "other", RED);
+    let mut app = a_program(&compositor);
+    let _window = window(&mut app, "hidden", GREEN);
+    let (mut dock, handles) = dock(&compositor);
+    let wanted = handle(&mut dock, &handles, "hidden");
+    wanted.set_minimized();
+    dock.roundtrip().unwrap();
+    wanted.unset_minimized();
+    dock.roundtrip().unwrap();
+    sound(&compositor);
+    assert!(window_line(&compositor, "hidden").contains("active=1"));
+    assert!(types_into(&compositor, &mut app));
+}
+
 impl Dispatch<XdgPositioner, ()> for Seen {
     fn event(
         _: &mut Self,

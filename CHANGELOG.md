@@ -41,6 +41,8 @@ and the measured idle RAM and boot time.
   a move with the click that opened a menu.
 - Clicking a window in the dock just as it closes no longer leaves the
   keyboard going nowhere.
+- A window that is restored without being chosen, as X11 programs can do,
+  comes back in front and Alt+Tab finds it.
 
 ## 1.0.0 - 2026-11-27
 
