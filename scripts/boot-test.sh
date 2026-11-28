@@ -185,6 +185,34 @@ click() {
 	echo "mouse_button 0" >&3
 	sleep 2
 }
+# In mouse_button's mask 2 is the right button.
+right_click() {
+	echo "mouse_button 2" >&3
+	sleep 0.2
+	echo "mouse_button 0" >&3
+	sleep 1
+}
+# A raw dump of the screen, and how many bytes of two of them differ.
+dump() {
+	echo "screendump $out/$1.ppm" >&3
+	sleep 1
+}
+differs() {
+	cmp -l "$out/$1.ppm" "$out/$2.ppm" 2>/dev/null | wc -l
+}
+# The same for $4 rows of the screen from row $3. Rows of a dump are three
+# bytes a pixel after a short header.
+strip() {
+	size=$(wc -c <"$out/$1.ppm")
+	header=$((size - screen_w * screen_h * 3))
+	tail -c +$((header + $2 * screen_w * 3 + 1)) "$out/$1.ppm" |
+		head -c $(($3 * screen_w * 3)) >"$out/$1.strip"
+}
+strip_differs() {
+	strip "$1" "$3" "$4"
+	strip "$2" "$3" "$4"
+	cmp -l "$out/$1.strip" "$out/$2.strip" 2>/dev/null | wc -l
+}
 
 # The live image asks whether to install Sengi OS or try it first. The guest
 # says when it has been up and left alone, with what memory is used then. It
@@ -463,6 +491,59 @@ if [ -z "$dock_fail" ] && [ "$(cmp -l "$out/before.ppm" "$out/after.ppm" 2>/dev/
 fi
 rm -f "$out/before.ppm" "$out/with.ppm" "$out/after.ppm"
 
+# The dock's own menu: a right click on an icon, then the pointer taken up to
+# a row a little at a time, as a hand takes it, and left there. The menu has
+# to stay until Escape; and, opened again, to stay with the pointer far away
+# until a click there, which does nothing more. The menu is above the panel,
+# which with its margin is 72 px high; its two rows are in the 56 px above a
+# gap of 4.
+menu_fail=
+menu_bytes=5000
+# The rows of the screen the menu is on, with nothing of the dock below it.
+menu_differs() {
+	strip_differs "$1" "$2" $((screen_h - 130)) 50
+}
+# Right-clicks the icon at $1 and goes up to the lower row of its menu.
+open_dock_menu() {
+	pointer "$1" "$dock_y"
+	right_click
+	for up in 66 74 84 93; do
+		pointer "$1" $((screen_h - up))
+	done
+}
+park() {
+	pointer $((screen_w / 8)) $((screen_h / 2))
+}
+park
+dump menu-none
+open_dock_menu "$dock_x"
+sleep 2
+shot dock-menu
+dump menu-open
+changed=$(menu_differs menu-none menu-open)
+echo "dock menu with the pointer on a row: $changed bytes changed" >&2
+[ "$changed" -ge "$menu_bytes" ] ||
+	menu_fail="the dock menu did not stay while the pointer went to its row ($changed bytes changed)"
+key esc 1
+park
+dump menu-gone
+changed=$(menu_differs menu-none menu-gone)
+[ -n "$menu_fail" ] || [ "$changed" -lt 500 ] ||
+	menu_fail="Escape did not close the dock menu ($changed bytes differ from before)"
+open_dock_menu "$dock_x"
+park
+sleep 2
+dump menu-away
+changed=$(menu_differs menu-none menu-away)
+[ -n "$menu_fail" ] || [ "$changed" -ge "$menu_bytes" ] ||
+	menu_fail="the dock menu went when the pointer left it ($changed bytes changed)"
+click
+dump menu-clicked
+changed=$(menu_differs menu-none menu-clicked)
+[ -n "$menu_fail" ] || [ "$changed" -lt 500 ] ||
+	menu_fail="a click elsewhere did not close the dock menu ($changed bytes differ from before)"
+rm -f "$out"/menu-*.ppm
+
 # The Store, from its icon next to Settings: the same click, one icon further
 # on. Closed again with the window shortcut, as Settings is.
 store_fail=
@@ -513,13 +594,6 @@ lock_fail=
 # two apart is the bar, the dock and the terminal that is open, and the
 # bar alone is over a hundred thousand bytes of a dump.
 covered_bytes=100000
-differs() {
-	cmp -l "$out/$1.ppm" "$out/$2.ppm" 2>/dev/null | wc -l
-}
-dump() {
-	echo "screendump $out/$1.ppm" >&3
-	sleep 1
-}
 # The lock screen's clock redraws itself when the minute turns, so "the
 # screen changed" says nothing about the prompt. This looks only at a band
 # across the screen below the date, where the name, the field and the line
@@ -727,19 +801,7 @@ else
 	apps "the guest did not get as far as what foot said"
 fi
 # A terminal over the whole screen: the bar's rows and the dock's have to
-# change, and be as they were once it is closed. Rows of a dump are three
-# bytes a pixel after a short header.
-strip() {
-	size=$(wc -c <"$out/$1.ppm")
-	header=$((size - screen_w * screen_h * 3))
-	tail -c +$((header + $2 * screen_w * 3 + 1)) "$out/$1.ppm" |
-		head -c $(($3 * screen_w * 3)) >"$out/$1.strip"
-}
-strip_differs() {
-	strip "$1" "$3" "$4"
-	strip "$2" "$3" "$4"
-	cmp -l "$out/$1.strip" "$out/$2.strip" 2>/dev/null | wc -l
-}
+# change, and be as they were once it is closed.
 dump plain
 if wait_serial 'SENGI-FULLSCREEN up' 30; then
 	dump filled
@@ -874,9 +936,6 @@ yellow_button() {
 			}
 			END { if (found >= 20) print int((left + right) / 2), int((top + bottom) / 2) }'
 }
-park() {
-	pointer $((screen_w / 8)) $((screen_h / 2))
-}
 # Clicks the dock icon of $1 and waits for the screen to change by at least
 # $2 bytes and show a window in front; $3 says what was being done.
 from_dock() {
@@ -958,6 +1017,98 @@ if [ "$want" = sengi-compositor ] && [ -z "$greeter_fail" ]; then
 		minimise_fail="the desktop did not come back after the minimised windows were closed ($left bytes differ)"
 	fi
 	rm -f "$out"/min-*.ppm
+fi
+# A maximised window has the screen to itself: the bar and the dock go, come
+# back while the pointer rests at their edge or while something opened from
+# them is up, and are there again once it is unmaximised. The title bar moves
+# below the bar while it is back. labwc keeps both in place, so this is for
+# our compositor only. The bar is the top 28 rows of the screen.
+maximise_fail=
+whole() {
+	maximise_fail=${maximise_fail:-$1}
+}
+# Where the yellow button of the window in front is down the screen, in dump $1.
+button_row() {
+	yellow_button "$1" | awk '{ print $2 }'
+}
+if [ "$want" = sengi-compositor ] && [ -z "$greeter_fail$minimise_fail" ]; then
+	dock_settings=$(dock_x_of sengi-settings)
+	dock_rows=$((screen_h - 60))
+	park
+	dump max-empty
+	pointer "$dock_settings" "$dock_y"
+	click
+	park
+	sleep 3
+	dump max-window
+	shot maximise-before
+	[ "$(differs max-empty max-window)" -ge "$window_bytes" ] ||
+		whole "Settings did not open to be maximised"
+	key meta_l-a 3
+	dump max-full
+	shot maximised
+	[ "$(strip_differs max-window max-full 0 28)" -ge 1000 ] ||
+		whole "the bar still shows over a maximised window"
+	[ "$(strip_differs max-window max-full "$dock_rows" 50)" -ge 3000 ] ||
+		whole "the dock still shows over a maximised window"
+	high=$(button_row max-full)
+	{ [ -n "$high" ] && [ "$high" -lt 28 ]; } ||
+		whole "the maximised window's title bar is not at the top (button at row ${high:-none})"
+	# The top edge brings the bar, and the title bar moves below it.
+	pointer $((screen_w / 2)) 0
+	sleep 1
+	dump max-top
+	shot maximised-bar
+	changed=$(strip_differs max-window max-top 0 28)
+	[ "$changed" -lt 20000 ] ||
+		whole "resting at the top edge did not bring the bar back ($changed bytes of it differ)"
+	low=$(button_row max-top)
+	{ [ -n "$low" ] && [ $((low - ${high:-0})) -ge 24 ] && [ $((low - ${high:-0})) -le 32 ]; } ||
+		whole "the title bar did not move below the bar (button at row ${low:-none}, before ${high:-none})"
+	# Quick settings from that bar: it stays while they are up, wherever
+	# the pointer is.
+	pointer $((screen_w - 293)) 14
+	click
+	park
+	sleep 2
+	dump max-quick
+	shot maximised-quick
+	[ "$(differs max-top max-quick)" -ge 20000 ] ||
+		whole "quick settings did not open from the bar over a maximised window"
+	changed=$(strip_differs max-window max-quick 0 28)
+	[ "$changed" -lt 20000 ] ||
+		whole "the bar left while quick settings were open ($changed bytes of it differ)"
+	key esc 2
+	dump max-closed
+	[ "$(strip_differs max-full max-closed 0 28)" -lt 20000 ] ||
+		whole "the bar did not leave once quick settings were closed"
+	# The bottom edge brings the dock, and its menu keeps it.
+	pointer $((screen_w / 8)) $((screen_h - 1))
+	sleep 1
+	dump max-bottom
+	shot maximised-dock
+	[ "$(strip_differs max-full max-bottom "$dock_rows" 50)" -ge 3000 ] ||
+		whole "resting at the bottom edge did not bring the dock back"
+	open_dock_menu "$dock_settings"
+	sleep 2
+	dump max-menu
+	shot maximised-dock-menu
+	[ "$(menu_differs max-full max-menu)" -ge "$menu_bytes" ] ||
+		whole "no dock menu over a maximised window"
+	key esc 1
+	park
+	sleep 1
+	dump max-left
+	[ "$(strip_differs max-full max-left "$dock_rows" 50)" -lt 3000 ] ||
+		whole "the dock did not leave when the pointer left it"
+	key meta_l-a 3
+	dump max-restored
+	shot maximise-restored
+	changed=$(differs max-window max-restored)
+	[ "$changed" -lt 20000 ] ||
+		whole "the desktop did not come back after unmaximising ($changed bytes differ)"
+	key meta_l-q 2
+	rm -f "$out"/max-*.ppm
 fi
 rm -f "$out"/*.ppm "$out"/*.band
 stop
@@ -1043,6 +1194,14 @@ if [ -n "$desktop_fail" ]; then
 fi
 if [ -n "$dock_fail" ]; then
 	echo "FAIL: $dock_fail" >&2
+	fail=1
+fi
+if [ -n "$menu_fail" ]; then
+	echo "FAIL: $menu_fail" >&2
+	fail=1
+fi
+if [ -n "$maximise_fail" ]; then
+	echo "FAIL: $maximise_fail" >&2
 	fail=1
 fi
 if [ -n "$store_fail" ]; then
