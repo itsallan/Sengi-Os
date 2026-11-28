@@ -469,8 +469,10 @@ impl State {
         }
     }
 
-    /// The client area a maximised `window` gets.
-    /// The usable area of the screen the middle of `frame` is on.
+    /// The usable area of the screen the middle of `frame` is on, else of
+    /// the first, and nothing at all when there is no screen. A drag asks
+    /// this while the pointer is held, so the pointer is not to be asked
+    /// where it is: that stops the compositor for good.
     pub fn usable_area_near(&self, frame: Rect) -> Rect {
         let middle = (
             f64::from(frame.x + frame.w / 2),
@@ -478,7 +480,7 @@ impl State {
         );
         self.output_at(middle.into())
             .map(|output| self.usable_area_of(&output))
-            .unwrap_or_else(|| self.usable_area())
+            .unwrap_or(Rect::new(0, 0, 0, 0))
     }
 
     pub fn maximised_rect(&self, window: &Window) -> Rect {

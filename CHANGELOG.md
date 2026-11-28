@@ -35,6 +35,8 @@ and the measured idle RAM and boot time.
   usual priority and no longer at the welcome's lowest one.
 - The volume in the bar follows the volume keys, quick settings and Settings
   at once, not up to 15 seconds later.
+- The desktop no longer freezes when a window is being moved or resized and
+  the only screen goes away, as when its cable is pulled.
 
 ## 1.0.0 - 2026-11-27
 
