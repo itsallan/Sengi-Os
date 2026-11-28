@@ -49,6 +49,13 @@ the next try has less to fetch; an unused runtime goes with the next removal.
 If the app had been deployed by the time flatpak ended, the card says Open and
 the line says it was installed before it could be cancelled.
 
+Nothing has to be repaired before the next try. A download that was cut off
+leaves a staging directory and a `.commitpartial` mark in the repository, which
+the next install takes over. A kill while files are being checked out leaves a
+hidden directory beside the deployment (`.<commit>-XXXXXX`, hard links into the
+repository) which stays until that app or runtime is removed. The tests cancel
+at sixty moments of an install and then install again each time.
+
 Closing the window during an install does the same: flatpak is killed and
 nothing is left running.
 
@@ -68,7 +75,8 @@ An open app is not removed: the line under the page asks to close it first.
 Flatpak 1.16 would remove it without a word and leave it running, and if the
 same version is then installed and removed again while that copy is still
 open, the removal fails with "Directory not empty" and leaves the app half
-removed. An app that stays in the background counts as open.
+removed. An app that stays in the background counts as open, and flatpak goes
+on listing one for a few seconds after it has quit.
 
 A removed app is gone from the launcher the next time it opens, and from the
 dock within two seconds. A pin stays in the dock's file, so the app is back in
