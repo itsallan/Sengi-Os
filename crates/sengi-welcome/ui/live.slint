@@ -1,7 +1,7 @@
 // The question the live image asks once the desktop is up: install Sengi OS,
 // or try it first. Nothing here has a colour or a size of its own.
 
-import { Tokens, SengiText, SengiButton, SengiIcon } from "components.slint";
+import { Tokens, SengiText, SengiButton, SengiLogo } from "components.slint";
 
 // The two answers.
 export global Live {
@@ -77,11 +77,8 @@ export component LiveWindow inherits Window {
                         VerticalLayout {
                             alignment: start;
 
-                            SengiIcon {
-                                name: "info";
-                                ink: Tokens.color-accent;
-                                width: Tokens.osd-icon;
-                                height: Tokens.osd-icon;
+                            SengiLogo {
+                                width: Tokens.logo-page;
                             }
                         }
 

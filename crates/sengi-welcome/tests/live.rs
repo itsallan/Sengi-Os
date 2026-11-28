@@ -68,6 +68,42 @@ fn it_is_drawn_as_it_opens_and_on_both_screens() {
     }
 }
 
+/// The logo at the width the other pages give it: green, above the buttons,
+/// and wider than any icon.
+#[test]
+fn it_is_headed_by_the_logo() {
+    for size in [OPENS, (888, 600), (800, 600)] {
+        let (_window, _recorder) = open_window(size);
+        let picture = harness::draw(&harness::window(), BACKDROP);
+        let (width, height) = (size.0 as usize, size.1 as usize);
+        // The question is centred, and its buttons are the lowest green.
+        let left = (width - OPENS.0 as usize) / 2;
+        let top = (height - OPENS.1 as usize) / 2;
+        let green = |[r, g, b]: [u8; 3]| u16::from(g) > u16::from(r) + 40 && g > b;
+        let columns: Vec<usize> = (left..left + OPENS.0 as usize / 2)
+            .filter(|&x| (top..top + OPENS.1 as usize / 2).any(|y| green(picture.at(x, y))))
+            .collect();
+        let (first, last) = (columns.first(), columns.last());
+        let wide = first.zip(last).map_or(0, |(first, last)| last - first + 1);
+        assert!(
+            (70..=80).contains(&wide),
+            "at {size:?} the green at the head is {wide} wide, and the logo is 80"
+        );
+        // Everything stays inside the size the window opens at.
+        let page = picture.at(0, 0);
+        assert!(
+            picture.is_flat(
+                left,
+                left + OPENS.0 as usize,
+                top + OPENS.1 as usize - 4,
+                top + OPENS.1 as usize,
+                page
+            ),
+            "at {size:?} the question runs out of the bottom of its window"
+        );
+    }
+}
+
 #[test]
 fn return_installs_and_closes() {
     let (window, recorder) = open_window(OPENS);
