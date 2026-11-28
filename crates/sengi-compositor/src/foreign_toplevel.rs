@@ -101,6 +101,12 @@ impl ForeignToplevelState {
         }
     }
 
+    /// How many windows clients are told about.
+    #[cfg(feature = "test-hooks")]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
     fn window(&self, id: u64) -> Option<Window> {
         self.entries
             .iter()

@@ -955,6 +955,9 @@ impl State {
             }
             // How many clients are counted as having set up security contexts.
             Some("contexts") => return format!("ok {}\n", self.security_contexts.len()),
+            // Where every window is, and whether anything disagrees.
+            #[cfg(feature = "test-hooks")]
+            Some("inspect") => return self.inspect(),
             // Minimises every window on the desktop, as the dock would.
             Some("minimise") => {
                 let windows: Vec<Window> = self.space.elements().cloned().collect();

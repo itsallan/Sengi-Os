@@ -1288,7 +1288,7 @@ impl State {
 
     /// The front-most layer surface asking for exclusive keyboard focus.
     /// Only the layers above windows may do that.
-    fn exclusive_layer(&self) -> Option<WlSurface> {
+    pub(crate) fn exclusive_layer(&self) -> Option<WlSurface> {
         let outputs: Vec<Output> = self.space.outputs().cloned().collect();
         [Layer::Overlay, Layer::Top].into_iter().find_map(|kind| {
             outputs.iter().find_map(|output| {

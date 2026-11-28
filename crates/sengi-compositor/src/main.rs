@@ -23,6 +23,8 @@ mod gpu;
 mod headless;
 mod idle;
 mod input;
+#[cfg(feature = "test-hooks")]
+mod inspect;
 mod keys;
 mod layer;
 mod layout;
