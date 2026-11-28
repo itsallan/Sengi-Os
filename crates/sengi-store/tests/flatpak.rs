@@ -13,7 +13,7 @@
 use std::sync::Mutex;
 use std::time::Instant;
 
-use sengi_store::flatpak::Flatpak;
+use sengi_store::flatpak::{Cancel, Flatpak};
 use sengi_store::problem::Problem;
 use sengi_text::progress::Progress;
 
@@ -40,7 +40,7 @@ fn a_real_install_reports_how_far_it_is() {
         );
         seen.lock().unwrap().push(progress);
     };
-    let result = Flatpak::default().install_with(&app, Some(&report));
+    let result = Flatpak::default().install_with(&app, Some(&report), &Cancel::default());
     println!("{:7.2}s  {result:?}", started.elapsed().as_secs_f32());
     let seen = seen.into_inner().unwrap();
 

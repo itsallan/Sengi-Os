@@ -5,10 +5,10 @@
 
 import { Tokens, SengiText, SengiLabel, SengiButton, SengiIcon, SengiProgress } from "components.slint";
 export { ThemeSwitch } from "components.slint";
-import { Scroll, TextField } from "kit.slint";
+import { Scroll, TextField, DialogLayer } from "kit.slint";
 
 // What an app is doing.
-export enum RowState { available, installing, installed, failed }
+export enum RowState { available, installing, installed, removing, failed }
 
 export enum StorePage { start, category, search }
 
@@ -37,7 +37,12 @@ export struct Card {
     detail: string,
     pace: string,
     state: RowState,
-    // Shown by name only, because the list of apps is not there: no button.
+    // The install was told to stop and has not yet.
+    cancelling: bool,
+    // Installed by this user, so it may be removed.
+    removable: bool,
+    // Shown by name only, because the list of apps is not there: no button
+    // to install it.
     unavailable: bool,
 }
 
@@ -63,10 +68,21 @@ export global Store {
     in property <bool> message-is-error: false;
     // The chosen tile or card, counting tiles first, or -1 for none.
     in-out property <int> current: -1;
+    // Whether the question before an app is removed is on show, and what
+    // it says. The words are left as they are when it is answered.
+    in property <bool> asking;
+    in property <string> remove-title;
+    in property <string> remove-body;
 
     callback search(string);
     callback install(string);
     callback open(string);
+    // Stops the install of an app.
+    callback cancel(string);
+    // Remove was pressed, and then the question answered yes or no.
+    callback ask-remove(string);
+    callback confirm-remove();
+    callback keep();
     callback open-category(int);
     callback back();
     callback retry();
@@ -216,7 +232,12 @@ component AppCard inherits Panel {
     callback chosen();
     callback install();
     callback open();
+    callback cancel();
+    callback remove();
 
+    // Being installed or removed.
+    private property <bool> working: root.app.state == RowState.installing
+        || root.app.state == RowState.removing;
     private property <length> inner: self.width - Tokens.space-md * 2;
     private property <length> words-x: Tokens.space-md * 2 + Tokens.store-app-icon;
     private property <length> foot: self.height - Tokens.space-md - Tokens.button;
@@ -249,7 +270,7 @@ component AppCard inherits Panel {
             overflow: elide;
         }
 
-        if root.app.summary != "" && root.app.state != RowState.installing: SengiLabel {
+        if root.app.summary != "" && !root.working: SengiLabel {
             // Two lines, and no more.
             height: Tokens.font-size-sm * 3;
             text: root.app.summary;
@@ -259,8 +280,10 @@ component AppCard inherits Panel {
         }
 
         // How far it is, where the summary was.
-        if root.app.state == RowState.installing: SengiLabel {
-            text: root.app.detail != "" ? root.app.detail : "Installing";
+        if root.working: SengiLabel {
+            text: root.app.state == RowState.removing ? "Removing"
+                : root.app.cancelling ? "Cancelling"
+                : root.app.detail != "" ? root.app.detail : "Installing";
             font-weight: Tokens.font-weight-regular;
             overflow: elide;
         }
@@ -272,30 +295,42 @@ component AppCard inherits Panel {
         }
     }
 
-    if root.app.state == RowState.installing && root.app.percent >= 0: HorizontalLayout {
+    if root.working: HorizontalLayout {
         x: Tokens.space-md;
         y: root.foot;
         width: root.inner;
         height: Tokens.button;
         spacing: Tokens.space-sm;
-        VerticalLayout {
+
+        if root.app.percent >= 0: VerticalLayout {
             alignment: center;
             horizontal-stretch: 1;
             SengiProgress { percent: root.app.percent; }
         }
-        SengiText {
+
+        if root.app.percent >= 0: SengiText {
             text: root.app.percent + "%";
             color: Tokens.color-text-muted;
             horizontal-alignment: right;
             vertical-alignment: center;
             min-width: Tokens.space-xxl - Tokens.space-md;
         }
-    }
 
-    if root.app.state == RowState.installing && root.app.percent < 0: Busy {
-        x: Tokens.space-md;
-        y: root.foot + (Tokens.button - self.height) / 2;
-        width: root.inner;
+        if root.app.percent < 0: Rectangle {
+            horizontal-stretch: 1;
+            Busy {
+                y: (parent.height - self.height) / 2;
+                width: parent.width;
+            }
+        }
+
+        if root.app.state == RowState.installing && !root.app.cancelling: SengiButton {
+            horizontal-stretch: 0;
+            text: "Cancel";
+            outlined: true;
+            focusable: false;
+            clicked => { root.cancel(); }
+        }
     }
 
     if root.app.state == RowState.failed: SengiLabel {
@@ -307,16 +342,29 @@ component AppCard inherits Panel {
         vertical-alignment: center;
     }
 
-    if root.app.state == RowState.installed: SengiButton {
-        x: root.width - self.width - Tokens.space-md;
+    if root.app.state == RowState.installed: HorizontalLayout {
+        x: Tokens.space-md;
         y: root.foot;
-        width: self.preferred-width;
+        width: root.inner;
         height: Tokens.button;
-        text: "Open";
-        primary: root.selected;
-        outlined: true;
-        focusable: false;
-        clicked => { root.open(); }
+        alignment: end;
+        spacing: Tokens.space-sm;
+
+        if root.app.removable: SengiButton {
+            text: "Remove";
+            danger: true;
+            outlined: true;
+            focusable: false;
+            clicked => { root.remove(); }
+        }
+
+        SengiButton {
+            text: "Open";
+            primary: root.selected;
+            outlined: true;
+            focusable: false;
+            clicked => { root.open(); }
+        }
     }
 
     if (root.app.state == RowState.available || root.app.state == RowState.failed) && !root.app.unavailable: SengiButton {
@@ -439,10 +487,28 @@ export component StoreWindow inherits Window {
             if Store.cards[Store.current - Store.tiles.length].state == RowState.installed {
                 Store.open(Store.cards[Store.current - Store.tiles.length].id);
             } else if !Store.cards[Store.current - Store.tiles.length].unavailable
-                && Store.cards[Store.current - Store.tiles.length].state != RowState.installing {
+                && Store.cards[Store.current - Store.tiles.length].state != RowState.installing
+                && Store.cards[Store.current - Store.tiles.length].state != RowState.removing {
                 Store.install(Store.cards[Store.current - Store.tiles.length].id);
             }
         }
+    }
+
+    // Delete on a card: stops its install, or asks about removing it.
+    function take-away-current() -> bool {
+        if Store.current < Store.tiles.length || Store.current - Store.tiles.length >= Store.cards.length {
+            return false;
+        }
+        if Store.cards[Store.current - Store.tiles.length].state == RowState.installing {
+            Store.cancel(Store.cards[Store.current - Store.tiles.length].id);
+            return true;
+        }
+        if Store.cards[Store.current - Store.tiles.length].removable
+            && Store.cards[Store.current - Store.tiles.length].state == RowState.installed {
+            Store.ask-remove(Store.cards[Store.current - Store.tiles.length].id);
+            return true;
+        }
+        return false;
     }
 
     // Out of a search first, then out of a category.
@@ -486,6 +552,14 @@ export component StoreWindow inherits Window {
     private property <int> chosen: Store.current;
     changed chosen => { root.reveal-current(); }
 
+    // The keyboard goes back to the field when a question is answered.
+    private property <bool> asking: Store.asking;
+    changed asking => {
+        if !root.asking {
+            field.take-focus();
+        }
+    }
+
     Timer {
         interval: Tokens.motion-fast;
         running: root.sheets-owed > 0;
@@ -520,6 +594,10 @@ export component StoreWindow inherits Window {
             if (event.text == Key.LeftArrow || event.text == Key.RightArrow)
                 && (field.text == "" || root.browsing) {
                 root.move(event.text == Key.LeftArrow ? 0 : 1);
+                return accept;
+            }
+            if event.text == Key.Delete && (field.text == "" || root.browsing)
+                && root.take-away-current() {
                 return accept;
             }
             if event.text == Key.Backspace && field.text == "" && !root.at-start {
@@ -666,6 +744,16 @@ export component StoreWindow inherits Window {
                                 Store.open(app.id);
                                 field.take-focus();
                             }
+                            cancel => {
+                                Store.current = index + Store.tiles.length;
+                                Store.cancel(app.id);
+                                field.take-focus();
+                            }
+                            remove => {
+                                Store.current = index + Store.tiles.length;
+                                Store.ask-remove(app.id);
+                                field.take-focus();
+                            }
                         }
 
                         if Store.cards.length == 0: SengiText {
@@ -692,5 +780,19 @@ export component StoreWindow inherits Window {
                 }
             }
         }
+    }
+
+    // Outside the scope above, so that Tab and the other keys are the
+    // dialog's own while it is open.
+    if Store.asking: DialogLayer {
+        spec: {
+            title: Store.remove-title,
+            body: Store.remove-body,
+            confirm: "Remove",
+            cancel: "Cancel",
+            danger: true,
+        };
+        confirmed => { Store.confirm-remove(); }
+        cancelled => { Store.keep(); }
     }
 }

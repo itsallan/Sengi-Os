@@ -86,7 +86,13 @@ through CUPS, with nothing more to set up. Details and measurements are in
 [crates/sengi-print](../crates/sengi-print/README.md).
 
 **Installing apps.** The Store, on the dock, shows recommended apps by
-category, searches Flathub and installs apps for your user, with no password. From a terminal, `sudo apt install <package>` for Debian's
+category, searches Flathub and installs apps for your user, with no password.
+An install under way has a Cancel button. An app you installed this way has a
+Remove button: close the app first; the Store asks, keeps the app's settings
+and data in `~/.var/app`, and clears the shared runtimes that no other app of
+yours uses.
+Programs installed with apt or for the whole system are not removed from the
+Store. From a terminal, `sudo apt install <package>` for Debian's
 packages, or `sudo flatpak install flathub <app>` for Flatpak apps. Flathub is
 already set up as the Flatpak source (`/etc/flatpak/remotes.d/`); the first
 `sudo flatpak` command creates the Flatpak store. When Sengi OS is run from the USB stick without installing, every

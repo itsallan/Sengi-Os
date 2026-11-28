@@ -23,9 +23,10 @@ Settings.
 
 The tiles are two to five to a row, one fewer where the last would be alone.
 
-An app is a card: its icon, its name, up to two lines about it and one
-button, Install or Open. The grid has two to four columns by the width of
-the window and stops growing at 1200 px.
+An app is a card: its icon, its name, up to two lines about it and its
+buttons: Install, or Open and, for an app this user installed, Remove. The
+grid has two to four columns by the width of the window and stops growing at
+1200 px.
 
 While an app is installed its card shows, in place of the summary, the step
 and the most that step downloads ("Step 2 of 2 · up to 300.1 MB"), then
@@ -33,9 +34,45 @@ the speed and the time left, over a bar and the percentage of that step. All
 of it is what flatpak prints, read by `sengi_text::progress`; what is not
 printed is not made up (how much has arrived is not), and with no percentage
 a bar moves to and fro instead. The card is brought up to date four times a
-second at most. One app is installed at a time. Open runs `flatpak run <id>` for the user, detached: the Store does not
-wait for the app, keeps none of its pipes, and does not stop it when the
-Store is closed. Nothing is installed without its button or Return.
+second at most. One app is installed or removed at a time. Open runs
+`flatpak run <id>` for the user, detached: the Store does not wait for the
+app, keeps none of its pipes, and does not stop it when the Store is closed.
+Nothing is installed without its button or Return.
+
+## Cancel
+
+The card of an app being installed has a Cancel button. It kills flatpak and
+everything in its process group, the card goes back to Install, and the line
+under the page says the app was not installed. It is not an error. Flatpak
+keeps what had arrived, and a runtime that was complete stays installed, so
+the next try has less to fetch; an unused runtime goes with the next removal.
+If the app had been deployed by the time flatpak ended, the card says Open and
+the line says it was installed before it could be cancelled.
+
+Closing the window during an install does the same: flatpak is killed and
+nothing is left running.
+
+## Remove
+
+Only an app in the user's own installation, where the Store installs, has a
+Remove button. Apps installed for the whole system and Debian's packages are
+never offered. A dialog names the app and says that its settings and data are
+kept: `~/.var/app/<id>` is not touched. Every branch of the app is removed,
+and then whatever `flatpak uninstall --unused` finds, which is what no app of
+the user uses (a runtime installed by name is pinned by flatpak and stays). A
+failure of that second step is logged and does not undo the removal. Closing
+the window during a removal hides it at once and lets flatpak finish before
+the program exits.
+
+An open app is not removed: the line under the page asks to close it first.
+Flatpak 1.16 would remove it without a word and leave it running, and if the
+same version is then installed and removed again while that copy is still
+open, the removal fails with "Directory not empty" and leaves the app half
+removed. An app that stays in the background counts as open.
+
+A removed app is gone from the launcher the next time it opens, and from the
+dock within two seconds. A pin stays in the dock's file, so the app is back in
+its place if it is installed again.
 
 ## Keyboard
 
@@ -48,10 +85,14 @@ card.
 | Left, Right | along the grid, once in it or with the field empty |
 | Tab, Shift+Tab | the next and the previous tile or card |
 | Return | opens the category, or installs or opens the app |
+| Delete | cancels the app's install, or asks to remove it; once in the grids or with the field empty |
 | Escape | clears the search, then goes back from a category |
 | Alt+Left, Backspace in an empty field | back |
 
 With something typed the best result is chosen already, so Return installs it.
+
+The question before a removal takes the keyboard, starting on Cancel: Tab
+moves to Remove, Return presses the one chosen and Escape cancels.
 
 ## Featured
 
@@ -114,7 +155,7 @@ opening a category also tries again, no sooner than every 30 seconds.
 Everything goes through the `flatpak` command, for the user's own
 installation, so there is no root, no polkit and no network code of our
 own. Each call has a time limit, and a call that goes over it is killed
-with whatever it started. A limit is how long flatpak may say nothing, so a big install that keeps printing is not cut off. Closing the window kills what is still running: Flatpak deploys an app only when all of it has arrived, so a cut-off install leaves nothing half installed and the next try carries on.
+with whatever it started. A limit is how long flatpak may say nothing, so a big install that keeps printing is not cut off. Closing the window kills what is still running, except a removal.
 
 Installs use `-y`: no question is asked and no permission list is shown to the
 person. `--noninteractive` is left out, because with it flatpak says only
@@ -128,10 +169,14 @@ The Store does not stop a second copy of itself from opening.
 | When | Command | Limit |
 | --- | --- | --- |
 | Start | `flatpak --user remote-add --if-not-exists flathub /etc/flatpak/remotes.d/flathub.flatpakrepo` | 20 s |
-| Start | `flatpak list --app --columns=application` | 20 s |
+| Start | `flatpak list --app --columns=application,installation` | 20 s |
 | Start | `flatpak --user remote-ls --cached --app --columns=application,name,description flathub` | 60 s |
 | Start | `flatpak --user update --appstream`, then `remote-ls` again without `--cached` | 10 min, 60 s |
 | Install | `flatpak --user install -y flathub app/<id>` | 10 min without a word from flatpak |
+| Remove | `flatpak ps --columns=application` | 20 s |
+| Remove | `flatpak --user list --app --columns=ref` | 20 s |
+| Remove | `flatpak --user uninstall -y --noninteractive --app <id>/<arch>/<branch>...` | 5 min without a word |
+| Remove | `flatpak --user uninstall --unused -y --noninteractive` | 5 min without a word |
 
 `update --appstream` says one line and then nothing while it fetches some
 thousands of icons, so its limit is long; without a network it fails at once.
@@ -151,7 +196,9 @@ and can be pinned to the dock without logging in again.
 The reading of flatpak's progress is tested in `sengi-text` against output
 captured from Flatpak 1.16. `cargo test -p sengi-store --test flatpak -- --ignored`
 installs from a real repository through the Store's own code; see the top of
-`tests/flatpak.rs`.
+`tests/flatpak.rs`. Cancelling and removing are tested against a repository of
+a tiny runtime and two apps, built by `tests/make-repo.sh` and served by the
+test; see the top of `tests/cancel_remove.rs`.
 
 The unit tests cover reading Flatpak's output, matching names, the pages, the
 keys in the grids, the plain words for errors, reading the routing tables,

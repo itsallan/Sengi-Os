@@ -85,11 +85,46 @@ pub fn parse_listing(text: &str) -> Vec<App> {
     apps
 }
 
-/// Reads the output of `flatpak list --columns=application`.
-pub fn parse_installed(text: &str) -> HashSet<String> {
+/// The apps that are installed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Installed {
+    /// For the user or for the whole system.
+    pub all: HashSet<String>,
+    /// In the user's own installation: the ones the Store may remove.
+    pub user: HashSet<String>,
+}
+
+/// Reads the output of `flatpak list --app --columns=application,installation`.
+pub fn parse_installed(text: &str) -> Installed {
+    let mut installed = Installed::default();
+    for line in text.lines() {
+        let mut columns = line.split('\t').map(str::trim);
+        let Some(id) = columns.next().filter(|id| valid_id(id)) else {
+            continue;
+        };
+        installed.all.insert(id.to_string());
+        if columns.next() == Some("user") {
+            installed.user.insert(id.to_string());
+        }
+    }
+    installed
+}
+
+/// The refs of `id` in the output of `flatpak list --columns=ref`, one
+/// `id/arch/branch` a line.
+pub fn parse_refs(text: &str, id: &str) -> Vec<String> {
+    let plain = |part: &str| {
+        !part.is_empty()
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+    };
     text.lines()
         .map(str::trim)
-        .filter(|id| valid_id(id))
+        .filter(|line| {
+            let parts: Vec<&str> = line.split('/').collect();
+            parts.len() == 3 && parts[0] == id && parts.iter().all(|part| plain(part))
+        })
         .map(str::to_string)
         .collect()
 }
@@ -176,11 +211,40 @@ mod tests {
         assert_eq!(apps[3].summary, "");
     }
 
+    /// What Flatpak 1.16 printed with one app of the user's and one of the
+    /// system's installation.
     #[test]
-    fn installed_is_parsed() {
-        let set = parse_installed("org.gimp.GIMP\n\n org.gnome.Calculator \nnonsense\n");
-        assert_eq!(set.len(), 2);
-        assert!(set.contains("org.gimp.GIMP"));
+    fn installed_is_parsed_with_whose_it_is() {
+        let installed = parse_installed(include_str!("../tests/fixtures/installed.out"));
+        assert_eq!(installed.all.len(), 2);
+        assert_eq!(
+            installed.user,
+            HashSet::from(["org.sengi.test.Hello".to_string()])
+        );
+        assert!(installed.all.contains("org.sengi.test.Other"));
+    }
+
+    #[test]
+    fn what_is_not_an_app_is_not_installed() {
+        let installed = parse_installed("\nnonsense\n org.gimp.GIMP \n");
+        assert_eq!(installed.all.len(), 1);
+        // Without the column nothing is offered for removal.
+        assert!(installed.user.is_empty());
+    }
+
+    /// What Flatpak 1.16 printed with two branches of one app.
+    #[test]
+    fn every_branch_of_an_app_is_found() {
+        let text = include_str!("../tests/fixtures/refs.out");
+        assert_eq!(
+            parse_refs(text, "org.sengi.test.Hello"),
+            [
+                "org.sengi.test.Hello/x86_64/beta",
+                "org.sengi.test.Hello/x86_64/stable"
+            ]
+        );
+        assert!(parse_refs(text, "org.sengi.test").is_empty());
+        assert!(parse_refs("a.b/x86_64\na.b/x86 64/stable\na.b//\n", "a.b").is_empty());
     }
 
     #[test]

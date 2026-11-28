@@ -548,6 +548,8 @@ fn store_card(index: usize) -> store::Card {
         detail: "".into(),
         pace: "".into(),
         state: store::RowState::Available,
+        cancelling: false,
+        removable: false,
         unavailable: false,
     }
 }
@@ -573,6 +575,8 @@ fn stores() {
         "search",
         "empty",
         "installing",
+        "installed",
+        "confirm",
         "offline",
         "loading",
         "stale",
@@ -620,11 +624,37 @@ fn stores() {
                     cards[1].state = Installing;
                     cards[2].state = Failed;
                     cards[3].state = Installed;
+                    cards[3].removable = true;
+                    // One told to stop.
+                    cards[4].state = Installing;
+                    cards[4].cancelling = true;
                     g.set_message(
                         "Could not install VLC. You\u{2019}re offline. Connect to the internet and try again."
                             .into(),
                     );
                     g.set_message_is_error(true);
+                }
+                "installed" | "confirm" => {
+                    g.set_page(StorePage::Category);
+                    g.set_title("Media".into());
+                    cards = (0..6).map(store_card).collect();
+                    for card in &mut cards[..2] {
+                        card.state = Installed;
+                        card.removable = true;
+                    }
+                    // The system's own, which is not the Store's to remove.
+                    cards[2].state = Installed;
+                    cards[3].state = Removing;
+                    if variant == "confirm" {
+                        cards[3].state = Available;
+                        g.set_remove_title(format!("Remove {}?", cards[0].name).into());
+                        g.set_remove_body(
+                            "Its settings and data are kept, and are used again if you install \
+                             it again. Shared parts that no other app uses are removed too."
+                                .into(),
+                        );
+                        g.set_asking(true);
+                    }
                 }
                 "offline" | "loading" => {
                     g.set_tiles(list(store_tiles()));
@@ -659,7 +689,7 @@ fn stores() {
             match variant {
                 // A card the keys are on, further down the page.
                 "keys" => g.set_current(14),
-                "category" | "search" | "installing" => g.set_current(0),
+                "category" | "search" | "installing" | "installed" => g.set_current(0),
                 _ => {}
             }
             show(
@@ -743,6 +773,85 @@ fn store_keys() {
     assert!(take().is_empty());
     press(Key::Escape.into());
     assert_eq!(take(), ["search"]);
+
+    // Delete stops the install of the chosen card, or asks about removing
+    // it, and does nothing on any other.
+    let said = note("cancel");
+    g.on_cancel(move |id| said(id.into()));
+    let said = note("ask");
+    g.on_ask_remove(move |id| said(id.into()));
+    let said = note("confirm");
+    g.on_confirm_remove(move || said(String::new()));
+    let said = note("keep");
+    g.on_keep(move || said(String::new()));
+    let mut cards: Vec<store::Card> = (0..4).map(store_card).collect();
+    cards[0].state = store::RowState::Installing;
+    cards[1].state = store::RowState::Installed;
+    cards[1].removable = true;
+    cards[2].state = store::RowState::Installed;
+    let names: Vec<String> = cards.iter().map(|c| c.id.to_string()).collect();
+    g.set_cards(list(cards));
+    g.set_tiles(list(Vec::<store::Tile>::new()));
+    for (current, heard) in [
+        (0, Some(format!("cancel {}", names[0]))),
+        (1, Some(format!("ask {}", names[1]))),
+        (2, None),
+        (3, None),
+    ] {
+        g.set_current(current);
+        press(Key::Delete.into());
+        assert_eq!(take(), heard.into_iter().collect::<Vec<_>>(), "{current}");
+    }
+    // Return neither installs nor cancels a card that is busy.
+    g.set_current(0);
+    press(Key::Return.into());
+    assert!(take().is_empty());
+    // With something typed, Delete is the field's.
+    press("a".into());
+    take();
+    g.set_current(1);
+    press(Key::Delete.into());
+    assert!(take().is_empty());
+    press(Key::Escape.into());
+    take();
+
+    // The question has the keyboard, starting on Cancel.
+    g.set_remove_title("Remove it?".into());
+    let ask = || {
+        g.set_asking(true);
+        harness::advance(50);
+        harness::draw(&win, BACKDROP);
+        harness::advance(50);
+    };
+    let answered = || {
+        g.set_asking(false);
+        harness::advance(50);
+        harness::draw(&win, BACKDROP);
+        harness::advance(50);
+    };
+    ask();
+    press(Key::DownArrow.into());
+    press(Key::Delete.into());
+    assert!(take().is_empty());
+    press(Key::Escape.into());
+    assert_eq!(take(), ["keep"]);
+    answered();
+    ask();
+    press(Key::Return.into());
+    assert_eq!(take(), ["keep"]);
+    answered();
+    ask();
+    press(Key::Tab.into());
+    press(Key::Return.into());
+    assert_eq!(take(), ["confirm"]);
+    // Tab stays in the question.
+    press(Key::Tab.into());
+    press(Key::Return.into());
+    assert_eq!(take(), ["keep"]);
+    answered();
+    // And the field has the keyboard again.
+    press("b".into());
+    assert_eq!(take(), ["search b"]);
     w.hide().unwrap();
 }
 

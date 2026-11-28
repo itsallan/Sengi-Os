@@ -97,6 +97,8 @@ impl Problem {
             Error::Refused(_) => Problem::Source,
             Error::TimedOut => Problem::Slow,
             Error::Failed(text) => Problem::read(text),
+            // Never said: stopping is not a problem.
+            Error::Cancelled => Problem::Other,
         }
     }
 
@@ -169,6 +171,18 @@ impl Problem {
             Problem::Other => "Something went wrong. Try again.",
         };
         format!("Could not install {name}. {why}")
+    }
+
+    /// Why an app was not removed. Nothing is fetched for that, so the
+    /// network is never the reason.
+    pub fn remove(self, name: &str) -> String {
+        let why = match self {
+            Problem::Space => "The disk is full.",
+            Problem::Missing => "Flatpak is not installed.",
+            Problem::Slow => "It took too long. Try again.",
+            _ => "Something went wrong. Try again.",
+        };
+        format!("Could not remove {name}. {why}")
     }
 }
 

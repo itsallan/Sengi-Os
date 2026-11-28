@@ -2,21 +2,20 @@
 //! network that half works makes flatpak wait for a long time, and the
 //! store must stay usable meanwhile.
 //!
-//! Everything is done for the user's own installation (`--user`), which
-//! needs no root and no polkit.
+//! Everything is changed in the user's own installation (`--user`), which
+//! needs no root and no polkit. What the system has installed is only read.
 
-use std::collections::HashSet;
 use std::ffi::OsString;
 use std::io::Read;
-use std::os::unix::process::CommandExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use sengi_text::progress::{Progress, Reader};
 
-use crate::catalog::{self, App};
+use crate::catalog::{self, App, Installed};
 
 /// The remote the image ships a description of.
 const REMOTE: &str = "flathub";
@@ -45,6 +44,7 @@ pub struct Limits {
     pub appstream: Duration,
     pub listing: Duration,
     pub install: Duration,
+    pub remove: Duration,
 }
 
 impl Default for Limits {
@@ -57,6 +57,8 @@ impl Default for Limits {
             // how long it may take: it prints as long as data arrives, and
             // gives up on a dead connection by itself.
             install: Duration::from_secs(10 * 60),
+            // Flatpak says little while it removes and tidies its store.
+            remove: Duration::from_secs(5 * 60),
         }
     }
 }
@@ -71,6 +73,8 @@ pub enum Error {
     Failed(String),
     /// The user's Flathub source is not the real one: nothing is fetched.
     Refused(String),
+    /// The user stopped it, or the window was closed.
+    Cancelled,
 }
 
 impl std::fmt::Display for Error {
@@ -79,16 +83,50 @@ impl std::fmt::Display for Error {
             Error::Missing => f.write_str("Flatpak is not installed"),
             Error::TimedOut => f.write_str("Flatpak took too long and was stopped"),
             Error::Failed(text) | Error::Refused(text) => f.write_str(text),
+            Error::Cancelled => f.write_str("Flatpak was stopped"),
         }
     }
+}
+
+/// Asks one call to stop. Clones ask the same call.
+#[derive(Clone, Debug, Default)]
+pub struct Cancel(Arc<AtomicBool>);
+
+impl Cancel {
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    pub fn cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+/// How a call may be stopped before it ends.
+#[derive(Clone, Copy)]
+enum Stop<'a> {
+    /// By closing the window.
+    WithWindow,
+    /// By closing the window, or by the user.
+    OnRequest(&'a Cancel),
+    /// Only by its time limit: a removal is left to finish.
+    Never,
+}
+
+/// The calls under way that closing the window stops.
+#[derive(Debug, Default)]
+struct Running {
+    /// Their process groups.
+    groups: Vec<libc::pid_t>,
+    /// The window is closed: nothing of the kind is started any more.
+    closed: bool,
 }
 
 #[derive(Clone, Debug)]
 pub struct Flatpak {
     program: OsString,
     limits: Limits,
-    /// Process groups of the calls under way, for `stop_all`.
-    running: Arc<Mutex<Vec<libc::pid_t>>>,
+    running: Arc<Mutex<Running>>,
 }
 
 impl Default for Flatpak {
@@ -214,12 +252,16 @@ impl Flatpak {
         }
     }
 
-    /// Kills every call under way, and what they started. Used when the
-    /// window is closed: an install stopped half way is not deployed by
-    /// Flatpak, so nothing is left running and nothing is left broken.
+    fn running(&self) -> MutexGuard<'_, Running> {
+        self.running.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Kills every call under way, and what they started, and starts no
+    /// more. Used when the window is closed. A removal is not touched.
     pub fn stop_all(&self) {
-        let groups = self.running.lock().unwrap_or_else(|e| e.into_inner());
-        for pid in groups.iter() {
+        let mut running = self.running();
+        running.closed = true;
+        for pid in &running.groups {
             // SAFETY: killpg only sends a signal.
             unsafe { libc::killpg(*pid, libc::SIGKILL) };
         }
@@ -240,15 +282,34 @@ impl Flatpak {
         limit: Duration,
         on_progress: Option<&dyn Fn(Progress)>,
     ) -> Result<String, Error> {
-        let mut child = self.spawn(args).map_err(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => Error::Missing,
-            _ => Error::Failed(sengi_text::line(&error.to_string(), 200)),
-        })?;
-        let pid = child.id() as libc::pid_t;
-        self.running
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(pid);
+        self.call(args, limit, on_progress, Stop::WithWindow)
+    }
+
+    fn call(
+        &self,
+        args: &[&str],
+        limit: Duration,
+        on_progress: Option<&dyn Fn(Progress)>,
+        stop: Stop<'_>,
+    ) -> Result<String, Error> {
+        let cancelled = || matches!(stop, Stop::OnRequest(cancel) if cancel.cancelled());
+        let stoppable = !matches!(stop, Stop::Never);
+        let (mut child, pid) = {
+            // Held while it starts, so that `stop_all` misses nothing.
+            let mut running = self.running();
+            if cancelled() || (stoppable && running.closed) {
+                return Err(Error::Cancelled);
+            }
+            let child = self.spawn(args).map_err(|error| match error.kind() {
+                std::io::ErrorKind::NotFound => Error::Missing,
+                _ => Error::Failed(sengi_text::line(&error.to_string(), 200)),
+            })?;
+            let pid = child.id() as libc::pid_t;
+            if stoppable {
+                running.groups.push(pid);
+            }
+            (child, pid)
+        };
         let started = Instant::now();
         let last_word = Arc::new(Mutex::new(started));
         let reader = on_progress.map(|_| Arc::new(Mutex::new(Reader::default())));
@@ -265,6 +326,7 @@ impl Flatpak {
         let mut last_look = Instant::now()
             .checked_sub(PROGRESS_EVERY)
             .unwrap_or_else(Instant::now);
+        let mut asked = false;
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Some(status),
@@ -287,13 +349,17 @@ impl Flatpak {
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .elapsed();
-                    if quiet < limit && started.elapsed() < HARD_LIMIT {
+                    asked = cancelled();
+                    if !asked && quiet < limit && started.elapsed() < HARD_LIMIT {
                         std::thread::sleep(Duration::from_millis(10));
                         continue;
                     }
                 }
                 Err(_) => {}
             }
+            // The whole group at once, while the parent is still there.
+            // SAFETY: killpg only sends a signal.
+            unsafe { libc::killpg(pid, libc::SIGKILL) };
             let _ = child.kill();
             let _ = child.wait();
             break None;
@@ -301,10 +367,11 @@ impl Flatpak {
         // Whatever it left behind goes too, so the pipes close.
         // SAFETY: killpg only sends a signal.
         unsafe { libc::killpg(pid, libc::SIGKILL) };
-        self.running
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .retain(|p| *p != pid);
+        let closed = {
+            let mut running = self.running();
+            running.groups.retain(|p| *p != pid);
+            running.closed
+        };
 
         // A helper that left its group may still hold the pipes: the output
         // is waited for a little, and then taken as it is.
@@ -320,8 +387,13 @@ impl Flatpak {
         let stdout = text(&out);
         let stderr = text(&err);
         match status {
+            None if asked => Err(Error::Cancelled),
             None => Err(Error::TimedOut),
             Some(status) if status.success() => Ok(String::from_utf8_lossy(&stdout).into_owned()),
+            // `stop_all` got to it first.
+            Some(status) if stoppable && closed && status.signal() == Some(libc::SIGKILL) => {
+                Err(Error::Cancelled)
+            }
             Some(_) => Err(Error::Failed(last_line(&stderr, &stdout))),
         }
     }
@@ -369,23 +441,26 @@ impl Flatpak {
     }
 
     /// The apps installed, for the user or for the whole system.
-    pub fn installed(&self) -> Result<HashSet<String>, Error> {
+    pub fn installed(&self) -> Result<Installed, Error> {
         self.run(
-            &["list", "--app", "--columns=application"],
+            &["list", "--app", "--columns=application,installation"],
             self.limits.quick,
         )
         .map(|text| catalog::parse_installed(&text))
     }
 
     pub fn install(&self, id: &str) -> Result<(), Error> {
-        self.install_with(id, None)
+        self.install_with(id, None, &Cancel::default())
     }
 
-    /// Installs, and reports progress while it goes.
+    /// Installs, and reports progress while it goes. `cancel` ends flatpak
+    /// and whatever it started; the next install carries on from what had
+    /// arrived.
     pub fn install_with(
         &self,
         id: &str,
         on_progress: Option<&dyn Fn(Progress)>,
+        cancel: &Cancel,
     ) -> Result<(), Error> {
         if !catalog::valid_id(id) {
             return Err(Error::Failed("That is not an app ID".to_string()));
@@ -393,12 +468,60 @@ impl Flatpak {
         // -y: every question is answered yes. With --noninteractive as
         // well, flatpak would not say how far it has got.
         let target = format!("app/{id}");
-        self.run_with(
+        self.call(
             &["--user", "install", "-y", REMOTE, &target],
             self.limits.install,
             on_progress,
+            Stop::OnRequest(cancel),
         )
         .map(|_| ())
+    }
+
+    /// Removes an app, with all its branches, from the user's own
+    /// installation. What the app has saved (`~/.var/app/<id>`) is kept.
+    /// Closing the window does not stop this: half a removal is worse than
+    /// a late exit.
+    pub fn uninstall(&self, id: &str) -> Result<(), Error> {
+        if !catalog::valid_id(id) {
+            return Err(Error::Failed("That is not an app ID".to_string()));
+        }
+        // By its ID alone flatpak asks which branch is meant, even with
+        // -y, so each is named.
+        let listed = self.call(
+            &["--user", "list", "--app", "--columns=ref"],
+            self.limits.quick,
+            None,
+            Stop::Never,
+        )?;
+        let refs = catalog::parse_refs(&listed, id);
+        if refs.is_empty() {
+            return Err(Error::Failed(
+                "It is not installed for this user".to_string(),
+            ));
+        }
+        let mut args = vec!["--user", "uninstall", "-y", "--noninteractive", "--app"];
+        args.extend(refs.iter().map(String::as_str));
+        self.call(&args, self.limits.remove, None, Stop::Never)
+            .map(|_| ())
+    }
+
+    /// Removes the runtimes and extensions of the user's installation that
+    /// flatpak itself says nothing uses. One the user installed by name is
+    /// pinned by flatpak and stays.
+    pub fn remove_unused(&self) -> Result<(), Error> {
+        self.call(
+            &["--user", "uninstall", "--unused", "-y", "--noninteractive"],
+            self.limits.remove,
+            None,
+            Stop::Never,
+        )
+        .map(|_| ())
+    }
+
+    /// Whether the app is open now.
+    pub fn is_running(&self, id: &str) -> Result<bool, Error> {
+        self.run(&["ps", "--columns=application"], self.limits.quick)
+            .map(|text| text.lines().any(|line| line.trim() == id))
     }
 
     /// The command that starts an installed app, for the user's own
@@ -492,6 +615,7 @@ pub mod testing {
             appstream: Duration::from_secs(5),
             listing: Duration::from_secs(5),
             install: Duration::from_secs(5),
+            remove: Duration::from_secs(5),
         }
     }
 }
@@ -501,6 +625,7 @@ mod tests {
     use super::testing::*;
     use super::*;
     use crate::problem::Problem;
+    use std::fs;
 
     #[test]
     fn listing_is_read_from_the_output() {
@@ -570,7 +695,7 @@ mod tests {
             let report = |_: Progress| {};
             let error = fake
                 .flatpak(quick())
-                .install_with("org.gimp.GIMP", Some(&report))
+                .install_with("org.gimp.GIMP", Some(&report), &Cancel::default())
                 .unwrap_err();
             assert_eq!(Problem::of(&error), expected, "{file}: {error}");
         }
@@ -632,9 +757,108 @@ mod tests {
 
     #[test]
     fn installed_apps_are_listed() {
-        let fake = Fake::new("installed", "printf 'org.gimp.GIMP\\n'");
-        let set = fake.flatpak(quick()).installed().unwrap();
-        assert!(set.contains("org.gimp.GIMP"));
+        let fake = Fake::new("installed", "printf 'org.gimp.GIMP\\tuser\\n'");
+        let installed = fake.flatpak(quick()).installed().unwrap();
+        assert!(installed.user.contains("org.gimp.GIMP"));
+        assert_eq!(
+            fake.calls(),
+            ["list --app --columns=application,installation"]
+        );
+    }
+
+    #[test]
+    fn removal_is_for_the_user_installation_and_keeps_the_data() {
+        let fake = Fake::new(
+            "remove",
+            "case \"$*\" in *--columns=ref) printf 'org.gimp.GIMP/x86_64/stable\\n';; esac",
+        );
+        let flatpak = fake.flatpak(quick());
+        flatpak.uninstall("org.gimp.GIMP").unwrap();
+        flatpak.remove_unused().unwrap();
+        assert!(flatpak.uninstall("--system").is_err());
+        // Not in the user's installation: nothing is run to remove it.
+        assert!(flatpak.uninstall("org.x.Y").is_err());
+        assert_eq!(
+            fake.calls(),
+            [
+                "--user list --app --columns=ref",
+                "--user uninstall -y --noninteractive --app org.gimp.GIMP/x86_64/stable",
+                "--user uninstall --unused -y --noninteractive",
+                "--user list --app --columns=ref",
+            ]
+        );
+    }
+
+    /// The helper stays in the group, as flatpak's own do.
+    #[test]
+    fn cancel_ends_the_whole_group() {
+        let fake = Fake::new(
+            "cancel-group",
+            "sleep 30 &\necho $! >\"$(dirname \"$0\")/helper\"\nwait",
+        );
+        let flatpak = fake.flatpak(quick());
+        let cancel = Cancel::default();
+        let worker = {
+            let (flatpak, cancel) = (flatpak.clone(), cancel.clone());
+            std::thread::spawn(move || flatpak.install_with("org.gimp.GIMP", None, &cancel))
+        };
+        let helper = (0..200)
+            .find_map(|_| {
+                std::thread::sleep(Duration::from_millis(25));
+                fs::read_to_string(fake.dir.join("helper"))
+                    .ok()?
+                    .trim()
+                    .parse::<u32>()
+                    .ok()
+            })
+            .expect("the helper started");
+        let started = Instant::now();
+        cancel.cancel();
+        assert_eq!(worker.join().unwrap(), Err(Error::Cancelled));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        // Gone, or dead and not yet reaped by whoever has it now.
+        let gone = (0..200).any(|_| {
+            std::thread::sleep(Duration::from_millis(10));
+            fs::read_to_string(format!("/proc/{helper}/stat"))
+                .map_or(true, |stat| stat.contains(") Z "))
+        });
+        assert!(gone, "the helper is alive");
+    }
+
+    #[test]
+    fn a_call_cancelled_before_it_starts_is_not_made() {
+        let fake = Fake::new("cancel-early", "exit 0");
+        let cancel = Cancel::default();
+        cancel.cancel();
+        let result = fake
+            .flatpak(quick())
+            .install_with("org.gimp.GIMP", None, &cancel);
+        assert_eq!(result, Err(Error::Cancelled));
+        assert!(fake.calls().is_empty());
+    }
+
+    #[test]
+    fn after_closing_only_a_removal_is_started() {
+        let fake = Fake::new("closed", "exit 0");
+        let flatpak = fake.flatpak(quick());
+        flatpak.stop_all();
+        assert_eq!(flatpak.install("org.gimp.GIMP"), Err(Error::Cancelled));
+        assert_eq!(flatpak.installed(), Err(Error::Cancelled));
+        flatpak.remove_unused().unwrap();
+        assert_eq!(fake.calls().len(), 1);
+    }
+
+    /// What Flatpak 1.16 printed with one app open.
+    #[test]
+    fn an_open_app_is_told_from_a_closed_one() {
+        let fake = Fake::new(
+            "ps",
+            &format!("cat '{}/tests/fixtures/ps.out'", env!("CARGO_MANIFEST_DIR")),
+        );
+        let flatpak = fake.flatpak(quick());
+        assert_eq!(flatpak.is_running("org.sengi.test.Hello"), Ok(true));
+        assert_eq!(flatpak.is_running("org.sengi.test.Other"), Ok(false));
+        assert_eq!(fake.calls()[0], "ps --columns=application");
     }
 
     #[test]
@@ -685,7 +909,7 @@ mod tests {
         );
         let started = Instant::now();
         let set = fake.flatpak(quick()).installed().unwrap();
-        assert!(set.contains("org.gimp.GIMP"));
+        assert!(set.all.contains("org.gimp.GIMP"));
         assert!(started.elapsed() < Duration::from_secs(4));
     }
 
@@ -713,7 +937,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(500));
         let started = Instant::now();
         flatpak.stop_all();
-        assert!(worker.join().unwrap().is_err());
+        assert_eq!(worker.join().unwrap(), Err(Error::Cancelled));
         assert!(started.elapsed() < Duration::from_secs(4));
     }
 

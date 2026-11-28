@@ -1,10 +1,11 @@
 //! The store's behaviour: loading the list, the pages and the search,
-//! installing, and drawing icons. Flatpak is only ever run on a thread of
-//! its own; the window is touched only from the event loop.
+//! installing and removing, and drawing icons. Flatpak is only ever run on
+//! a thread of its own; the window is touched only from the event loop.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use slint::{
@@ -16,7 +17,7 @@ use sengi_text::progress::Progress;
 
 use crate::catalog::App;
 use crate::featured::{self, Featured, Item, Page};
-use crate::flatpak::{Error, Flatpak};
+use crate::flatpak::{Cancel, Error, Flatpak};
 use crate::icons;
 use crate::nav::{self, Grid, Key};
 use crate::online::{self, Retry};
@@ -46,6 +47,25 @@ const MAX_QUERY: usize = 64;
 /// The soonest the list is asked for again after a failed try because the
 /// user typed or moved, unless the search was empty before.
 const RETRY_AFTER: Duration = Duration::from_secs(30);
+
+const BUSY: &str = "Another app is being installed or removed. Try again when it is done.";
+
+/// What is asked before an app is removed.
+const REMOVE_BODY: &str = "Its settings and data are kept, and are used again if you install \
+    it again. Shared parts that no other app uses are removed too.";
+
+/// A removal that waits to be confirmed.
+struct Asking {
+    id: String,
+    name: String,
+}
+
+/// Why an open app is not removed. Flatpak would remove it and leave it
+/// running, and removing the same app again before it is closed then fails
+/// half way.
+fn still_open(name: &str) -> String {
+    format!("{name} is open. Close it, then remove it.")
+}
 
 #[derive(Clone, Default)]
 struct Message {
@@ -85,6 +105,9 @@ struct Data {
     decoding: bool,
     /// How far the install under way has got, as far as flatpak says.
     progress: Option<Progress>,
+    /// The app being installed, and how to stop it.
+    stop: Option<(String, Cancel)>,
+    asking: Option<Asking>,
     message: Message,
     /// The message is why an install failed, and stays until the user
     /// does something else.
@@ -106,6 +129,8 @@ pub struct Context {
     proc_net: PathBuf,
     /// The window is closed: nothing new is started.
     closing: AtomicBool,
+    /// The last removal's thread, which is waited for before exiting.
+    removal: Mutex<Option<JoinHandle<()>>>,
     /// None in tests, which have no window.
     window: Option<slint::Weak<StoreWindow>>,
 }
@@ -122,6 +147,9 @@ struct CardData {
     icon: Option<Pixels>,
     state: State,
     progress: Option<Progress>,
+    /// The install was told to stop and has not yet.
+    cancelling: bool,
+    removable: bool,
     /// Shown by name only and not to be installed: there is no list.
     unavailable: bool,
 }
@@ -136,6 +164,9 @@ struct View {
     banner_retry: bool,
     banner_busy: bool,
     message: Message,
+    /// The question to confirm a removal, or nothing.
+    remove_title: String,
+    remove_body: String,
     /// Where the keys are to be, when the page changed.
     current: Option<i32>,
 }
@@ -182,10 +213,13 @@ fn apply(window: &StoreWindow, view: View) {
                 .unwrap_or_default()
                 .into(),
             unavailable: card.unavailable,
+            cancelling: card.cancelling,
+            removable: card.removable,
             state: match card.state {
                 State::Available => RowState::Available,
                 State::Installing => RowState::Installing,
                 State::Installed => RowState::Installed,
+                State::Removing => RowState::Removing,
                 State::Failed => RowState::Failed,
             },
         })
@@ -214,6 +248,14 @@ fn apply(window: &StoreWindow, view: View) {
     store.set_banner_busy(view.banner_busy);
     store.set_message(view.message.text.into());
     store.set_message_is_error(view.message.error);
+    // The words stay when the question goes, so that the dialog does not
+    // change, and take the keyboard back, while it is being closed.
+    let asking = !view.remove_title.is_empty();
+    if asking {
+        store.set_remove_body(view.remove_body.into());
+        store.set_remove_title(view.remove_title.into());
+    }
+    store.set_asking(asking);
     match view.current {
         Some(current) => store.set_current(current.min(total - 1)),
         None if store.get_current() >= total => store.set_current(total - 1),
@@ -239,6 +281,7 @@ impl Context {
             data_home,
             proc_net: PathBuf::from(online::PROC_NET),
             closing: AtomicBool::new(false),
+            removal: Mutex::new(None),
             window,
         }
     }
@@ -325,7 +368,13 @@ fn view(data: &Data, current: Option<i32>) -> View {
                 Item::Offline { id, name } => (id, name, String::new(), true),
             };
             let state = data.rows.state(&id);
+            let cancelling = data
+                .stop
+                .as_ref()
+                .is_some_and(|(stopped, stop)| *stopped == id && stop.cancelled());
             CardData {
+                cancelling,
+                removable: data.rows.may_remove(&id),
                 glyph: data
                     .featured
                     .group_of(&id)
@@ -333,7 +382,7 @@ fn view(data: &Data, current: Option<i32>) -> View {
                     .unwrap_or_default(),
                 letter: sengi_text::initial(&name),
                 icon: data.icons.get(&id).cloned(),
-                progress: (state == State::Installing)
+                progress: (state == State::Installing && !cancelling)
                     .then(|| data.progress.clone())
                     .flatten(),
                 state,
@@ -387,6 +436,16 @@ fn view(data: &Data, current: Option<i32>) -> View {
         banner_retry,
         banner_busy,
         message: data.message.clone(),
+        remove_title: data
+            .asking
+            .as_ref()
+            .map(|asking| format!("Remove {}?", asking.name))
+            .unwrap_or_default(),
+        remove_body: data
+            .asking
+            .as_ref()
+            .map(|_| REMOVE_BODY.to_string())
+            .unwrap_or_default(),
         current,
     }
 }
@@ -766,10 +825,9 @@ fn install(shared: &Shared, id: &str) {
                 data.sticky = false;
                 data.message = Message::info(format!("Installing {name}"));
             }
-            Err(Refused::Done) => return,
+            Err(Refused::Done | Refused::NotYours) => return,
             Err(Refused::Busy) => {
-                data.message =
-                    Message::info("Another app is being installed. Try again when it is done.");
+                data.message = Message::info(BUSY);
                 drop(data);
                 render(shared, None);
                 return;
@@ -777,6 +835,8 @@ fn install(shared: &Shared, id: &str) {
         }
         name
     };
+    let stop = Cancel::default();
+    shared.lock().stop = Some((id.to_string(), stop.clone()));
     render(shared, None);
 
     let id = id.to_string();
@@ -785,12 +845,190 @@ fn install(shared: &Shared, id: &str) {
         .spawn({
             let shared = shared.clone();
             let id = id.clone();
-            move || run_install(&shared, &id, &name)
+            move || run_install(&shared, &id, &name, &stop)
         });
     if spawned.is_err() {
-        shared.lock().rows.finish(&id, false);
+        {
+            let mut data = shared.lock();
+            data.rows.finish(&id, false);
+            data.stop = None;
+        }
         set_message(shared, Message::error("Could not start the install"));
     }
+}
+
+/// Stops the install of `id`, if it is the one under way. The card says so
+/// until flatpak is gone.
+fn cancel(shared: &Shared, id: &str) {
+    {
+        let mut data = shared.lock();
+        let Some((_, stop)) = data.stop.as_ref().filter(|(under_way, _)| under_way == id) else {
+            return;
+        };
+        if stop.cancelled() {
+            return;
+        }
+        stop.cancel();
+        data.progress = None;
+        data.sticky = false;
+        let name = name_of(&data, id);
+        data.message = Message::info(format!("Cancelling the install of {name}"));
+    }
+    render(shared, None);
+}
+
+/// What an app is called, or its ID if nothing says.
+fn name_of(data: &Data, id: &str) -> String {
+    if let Some(app) = data.catalog.iter().find(|app| app.id == id) {
+        return app.name.clone();
+    }
+    // Without a list only the recommended names are on show.
+    items(data)
+        .into_iter()
+        .find_map(|item| match item {
+            Item::Offline { id: other, name } if other == id => Some(name),
+            _ => None,
+        })
+        .unwrap_or_else(|| id.to_string())
+}
+
+/// The Remove button: asks first, unless the app is open. Nothing is
+/// removed from here.
+fn ask_remove(shared: &Shared, id: &str) {
+    {
+        let mut data = shared.lock();
+        if data.rows.busy() {
+            if data.rows.state(id) == State::Installed {
+                data.message = Message::info(BUSY);
+                drop(data);
+                render(shared, None);
+            }
+            return;
+        }
+        if !data.rows.may_remove(id) {
+            return;
+        }
+    }
+    let id = id.to_string();
+    let spawned = std::thread::Builder::new().name("store-ask".into()).spawn({
+        let shared = shared.clone();
+        move || {
+            // When flatpak cannot say, the removal says what is wrong.
+            let open = matches!(shared.flatpak.is_running(&id), Ok(true));
+            {
+                let mut data = shared.lock();
+                if data.rows.busy() || !data.rows.may_remove(&id) {
+                    return;
+                }
+                let name = name_of(&data, &id);
+                if open {
+                    data.sticky = true;
+                    data.message = Message::error(still_open(&name));
+                } else {
+                    data.sticky = false;
+                    data.message = Message::default();
+                    data.asking = Some(Asking { id, name });
+                }
+            }
+            render(&shared, None);
+        }
+    });
+    if spawned.is_err() {
+        set_message(shared, Message::error("Could not start the removal"));
+    }
+}
+
+/// The question was answered no.
+fn keep(shared: &Shared) {
+    shared.lock().asking = None;
+    render(shared, None);
+}
+
+/// The question was answered yes.
+fn confirm_remove(shared: &Shared) {
+    let (id, name) = {
+        let mut data = shared.lock();
+        let Some(Asking { id, name }) = data.asking.take() else {
+            return;
+        };
+        match data.rows.begin_removal(&id) {
+            Ok(()) => {
+                data.sticky = false;
+                data.message = Message::info(format!("Removing {name}"));
+            }
+            Err(refused) => {
+                if refused == Refused::Busy {
+                    data.message = Message::info(BUSY);
+                }
+                drop(data);
+                render(shared, None);
+                return;
+            }
+        }
+        (id, name)
+    };
+    render(shared, None);
+    let spawned = std::thread::Builder::new()
+        .name("store-remove".into())
+        .spawn({
+            let shared = shared.clone();
+            let id = id.clone();
+            move || run_remove(&shared, &id, &name)
+        });
+    match spawned {
+        Ok(thread) => {
+            *shared.removal.lock().unwrap_or_else(|e| e.into_inner()) = Some(thread);
+        }
+        Err(_) => {
+            shared.lock().rows.finish_removal(&id, false);
+            set_message(shared, Message::error("Could not start the removal"));
+        }
+    }
+}
+
+/// The removal itself, on its own thread.
+fn run_remove(shared: &Shared, id: &str, name: &str) {
+    let flatpak = &shared.flatpak;
+    // It may have been opened while the question was on the screen.
+    if matches!(flatpak.is_running(id), Ok(true)) {
+        {
+            let mut data = shared.lock();
+            data.rows.finish_removal(id, false);
+            data.sticky = true;
+            data.message = Message::error(still_open(name));
+        }
+        render(shared, None);
+        return;
+    }
+    let result = flatpak.uninstall(id);
+    if result.is_ok() {
+        // The app is gone whether or not this works.
+        if let Err(error) = flatpak.remove_unused() {
+            eprintln!("sengi-store: could not remove unused runtimes: {error}");
+        }
+    }
+    // What is there now: a copy the system has stays, and a removal that
+    // failed may have got part of the way.
+    let installed = flatpak.installed();
+    {
+        let mut data = shared.lock();
+        data.rows.finish_removal(id, result.is_ok());
+        if let Ok(installed) = installed {
+            data.rows.set_installed(installed);
+        }
+        match &result {
+            Ok(()) => {
+                data.sticky = false;
+                data.message = Message::info(format!("{name} was removed."));
+            }
+            Err(error) => {
+                eprintln!("sengi-store: could not remove {id}: {error}");
+                data.sticky = true;
+                data.message = Message::error(Problem::of(error).remove(name));
+            }
+        }
+    }
+    render(shared, None);
 }
 
 /// Starts an installed app. The Store does not wait for it.
@@ -824,52 +1062,91 @@ fn open(shared: &Shared, id: &str) {
 }
 
 /// The install itself, on its own thread.
-fn run_install(shared: &Shared, id: &str, name: &str) {
+fn run_install(shared: &Shared, id: &str, name: &str, stop: &Cancel) {
     // The list of what is installed may have failed to load, or the app
     // may have come from elsewhere since. A second copy is not made.
     let result = match shared.flatpak.installed() {
-        Ok(installed) if installed.contains(id) => {
+        Ok(installed) if installed.all.contains(id) => {
             shared.lock().rows.set_installed(installed);
             Ok(true)
         }
         Ok(_) => {
             let report = |progress: Progress| {
-                shared.lock().progress = Some(progress);
-                render(shared, None);
+                let mut data = shared.lock();
+                if !stop.cancelled() {
+                    data.progress = Some(progress);
+                    drop(data);
+                    render(shared, None);
+                }
             };
             shared
                 .flatpak
-                .install_with(id, Some(&report))
+                .install_with(id, Some(&report), stop)
                 .map(|()| false)
         }
         Err(error) => Err(error),
     };
+    // A cancel may come when flatpak has done its work already, so it is
+    // asked what is there now.
+    let arrived = (result.is_err() && stop.cancelled())
+        .then(|| shared.flatpak.installed().ok())
+        .flatten()
+        .filter(|installed| installed.all.contains(id));
     {
         let mut data = shared.lock();
-        data.rows.finish(id, result.is_ok());
         data.progress = None;
+        data.stop = None;
+        let done = |data: &mut Data, text: String| {
+            data.rows.finish(id, true);
+            data.sticky = false;
+            data.message = Message::info(text);
+        };
+        let late = format!("{name} was installed before it could be cancelled.");
         match &result {
-            Ok(true) => {
+            Ok(true) => done(&mut data, format!("{name} is installed already")),
+            Ok(false) if stop.cancelled() => done(&mut data, late),
+            Ok(false) => done(
+                &mut data,
+                format!("{name} is installed. It is in the launcher now."),
+            ),
+            Err(_) if arrived.is_some() => done(&mut data, late),
+            // Cancelled, or the window was closed.
+            Err(error) if stop.cancelled() || *error == Error::Cancelled => {
+                data.rows.stopped(id);
                 data.sticky = false;
-                data.message = Message::info(format!("{name} is installed already"));
-            }
-            Ok(false) => {
-                data.sticky = false;
-                data.message =
-                    Message::info(format!("{name} is installed. It is in the launcher now."));
+                data.message = Message::info(format!("Cancelled. {name} was not installed."));
             }
             Err(error) => {
                 eprintln!("sengi-store: could not install {id}: {error}");
+                data.rows.finish(id, false);
                 data.sticky = true;
                 data.message = Message::error(Problem::of(error).install(name));
             }
+        }
+        if let Some(installed) = arrived {
+            data.rows.set_installed(installed);
         }
     }
     render(shared, None);
 }
 
+/// What is done when the window is closed: an install under way is stopped,
+/// as Cancel would, and a removal is waited for.
+fn close(shared: &Shared) {
+    shared.closing.store(true, Ordering::Relaxed);
+    shared.flatpak.stop_all();
+    let removal = shared
+        .removal
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    if let Some(thread) = removal {
+        let _ = thread.join();
+    }
+}
+
 /// Makes the store out of a window and starts loading. When the window is
-/// closed, what flatpak is still doing for it is stopped.
+/// closed, an install under way is stopped and a removal is finished.
 pub fn run(
     window: StoreWindow,
     flatpak: Flatpak,
@@ -927,6 +1204,22 @@ pub fn run_with_query(
         let shared = shared.clone();
         move |id| open(&shared, &id)
     });
+    store.on_cancel({
+        let shared = shared.clone();
+        move |id| cancel(&shared, &id)
+    });
+    store.on_ask_remove({
+        let shared = shared.clone();
+        move |id| ask_remove(&shared, &id)
+    });
+    store.on_confirm_remove({
+        let shared = shared.clone();
+        move || confirm_remove(&shared)
+    });
+    store.on_keep({
+        let shared = shared.clone();
+        move || keep(&shared)
+    });
     scaled(&shared, window.window().scale_factor());
     render(&shared, Some(nav::FIELD));
     start_load(&shared);
@@ -935,8 +1228,7 @@ pub fn run_with_query(
     }
     watch(&shared);
     let result = window.run();
-    shared.closing.store(true, Ordering::Relaxed);
-    shared.flatpak.stop_all();
+    close(&shared);
     result
 }
 

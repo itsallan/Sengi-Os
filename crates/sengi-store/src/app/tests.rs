@@ -501,3 +501,266 @@ fn a_source_that_is_not_flathub_stops_the_load() {
     assert!(!view(&data, None).banner.contains("offline"));
     assert!(!fake.calls().iter().any(|c| c.contains("remote-ls")));
 }
+
+const GIMP: &str = "org.gimp.GIMP";
+const OWN_GIMP: &str = "org.gimp.GIMP\tuser\n";
+
+/// GIMP and Y on the remote, `list` printing the file `installed` in the
+/// fake's folder, which is `$d`, and one branch of GIMP to remove; `extra`
+/// answers the rest.
+fn removing_fake(tag: &str, installed: &str, extra: &str) -> Fake {
+    let fake = Fake::new(
+        tag,
+        &format!(
+            "d=\"$(dirname \"$0\")\"\n\
+             case \"$*\" in\n{REMOTES}\n\
+             *remote-ls*) printf '{LISTING}';;\n\
+             list*) cat \"$d/installed\";;\n\
+             *--columns=ref) echo org.gimp.GIMP/x86_64/stable;;\n\
+             {extra}\n\
+             esac"
+        ),
+    );
+    fs::write(fake.dir.join("installed"), installed).unwrap();
+    fake
+}
+
+/// What takes GIMP off the list, as removing it does.
+const REMOVES: &str = "*\"--app org.gimp.GIMP/x86_64/stable\") : >\"$d/installed\";;";
+
+fn called(fake: &Fake, part: &str) -> bool {
+    fake.calls().iter().any(|c| c.contains(part))
+}
+
+/// Presses Remove and waits for the question.
+fn asked(shared: &Shared) {
+    ask_remove(shared, GIMP);
+    wait_until(shared, |d| d.asking.is_some());
+}
+
+#[test]
+fn a_cancelled_install_is_no_error_and_may_be_tried_again() {
+    let fake = removing_fake(
+        "app-cancel",
+        "",
+        "*\" install \"*) [ -e \"$d/again\" ] && exit 0; touch \"$d/again\"; exec sleep 30;;",
+    );
+    let shared = context(&fake);
+    load(shared.clone());
+    install(&shared, GIMP);
+    wait_until(&shared, |_| fake.dir.join("again").exists());
+    // Another app's Cancel does nothing.
+    cancel(&shared, "org.x.Y");
+    assert!(!view(&shared.lock(), None)
+        .cards
+        .iter()
+        .any(|c| c.cancelling));
+    cancel(&shared, GIMP);
+    wait_until(&shared, |d| d.rows.state(GIMP) == State::Available);
+    {
+        let data = shared.lock();
+        assert!(!data.message.error && !data.sticky);
+        assert_eq!(data.message.text, "Cancelled. GIMP was not installed.");
+        assert!(data.stop.is_none() && data.progress.is_none());
+    }
+    install(&shared, GIMP);
+    wait_until(&shared, |d| d.rows.state(GIMP) == State::Installed);
+    assert!(shared.lock().rows.may_remove(GIMP));
+}
+
+#[test]
+fn a_cancel_that_comes_too_late_says_the_app_is_there() {
+    let fake = removing_fake(
+        "app-cancel-late",
+        "",
+        "*\" install \"*) printf 'org.gimp.GIMP\\tuser\\n' >\"$d/installed\"; \
+         touch \"$d/deployed\"; exec sleep 30;;",
+    );
+    let shared = context(&fake);
+    load(shared.clone());
+    install(&shared, GIMP);
+    wait_until(&shared, |_| fake.dir.join("deployed").exists());
+    cancel(&shared, GIMP);
+    wait_until(&shared, |d| d.rows.state(GIMP) == State::Installed);
+    let data = shared.lock();
+    assert_eq!(
+        data.message.text,
+        "GIMP was installed before it could be cancelled."
+    );
+    assert!(!data.message.error && data.rows.may_remove(GIMP));
+}
+
+#[test]
+fn closing_stops_an_install_and_starts_nothing_more() {
+    let fake = removing_fake(
+        "app-close-install",
+        "",
+        "*\" install \"*) touch \"$d/started\"; exec sleep 30;;",
+    );
+    let shared = context(&fake);
+    load(shared.clone());
+    install(&shared, GIMP);
+    wait_until(&shared, |_| fake.dir.join("started").exists());
+    close(&shared);
+    wait_until(&shared, |d| d.rows.state(GIMP) == State::Available);
+    assert!(!shared.lock().message.error);
+    let calls = fake.calls().len();
+    install(&shared, GIMP);
+    wait_until(&shared, |d| !d.rows.busy());
+    assert_eq!(fake.calls().len(), calls);
+}
+
+#[test]
+fn remove_asks_first_and_names_the_app() {
+    let fake = removing_fake("app-ask", OWN_GIMP, "");
+    let shared = context(&fake);
+    load(shared.clone());
+    assert!(view(&shared.lock(), None).remove_title.is_empty());
+    asked(&shared);
+    {
+        let v = view(&shared.lock(), None);
+        assert_eq!(v.remove_title, "Remove GIMP?");
+        assert!(v.remove_body.contains("settings and data are kept"));
+    }
+    keep(&shared);
+    assert!(view(&shared.lock(), None).remove_title.is_empty());
+    // A yes that was never asked for does nothing.
+    confirm_remove(&shared);
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(!called(&fake, "uninstall"));
+    assert!(shared.lock().rows.may_remove(GIMP));
+}
+
+#[test]
+fn a_confirmed_removal_takes_the_app_and_then_the_unused_parts() {
+    let fake = removing_fake("app-remove", OWN_GIMP, REMOVES);
+    let shared = context(&fake);
+    load(shared.clone());
+    asked(&shared);
+    confirm_remove(&shared);
+    wait_until(&shared, |d| d.rows.state(GIMP) == State::Available);
+    let uninstalls: Vec<String> = fake
+        .calls()
+        .into_iter()
+        .filter(|c| c.contains("uninstall"))
+        .collect();
+    assert_eq!(
+        uninstalls,
+        [
+            "--user uninstall -y --noninteractive --app org.gimp.GIMP/x86_64/stable",
+            "--user uninstall --unused -y --noninteractive",
+        ]
+    );
+    assert!(!called(&fake, "delete-data"));
+    let data = shared.lock();
+    assert_eq!(data.message.text, "GIMP was removed.");
+    assert!(!data.message.error);
+}
+
+#[test]
+fn an_open_app_is_not_removed() {
+    let fake = removing_fake("app-remove-open", OWN_GIMP, "ps*) echo org.gimp.GIMP;;");
+    let shared = context(&fake);
+    load(shared.clone());
+    ask_remove(&shared, GIMP);
+    wait_until(&shared, |d| d.sticky);
+    let data = shared.lock();
+    assert!(data.asking.is_none() && data.message.error);
+    assert_eq!(data.message.text, "GIMP is open. Close it, then remove it.");
+    assert!(data.rows.may_remove(GIMP));
+    assert!(!called(&fake, "uninstall"));
+}
+
+#[test]
+fn an_app_opened_while_asked_is_not_removed() {
+    let fake = removing_fake(
+        "app-remove-opened",
+        OWN_GIMP,
+        "ps*) cat \"$d/open\" 2>/dev/null;;",
+    );
+    let shared = context(&fake);
+    load(shared.clone());
+    asked(&shared);
+    fs::write(fake.dir.join("open"), "org.gimp.GIMP\n").unwrap();
+    confirm_remove(&shared);
+    wait_until(&shared, |d| !d.rows.busy());
+    assert!(shared.lock().message.text.contains("Close it"));
+    assert!(shared.lock().rows.may_remove(GIMP));
+    assert!(!called(&fake, "uninstall"));
+}
+
+#[test]
+fn a_system_app_is_never_offered_for_removal() {
+    let fake = removing_fake("app-system", "org.gimp.GIMP\tsystem\n", "");
+    let shared = context(&fake);
+    load(shared.clone());
+    search(&shared, "gimp");
+    {
+        let v = view(&shared.lock(), None);
+        assert!(v.cards[0].state == State::Installed && !v.cards[0].removable);
+    }
+    ask_remove(&shared, GIMP);
+    assert!(view(&shared.lock(), None).remove_title.is_empty());
+    confirm_remove(&shared);
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(!called(&fake, "uninstall"));
+}
+
+#[test]
+fn a_removal_that_fails_says_so_and_the_app_stays() {
+    let fake = removing_fake(
+        "app-remove-fail",
+        OWN_GIMP,
+        "*uninstall*) echo 'error: something broke' >&2; exit 1;;",
+    );
+    let shared = context(&fake);
+    load(shared.clone());
+    asked(&shared);
+    confirm_remove(&shared);
+    wait_until(&shared, |d| d.sticky);
+    let data = shared.lock();
+    assert_eq!(
+        data.message.text,
+        "Could not remove GIMP. Something went wrong. Try again."
+    );
+    assert!(data.message.error && data.rows.may_remove(GIMP));
+    assert!(!called(&fake, "--unused"));
+}
+
+#[test]
+fn closing_waits_for_a_removal() {
+    let fake = removing_fake(
+        "app-close-remove",
+        OWN_GIMP,
+        "*--unused*) touch \"$d/tidied\";;\n\
+         *uninstall*) touch \"$d/started\"; sleep 1; touch \"$d/removed\";;",
+    );
+    let shared = context(&fake);
+    load(shared.clone());
+    asked(&shared);
+    confirm_remove(&shared);
+    wait_until(&shared, |_| fake.dir.join("started").exists());
+    close(&shared);
+    assert!(fake.dir.join("removed").exists());
+    assert!(fake.dir.join("tidied").exists());
+}
+
+#[test]
+fn nothing_is_removed_while_an_app_is_installed() {
+    let fake = removing_fake(
+        "app-remove-busy",
+        OWN_GIMP,
+        "*\" install \"*) exec sleep 30;;",
+    );
+    let shared = context(&fake);
+    load(shared.clone());
+    install(&shared, "org.x.Y");
+    ask_remove(&shared, GIMP);
+    {
+        let data = shared.lock();
+        assert!(data.asking.is_none());
+        assert_eq!(data.message.text, BUSY);
+    }
+    assert!(!called(&fake, "uninstall"));
+    close(&shared);
+}

@@ -15,6 +15,10 @@ and the measured idle RAM and boot time.
 - Settings, About: Save system report writes one text file in Documents about
   the hardware and what failed, to attach to a problem report, with names,
   addresses and serial numbers hidden. Nothing is sent anywhere.
+- The Store can stop an install under way, and remove an app you installed,
+  after asking: the app's settings and data are kept. A removed app leaves the
+  launcher and the dock, and a pinned one comes back to its place if installed
+  again.
 
 ### Fixed
 
