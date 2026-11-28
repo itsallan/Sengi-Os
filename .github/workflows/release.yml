@@ -50,6 +50,21 @@ jobs:
         run: |
           SENGI_INSTALL_MODE=beside SENGI_UEFI=/usr/share/OVMF/OVMF_CODE_4M.fd SENGI_UEFI_VARS=/usr/share/OVMF/OVMF_VARS_4M.fd \
             scripts/install-test.sh out/sengi-os-$(cat VERSION)-amd64.iso test-output/install-beside
+      # No release ships that cannot make a full Windows volume smaller
+      # without losing a file of it.
+      - name: Install test, shrinking Windows, UEFI
+        timeout-minutes: 30
+        run: |
+          rm -f test-output/install*/*.img test-output/install*/*.qcow2
+          sudo -E apt-get $APT_OPTS install -y -q --no-install-recommends ntfs-3g attr
+          sudo scripts/make-windows-volume.sh test-output/windows
+          sudo chown -R "$USER" test-output/windows
+          for fault in "" powercut; do
+            SENGI_INSTALL_MODE=shrink SENGI_SHRINK_FAULT=$fault SENGI_NTFS=test-output/windows \
+              SENGI_UEFI=/usr/share/OVMF/OVMF_CODE_4M.fd SENGI_UEFI_VARS=/usr/share/OVMF/OVMF_VARS_4M.fd \
+              scripts/install-test.sh out/sengi-os-$(cat VERSION)-amd64.iso "test-output/install-shrink$fault"
+            rm -f "test-output/install-shrink$fault"/*.img "test-output/install-shrink$fault"/*.raw
+          done
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
