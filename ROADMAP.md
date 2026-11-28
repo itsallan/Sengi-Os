@@ -67,3 +67,12 @@ each `- [ ]` line is an issue.
 
 - [x] Polish pass across all components
 - [x] First public release
+
+## 1.1
+
+- [ ] Sound for browsers and Intel laptops with audio through a DSP
+- [ ] Real progress, cancel and remove in the Store
+- [ ] The live system asks whether to install or try it first
+- [ ] Install beside Windows by making it smaller
+- [ ] A system report to attach to a problem report
+- [ ] Maximised windows hide the bar and dock until the pointer asks

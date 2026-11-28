@@ -1399,7 +1399,7 @@ checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
 name = "sengi-compositor"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "ab_glyph",
  "calloop 0.14.5",
@@ -1417,11 +1417,11 @@ dependencies = [
 
 [[package]]
 name = "sengi-config"
-version = "1.0.0"
+version = "1.1.0"
 
 [[package]]
 name = "sengi-tokens"
-version = "1.0.0"
+version = "1.1.0"
 
 [[package]]
 name = "serde"

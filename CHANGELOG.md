@@ -3,103 +3,51 @@
 All notable changes to Sengi OS. Each release section lists what is in its ISO
 and the measured idle RAM and boot time.
 
-## Unreleased
+## 1.1.0 - 2026-11-28
 
 ### Added
 
-- The Sengi OS logo in the bar, on the login screen, in Settings' About page,
-  on the first page of the installer and the welcome wizard, and on the live
-  system's question about installing.
-- The live USB system asks, once per start, whether to install Sengi OS or try
-  it first, and says that nothing is installed yet.
-- Settings, About: Save system report writes one text file in Documents about
-  the hardware and what failed, to attach to a problem report, with names,
-  addresses and serial numbers hidden. Nothing is sent anywhere.
-- The Store can stop an install under way, and remove an app you installed,
-  after asking: the app's settings and data are kept. A removed app leaves the
-  launcher and the dock, and a pinned one comes back to its place if installed
-  again.
-- Install beside Windows on a disk with no free space: the installer makes the
-  largest Windows (NTFS) partition smaller, naming it by its label where
-  Windows is not on it, after checks that refuse BitLocker, hibernation and Fast
-  Startup on any partition of the disk, unclean or damaged volumes, bad
-  sectors, a missing charger and too little free space, and after you confirm
-  that you have a backup. Windows checks its disk at its next start. This has
-  not been tried on a real Windows installation yet; back up first.
+- Install beside Windows on a full disk: the installer makes Windows smaller
+  after checking it. Not yet tried on a real Windows installation; back up
+  first.
+- The live USB system asks whether to install or try Sengi OS first.
+- The Store can cancel an install and remove an app you installed.
+- Settings, About: save a system report to attach to a problem report. Names,
+  addresses and serial numbers are hidden and nothing is sent.
+- The Sengi OS logo in the bar, login screen, About, installer and welcome.
 
 ### Changed
 
-- A maximised window takes the whole screen: the top bar and the dock hide,
-  and come back while the pointer rests at the top or bottom edge, or while
-  something opened from them is up. The window's title bar moves below the bar
-  while it shows. Under the labwc fallback they stay as before.
-- The installer chooses nothing for you on a disk that holds Windows (NTFS) or
-  BitLocker: erasing it is chosen on purpose.
-- A disk that is part of a firmware RAID set, such as Intel RST in RAID mode,
-  is not offered: writing to one disk of a set would break it.
+- A maximised window takes the whole screen. Rest the pointer at the top or
+  bottom edge to bring back the bar or the dock.
+- The installer chooses nothing for you on a disk with Windows or BitLocker,
+  and does not offer disks in a firmware RAID set.
 
 ### Fixed
 
-- The dock's right-click menu stays until you choose a row, click somewhere
-  else or press Escape. It disappeared as soon as the pointer reached its rows,
-  so that Keep in Dock and Quit could hardly be chosen.
-- Battery: the bar reads it as quick settings and Settings do, so a mouse's
-  or pen's battery and empty slots are left out, and a driver that gives no
-  percentage, or 0 while its energy counters say otherwise, no longer shows as
-  0% or not at all.
-- Sound: programs that use PulseAudio, such as browsers, have a sound server
-  again; Intel laptops whose audio goes through a DSP get its firmware and
-  mixer profiles; Bluetooth audio and ALSA-only programs work; a machine with
-  no sound device says so.
-- The Store and app updates show real progress while Flatpak works: a bar with
-  the percentage, the step, the download size, the speed and the time left. A
-  full disk or a lost connection is named again.
-- Settings: the progress line of an update wraps in a narrow window instead of
-  losing the speed and the time left.
-- Settings, the Store and Files opened from the first-run welcome run at the
-  usual priority and no longer at the welcome's lowest one.
-- The volume in the bar follows the volume keys, quick settings and Settings
-  at once, not up to 15 seconds later.
-- The desktop no longer freezes when a window is being moved or resized and
-  the only screen goes away, as when its cable is pulled.
-- A program can no longer leave its window stuck to the pointer by asking for
-  a move with the click that opened a menu.
-- Clicking a window in the dock just as it closes no longer leaves the
-  keyboard going nowhere.
-- A window that is restored without being chosen, as X11 programs can do,
-  comes back in front and Alt+Tab finds it.
-- A window restored, or leaving fullscreen, after its screen was unplugged
-  comes back where it can be reached, and a fullscreen window is no longer
-  pushed down when the bar or the screens change.
-- A program's open menu closes when you switch to another window, lock the
-  screen, minimise its window or open the launcher, and the keyboard goes
-  where you went.
-- A window asked to fill the screen while it was minimised goes back to its
-  place afterwards, not with its title bar above the screen.
-- A window that makes itself smaller while it hangs over the edge of the
-  screen no longer disappears off it.
-- Dragging the left or top edge of an X11 program's window moves that edge, not
-  the one opposite.
-- Windows are fitted to a screen that is plugged in after the last one went.
-- A window asked to maximise while minimised is maximised when it returns.
-- The outline shown while a window is snapped goes away if the window closes
-  during the drag.
-- Installing beside another system works on a disk whose protective MBR gives
-  its size as all ones, as Windows commonly writes it: it stopped after adding
-  the partition, with nothing installed. A disk whose protective MBR would be
-  changed in any other way is now refused before anything is written.
-- The installer's Disk page shows every line whole, wrapped where it is too
-  long for the window: what installing beside another system adds, why a disk
-  or a way of using it is not offered, and what making a partition smaller
-  does.
-- Settings: the list of pages scrolls where the window is too short for all of
-  it, as at 800x600, so Accessibility and About can be reached, and the
-  keyboard brings the page it is on into view.
-- The volume appears in the bar as soon as sound is ready after logging in,
-  not up to 15 seconds later.
-- Logging in, most often again after logging out, could leave the computer
-  with no sound and "No sound device" in quick settings until the next
-  restart.
+- Sound, including browsers, Intel laptops, Bluetooth audio, and a login that
+  came up with no sound device.
+- Real progress for Store installs and app updates.
+- The dock menu closed before a choice could be made.
+- Freezes and lost windows when moving, minimising or closing windows, or when
+  a screen is unplugged.
+- Volume and battery readings in the bar, and cut-off text in the installer and
+  Settings on small screens.
+
+### Known limits
+
+- Not yet verified on real hardware: sound, shrinking Windows, suspend,
+  touchpad gestures and printers.
+- The installer shrinks only Windows. To install beside Linux, free the space
+  first.
+- Secure Boot must be off.
+
+![The dock menu](docs/releases/1.1.0/dock-menu.png)
+![The bar over a maximised window](docs/releases/1.1.0/maximised-bar.png)
+![Install or try](docs/releases/1.1.0/live-question.png)
+![Install progress in the Store](docs/releases/1.1.0/store-progress.png)
+![Installing beside Windows](docs/releases/1.1.0/install-beside-windows.png)
+![The system report](docs/releases/1.1.0/system-report.png)
 
 ## 1.0.0 - 2026-11-27
 

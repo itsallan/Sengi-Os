@@ -197,7 +197,7 @@ the ISO:
     qemu-img create -f qcow2 /tmp/sengi-disk.qcow2 16G
     qemu-system-x86_64 -enable-kvm -cpu host -smp 2 -m 4G \
       -device virtio-vga -display gtk \
-      -drive file=out/sengi-os-1.0.0-amd64.iso,format=raw,if=virtio,readonly=on \
+      -drive file=out/sengi-os-1.1.0-amd64.iso,format=raw,if=virtio,readonly=on \
       -drive file=/tmp/sengi-disk.qcow2,format=qcow2,if=virtio
 
 ## Maximised windows

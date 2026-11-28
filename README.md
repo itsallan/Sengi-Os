@@ -7,7 +7,7 @@
 <p align="center">A fast, light desktop operating system built on Debian.</p>
 
 <p align="center">
-  <a href="https://github.com/itsallan/Sengi-Os/releases/latest"><b>Download 1.0.0</b></a> ·
+  <a href="https://github.com/itsallan/Sengi-Os/releases/latest"><b>Download 1.1.0</b></a> ·
   <a href="docs/media/sengi-os-1.0.mp4?raw=true">Video</a> ·
   <a href="docs/guide.md">Guide</a> ·
   <a href="CHANGELOG.md">Changelog</a>
@@ -21,8 +21,7 @@
 
 > [!IMPORTANT]
 > Sengi OS is not stable yet and still lacks features. Expect bugs, and do not
-> rely on it as your only system. In 1.0.0, sound does not work on some laptops
-> and the Store shows no install progress.
+> rely on it as your only system.
 
 ## Highlights
 
@@ -47,7 +46,7 @@ Requires a 64-bit Intel or AMD computer with Secure Boot off, and a USB stick
 of 2 GB or more.
 
 ```sh
-sha256sum -c sengi-os-1.0.0-amd64.iso.sha256
+sha256sum -c sengi-os-1.1.0-amd64.iso.sha256
 ```
 
 Write the ISO to the stick (this erases it) and boot from it. Sengi OS asks
@@ -55,8 +54,8 @@ whether to install or try it first; **Install Sengi OS** also stays on the
 dock. The live user and password are both `live`.
 
 > [!WARNING]
-> First release. Installing beside Windows, suspend and printing are not yet
-> verified on real hardware. Back up your data first. See the
+> Sound, shrinking Windows, suspend and printing are not yet verified on real
+> hardware. Back up your data first. See the
 > [guide](docs/guide.md#installing).
 
 ## Build
