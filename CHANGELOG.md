@@ -51,6 +51,8 @@ and the measured idle RAM and boot time.
   where you went.
 - A window asked to fill the screen while it was minimised goes back to its
   place afterwards, not with its title bar above the screen.
+- A window that makes itself smaller while it hangs over the edge of the
+  screen no longer disappears off it.
 
 ## 1.0.0 - 2026-11-27
 

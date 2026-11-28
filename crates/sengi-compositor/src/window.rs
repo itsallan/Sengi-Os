@@ -840,24 +840,45 @@ impl State {
     /// Puts a window that shows again where it can be used: one whose
     /// place is on no screen any more comes wholly onto one that is there.
     fn bring_back(&mut self, window: &Window) {
-        let screens = self.output_rects();
         if let Some(frame) = self.frame_rect(window) {
-            let bar = self.theme.metrics.titlebar;
-            let lost = !screens.iter().any(|screen| {
-                frame.x < screen.right()
-                    && screen.x < frame.right()
-                    && frame.y < screen.bottom()
-                    && screen.y < frame.y.saturating_add(bar)
-            });
             let usable = self.usable_area_near(frame);
-            if let Some((x, y)) = lost
-                .then(|| layout::rehome(frame, &screens, usable))
+            if let Some((x, y)) = self
+                .out_of_reach(frame)
+                .then(|| layout::rehome(frame, &self.output_rects(), usable))
                 .flatten()
             {
                 self.move_frame_to(window, x, y);
             }
         }
         self.fit_window(window);
+    }
+
+    /// Whether the strip a window is taken hold of by is on no screen.
+    fn out_of_reach(&self, frame: Rect) -> bool {
+        let bar = self.theme.metrics.titlebar;
+        !self.output_rects().iter().any(|screen| {
+            frame.x < screen.right()
+                && screen.x < frame.right()
+                && frame.y < screen.bottom()
+                && screen.y < frame.y.saturating_add(bar)
+        })
+    }
+
+    /// A window that drew itself smaller while it hung over the edge of the
+    /// screens may be on none of them any more, with nothing left to take
+    /// hold of: it is pulled back. Called when the client commits.
+    pub fn keep_in_reach(&mut self, window: &Window) {
+        let data = data(window);
+        // During a resize the anchor says where it belongs.
+        if !data.decorated.get() || data.resize_anchor.get().is_some() {
+            return;
+        }
+        let Some(frame) = self.frame_rect(window) else {
+            return;
+        };
+        if self.space.outputs().next().is_some() && self.out_of_reach(frame) {
+            self.move_frame_to(window, frame.x, frame.y);
+        }
     }
 
     /// Gives a maximised window the usable area as it is now, and pulls any

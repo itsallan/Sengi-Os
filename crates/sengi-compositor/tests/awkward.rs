@@ -500,6 +500,26 @@ fn a_hidden_window_asked_to_fill_the_screen_gives_its_place_back() {
 }
 
 #[test]
+fn a_window_that_shrinks_while_over_the_edge_stays_within_reach() {
+    let compositor = Compositor::start(None);
+    let mut app = a_program(&compositor);
+    let shrinking = window(&mut app, "shrinking", GREEN);
+    app.paint(&shrinking.surface, 600, 200, GREEN).unwrap();
+    // Far out to the left by its title bar, then much narrower.
+    let frame = numbers(&window_line(&compositor, "shrinking"), "frame");
+    let (x, y) = (frame[0] + frame[2] - 40, frame[1] + 12);
+    compositor.input(&format!("move {x} {y}"));
+    compositor.input("press left");
+    compositor.input("move 60 300");
+    compositor.input("release left");
+    assert!(numbers(&window_line(&compositor, "shrinking"), "frame")[0] < -300);
+    app.paint(&shrinking.surface, 100, 80, GREEN).unwrap();
+    let frame = numbers(&window_line(&compositor, "shrinking"), "frame");
+    assert!(frame[0] + frame[2] > 0, "it is at {frame:?}");
+    sound(&compositor);
+}
+
+#[test]
 fn a_window_that_fills_the_screen_stays_there_when_a_bar_appears() {
     let compositor = Compositor::start(None);
     let mut app = a_program(&compositor);

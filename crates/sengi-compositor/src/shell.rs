@@ -87,6 +87,7 @@ impl CompositorHandler for State {
                 // commit, and a focus that waited for it is given now.
                 if window::is_x11(&window) {
                     self.update_keyboard_focus();
+                    self.keep_in_reach(&window);
                 }
             }
         }
@@ -342,6 +343,7 @@ impl State {
                     self.decoration_changed(&window);
                 }
                 self.apply_resize_anchor(&window);
+                self.keep_in_reach(&window);
             }
             return;
         };
