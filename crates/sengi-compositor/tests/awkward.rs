@@ -580,6 +580,33 @@ fn the_snap_outline_goes_with_a_window_that_closes_while_dragged() {
 }
 
 #[test]
+fn a_window_that_shrinks_right_after_a_resize_stays_within_reach() {
+    let compositor = Compositor::start(None);
+    let mut app = a_program(&compositor);
+    let shrinking = window(&mut app, "shrinking", GREEN);
+    app.paint(&shrinking.surface, 600, 200, GREEN).unwrap();
+    // Far out to the right, then a little wider by its left edge.
+    let frame = numbers(&window_line(&compositor, "shrinking"), "frame");
+    let (x, y) = (frame[0] + 90, frame[1] + 12);
+    compositor.input(&format!("move {x} {y}"));
+    compositor.input("press left");
+    // Short of the edge itself, which would snap it.
+    compositor.input(&format!("move 1260 {y}"));
+    compositor.input("release left");
+    let frame = numbers(&window_line(&compositor, "shrinking"), "frame");
+    assert!(frame[0] + frame[2] > 1500, "it is at {frame:?}");
+    let (left, middle) = (frame[0], frame[1] + frame[3] / 2);
+    compositor.input(&format!("move {left} {middle}"));
+    compositor.input("press left");
+    compositor.input(&format!("move {} {middle}", left - 10));
+    compositor.input("release left");
+    app.paint(&shrinking.surface, 100, 200, GREEN).unwrap();
+    let frame = numbers(&window_line(&compositor, "shrinking"), "frame");
+    assert!(frame[0] < 1280, "it is at {frame:?}");
+    sound(&compositor);
+}
+
+#[test]
 fn a_window_that_fills_the_screen_stays_there_when_a_bar_appears() {
     let compositor = Compositor::start(None);
     let mut app = a_program(&compositor);

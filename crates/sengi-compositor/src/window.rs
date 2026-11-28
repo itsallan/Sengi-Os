@@ -872,9 +872,14 @@ impl State {
     /// screens may be on none of them any more, with nothing left to take
     /// hold of: it is pulled back. Called when the client commits.
     pub fn keep_in_reach(&mut self, window: &Window) {
-        let data = data(window);
-        // During a resize the anchor says where it belongs.
-        if !data.decorated.get() || data.resize_anchor.get().is_some() {
+        // While it is being resized the pointer, which is on a screen,
+        // says where its edge goes. Afterwards the anchor does not count if
+        // it would put the window out of reach.
+        let resizing = matches!(
+            &self.drag,
+            Some(Drag::Resize { window: of, .. }) if of == window
+        );
+        if !data(window).decorated.get() || resizing {
             return;
         }
         let Some(frame) = self.frame_rect(window) else {
