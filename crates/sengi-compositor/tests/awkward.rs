@@ -562,6 +562,24 @@ fn a_hidden_window_asked_to_be_maximised_comes_back_so() {
 }
 
 #[test]
+fn the_snap_outline_goes_with_a_window_that_closes_while_dragged() {
+    let compositor = Compositor::start(None);
+    let mut app = a_program(&compositor);
+    let closing = window(&mut app, "closing", GREEN);
+    let frame = numbers(&window_line(&compositor, "closing"), "frame");
+    let (x, y) = (frame[0] + frame[2] / 2, frame[1] + 12);
+    compositor.input(&format!("move {x} {y}"));
+    compositor.input("press left");
+    compositor.input("move 640 0");
+    closing.toplevel.destroy();
+    closing.shell.destroy();
+    closing.surface.destroy();
+    app.roundtrip().unwrap();
+    sound(&compositor);
+    compositor.input("release left");
+}
+
+#[test]
 fn a_window_that_fills_the_screen_stays_there_when_a_bar_appears() {
     let compositor = Compositor::start(None);
     let mut app = a_program(&compositor);

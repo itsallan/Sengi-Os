@@ -57,6 +57,8 @@ and the measured idle RAM and boot time.
   the one opposite.
 - Windows are fitted to a screen that is plugged in after the last one went.
 - A window asked to maximise while minimised is maximised when it returns.
+- The outline shown while a window is snapped goes away if the window closes
+  during the drag.
 
 ## 1.0.0 - 2026-11-27
 

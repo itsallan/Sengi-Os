@@ -1185,6 +1185,8 @@ impl State {
         };
         if dragged {
             self.drag = None;
+            // The outline of where it would have landed goes with it.
+            self.clear_snap_hint();
         }
     }
 
