@@ -243,13 +243,17 @@ component DiskPage inherits Page {
             text: Wizard.disk-note;
         }
 
-        Card {
+        disks := Card {
             visible: Wizard.disks.length > 0;
 
             list := ItemList {
+                wrap: true;
                 items: Wizard.disks;
                 current <=> Wizard.disk-current;
                 activated(id) => { Wizard.disk-picked(id); }
+                keyboard-at(top, height) => {
+                    root.reveal(root.head + disks.y + top, height);
+                }
             }
         }
 
@@ -259,11 +263,15 @@ component DiskPage inherits Page {
             text: "What to do with it";
         }
 
-        if Wizard.disk-chosen: Card {
+        if Wizard.disk-chosen: ways := Card {
             ItemList {
+                wrap: true;
                 items: Wizard.modes;
                 current <=> Wizard.mode-current;
                 activated(id) => { Wizard.mode-picked(id); }
+                keyboard-at(top, height) => {
+                    root.reveal(root.head + ways.y + top, height);
+                }
             }
         }
 
@@ -294,6 +302,7 @@ component DiskPage inherits Page {
         if Wizard.disk-chosen && Wizard.shrink-state == "ready": room := Card {
             SettingRow {
                 title: Wizard.shrink-uses-title;
+                wrap-title: true;
 
                 RowValue {
                     text: Wizard.shrink-uses;
@@ -305,6 +314,7 @@ component DiskPage inherits Page {
             SettingRow {
                 title: "Sengi OS gets " + Wizard.shrink-sengi;
                 detail: Wizard.shrink-range;
+                wrap-title: true;
 
                 VerticalLayout {
                     alignment: center;
@@ -329,6 +339,7 @@ component DiskPage inherits Page {
 
             SettingRow {
                 title: Wizard.shrink-keeps-title;
+                wrap-title: true;
 
                 RowValue {
                     text: Wizard.shrink-windows;

@@ -12,5 +12,9 @@ build = "build.rs"
 slint = { version = "1.18", default-features = false, features = ["compat-1-2", "std", "renderer-software", "software-renderer-systemfonts", "software-renderer-path"] }
 png = "0.18"
 
+[dev-dependencies]
+# The refusals the installer shows, in the words it shows them in.
+sengi-install = { path = "../sengi-install" }
+
 [build-dependencies]
 slint-build.workspace = true

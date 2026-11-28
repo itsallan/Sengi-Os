@@ -81,6 +81,10 @@ and the measured idle RAM and boot time.
   its size as all ones, as Windows commonly writes it: it stopped after adding
   the partition, with nothing installed. A disk whose protective MBR would be
   changed in any other way is now refused before anything is written.
+- The installer's Disk page shows every line whole, wrapped where it is too
+  long for the window: what installing beside another system adds, why a disk
+  or a way of using it is not offered, and what making a partition smaller
+  does.
 
 ## 1.0.0 - 2026-11-27
 

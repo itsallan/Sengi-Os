@@ -1,8 +1,11 @@
 //! Every page of the installer, with the awkward data a disk list brings.
 
-use sengi_shots::harness::{self, BACKDROP};
+use sengi_install::beside::Why;
+use sengi_install::disks::Refusal as DiskRefusal;
+use sengi_install::shrink::Refusal;
+use sengi_shots::harness::{self, Look, Picture, BACKDROP};
 use sengi_shots::installer::*;
-use slint::{ComponentHandle, ModelRc, VecModel};
+use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 fn list<T: Clone + 'static>(items: Vec<T>) -> ModelRc<T> {
     ModelRc::new(VecModel::from(items))
@@ -348,7 +351,7 @@ fn every_page() {
         ("progress", "failed"),
     ];
     for (page, variant) in scenes {
-        for (width, height) in [(720u32, 480u32), (888, 600), (1280, 800)] {
+        for (width, height) in [(720u32, 480u32), (800, 463), (888, 600), (1280, 800)] {
             let w = themed(InstallerWindow::new().unwrap());
             // As the program does before it changes the page.
             w.invoke_release();
@@ -362,4 +365,269 @@ fn every_page() {
             w.hide().unwrap();
         }
     }
+}
+
+// Nothing on the Disk page is cut off ----------------------------------------
+
+/// The Disk page with the words a test hands it, in this order: the note
+/// above the list, a title and a second line for each disk, the same for
+/// each way of using the chosen one, what goes with making a partition
+/// smaller, and the note under it.
+struct DiskWords {
+    name: &'static str,
+    disks: usize,
+    modes: usize,
+    shrink: &'static str,
+    words: Vec<String>,
+}
+
+fn disk_page(case: &DiskWords, words: &[String], w: &InstallerWindow) {
+    let g = w.global::<Wizard>();
+    let mut next = words.iter();
+    let mut word = || SharedString::from(next.next().map_or("", String::as_str));
+    // The first row is the chosen one; the second shows the button that
+    // chooses it when the keyboard is on it.
+    let row = |n: usize, title: SharedString, detail: SharedString| Item {
+        id: format!("row{n}").into(),
+        title,
+        detail,
+        checked: n == 0,
+        enabled: n < 2,
+        action: if n == 1 { "Choose" } else { "" }.into(),
+        ..Default::default()
+    };
+    g.set_page("disk".into());
+    g.set_place("Step 2 of 4".into());
+    g.set_back_label("Back".into());
+    g.set_next_label("Continue".into());
+    g.set_disk_note(word());
+    let disks = (0..case.disks).map(|n| row(n, word(), word())).collect();
+    g.set_disks(list(disks));
+    g.set_disk_chosen(true);
+    let modes = (0..case.modes).map(|n| row(n, word(), word())).collect();
+    g.set_modes(list(modes));
+    g.set_shrink_state(case.shrink.into());
+    match case.shrink {
+        "ready" => {
+            g.set_shrink_uses_title(word());
+            g.set_shrink_uses(word());
+            g.set_shrink_range(word());
+            g.set_shrink_sengi(word());
+            g.set_shrink_keeps_title(word());
+            g.set_shrink_windows(word());
+            g.set_shrink_min(11);
+            g.set_shrink_max(290);
+            g.set_shrink_gb(145);
+        }
+        "refused" => g.set_shrink_words(word()),
+        _ => {}
+    }
+    g.set_note_warns(true);
+    g.set_erase_warning(word());
+}
+
+/// The same words with the last character of one of them changed.
+fn changed_end(words: &[String], which: usize) -> Vec<String> {
+    let mut words = words.to_vec();
+    let last = words[which].pop().expect("words to change");
+    words[which].push(if last == 'W' { 'i' } else { 'W' });
+    words
+}
+
+fn drawn(case: &DiskWords, words: &[String], width: u32, look: Look) -> Picture {
+    let w = themed_look(InstallerWindow::new().unwrap(), look);
+    w.invoke_release();
+    disk_page(case, words, &w);
+    w.show().unwrap();
+    let win = harness::window();
+    // Taller than any screen, so that what is under the fold is drawn too.
+    harness::resize(&win, width, 1800);
+    harness::advance(300);
+    let picture = harness::draw(&win, BACKDROP);
+    w.hide().unwrap();
+    picture
+}
+
+fn disk_cases() -> Vec<DiskWords> {
+    let case = |name, disks, modes, shrink, words: &[&str]| DiskWords {
+        name,
+        disks,
+        modes,
+        shrink,
+        words: words.iter().map(ToString::to_string).collect(),
+    };
+    let note = "Choose the disk to install on. Then say whether to erase it, or to install beside what is on it.";
+    let erase = [
+        "Erase the whole disk",
+        "Everything on the disk is removed and Sengi OS takes all of it.",
+    ];
+    let contents = "now on it: 4 partitions: 1 GB unknown, 272 MB FAT “ESP”, 67 MB Linux and more";
+    let warning = "Everything on A disk whose maker chose a rather long name · 1 TB (/dev/nvme0n1) will be erased and cannot be brought back. Now on it: 4 partitions: 1 GB unknown, 272 MB FAT “ESP”, 67 MB Linux and more.";
+    let raid = format!(
+        "/dev/sdc · SATA · serial …400999 · {}",
+        DiskRefusal::FirmwareRaid.words()
+    );
+    let mounted = format!(
+        "/dev/sdb · USB · serial …2B3C4D · {}",
+        DiskRefusal::Mounted("/media/live/A volume with a long name".into()).words()
+    );
+    let mut cases = vec![case(
+        "disks",
+        4,
+        2,
+        "",
+        &[
+            note,
+            "A disk whose maker chose a rather long name · 1 TB",
+            &format!("/dev/nvme0n1 · NVMe · serial …400999 · {contents}"),
+            "Disk · 15 GB",
+            &format!("/dev/vdb · virtual · {contents}"),
+            "Disk · 32 GB",
+            &raid,
+            "Disk · 64 GB",
+            &mounted,
+            erase[0],
+            erase[1],
+            "Install beside the existing system",
+            "Adds one partition of 13 GB in free space and a Sengi OS folder on the EFI system partition. Your other files are not touched.",
+            warning,
+        ],
+    )];
+
+    // Every reason installing beside is not offered.
+    let why = [
+        Why::NotUefi,
+        Why::NoSystem,
+        Why::NotGpt,
+        Why::Unreadable,
+        Why::NoEsp,
+        Why::EspNotFat,
+        Why::NoRoom,
+        Why::SecureBoot,
+        Why::SeveralEsp,
+    ]
+    .map(|why| why.words());
+    let mut words = vec![
+        note,
+        "Disk · 15 GB",
+        "/dev/vdb · virtual · now on it: Empty",
+    ];
+    for line in &why {
+        words.extend(["Install beside the existing system", line]);
+    }
+    words.push(warning);
+    cases.push(case("why", 1, why.len(), "", &words));
+
+    // A partition that is not Windows, named by a label as long as one is
+    // shown, ready to be made smaller.
+    let label = "Backup of the old office computer, 2019";
+    cases.push(case(
+        "ready",
+        1,
+        2,
+        "ready",
+        &[
+            note,
+            "Disk · 250 GB",
+            "/dev/sda · SATA · now on it: 2 partitions: 250 GB Windows (NTFS), 104 MB FAT",
+            erase[0],
+            erase[1],
+            &format!("Make “{label}” smaller and install beside it"),
+            &format!("Makes the partition “{label}” (250 GB) smaller to make room. It uses 80 GB of its 250 GB"),
+            &format!("“{label}” uses"),
+            "184 GB of 512 GB",
+            "From 11 GB to 290 GB",
+            "145 GB",
+            &format!("“{label}” keeps"),
+            "366 GB, with 182 GB free",
+            &format!("Back up your files before you go on. The partition “{label}” (250 GB) on /dev/sda will be made smaller, from 250 GB to 189 GB. If the power fails or the computer is switched off while that happens, everything on it can be lost."),
+        ],
+    ));
+
+    // Every refusal to make a partition smaller: the few words on the row
+    // and what to do about it underneath.
+    let codes = [
+        "battery",
+        "bitlocker",
+        "not-ntfs",
+        "hibernated",
+        "unclean",
+        "dirty",
+        "bad-sectors",
+        "busy",
+        "damaged",
+        "no-room 400000000000 512000000000",
+        "sector-size",
+        "twin",
+        "other-encrypted 3",
+        "unchecked 4",
+        "short",
+        "slow",
+        "other ntfsresize ended with status 1: the volume cannot be read",
+    ];
+    for code in codes {
+        let refusal = Refusal::from_code(code).expect(code);
+        cases.push(case(
+            code,
+            1,
+            2,
+            "refused",
+            &[
+                note,
+                "Disk · 512 GB",
+                "/dev/sda · SATA · now on it: 2 partitions: 512 GB Windows (NTFS), 104 MB FAT",
+                erase[0],
+                erase[1],
+                "Make room and install beside",
+                refusal.short(),
+                &refusal.words(),
+            ],
+        ));
+    }
+    cases
+}
+
+/// A line that is cut off ends in an ellipsis, and its last characters are
+/// not drawn: changing the last one then changes nothing on screen.
+#[test]
+fn every_line_of_the_disk_page_is_shown_whole() {
+    if !harness::has_inter() {
+        return;
+    }
+    harness::install();
+    let mut cut = Vec::new();
+    for scale in [1.0, 1.4] {
+        // The column of a page is as wide at 800 pixels as in any wider
+        // window; 640, narrower than the window may be, wraps more.
+        for width in [640, 800] {
+            let look = Look::PLAIN.scaled(scale);
+            for case in disk_cases() {
+                let whole = drawn(&case, &case.words, width, look);
+                if case.shrink != "refused" {
+                    whole.save_as(&format!(
+                        "installer-whole-{}-{width}-{}.png",
+                        case.name,
+                        (scale * 100.0) as u32
+                    ));
+                }
+                // The refusals share all but their last two lines.
+                let first = if case.shrink == "refused" {
+                    case.words.len() - 2
+                } else {
+                    0
+                };
+                for which in first..case.words.len() {
+                    let other = drawn(&case, &changed_end(&case.words, which), width, look);
+                    if other.rgb == whole.rgb {
+                        cut.push(format!(
+                            "{width} px, text at {scale}: {}",
+                            case.words[which]
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    cut.dedup();
+    assert!(cut.is_empty(), "cut off:\n{}", cut.join("\n"));
 }

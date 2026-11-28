@@ -3815,6 +3815,7 @@ name = "sengi-shots"
 version = "1.0.0"
 dependencies = [
  "png",
+ "sengi-install",
  "slint",
  "slint-build",
 ]

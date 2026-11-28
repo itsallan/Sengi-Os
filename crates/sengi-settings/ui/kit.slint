@@ -401,6 +401,8 @@ export component SettingRow inherits Rectangle {
     in property <bool> enabled: true;
     // Drawn in the danger colour: something is wrong.
     in property <bool> alert: false;
+    // A title too long for the width wraps too, instead of being cut.
+    in property <bool> wrap-title: false;
 
     min-height: Metrics.row;
 
@@ -429,7 +431,8 @@ export component SettingRow inherits Rectangle {
                 height: self.preferred-height;
                 text: root.title;
                 color: root.enabled ? Tokens.color-text : Tokens.color-text-disabled;
-                overflow: elide;
+                wrap: root.wrap-title ? TextWrap.word-wrap : TextWrap.no-wrap;
+                overflow: root.wrap-title ? TextOverflow.clip : TextOverflow.elide;
             }
 
             more := SengiLabel {
@@ -714,9 +717,14 @@ component RowButton inherits SengiButton {
 // `engaged` is true while the pointer is over the list or the keyboard is
 // in it. Whoever fills the list should not reorder it then: a row must
 // not move out from under a click.
+//
+// A row is one height, and words too long for it end in an ellipsis. With
+// `wrap` they are wrapped instead and the row grows by what that takes,
+// for a list whose words have to be read whole.
 export component ItemList inherits Rectangle {
     in property <[Item]> items;
     in-out property <int> current: 0;
+    in property <bool> wrap: false;
     // Mark the current row although the keyboard is elsewhere, as when
     // a search field above the list is what is being typed into.
     in property <bool> show-current: false;
@@ -727,6 +735,9 @@ export component ItemList inherits Rectangle {
     callback removed(string);
     // The keyboard moved to another row.
     callback moved(int);
+    // The keyboard is now on the row at this place in the list, of this
+    // height: for a page to bring it into view.
+    callback keyboard-at(length, length);
 
     private property <int> hovered: -1;
 
@@ -756,7 +767,7 @@ export component ItemList inherits Rectangle {
     }
 
     forward-focus: scope;
-    height: root.items.length * Metrics.row;
+    height: root.wrap ? rows.preferred-height : root.items.length * Metrics.row;
 
     scope := FocusScope {
         focus-on-click: false;
@@ -781,99 +792,129 @@ export component ItemList inherits Rectangle {
         }
     }
 
-    for item[index] in root.items: row := Rectangle {
-        private property <bool> lit: root.hovered == index
-            || ((scope.has-focus || root.show-current) && root.current == index);
+    rows := VerticalLayout {
+        alignment: start;
 
-        y: index * Metrics.row;
-        height: Metrics.row;
-        border-radius: Tokens.radius;
-        border-width: scope.has-focus && root.current == index ? Tokens.focus-ring-width
-            : ThemeSwitch.high-contrast && self.lit && item.enabled ? Tokens.border-width : 0;
-        border-color: scope.has-focus && root.current == index
-            ? Tokens.color-focus-ring : Tokens.color-accent;
-        background: self.lit && item.enabled ? Tokens.color-surface-hover : transparent;
-        animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+        for item[index] in root.items: row := Rectangle {
+            private property <bool> lit: root.hovered == index
+                || ((scope.has-focus || root.show-current) && root.current == index);
+            private property <bool> keyed: scope.has-focus && root.current == index;
 
-        // The row's words and buttons are inside its touch area, not
-        // beside it: a pointer on a button is then still on the row, and
-        // the button does not vanish from under the click.
-        touch := TouchArea {
-            changed has-hover => {
-                if self.has-hover {
-                    root.hovered = index;
-                } else if root.hovered == index {
-                    root.hovered = -1;
+            height: root.wrap
+                ? Math.max(Metrics.row, words.stack + Tokens.space-xs * 2) : Metrics.row;
+            border-radius: Tokens.radius;
+            border-width: self.keyed ? Tokens.focus-ring-width
+                : ThemeSwitch.high-contrast && self.lit && item.enabled ? Tokens.border-width : 0;
+            border-color: self.keyed ? Tokens.color-focus-ring : Tokens.color-accent;
+            background: self.lit && item.enabled ? Tokens.color-surface-hover : transparent;
+            animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+
+            changed keyed => {
+                if self.keyed {
+                    root.keyboard-at(self.y, self.height);
                 }
             }
-            clicked => {
-                scope.focus();
-                root.current = index;
-                root.act(index);
-            }
 
-            HorizontalLayout {
-                padding-left: Tokens.space-md;
-                padding-right: Tokens.space-md;
-                spacing: Tokens.space-md;
-
-                if item.icon != "": VerticalLayout {
-                    alignment: center;
-                    NamedIcon {
-                        name: item.icon;
-                        level: item.level;
-                        ink: item.enabled ? Tokens.color-text : Tokens.color-text-disabled;
+            // The row's words and buttons are inside its touch area, not
+            // beside it: a pointer on a button is then still on the row,
+            // and the button does not vanish from under the click.
+            touch := TouchArea {
+                changed has-hover => {
+                    if self.has-hover {
+                        root.hovered = index;
+                    } else if root.hovered == index {
+                        root.hovered = -1;
                     }
                 }
-
-                VerticalLayout {
-                    horizontal-stretch: 1;
-                    alignment: center;
-                    spacing: Tokens.space-xxs;
-
-                    SengiText {
-                        text: item.title;
-                        color: item.enabled ? Tokens.color-text : Tokens.color-text-disabled;
-                        font-weight: item.checked ? Tokens.font-weight-medium : Tokens.font-weight-regular;
-                        overflow: elide;
-                    }
-
-                    if item.detail != "": SengiLabel {
-                        text: item.detail;
-                        color: item.enabled ? Tokens.color-text-muted : Tokens.color-text-disabled;
-                        font-weight: Tokens.font-weight-regular;
-                        overflow: elide;
-                    }
+                clicked => {
+                    scope.focus();
+                    root.current = index;
+                    root.act(index);
                 }
 
-                if item.status != "": SengiText {
-                    text: item.status;
-                    color: Tokens.color-text-muted;
-                    vertical-alignment: center;
-                }
+                HorizontalLayout {
+                    padding-left: Tokens.space-md;
+                    padding-right: Tokens.space-md;
+                    spacing: Tokens.space-md;
 
-                if row.lit && item.enabled && item.remove != "": VerticalLayout {
-                    alignment: center;
-                    RowButton {
-                        text: item.remove;
-                        danger: true;
-                        clicked => { root.drop(index); }
+                    if item.icon != "": VerticalLayout {
+                        alignment: center;
+                        NamedIcon {
+                            name: item.icon;
+                            level: item.level;
+                            ink: item.enabled ? Tokens.color-text : Tokens.color-text-disabled;
+                        }
                     }
-                }
 
-                if row.lit && item.enabled && item.action != "": VerticalLayout {
-                    alignment: center;
-                    RowButton {
-                        text: item.action;
-                        clicked => { root.act(index); }
+                    // Placed by hand, as in a SettingRow, so that the row
+                    // can ask wrapped words their height at the width they
+                    // really have.
+                    words := Rectangle {
+                        property <length> stack: head.preferred-height
+                            + (item.detail != "" ? Tokens.space-xxs + more.preferred-height : 0);
+
+                        horizontal-stretch: 1;
+
+                        head := SengiText {
+                            x: 0;
+                            y: (parent.height - words.stack) / 2;
+                            width: parent.width;
+                            height: self.preferred-height;
+                            text: item.title;
+                            color: item.enabled ? Tokens.color-text : Tokens.color-text-disabled;
+                            font-weight: item.checked ? Tokens.font-weight-medium : Tokens.font-weight-regular;
+                            wrap: root.wrap ? TextWrap.word-wrap : TextWrap.no-wrap;
+                            overflow: root.wrap ? TextOverflow.clip : TextOverflow.elide;
+                        }
+
+                        more := SengiLabel {
+                            x: 0;
+                            y: head.y + head.height + Tokens.space-xxs;
+                            width: parent.width;
+                            height: self.preferred-height;
+                            visible: item.detail != "";
+                            text: item.detail;
+                            color: item.enabled ? Tokens.color-text-muted : Tokens.color-text-disabled;
+                            font-weight: Tokens.font-weight-regular;
+                            wrap: root.wrap ? TextWrap.word-wrap : TextWrap.no-wrap;
+                            overflow: root.wrap ? TextOverflow.clip : TextOverflow.elide;
+                        }
                     }
-                }
 
-                if item.checked: VerticalLayout {
-                    alignment: center;
-                    NamedIcon {
-                        name: "check";
-                        ink: Tokens.color-accent;
+                    if item.status != "": SengiText {
+                        text: item.status;
+                        color: Tokens.color-text-muted;
+                        vertical-alignment: center;
+                    }
+
+                    // Where words wrap, a button keeps its room while it
+                    // is not shown: a row must not change its height under
+                    // the pointer.
+                    if (row.lit || root.wrap) && item.enabled && item.remove != "": VerticalLayout {
+                        alignment: center;
+                        RowButton {
+                            visible: row.lit;
+                            text: item.remove;
+                            danger: true;
+                            clicked => { root.drop(index); }
+                        }
+                    }
+
+                    if (row.lit || root.wrap) && item.enabled && item.action != "": VerticalLayout {
+                        alignment: center;
+                        RowButton {
+                            visible: row.lit;
+                            text: item.action;
+                            clicked => { root.act(index); }
+                        }
+                    }
+
+                    if item.checked: VerticalLayout {
+                        alignment: center;
+                        NamedIcon {
+                            name: "check";
+                            ink: Tokens.color-accent;
+                        }
                     }
                 }
             }
