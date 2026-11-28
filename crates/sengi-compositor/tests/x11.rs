@@ -22,6 +22,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use common::{apps::Picture, Client};
 use harness::{Compositor, SOON};
 use wayland_client::{
     event_created_child,
@@ -119,6 +120,48 @@ fn wait_for_display(compositor: &Compositor) -> u32 {
         "Xwayland never came up; the compositor said: {:?}",
         compositor.said_all("")
     );
+}
+
+/// The first picture from `take` that `done` holds of, or the last one once
+/// time runs out. A window is listed as soon as it is mapped, and what its
+/// program paints reaches the screen a little after.
+fn painted(mut take: impl FnMut() -> Picture, done: impl Fn(&Picture) -> bool) -> Picture {
+    let end = Instant::now() + SOON;
+    loop {
+        let picture = take();
+        if done(&picture) || Instant::now() >= end {
+            return picture;
+        }
+        sleep(Duration::from_millis(20));
+    }
+}
+
+/// Waits until the screen shows `colour` just inside two opposite corners
+/// of where X has the window, and says where that is. A window is listed as
+/// soon as it is mapped: its place reaches the X side, and what its program
+/// paints reaches the screen, a little after.
+fn shown(x: &XClient, window: Window, app: &mut Client, colour: u32) -> (i16, i16) {
+    let end = Instant::now() + SOON;
+    loop {
+        let (left, top, w, h) = x.size(window);
+        let picture = app.capture().expect("a picture of the screen");
+        // Clear of the rounded corners.
+        let there = [(8, 8), (i32::from(w) - 9, i32::from(h) - 9)]
+            .into_iter()
+            .all(|(dx, dy)| {
+                let at = (i32::from(left) + dx, i32::from(top) + dy);
+                picture.at(at.0 as u32, at.1 as u32) == colour
+            });
+        if there {
+            return (left, top);
+        }
+        assert!(
+            Instant::now() < end,
+            "never on the screen where X has it: {:?}",
+            x.size(window)
+        );
+        sleep(Duration::from_millis(20));
+    }
 }
 
 /// An X11 client in this process: its connection and what Xwayland has sent it.
@@ -662,8 +705,8 @@ fn an_x11_window_is_listed_framed_and_takes_the_keyboard() {
 
     // Framed like a Wayland window: the pixel above the client area is not
     // the desktop.
-    let (x0, y0, _, _) = x.size(window);
     let mut app = compositor.connect();
+    let (x0, y0) = shown(&x, window, &mut app, X_GREEN);
     let picture = app.capture().expect("a picture of the screen");
     let above = picture.at(x0 as u32 + 100, (y0 - 4) as u32);
     assert_ne!(above & 0x00ff_ffff, DESKTOP, "no frame was drawn");
@@ -689,22 +732,27 @@ fn a_menu_of_an_x11_toolkit_is_not_framed_or_focused() {
     let mut list = WindowList::connect(&compositor);
     let mut x = XClient::connect(display);
     let window = x.window(400, 300, 200, X_GREEN, "parent", "SengiXTest");
-    // Placed once the compositor has listed it; until then X still has it
+    // Placed by the time the compositor shows it; until then X still has it
     // where the program first put it.
     assert!(list.lists("parent", "SengiXTest", SOON));
-    let (wx, wy, _, _) = x.size(window);
+    let mut app = compositor.connect();
+    let (wx, wy) = shown(&x, window, &mut app, X_GREEN);
 
     let menu = x.menu(wx + 20, wy + 40, 60, MENU);
     x.pump(Duration::from_millis(500));
-    let mut app = compositor.connect();
-    let picture = app.capture().expect("a picture of the screen");
+    let in_menu = |picture: &Picture| picture.at((wx + 50) as u32, (wy + 70) as u32) & 0x00ff_ffff;
+    let above_it = |picture: &Picture| picture.at((wx + 50) as u32, (wy + 36) as u32) & 0x00ff_ffff;
+    let picture = painted(
+        || app.capture().expect("a picture of the screen"),
+        |picture| in_menu(picture) == MENU && above_it(picture) == X_GREEN,
+    );
     assert_eq!(
-        picture.at((wx + 50) as u32, (wy + 70) as u32) & 0x00ff_ffff,
+        in_menu(&picture),
         MENU,
         "the menu is not drawn where it was put"
     );
     assert_eq!(
-        picture.at((wx + 50) as u32, (wy + 36) as u32) & 0x00ff_ffff,
+        above_it(&picture),
         X_GREEN,
         "the menu has a frame of its own"
     );
@@ -987,13 +1035,16 @@ fn an_x11_window_opens_on_the_output_of_the_pointer_and_is_held_to_it() {
     let window = x.window(300, 200, 200, X_GREEN, "two", "SengiXTest");
     assert!(list.lists("two", "SengiXTest", SOON));
     let mut app = compositor.connect();
-    let green = |picture: &common::apps::Picture| {
+    let green = |picture: &Picture| {
         (0..picture.height)
             .flat_map(|y| (0..picture.width).map(move |x| (x, y)))
             .filter(|(x, y)| picture.at(*x, *y) == X_GREEN)
             .count()
     };
-    let second = app.capture_named("HEADLESS-2").unwrap();
+    let second = painted(
+        || app.capture_named("HEADLESS-2").unwrap(),
+        |picture| green(picture) > 0,
+    );
     let first = app.capture_named("HEADLESS-1").unwrap();
     assert!(green(&second) > 0, "the window is not on the second output");
     assert_eq!(green(&first), 0, "it is on the first");
@@ -1050,20 +1101,15 @@ fn an_x11_window_can_be_minimised() {
     let x = XClient::connect(display);
     let window = x.window(300, 200, 200, X_GREEN, "mini", "SengiXTest");
     assert!(list.lists("mini", "SengiXTest", SOON));
-    let (wx, wy, _, _) = x.size(window);
     let mut app = compositor.connect();
+    let (wx, wy) = shown(&x, window, &mut app, X_GREEN);
     let at = ((wx + 100) as u32, (wy + 100) as u32);
-    assert_eq!(app.capture().unwrap().at(at.0, at.1), X_GREEN);
     ask(&x, window, "WM_CHANGE_STATE", [3, 0, 0, 0, 0]);
-    let end = Instant::now() + SOON;
-    while Instant::now() < end && app.capture().unwrap().at(at.0, at.1) != DESKTOP {
-        sleep(Duration::from_millis(100));
-    }
-    assert_eq!(
-        app.capture().unwrap().at(at.0, at.1),
-        DESKTOP,
-        "still drawn"
+    let gone = painted(
+        || app.capture().unwrap(),
+        |picture| picture.at(at.0, at.1) == DESKTOP,
     );
+    assert_eq!(gone.at(at.0, at.1), DESKTOP, "still drawn");
 }
 
 /// The frame of the window called `title`: left, top, width, height.
@@ -1126,12 +1172,16 @@ fn nothing_of_the_x11_session_shows_or_hears_while_the_session_is_locked() {
     let mut x = XClient::connect(display);
     let window = x.window(300, 200, 300, X_GREEN, "locked", "SengiXTest");
     assert!(list.lists("locked", "SengiXTest", SOON));
-    let (wx, wy, _, _) = x.size(window);
+    let mut app = compositor.connect();
+    let (wx, wy) = shown(&x, window, &mut app, X_GREEN);
     let _menu = x.menu(wx + 20, wy + 40, 60, MENU);
     x.pump(Duration::from_millis(500));
-    let mut app = compositor.connect();
-    let before = app.capture().unwrap();
-    assert_eq!(before.at((wx + 50) as u32, (wy + 70) as u32), MENU);
+    let in_menu = |picture: &Picture| picture.at((wx + 50) as u32, (wy + 70) as u32);
+    let before = painted(
+        || app.capture().unwrap(),
+        |picture| in_menu(picture) == MENU,
+    );
+    assert_eq!(in_menu(&before), MENU);
 
     let mut locker = compositor.locker();
     locker.keyboard().unwrap();
