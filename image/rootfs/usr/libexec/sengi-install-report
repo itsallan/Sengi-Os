@@ -206,6 +206,10 @@ if grep -q sengi-installer /etc/xdg/sengi-os/dock.toml; then fail "the installer
 for pkg in grub-efi-amd64 grub-efi-amd64-signed grub-pc shim-signed; do
 	if dpkg -s "$pkg" >/dev/null 2>&1; then fail "$pkg is installed: its upgrades would write to the EFI system partition"; fi
 done
+# ntfs-3g was purged. Its fuse3, which Flatpak's document portal needs too,
+# stays, and nothing is left half installed.
+command -v fusermount3 >/dev/null || fail "fusermount3 is gone with the Windows programs"
+[ -z "$(dpkg --audit 2>&1)" ] || fail "dpkg reports packages that are not whole"
 # The way in when the desktop does not start: an entry in GRUB's menu,
 # and the text login it switches on and no other start does.
 grep -q "sengi.text systemd.unit=multi-user.target" /boot/grub/grub.cfg ||
@@ -232,6 +236,9 @@ may_power_off "$user"
 	ps -eo rss,comm --sort=-rss | head -24
 	grep -E '^(MemTotal|MemAvailable|Shmem|Slab|Cached|AnonPages):' /proc/meminfo
 	lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT 2>&1
+	dpkg-query -W -f '${db:Status-Abbrev} ${Package}\n' ntfs-3g libntfs-3g89t64 fuse3 2>&1
+	dpkg-query -W -f '${db:Status-Abbrev} ${Package}: ${Depends}, ${Recommends}\n' 2>/dev/null |
+		sed -n 's/^ii  *\([^:]*\):.*[ ,]fuse3[ ,(].*/needs fuse3: \1/p'
 	cat /proc/cmdline
 	df -h / /boot/efi 2>&1
 	ls -la /boot 2>&1

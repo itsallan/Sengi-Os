@@ -19,15 +19,18 @@
 #   dirty       the volume is marked for a disk check: refused
 #   hibernated  it has a hibernation file, as after Fast Startup: refused
 #   bitlocker   its first sector says BitLocker: refused
+#   otherhibernated
+#               another NTFS partition of the disk has a hibernation file:
+#               refused
 #   powercut    the power is cut after the file system was made smaller and
 #               before the partition was: the disk is consistent
 # After a refusal the disk must be byte for byte as it was.
 
 fault=${SENGI_SHRINK_FAULT:-}
 case $fault in
-'' | dirty | hibernated | bitlocker | powercut) ;;
+'' | dirty | hibernated | otherhibernated | bitlocker | powercut) ;;
 *)
-	echo "SENGI_SHRINK_FAULT is dirty, hibernated, bitlocker or powercut" >&2
+	echo "SENGI_SHRINK_FAULT is dirty, hibernated, otherhibernated, bitlocker or powercut" >&2
 	exit 2
 	;;
 esac
@@ -40,6 +43,15 @@ msr_start=$((esp_start + esp_sectors))
 msr_sectors=32768
 win_start=$((msr_start + msr_sectors))
 rec_sectors=1048576
+
+# Put into the NTFS volume $1 a hibernation file as Windows leaves one.
+hibernation_file() {
+	{
+		printf 'hibr'
+		head -c 8188 /dev/zero
+	} >"$out/hiberfil"
+	ntfscp -q "$1" "$out/hiberfil" hiberfil.sys
+}
 
 prepare_shrink() {
 	[ -n "${SENGI_UEFI:-}" ] || {
@@ -76,6 +88,9 @@ prepare_shrink() {
 	mkfs.ntfs -q -F -Q -L Recovery "$out/recovery.img" >/dev/null 2>&1
 	echo "$marker_other" >"$out/before.marker"
 	ntfscp -q "$out/recovery.img" "$out/before.marker" Winre.wim
+	if [ "$fault" = otherhibernated ]; then
+		hibernation_file "$out/recovery.img"
+	fi
 	dd if="$out/recovery.img" of="$raw" bs=1M seek=$((rec_start / 2048)) conv=notrunc,sparse status=none
 	rm -f "$out/recovery.img"
 	# Windows, with what the fault does to it.
@@ -85,11 +100,7 @@ prepare_shrink() {
 		ntfsfix "$out/windows.ntfs" >/dev/null
 		;;
 	hibernated)
-		{
-			printf 'hibr'
-			head -c 8188 /dev/zero
-		} >"$out/hiberfil"
-		ntfscp -q "$out/windows.ntfs" "$out/hiberfil" hiberfil.sys
+		hibernation_file "$out/windows.ntfs"
 		;;
 	esac
 	dd if="$out/windows.ntfs" of="$raw" bs=1M seek=$((win_start / 2048)) conv=notrunc,sparse status=none
@@ -121,8 +132,8 @@ shrink_disk_page() {
 		# Seen without looking inside: the choice cannot be made.
 		sleep 3
 		;;
-	dirty | hibernated)
-		wait_serial "SENGI-INSTALL analyzed refused $fault" 600 ||
+	dirty | hibernated | otherhibernated)
+		wait_serial "SENGI-INSTALL analyzed refused ${fault#other}" 600 ||
 			give_up "Windows was not refused as $fault" installer-disk-refused
 		sleep 3
 		;;
@@ -133,7 +144,7 @@ shrink_disk_page() {
 		;;
 	esac
 	case $fault in
-	bitlocker | dirty | hibernated)
+	bitlocker | dirty | hibernated | otherhibernated)
 		shot installer-disk-refused
 		# Nothing goes on from here but by choosing to erase.
 		if grep -q 'SENGI-INSTALL begin' "$serial"; then

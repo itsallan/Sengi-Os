@@ -103,6 +103,8 @@ while [ "$i" -lt 120 ]; do
 	i=$((i + 1))
 done
 cut_file "$mnt/Windows/System32/ntoskrnl.exe" 11534336
+# As a program begins, which is how the installer knows a Windows is here.
+printf 'MZ' | dd of="$mnt/Windows/System32/ntoskrnl.exe" conv=notrunc status=none
 cut_file "$mnt/Users/Zoë/Ünïcödé 文件/résumé — final (2).txt" 70000
 cut_file "$mnt/Users/Test/Documents/$(head -c 200 /dev/zero | tr '\0' a).txt" 5000
 : >"$mnt/Users/Test/Documents/empty.txt"
