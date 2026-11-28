@@ -12,8 +12,9 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 
 /// Account and computer names that every installation of the kind has.
 /// They say nothing about anyone, and replacing the word "live" wherever
-/// it stands would only spoil the report.
-const COMMON: &[&str] = &["root", "live", "sengios", "localhost", "(none)"];
+/// it stands would only spoil the report. "sengi" is the name the
+/// installer suggests, and part of the name of every program of ours.
+const COMMON: &[&str] = &["root", "live", "sengi", "sengios", "localhost", "(none)"];
 
 /// A stretch of a line to be replaced, in characters.
 #[derive(Debug, Clone, Copy)]
@@ -759,6 +760,15 @@ mod tests {
         redactor.computer("sengios");
         redactor.bluetooth("sengios");
         let line = "Sengi OS live system on sengios, run by root";
+        assert_eq!(redactor.line(line), line);
+    }
+
+    #[test]
+    fn the_suggested_computer_name_is_left() {
+        let mut redactor = Redactor::default();
+        redactor.computer("sengi");
+        redactor.bluetooth("sengi");
+        let line = "Sengi OS on sengi: sengi-bar running, sengi-compositor too";
         assert_eq!(redactor.line(line), line);
     }
 
