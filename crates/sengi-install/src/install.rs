@@ -601,6 +601,7 @@ impl Installer<'_> {
         let device = self.plan.device.clone();
         let sector0 = self.sys.read_sector0(&device)?;
         beside::mbr_is_plain(&sector0)?;
+        beside::mbr_stays(&sector0)?;
         self.sector0 = Some(sector0);
         self.esp_number = beside.esp;
         // The guard knows the old partitions from here on.
@@ -749,10 +750,13 @@ impl Installer<'_> {
         let after = self.read_table()?;
         let uuid = self.new_uuid.clone();
         let new = beside::check_after(&before, &after, &beside, &uuid)?;
-        if self.sys.read_sector0(&device)?.as_slice() != self.sector0.as_deref().unwrap_or_default()
-        {
-            return Err("sector 0 of the disk changed when the table was written".to_string());
-        }
+        let sector0 = self.sys.read_sector0(&device)?;
+        beside::check_sector0(
+            self.sector0.as_deref().unwrap_or_default(),
+            &sector0,
+            self.plan.size / before.sector_size,
+        )?;
+        self.sector0 = Some(sector0);
         self.root_number = new;
         self.made = true;
         self.tell(Event::Made(new));
@@ -1671,7 +1675,9 @@ mod tests {
         disk_changes: bool,
         sector0: Vec<u8>,
         /// Sector 0 is not what it was after the new partition is written.
-        tamper_mbr: bool,
+        /// A byte of sector 0 that is not as it should be once the table
+        /// has been written.
+        tamper_mbr: Option<(usize, u8)>,
         appended: bool,
         /// The new partition's node holds another partition's identifier.
         wrong_partuuid: bool,
@@ -1983,8 +1989,14 @@ mod tests {
 
         fn read_sector0(&mut self, _device: &str) -> Result<Vec<u8>, String> {
             let mut sector = self.sector0.clone();
-            if self.tamper_mbr && self.appended {
-                sector[446 + 20] = 0x83;
+            if self.appended {
+                // As sfdisk does when it writes the table: the protective
+                // MBR gets the disk's own size.
+                let size = crate::beside::mbr_size(self.disks[0].size / 512);
+                sector[458..462].copy_from_slice(&size);
+                if let Some((at, byte)) = self.tamper_mbr {
+                    sector[at] = byte;
+                }
             }
             Ok(sector)
         }
@@ -2108,15 +2120,17 @@ mod tests {
             secure_boot: false,
             relist_fails: false,
             disk_changes: false,
+            // The protective MBR as Windows writes it, with a size of all
+            // ones.
             sector0: {
                 let mut sector = vec![0u8; 512];
-                sector[446 + 4] = 0xee;
-                sector[446 + 8] = 1;
+                sector[446..458].copy_from_slice(&[0, 0, 2, 0, 0xee, 0xff, 0xff, 0xff, 1, 0, 0, 0]);
+                sector[458..462].copy_from_slice(&[0xff; 4]);
                 sector[510] = 0x55;
                 sector[511] = 0xaa;
                 sector
             },
-            tamper_mbr: false,
+            tamper_mbr: None,
             appended: false,
             wrong_partuuid: false,
             dump_warning: "",
@@ -3137,15 +3151,45 @@ mod tests {
         assert_eq!(step, "check");
         assert!(why.contains("hybrid MBR"), "{why}");
         untouched(&world);
-        // Written, and sector 0 is not as it was: nothing is formatted.
+        // Written, and sector 0 is not as it should be: nothing is
+        // formatted. A second entry, the disk's signature, the entry's
+        // start, and a size that is not the disk's.
+        for tamper in [(446 + 20, 0x83), (440, 1), (454, 2), (458, 0x12)] {
+            let mut world = world_beside();
+            world.fake.tamper_mbr = Some(tamper);
+            let (result, _) = run(&mut world);
+            let (step, why) = result.unwrap_err();
+            assert_eq!(step, "partition", "{tamper:?}");
+            assert!(why.contains("sector 0"), "{why}");
+            assert!(!world.fake.ran("partx"));
+            assert!(!world.fake.ran("mkfs"));
+        }
+    }
+
+    #[test]
+    fn the_size_in_a_windows_protective_mbr_may_become_the_disks_own() {
+        // All ones, as Windows writes it, and sfdisk puts the disk's size
+        // there with the table.
         let mut world = world_beside();
-        world.fake.tamper_mbr = true;
+        assert_eq!(world.fake.sector0[458..462], [0xff; 4]);
         let (result, _) = run(&mut world);
-        let (step, why) = result.unwrap_err();
-        assert_eq!(step, "partition");
-        assert!(why.contains("sector 0"), "{why}");
-        assert!(!world.fake.ran("partx"));
-        assert!(!world.fake.ran("mkfs"));
+        result.unwrap();
+        assert!(world.fake.ran("mkfs.ext4"));
+    }
+
+    #[test]
+    fn a_protective_mbr_that_would_be_rewritten_is_refused_before_anything_is_written() {
+        // The active flag, another start or end in cylinders and heads, an
+        // entry elsewhere than the first: sfdisk would change each.
+        for (at, byte) in [(446, 0x80), (448, 0), (451, 0xfe), (510, 0)] {
+            let mut world = world_beside();
+            world.fake.sector0[at] = byte;
+            let (result, _) = run(&mut world);
+            let (step, why) = result.unwrap_err();
+            assert_eq!(step, "check", "byte {at}");
+            assert!(why.contains("protective MBR"), "{why}");
+            untouched(&world);
+        }
     }
 
     #[test]

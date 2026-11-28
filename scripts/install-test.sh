@@ -122,6 +122,12 @@ free_start=$((ntfs_start + ntfs_sectors))
 marker_other="SENGI-OTHER-SYSTEM-DATA do not touch"
 marker_boot="SENGI-OTHER-SYSTEM-BOOT-FILE do not touch"
 
+# Give the disk image $1 the protective MBR Windows commonly writes, whose
+# size is all ones whatever the disk's is.
+windows_mbr() {
+	printf '\377\377\377\377' | dd of="$1" bs=1 seek=458 conv=notrunc status=none
+}
+
 # A disk as a computer with another system on it comes: made as a raw
 # file with the tools of the host, none of which needs root, then turned
 # into the qcow2 the guest gets.
@@ -175,6 +181,7 @@ prepare_beside() {
 		dd if=/dev/zero bs=1 count=500 status=none
 	} | dd of="$raw" bs=512 seek="$ntfs_start" conv=notrunc status=none
 	printf 'hibr%s' "$marker_other" | dd of="$raw" bs=1M seek=$((ntfs_start / 2048 + 1)) conv=notrunc status=none
+	windows_mbr "$raw"
 	sfdisk -d "$raw" >"$out/before.dump"
 	mdir -i "$raw@@$((esp_start * 512))" -/ -b :: | sort >"$out/before.files"
 	qemu-img convert -O qcow2 "$raw" "$disk"
@@ -473,6 +480,27 @@ same_sectors() {
 	fi
 }
 
+# Sector 0 of image $1, as 1024 hexadecimal digits.
+sector0() {
+	head -c 512 "$1" | od -An -v -tx1 | tr -d ' \n'
+}
+# Sector 0 is what it was but for the size in the protective MBR, bytes 458
+# to 461, which was all ones and now is the disk's own.
+check_mbr() {
+	b=$(sector0 "$out/before.img")
+	a=$(sector0 "$out/after.img")
+	sectors=$(($(stat -c %s "$out/after.img") / 512 - 1))
+	want=$(printf '%02x%02x%02x%02x' $((sectors & 255)) $((sectors >> 8 & 255)) \
+		$((sectors >> 16 & 255)) $((sectors >> 24 & 255)))
+	if [ "$(echo "$b" | cut -c917-924)" = ffffffff ] &&
+		[ "$(echo "$a" | cut -c917-924)" = "$want" ] &&
+		[ "$(echo "$a" | cut -c1-916,925-)" = "$(echo "$b" | cut -c1-916,925-)" ]; then
+		check_ok "sector 0 is as it was but for the protective MBR's size, now the disk's own"
+	else
+		check_fail "sector 0 is not as expected: size $(echo "$b" | cut -c917-924) became $(echo "$a" | cut -c917-924), wanted $want"
+	fi
+}
+
 verify_beside() {
 	: >"$out/dualboot-checks.txt"
 	qemu-img convert -O raw "$disk" "$out/after.img"
@@ -492,6 +520,7 @@ verify_beside() {
 	done
 	count=$(grep -c -E '^[^ ]+ :' "$out/after.dump")
 	[ "$count" = 5 ] && check_ok "there is one more partition, five in all" || check_fail "there are $count partitions, not 5"
+	check_mbr
 
 	# The new one: Linux, inside the free space, and nowhere else.
 	new_start=$(part_field "$out/after.dump" 5 start)

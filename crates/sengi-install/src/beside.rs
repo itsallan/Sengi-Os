@@ -698,6 +698,53 @@ pub fn mbr_is_plain(sector: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// The first twelve bytes of the protective MBR's entry, from byte 446, as
+/// sfdisk writes them.
+const PROTECTIVE: [u8; 12] = [0, 0, 2, 0, 0xEE, 0xFF, 0xFF, 0xFF, 1, 0, 0, 0];
+
+/// Where in sector 0 that entry gives its size.
+const MBR_SIZE: std::ops::Range<usize> = 458..462;
+
+/// The size sfdisk writes there for a disk of `sectors` of its own sectors:
+/// all but the first, or all ones where that does not fit. Windows commonly
+/// writes all ones on a disk of any size.
+pub fn mbr_size(sectors: u64) -> [u8; 4] {
+    u32::try_from(sectors.saturating_sub(1))
+        .unwrap_or(u32::MAX)
+        .to_le_bytes()
+}
+
+/// sfdisk writes the whole protective MBR afresh, in its own form. Before
+/// anything is written: sector 0 is in that form already, but perhaps for
+/// the size, so that nothing else in it will change.
+pub fn mbr_stays(sector: &[u8]) -> Result<(), String> {
+    let standard = sector.len() >= 512
+        && sector[446..458] == PROTECTIVE
+        && sector[462..510].iter().all(|byte| *byte == 0)
+        && sector[510..512] == [0x55, 0xAA];
+    if standard {
+        Ok(())
+    } else {
+        Err("the disk's protective MBR is not in the standard form, and writing the partition table would change it: not written beside".to_string())
+    }
+}
+
+/// After sfdisk has written the table of a disk of `sectors`: sector 0 is
+/// what it was, but for the four bytes of the size, which may only have
+/// become the disk's own.
+pub fn check_sector0(before: &[u8], after: &[u8], sectors: u64) -> Result<(), String> {
+    let kept = before.len() >= 512
+        && after.len() == before.len()
+        && after[..MBR_SIZE.start] == before[..MBR_SIZE.start]
+        && after[MBR_SIZE.end..] == before[MBR_SIZE.end..]
+        && (after[MBR_SIZE] == before[MBR_SIZE] || after[MBR_SIZE] == mbr_size(sectors));
+    if kept {
+        Ok(())
+    } else {
+        Err("sector 0 of the disk changed when the table was written".to_string())
+    }
+}
+
 /// Programs that write to what they are given.
 const WRITERS: [&str; 14] = [
     "mkfs",

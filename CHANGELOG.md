@@ -63,6 +63,10 @@ and the measured idle RAM and boot time.
 - A window asked to maximise while minimised is maximised when it returns.
 - The outline shown while a window is snapped goes away if the window closes
   during the drag.
+- Installing beside another system works on a disk whose protective MBR gives
+  its size as all ones, as Windows commonly writes it: it stopped after adding
+  the partition, with nothing installed. A disk whose protective MBR would be
+  changed in any other way is now refused before anything is written.
 
 ## 1.0.0 - 2026-11-27
 
