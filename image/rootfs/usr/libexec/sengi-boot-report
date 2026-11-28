@@ -494,6 +494,27 @@ if [ "$(session_compositor)" = "$compositor" ] && [ -n "$(session_compositor_pid
 	desktop=up
 fi
 echo "SENGI-GREETER after desktop=$desktop session=${owner:-nobody} left=${left:-nothing}" >$port
+# Sound has to be there again. The sound stack usually starts afresh with
+# this session, and a device can come up broken as it does; the session
+# mends that, so give it time. Only listings are asked for here: asking
+# more could break a device that is just appearing.
+sound_back() {
+	as_live pw-cli ls Node 2>/dev/null | grep -q 'media\.class = "Audio/Sink"' &&
+		[ -z "$(as_live sh -c '. /usr/lib/sengi-os/sound.sh; sengi_sound_broken')" ]
+}
+n=0
+until sound_back; do
+	n=$((n + 1))
+	[ $n -lt 120 ] || break
+	sleep 0.2
+done
+if sound_back; then
+	echo "SENGI-INFO sound after logging in again: there" >$port
+else
+	echo "SENGI-FAIL there is no sound output after logging in again" >$port
+fi
+journalctl -b --no-pager -o cat -t sengi-session | grep 'sound device' |
+	sed 's/^/SENGI-INFO mended: /' >$port
 # The live question is asked once per start, not at every login. By now this
 # session would have shown it again.
 sleep 6

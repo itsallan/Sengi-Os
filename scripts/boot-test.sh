@@ -899,7 +899,7 @@ else
 fi
 # The guest's last lines, on how the display was handed over. Before them it
 # waits to see that the live question is not asked again.
-wait_serial 'SENGI-HANDOVER reported' 20 || true
+wait_serial 'SENGI-HANDOVER reported' 60 || true
 # Several windows, each minimised with its yellow button while another is
 # open: this once froze the whole desktop, pointer and all. Only the window
 # in front has coloured buttons, so its yellow one is found by that colour in
