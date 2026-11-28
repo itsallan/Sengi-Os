@@ -14,6 +14,10 @@ and the measured idle RAM and boot time.
 
 ### Fixed
 
+- Battery: the bar reads it as quick settings and Settings do, so a mouse's
+  or pen's battery and empty slots are left out, and a driver that gives no
+  percentage, or 0 while its energy counters say otherwise, no longer shows as
+  0% or not at all.
 - Sound: programs that use PulseAudio, such as browsers, have a sound server
   again; Intel laptops whose audio goes through a DSP get its firmware and
   mixer profiles; Bluetooth audio and ALSA-only programs work; a machine with

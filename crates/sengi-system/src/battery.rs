@@ -7,7 +7,7 @@
 //! the same charge from both.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// What the battery is doing, from its `status` file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +123,21 @@ fn charge_of(status: &str) -> Charge {
     }
 }
 
+/// Charge left in percent, from `capacity` and from the counters the
+/// battery keeps: what is in it now and what it holds when full, by energy
+/// or by charge. The kernel's own figure counts, unless there is none, or it
+/// says empty while the counters say otherwise, as some drivers do.
+fn percent(capacity: Option<f64>, counters: [(Option<f64>, Option<f64>); 2]) -> Option<f64> {
+    let counted = counters.into_iter().find_map(|(now, full)| {
+        let (now, full) = (now?, full?);
+        (full > 0.0).then(|| now / full * 100.0)
+    });
+    match (capacity, counted) {
+        (Some(0.0), Some(counted)) => Some(counted),
+        (said, counted) => said.or(counted),
+    }
+}
+
 /// Reads one battery's directory. Energy is in µWh; where the battery
 /// counts charge instead (µAh), the design voltage turns it into energy.
 fn read_pack(dir: &Path) -> Option<Pack> {
@@ -138,8 +153,10 @@ fn read_pack(dir: &Path) -> Option<Pack> {
     if file("scope").is_some_and(|scope| scope.trim() == "Device") {
         return None;
     }
-    let volts = number("voltage_min_design")
-        .or(number("voltage_now"))
+    // A voltage of zero is a driver that does not know it.
+    let volts = ["voltage_min_design", "voltage_now"]
+        .iter()
+        .find_map(|name| number(name).filter(|microvolts| *microvolts > 0.0))
         .map(|microvolts| microvolts / 1e6);
     let energy = |energy: &str, charge: &str| -> Option<f64> {
         number(energy)
@@ -160,10 +177,13 @@ fn read_pack(dir: &Path) -> Option<Pack> {
         energy("energy_now", "charge_now"),
         energy("energy_full", "charge_full"),
     );
-    let percent = number("capacity").or_else(|| {
-        let (now, full) = (now_wh?, full_wh?);
-        (full > 0.0).then(|| now / full * 100.0)
-    })?;
+    let percent = percent(
+        number("capacity"),
+        [
+            (number("energy_now"), number("energy_full")),
+            (number("charge_now"), number("charge_full")),
+        ],
+    )?;
     let words: Vec<String> = ["technology", "manufacturer", "model_name"]
         .iter()
         .filter_map(|name| file(name))
@@ -186,8 +206,10 @@ fn read_pack(dir: &Path) -> Option<Pack> {
     })
 }
 
-/// The system's batteries under `root`, by name. Some laptops have two.
-pub fn packs(root: &Path) -> Vec<Pack> {
+/// The directory and the reading of each of the system's batteries under
+/// `root`, by name. Batteries inside mice and headsets show up there too,
+/// as do slots with no battery in them, and both are left out.
+fn found(root: &Path) -> Vec<(PathBuf, Pack)> {
     let mut entries: Vec<_> = fs::read_dir(root)
         .into_iter()
         .flatten()
@@ -197,9 +219,14 @@ pub fn packs(root: &Path) -> Vec<Pack> {
     entries.sort_by_key(|entry| entry.file_name());
     entries
         .iter()
-        .filter_map(|entry| read_pack(&entry.path()))
+        .filter_map(|entry| Some((entry.path(), read_pack(&entry.path())?)))
         .take(MAX_BATTERIES)
         .collect()
+}
+
+/// The system's batteries under `root`, by name. Some laptops have two.
+pub fn packs(root: &Path) -> Vec<Pack> {
+    found(root).into_iter().map(|(_, pack)| pack).collect()
 }
 
 /// Several batteries as the one supply they are to the user: energies
@@ -285,16 +312,20 @@ pub fn minutes_left(charge: Charge, now: u64, full: Option<u64>, rate: u64) -> O
     (minutes > 0 && minutes <= MAX_MINUTES).then_some(minutes as u32)
 }
 
-/// Makes sense of one battery's files. `None` without a usable
-/// `capacity`.
+/// Makes sense of one battery's files. `None` when neither `capacity` nor
+/// the counters say how full it is.
 pub fn parse(raw: &Raw) -> Option<Battery> {
-    let percent = raw
-        .capacity
-        .as_deref()?
-        .trim()
-        .parse::<u32>()
-        .ok()?
-        .min(100);
+    let whole = |text: &Option<String>| -> Option<f64> {
+        let value: u64 = text.as_deref()?.trim().parse().ok()?;
+        Some(value as f64)
+    };
+    let percent = percent(
+        whole(&raw.capacity),
+        [
+            (whole(&raw.energy_now), whole(&raw.energy_full)),
+            (whole(&raw.charge_now), whole(&raw.charge_full)),
+        ],
+    )?;
     let charge = charge_of(raw.status.as_deref().unwrap_or_default());
     // Energy when the kernel has it, charge otherwise; never a mix.
     let by_energy = || {
@@ -306,7 +337,7 @@ pub fn parse(raw: &Raw) -> Option<Battery> {
         minutes_left(charge, now, number(&raw.charge_full), rate)
     };
     Some(Battery {
-        percent,
+        percent: percent.round().clamp(0.0, 100.0) as u32,
         charge,
         minutes: by_energy().or_else(by_charge),
     })
@@ -358,42 +389,32 @@ fn read_trimmed(path: &Path) -> Option<String> {
     (text.len() <= 64).then(|| text.trim().to_string())
 }
 
-/// The system battery under `root`. Batteries inside mice and headsets
-/// show up in the same directory and are skipped. Where the machine has
-/// several of its own they are read as one: see [`combined`].
+/// The system battery under `root`, the one answer for every program of
+/// the shell. Where the machine has several they are read as one: see
+/// [`combined`].
 pub fn read(root: &Path) -> Option<Battery> {
-    let mut paths: Vec<_> = fs::read_dir(root)
-        .ok()?
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| {
-            read_trimmed(&path.join("type")).as_deref() == Some("Battery")
-                && read_trimmed(&path.join("scope")).as_deref() != Some("Device")
-        })
-        .collect();
-    paths.sort();
-    if paths.len() > 1 {
-        if let Some(whole) = combined(&packs(root)) {
-            return Some(Battery {
-                percent: whole.percent,
-                charge: whole.charge,
-                minutes: whole
-                    .minutes_left()
-                    .filter(|minutes| (1..=MAX_MINUTES).contains(&u64::from(*minutes))),
-            });
-        }
+    let found = found(root);
+    if let [(path, _)] = found.as_slice() {
+        let file = |name: &str| read_trimmed(&path.join(name));
+        return parse(&Raw {
+            capacity: file("capacity"),
+            status: file("status"),
+            energy_now: file("energy_now"),
+            energy_full: file("energy_full"),
+            power_now: file("power_now"),
+            charge_now: file("charge_now"),
+            charge_full: file("charge_full"),
+            current_now: file("current_now"),
+        });
     }
-    let path = paths.first()?;
-    let file = |name: &str| read_trimmed(&path.join(name));
-    parse(&Raw {
-        capacity: file("capacity"),
-        status: file("status"),
-        energy_now: file("energy_now"),
-        energy_full: file("energy_full"),
-        power_now: file("power_now"),
-        charge_now: file("charge_now"),
-        charge_full: file("charge_full"),
-        current_now: file("current_now"),
+    let packs: Vec<Pack> = found.into_iter().map(|(_, pack)| pack).collect();
+    let whole = combined(&packs)?;
+    Some(Battery {
+        percent: whole.percent,
+        charge: whole.charge,
+        minutes: whole
+            .minutes_left()
+            .filter(|minutes| (1..=MAX_MINUTES).contains(&u64::from(*minutes))),
     })
 }
 
@@ -529,6 +550,81 @@ mod tests {
                 minutes: Some(60),
             })
         );
+    }
+
+    fn supply(sys: &TempDir, name: &str, files: &[(&str, &str)]) {
+        sys.write(&format!("{name}/type"), "Battery\n");
+        for (file, value) in files {
+            sys.write(&format!("{name}/{file}"), &format!("{value}\n"));
+        }
+    }
+
+    fn reading(files: &[(&str, &str)]) -> Option<(u32, Charge)> {
+        let sys = TempDir::new();
+        supply(&sys, "BAT0", files);
+        read(sys.path()).map(|battery| (battery.percent, battery.charge))
+    }
+
+    #[test]
+    fn a_zero_the_energy_counters_contradict_is_not_believed() {
+        let found = reading(&[
+            ("status", "Charging"),
+            ("capacity", "0"),
+            ("energy_now", "30000000"),
+            ("energy_full", "50000000"),
+        ]);
+        assert_eq!(found, Some((60, Charge::Charging)));
+        let found = reading(&[
+            ("status", "Charging"),
+            ("capacity", "0"),
+            ("charge_now", "1000000"),
+            ("charge_full", "4000000"),
+        ]);
+        assert_eq!(found, Some((25, Charge::Charging)));
+    }
+
+    #[test]
+    fn without_a_usable_capacity_the_counters_give_the_charge() {
+        let energy = [("energy_now", "30000000"), ("energy_full", "50000000")];
+        // No capacity file at all, and one that says nothing.
+        assert_eq!(reading(&energy), Some((60, Charge::Unknown)));
+        let empty = [("capacity", ""), energy[0], energy[1]];
+        assert_eq!(reading(&empty), Some((60, Charge::Unknown)));
+        // Charge counters need no voltage, and one of zero is no voltage.
+        let charge = [("charge_now", "2000000"), ("charge_full", "4000000")];
+        assert_eq!(reading(&charge), Some((50, Charge::Unknown)));
+        let zero_volts = [charge[0], charge[1], ("voltage_min_design", "0")];
+        assert_eq!(reading(&zero_volts), Some((50, Charge::Unknown)));
+        // Nothing to go by.
+        assert_eq!(reading(&[("status", "Charging")]), None);
+        let nothing_full = [("energy_now", "0"), ("energy_full", "0")];
+        assert_eq!(reading(&nothing_full), None);
+    }
+
+    #[test]
+    fn an_empty_battery_still_reads_zero() {
+        let found = reading(&[
+            ("status", "Charging"),
+            ("capacity", "0"),
+            ("energy_now", "0"),
+            ("energy_full", "50000000"),
+        ]);
+        assert_eq!(found, Some((0, Charge::Charging)));
+        let bare = reading(&[("status", "Discharging"), ("capacity", "0")]);
+        assert_eq!(bare, Some((0, Charge::Discharging)));
+    }
+
+    #[test]
+    fn a_slot_with_no_battery_in_it_is_not_read() {
+        let absent = [("present", "0"), ("status", "Charging"), ("capacity", "0")];
+        assert_eq!(reading(&absent), None);
+        // Beside a real one, in whichever order.
+        for (empty, real) in [("BAT0", "BAT1"), ("BAT1", "BAT0")] {
+            let sys = TempDir::new();
+            supply(&sys, empty, &absent);
+            supply(&sys, real, &[("status", "Charging"), ("capacity", "81")]);
+            assert_eq!(read(sys.path()).unwrap().percent, 81);
+        }
     }
 
     #[test]

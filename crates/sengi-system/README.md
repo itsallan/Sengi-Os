@@ -27,6 +27,10 @@ Nothing is on by default. Without features the crate is plain std:
 
 The features add:
 
+- `battery`: the one reading of `/sys/class/power_supply`. Batteries of
+  devices and empty slots are left out, and the charge is worked out from the
+  energy or charge counters when `capacity` is missing, or says 0 while they
+  say otherwise.
 - `bus`: `connect`, the D-Bus connections opened by hand. zbus's own connect
   starts a helper thread that wakes twice a second for as long as the
   process lives; a socket that is already connected avoids it.

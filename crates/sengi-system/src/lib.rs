@@ -6,6 +6,9 @@
 //! a password and wipes it; it needs no feature either, so the lock screen
 //! has it without a D-Bus stack.
 //!
+//! With the `battery` feature comes [`battery`], the one reading of
+//! `/sys/class/power_supply`, which the bar and the update helper use too.
+//!
 //! With the `bus` feature, [`connect`] opens the D-Bus connections by hand
 //! so that no helper thread is left waking the machine.
 //!
@@ -38,7 +41,7 @@ pub mod instance;
 
 #[cfg(feature = "services")]
 pub mod backlight;
-#[cfg(feature = "services")]
+#[cfg(feature = "battery")]
 pub mod battery;
 #[cfg(feature = "services")]
 pub mod bluetooth;

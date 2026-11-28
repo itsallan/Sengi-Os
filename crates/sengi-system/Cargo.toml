@@ -9,9 +9,11 @@ license.workspace = true
 [features]
 # The hand-opened bus connections, for a program that speaks D-Bus itself.
 bus = ["dep:zbus"]
+# The battery readings alone, for a program that wants nothing else here.
+battery = ["dep:sengi-text"]
 # iwd, BlueZ, logind brightness, audio, battery, link state and rfkill, and
 # the worker threads that run them.
-services = ["bus", "dep:sengi-text"]
+services = ["bus", "battery"]
 # What a settings application manages and the panel does not. The image
 # builds Settings apart from the other programs, so the panel there is
 # compiled without this. A build of the whole workspace unifies features

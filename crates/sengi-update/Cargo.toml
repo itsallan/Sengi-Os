@@ -20,3 +20,5 @@ path = "src/main.rs"
 libc = "0.2"
 # Names of packages and apps come from outside and are shown in a window.
 sengi-text = { path = "../sengi-text" }
+# The battery as the bar reads it; no other feature, so no D-Bus.
+sengi-system = { path = "../sengi-system", features = ["battery"] }

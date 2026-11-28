@@ -7,6 +7,8 @@ use std::fs;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
+use sengi_system::battery::{self, Charge};
+
 /// Below this much charge, on battery, nothing is installed: a cut-off
 /// half way through unpacking is the worst thing an update can do.
 pub const MIN_BATTERY: u8 = 20;
@@ -131,26 +133,11 @@ fn read(path: &Path) -> String {
 /// Charge of the laptop's battery, if it is running on it. Batteries of
 /// devices (a mouse, a headset) are not the computer's.
 pub fn battery_discharging(power_supply: &Path) -> Option<u8> {
-    let mut lowest: Option<u8> = None;
-    let entries = fs::read_dir(power_supply).ok()?;
-    for entry in entries.flatten().take(32) {
-        let dir = entry.path();
-        if read(&dir.join("type")).trim() != "Battery" {
-            continue;
-        }
-        if read(&dir.join("scope")).trim() == "Device" {
-            continue;
-        }
-        if read(&dir.join("status")).trim() != "Discharging" {
-            continue;
-        }
-        let Ok(percent) = read(&dir.join("capacity")).trim().parse::<u32>() else {
-            continue;
-        };
-        let percent = percent.min(100) as u8;
-        lowest = Some(lowest.map_or(percent, |old| old.min(percent)));
-    }
-    lowest
+    battery::packs(power_supply)
+        .into_iter()
+        .filter(|pack| pack.charge == Charge::Discharging)
+        .map(|pack| pack.percent.min(100) as u8)
+        .min()
 }
 
 /// Whether another process holds a write lock on one of these files.
@@ -261,6 +248,20 @@ mod tests {
         // A computer with no battery has nothing to run out.
         let bare = scratch("bare");
         assert_eq!(allow_apply(&Paths::under(&bare)), Ok(()));
+    }
+
+    #[test]
+    fn a_zero_the_counters_contradict_does_not_stop_an_update() {
+        let root = scratch("false-zero");
+        battery(&root, "BAT0", "Discharging", "0", None);
+        let dir = root.join("sys/class/power_supply/BAT0");
+        fs::write(dir.join("energy_now"), "30000000\n").unwrap();
+        fs::write(dir.join("energy_full"), "50000000\n").unwrap();
+        assert_eq!(allow_apply(&Paths::under(&root)), Ok(()));
+        // An empty slot has no charge to run out.
+        battery(&root, "BAT1", "Discharging", "0", None);
+        fs::write(root.join("sys/class/power_supply/BAT1/present"), "0\n").unwrap();
+        assert_eq!(allow_apply(&Paths::under(&root)), Ok(()));
     }
 
     #[test]

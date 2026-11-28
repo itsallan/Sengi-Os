@@ -3872,6 +3872,7 @@ name = "sengi-update"
 version = "1.0.0"
 dependencies = [
  "libc",
+ "sengi-system",
  "sengi-text",
 ]
 

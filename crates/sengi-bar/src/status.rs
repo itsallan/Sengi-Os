@@ -7,7 +7,7 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use sengi_system::{commands, volume};
+use sengi_system::{battery, commands, volume};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Network {
@@ -130,29 +130,13 @@ impl Battery {
     }
 }
 
-pub fn parse_battery(capacity: &str, status: &str) -> Option<Battery> {
-    Some(Battery {
-        percent: capacity.trim().parse::<u32>().ok()?.min(100),
-        charging: status.trim() == "Charging",
-    })
-}
-
-/// The first battery under `/sys/class/power_supply`, if the machine has one.
+/// The machine's battery under `/sys/class/power_supply`, if it has one,
+/// read as quick settings and Settings read it.
 pub fn read_battery(root: &Path) -> Option<Battery> {
-    let mut names: Vec<_> = fs::read_dir(root)
-        .ok()?
-        .flatten()
-        .filter(|entry| {
-            fs::read_to_string(entry.path().join("type")).is_ok_and(|t| t.trim() == "Battery")
-        })
-        .map(|entry| entry.path())
-        .collect();
-    names.sort();
-    let path = names.first()?;
-    parse_battery(
-        &fs::read_to_string(path.join("capacity")).ok()?,
-        &fs::read_to_string(path.join("status")).unwrap_or_default(),
-    )
+    battery::read(root).map(|battery| Battery {
+        percent: battery.percent,
+        charging: battery.charging(),
+    })
 }
 
 /// Finds the connected Wi-Fi network in iwd's object list, as printed by
@@ -308,6 +292,30 @@ mod tests {
     }
 
     #[test]
+    fn a_device_that_sorts_first_is_not_the_computers_battery() {
+        let sys = Sysfs::new("peripheral");
+        sys.file("AAA_pen/type", "Battery\n");
+        sys.file("AAA_pen/scope", "Device\n");
+        sys.file("AAA_pen/capacity", "0\n");
+        sys.file("AAA_pen/status", "Charging\n");
+        sys.file("BAT0/type", "Battery\n");
+        sys.file("BAT0/capacity", "73\n");
+        sys.file("BAT0/status", "Discharging\n");
+        assert_eq!(read_battery(&sys.0).unwrap().label(), "73%");
+    }
+
+    #[test]
+    fn the_bar_reads_the_same_charge_as_the_rest_of_the_shell() {
+        let sys = Sysfs::new("counters");
+        sys.file("BAT0/type", "Battery\n");
+        sys.file("BAT0/capacity", "0\n");
+        sys.file("BAT0/status", "Charging\n");
+        sys.file("BAT0/energy_now", "30000000\n");
+        sys.file("BAT0/energy_full", "50000000\n");
+        assert_eq!(read_battery(&sys.0).unwrap().label(), "60% charging");
+    }
+
+    #[test]
     fn volume_is_rounded_to_percent() {
         assert_eq!(
             volume::parse("Volume: 0.40\n"),
@@ -345,36 +353,27 @@ mod tests {
         assert_eq!(volume::parse("Could not connect to PipeWire"), None);
     }
 
+    fn battery(percent: u32, charging: bool) -> Battery {
+        Battery { percent, charging }
+    }
+
     #[test]
     fn battery_labels() {
-        assert_eq!(
-            parse_battery("87\n", "Discharging\n").unwrap().label(),
-            "87%"
-        );
-        assert_eq!(
-            parse_battery("42", "Charging").unwrap().label(),
-            "42% charging"
-        );
+        assert_eq!(battery(87, false).label(), "87%");
+        assert_eq!(battery(42, true).label(), "42% charging");
     }
 
     #[test]
     fn battery_is_low_only_when_draining() {
-        assert!(parse_battery("8", "Discharging").unwrap().low());
-        assert!(!parse_battery("8", "Charging").unwrap().low());
-        assert!(!parse_battery("60", "Discharging").unwrap().low());
+        assert!(battery(8, false).low());
+        assert!(!battery(8, true).low());
+        assert!(!battery(60, false).low());
     }
 
     #[test]
     fn battery_warns_before_it_is_low() {
-        let battery = parse_battery("18", "Discharging").unwrap();
-        assert!(battery.warning() && !battery.low());
-        assert!(!parse_battery("8", "Discharging").unwrap().warning());
-    }
-
-    #[test]
-    fn odd_battery_readings() {
-        assert_eq!(parse_battery("", "Full"), None);
-        assert_eq!(parse_battery("250", "Full").unwrap().percent, 100);
+        assert!(battery(18, false).warning() && !battery(18, false).low());
+        assert!(!battery(8, false).warning());
     }
 
     #[test]
