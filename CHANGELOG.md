@@ -85,6 +85,9 @@ and the measured idle RAM and boot time.
   long for the window: what installing beside another system adds, why a disk
   or a way of using it is not offered, and what making a partition smaller
   does.
+- Settings: the list of pages scrolls where the window is too short for all of
+  it, as at 800x600, so Accessibility and About can be reached, and the
+  keyboard brings the page it is on into view.
 
 ## 1.0.0 - 2026-11-27
 

@@ -5,7 +5,7 @@
 import { Tokens, ThemeSwitch, SengiText } from "components.slint";
 export { ThemeSwitch } from "components.slint";
 import { NamedIcon } from "icons.slint";
-import { Metrics, Nudge, Item, InfoRow, DialogSpec, DialogLayer, ChooserLayer } from "kit.slint";
+import { Metrics, Nudge, Item, InfoRow, DialogSpec, DialogLayer, ChooserLayer, Scroll } from "kit.slint";
 import { NetworkData, NetworkPage } from "pages/network.slint";
 import { BluetoothData, BluetoothPage } from "pages/bluetooth.slint";
 import { SoundData, SoundSide, SoundPage } from "pages/sound.slint";
@@ -61,9 +61,19 @@ component Sidebar inherits Rectangle {
     callback selected(string);
 
     private property <int> index: 0;
+    // A row and the gap under it.
+    private property <length> pitch: Metrics.sidebar-row + Tokens.space-xxs;
 
     public function take-focus() {
         scope.focus();
+    }
+
+    // Scrolls the list, where the window is too short for all of it, until
+    // the chosen row and the room around it are in view.
+    function show-chosen() {
+        if list.height > 0 {
+            list.reveal(root.index * root.pitch, Metrics.sidebar-row + Tokens.space-sm * 2);
+        }
     }
 
     function go(to: int) {
@@ -74,11 +84,23 @@ component Sidebar inherits Rectangle {
 
     forward-focus: scope;
     background: Tokens.color-surface;
+    changed index => { root.show-chosen(); }
+    changed height => { root.show-chosen(); }
 
     scope := FocusScope {
         focus-on-click: false;
+        changed has-focus => {
+            if self.has-focus {
+                root.show-chosen();
+            }
+        }
 
         key-pressed(event) => {
+            // The wheel may have taken the chosen row out of view.
+            if event.text == Key.UpArrow || event.text == Key.DownArrow
+                || event.text == Key.Home || event.text == Key.End {
+                root.show-chosen();
+            }
             if event.text == Key.UpArrow {
                 root.go(root.index - 1);
             } else if event.text == Key.DownArrow {
@@ -98,83 +120,87 @@ component Sidebar inherits Rectangle {
         }
     }
 
-    for page[index] in root.pages: Rectangle {
-        private property <bool> chosen: page.name == root.current;
+    list := Scroll {
+        content-height: Tokens.space-sm * 2 + root.pages.length * root.pitch - Tokens.space-xxs;
 
-        x: Tokens.space-sm;
-        y: Tokens.space-sm + index * (Metrics.sidebar-row + Tokens.space-xxs);
-        width: parent.width - Tokens.space-sm * 2;
-        height: Metrics.sidebar-row;
-        border-radius: Tokens.radius;
-        border-width: self.chosen && scope.has-focus ? Tokens.focus-ring-width
-            : self.chosen && ThemeSwitch.high-contrast ? Tokens.border-width : 0;
-        border-color: scope.has-focus ? Tokens.color-focus-ring : Tokens.color-accent;
-        background: self.chosen ? Tokens.color-surface-hover
-            : touch.has-hover ? Tokens.color-surface-raised : transparent;
-        animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
+        for page[index] in root.pages: Rectangle {
+            private property <bool> chosen: page.name == root.current;
 
-        // Hover is a fill too, so the chosen page carries a mark of its own.
-        if self.chosen: Rectangle {
-            x: Tokens.space-xs;
-            y: (parent.height - self.height) / 2;
-            width: Tokens.space-xs;
-            height: Tokens.bar-icon;
-            border-radius: self.width / 2;
-            background: Tokens.color-accent;
-        }
-
-        changed chosen => {
-            if self.chosen {
-                root.index = index;
-            }
-        }
-
-        init => {
-            if self.chosen {
-                root.index = index;
-            }
-        }
-
-        NamedIcon {
-            x: Tokens.space-md;
-            y: (parent.height - self.height) / 2;
-            name: page.icon;
-            ink: parent.chosen ? Tokens.color-accent : Tokens.color-text-muted;
-        }
-
-        // How many updates are waiting.
-        if page.name == "updates" && UpdatesData.badge > 0: Rectangle {
-            x: parent.width - self.width - Tokens.space-md;
-            y: (parent.height - self.height) / 2;
-            width: Math.max(self.height, count.preferred-width + Tokens.space-sm * 2);
-            height: Tokens.space-lg + Tokens.space-xs;
+            x: Tokens.space-sm;
+            y: Tokens.space-sm + index * root.pitch;
+            width: parent.width - Tokens.space-sm * 2;
+            height: Metrics.sidebar-row;
             border-radius: Tokens.radius;
-            background: Tokens.color-accent;
+            border-width: self.chosen && scope.has-focus ? Tokens.focus-ring-width
+                : self.chosen && ThemeSwitch.high-contrast ? Tokens.border-width : 0;
+            border-color: scope.has-focus ? Tokens.color-focus-ring : Tokens.color-accent;
+            background: self.chosen ? Tokens.color-surface-hover
+                : touch.has-hover ? Tokens.color-surface-raised : transparent;
+            animate background { duration: Tokens.motion-fast; easing: Tokens.motion-easing; }
 
-            count := SengiText {
-                text: UpdatesData.badge > 99 ? "99+" : "" + UpdatesData.badge;
-                color: Tokens.color-accent-text;
-                font-size: Tokens.font-size-sm;
-                font-weight: Tokens.font-weight-medium;
-                horizontal-alignment: center;
-                vertical-alignment: center;
+            // Hover is a fill too, so the chosen page carries a mark of its own.
+            if self.chosen: Rectangle {
+                x: Tokens.space-xs;
+                y: (parent.height - self.height) / 2;
+                width: Tokens.space-xs;
+                height: Tokens.bar-icon;
+                border-radius: self.width / 2;
+                background: Tokens.color-accent;
             }
-        }
 
-        SengiText {
-            x: Tokens.space-md * 2 + Tokens.bar-icon;
-            width: parent.width - self.x - Tokens.space-sm;
-            height: parent.height;
-            text: page.title;
-            font-weight: parent.chosen ? Tokens.font-weight-medium : Tokens.font-weight-regular;
-            vertical-alignment: center;
-            overflow: elide;
-        }
+            changed chosen => {
+                if self.chosen {
+                    root.index = index;
+                }
+            }
 
-        touch := TouchArea {
-            clicked => {
-                scope.focus();
-                root.selected(page.name);
+            init => {
+                if self.chosen {
+                    root.index = index;
+                }
+            }
+
+            NamedIcon {
+                x: Tokens.space-md;
+                y: (parent.height - self.height) / 2;
+                name: page.icon;
+                ink: parent.chosen ? Tokens.color-accent : Tokens.color-text-muted;
+            }
+
+            // How many updates are waiting.
+            if page.name == "updates" && UpdatesData.badge > 0: Rectangle {
+                x: parent.width - self.width - Tokens.space-md;
+                y: (parent.height - self.height) / 2;
+                width: Math.max(self.height, count.preferred-width + Tokens.space-sm * 2);
+                height: Tokens.space-lg + Tokens.space-xs;
+                border-radius: Tokens.radius;
+                background: Tokens.color-accent;
+
+                count := SengiText {
+                    text: UpdatesData.badge > 99 ? "99+" : "" + UpdatesData.badge;
+                    color: Tokens.color-accent-text;
+                    font-size: Tokens.font-size-sm;
+                    font-weight: Tokens.font-weight-medium;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            SengiText {
+                x: Tokens.space-md * 2 + Tokens.bar-icon;
+                width: parent.width - self.x - Tokens.space-sm;
+                height: parent.height;
+                text: page.title;
+                font-weight: parent.chosen ? Tokens.font-weight-medium : Tokens.font-weight-regular;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            touch := TouchArea {
+                clicked => {
+                    scope.focus();
+                    root.selected(page.name);
+                }
             }
         }
     }

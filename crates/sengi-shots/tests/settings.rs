@@ -6,9 +6,11 @@ use std::rc::Rc;
 
 use sengi_shots::harness::{self, Look, BACKDROP};
 use sengi_shots::settings::*;
-use slint::platform::Key;
+use slint::platform::software_renderer::MinimalSoftwareWindow;
+use slint::platform::{Key, PointerEventButton, WindowEvent};
 use slint::{
-    ComponentHandle, Image, ModelRc, Rgb8Pixel, SharedPixelBuffer, SharedString, VecModel,
+    ComponentHandle, Image, LogicalPosition, ModelRc, Rgb8Pixel, SharedPixelBuffer, SharedString,
+    VecModel,
 };
 
 fn list<T: Clone + 'static>(items: Vec<T>) -> ModelRc<T> {
@@ -1232,5 +1234,123 @@ fn about_rows_stay_with_their_values() {
             &name("grown"),
         );
         w.hide().unwrap();
+    }
+}
+
+/// Where the window is too short for the whole sidebar, as at 800x600, it
+/// scrolls by wheel and touchpad, and the keyboard brings the entry it is
+/// on into view.
+#[test]
+fn the_sidebar_scrolls_where_it_does_not_fit() {
+    // The mark of the chosen entry, a little left of its icon.
+    const MARK: usize = 13;
+    const ACCENT: [u8; 3] = [0x2f, 0x9e, 0x6b];
+    harness::install();
+    for scale in [1.0, 1.4] {
+        for (width, height) in [(720u32, 480u32), (800, 463)] {
+            // A row of the sidebar (button and space-sm in the tokens), and
+            // the middles of the first and last rows in view, each space-sm
+            // from the edge.
+            let row = 26.0 * scale + 8.0;
+            let first = 8.0 + row / 2.0;
+            let last = height as f32 - 8.0 - row / 2.0;
+            let what = format!("{width}x{height}, text {scale}");
+            let open = |page: &str| {
+                let w = themed_look(SettingsWindow::new().unwrap(), Look::PLAIN.scaled(scale));
+                w.set_pages(pages());
+                w.set_page(page.into());
+                let window = w.as_weak();
+                w.on_page_selected(move |name| window.unwrap().set_page(name));
+                w.show().unwrap();
+                let win = harness::window();
+                harness::resize(&win, width, height);
+                harness::advance(300);
+                harness::draw(&win, BACKDROP);
+                harness::advance(300);
+                (w, win)
+            };
+            let marked = |win: &MinimalSoftwareWindow, middle: f32| {
+                harness::advance(500);
+                harness::draw(win, BACKDROP).at(MARK, middle as usize) == ACCENT
+            };
+            let scroll = |win: &MinimalSoftwareWindow, delta: f32, times: usize| {
+                for _ in 0..times {
+                    win.dispatch_event(WindowEvent::PointerScrolled {
+                        position: LogicalPosition::new(60.0, height as f32 / 2.0),
+                        delta_x: 0.0,
+                        delta_y: delta,
+                    });
+                    harness::advance(50);
+                }
+                harness::advance(1000);
+            };
+            let click = |win: &MinimalSoftwareWindow, y: f32| {
+                let position = LogicalPosition::new(60.0, y);
+                win.dispatch_event(WindowEvent::PointerMoved { position });
+                win.dispatch_event(WindowEvent::PointerPressed {
+                    position,
+                    button: PointerEventButton::Left,
+                });
+                harness::advance(50);
+                win.dispatch_event(WindowEvent::PointerReleased {
+                    position,
+                    button: PointerEventButton::Left,
+                });
+                harness::advance(500);
+            };
+            let press = |win: &MinimalSoftwareWindow, key: Key| {
+                harness::key(win, &SharedString::from(key));
+                harness::advance(100);
+            };
+
+            // A wheel, which moves in large steps, to the bottom.
+            let (w, win) = open("network");
+            scroll(&win, -60.0, 20);
+            click(&win, last);
+            assert_eq!(w.get_page(), "about", "{what}: wheel");
+            harness::draw(&win, BACKDROP).save_as(&format!(
+                "settings-sidebar-scrolled-{}-{width}x{height}.png",
+                (scale * 100.0) as u32
+            ));
+            // A touchpad, which moves in many small ones, back to the top.
+            scroll(&win, 7.0, 80);
+            click(&win, first);
+            assert_eq!(w.get_page(), "network", "{what}: touchpad");
+            w.hide().unwrap();
+
+            // The keyboard, to the ends and one entry at a time.
+            let (w, win) = open("network");
+            w.invoke_focus_sidebar();
+            press(&win, Key::End);
+            assert_eq!(w.get_page(), "about", "{what}: End");
+            assert!(marked(&win, last), "{what}: End leaves About out of view");
+            press(&win, Key::Home);
+            assert!(
+                marked(&win, first),
+                "{what}: Home leaves Network out of view"
+            );
+            for _ in 0..13 {
+                press(&win, Key::DownArrow);
+            }
+            assert_eq!(w.get_page(), "about", "{what}: arrows");
+            assert!(marked(&win, last), "{what}: arrows leave About out of view");
+            // Scrolled away by hand: the next key comes back to it, even
+            // one that goes nowhere.
+            scroll(&win, 60.0, 20);
+            press(&win, Key::DownArrow);
+            assert!(marked(&win, last), "{what}: a key leaves About out of view");
+            w.hide().unwrap();
+
+            // Opened on the last page, as "sengi-settings about" does.
+            let (w, win) = open("about");
+            assert!(marked(&win, last), "{what}: opened with About out of view");
+            // A taller window shows the list from its top again.
+            harness::resize(&win, width, 900);
+            harness::advance(500);
+            harness::draw(&win, BACKDROP);
+            click(&win, first);
+            assert_eq!(w.get_page(), "network", "{what}: after growing");
+            w.hide().unwrap();
+        }
     }
 }
