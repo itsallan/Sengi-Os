@@ -737,6 +737,72 @@ fn an_x11_window_maximises_with_super_a() {
 }
 
 #[test]
+fn a_maximised_x11_window_hides_the_bar_also_under_its_own_dialog() {
+    if !xwayland_installed("a_maximised_x11_window_hides_the_bar_also_under_its_own_dialog") {
+        return;
+    }
+    let compositor = Compositor::start_in(None, None, Some(START), &[]);
+    let display = wait_for_display(&compositor);
+    let mut shell = compositor.connect();
+    let _bar = shell.bar(30, MENU | 0xff00_0000).unwrap();
+    let mut list = WindowList::connect(&compositor);
+    let mut x = XClient::connect(display);
+    let parent = x.window(300, 200, 300, X_BLUE, "whole", "SengiXTest");
+    assert!(list.lists("whole", "SengiXTest", SOON));
+    let bar_is = |what: &str| {
+        let end = Instant::now() + SOON;
+        loop {
+            let report = compositor.control("inspect");
+            assert!(!report.contains("\nbroken "), "{report}");
+            if report.contains(&format!(" top={what} ")) {
+                return;
+            }
+            assert!(Instant::now() < end, "the bar is never {what}: {report}");
+            sleep(Duration::from_millis(20));
+        }
+    };
+    bar_is("shown");
+    compositor.input("key super+a");
+    bar_is("hidden");
+    assert!(
+        x.wait_for(XWAYLAND, |x| x.size(parent).3 >= 680),
+        "not the height of the screen: {:?}",
+        x.size(parent)
+    );
+
+    // A dialog says what it is part of before it is shown.
+    let dialog = x.make(500, 300, 120, X_GREEN, false);
+    x.conn
+        .change_property32(
+            PropMode::REPLACE,
+            dialog,
+            AtomEnum::WM_TRANSIENT_FOR,
+            AtomEnum::WINDOW,
+            &[parent],
+        )
+        .unwrap();
+    x.conn
+        .change_property8(
+            PropMode::REPLACE,
+            dialog,
+            AtomEnum::WM_NAME,
+            AtomEnum::STRING,
+            b"question",
+        )
+        .unwrap();
+    x.conn.map_window(dialog).unwrap();
+    x.conn.flush().unwrap();
+    assert!(list.lists("question", "", SOON));
+    sleep(Duration::from_millis(500));
+    bar_is("hidden");
+
+    // Another window that is no part of it brings the bar back.
+    x.window(100, 100, 200, X_GREEN, "other", "SengiXTest");
+    assert!(list.lists("other", "SengiXTest", SOON));
+    bar_is("shown");
+}
+
+#[test]
 fn super_q_closes_an_x11_window_and_the_focus_goes_on() {
     if !xwayland_installed("super_q_closes_an_x11_window_and_the_focus_goes_on") {
         return;

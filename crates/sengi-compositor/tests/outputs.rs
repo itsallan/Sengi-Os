@@ -683,22 +683,30 @@ fn a_bar_takes_room_from_its_own_output_only() {
     let first = shell.capture_named("HEADLESS-1").unwrap();
     assert_ne!(first.at(5, 5), rgb(RED), "not on the first");
 
-    // A window maximised on the first output is not shorter for it.
+    // A window filling half of the first output is not shorter for it.
     let mut app = compositor.connect();
     app.keyboard().unwrap();
     compositor.input("move 100 100");
     let (_s, _t) = app.window(GREEN).unwrap();
     assert!(app.wait(SOON, |seen| seen.keyboard_enters == 1));
-    compositor.input("key super+a");
-    assert!(app.wait(SOON, |seen| seen.more.toplevel == Some((1278, 689, false))));
+    compositor.input("key super+left");
+    assert!(
+        app.wait(SOON, |seen| seen.more.toplevel == Some((632, 681, false))),
+        "told {:?}",
+        app.seen.more.toplevel
+    );
     // And on the second it is.
     let mut other = compositor.connect();
     other.keyboard().unwrap();
     compositor.input("move 1500 300");
     let (_s2, _t2) = other.window(BLUE).unwrap();
     assert!(other.wait(SOON, |seen| seen.keyboard_enters == 1));
-    compositor.input("key super+a");
-    assert!(other.wait(SOON, |seen| seen.more.toplevel == Some((638, 299, false))));
+    compositor.input("key super+left");
+    assert!(
+        other.wait(SOON, |seen| seen.more.toplevel == Some((312, 291, false))),
+        "told {:?}",
+        other.seen.more.toplevel
+    );
 }
 
 #[test]
@@ -1357,9 +1365,12 @@ fn a_bar_on_an_output_that_is_switched_off_is_closed_and_the_output_comes_back_c
     let again = newcomer.output_named("HEADLESS-2").unwrap();
     let (_s2, _b2) = newcomer.bar_on(Some(&again), 30, BLUE).unwrap();
     assert_eq!(newcomer.seen.more.layer_closed, 0);
-    compositor.input("key super+a");
-    compositor.input("key super+a");
-    assert!(app.wait(SOON, |seen| seen.more.toplevel == Some((638, 299, false))));
+    compositor.input("key super+left");
+    assert!(
+        app.wait(SOON, |seen| seen.more.toplevel == Some((312, 291, false))),
+        "told {:?}",
+        app.seen.more.toplevel
+    );
 }
 
 #[test]

@@ -377,8 +377,10 @@ impl State {
         } else {
             usable
         };
-        // A window that fills the screen is the size of the screen.
+        // A window that fills the screen, or is to be maximised, is as large
+        // as that makes it.
         if !fullscreen
+            && !window::data(&window).start_maximised.get()
             && (size.w > most.w || size.h > most.h)
             && !window::data(&window).fitted.get()
         {

@@ -275,11 +275,13 @@ impl ClientDndGrabHandler for State {
         _seat: Seat<Self>,
     ) {
         self.drag_icon = icon;
+        self.autohide.carrying = true;
         self.request_redraw();
     }
 
     fn dropped(&mut self, _target: Option<WlSurface>, _validated: bool, _seat: Seat<Self>) {
         self.drag_icon = None;
+        self.autohide.carrying = false;
         self.request_redraw();
     }
 }

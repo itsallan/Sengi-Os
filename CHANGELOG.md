@@ -29,6 +29,10 @@ and the measured idle RAM and boot time.
 
 ### Changed
 
+- A maximised window takes the whole screen: the top bar and the dock hide,
+  and come back while the pointer rests at the top or bottom edge, or while
+  something opened from them is up. The window's title bar moves below the bar
+  while it shows. Under the labwc fallback they stay as before.
 - The installer chooses nothing for you on a disk that holds Windows (NTFS) or
   BitLocker: erasing it is chosen on purpose.
 - A disk that is part of a firmware RAID set, such as Intel RST in RAID mode,

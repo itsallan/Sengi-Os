@@ -200,6 +200,20 @@ the ISO:
       -drive file=out/sengi-os-1.0.0-amd64.iso,format=raw,if=virtio,readonly=on \
       -drive file=/tmp/sengi-disk.qcow2,format=qcow2,if=virtio
 
+## Maximised windows
+
+The green button, a double click on the title bar, Super+A or letting go of a
+window at the top edge maximises it: it takes the whole screen, and the top bar
+and the dock hide. Move the pointer to the top edge of the screen and rest it
+there for a moment to bring the bar back, or to the bottom edge for the dock.
+Each slides away again when the pointer leaves it, and stays while something
+you opened from it is up, such as quick settings or the dock's menu. While the
+bar shows, the window's title bar moves down below it, so the window buttons
+stay in reach. Switching to a window that is not maximised, minimising,
+closing or unmaximising brings both back. A full-screen video or game covers
+the edges too. If the desktop had to fall back to the labwc compositor,
+maximised windows leave the bar and the dock in place.
+
 ## The dock
 
 Click an icon to start the app, or to bring its window to the front. Right-click

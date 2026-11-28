@@ -268,6 +268,7 @@ struct Shell {
     surface: WlSurface,
     layer: ZwlrLayerSurfaceV1,
     seen: Arc<LayerSeen>,
+    kind: usize,
 }
 
 struct Actor {
@@ -321,6 +322,10 @@ struct View {
     outputs: Vec<(String, (i32, i32, i32, i32))>,
     windows: Vec<Shown>,
     broken: Vec<String>,
+    /// The screens a maximised window has, and whether a panel is back
+    /// over one of them.
+    covered: Vec<String>,
+    revealed: bool,
 }
 
 impl View {
@@ -394,6 +399,15 @@ fn parse(report: &str) -> View {
                 view.windows.push(shown);
             }
             "broken" => view.broken.push(rest.to_string()),
+            "screen" => {
+                let facts: BTreeMap<_, _> = pairs().collect();
+                if facts.get("cover").is_some_and(|cover| *cover != "-") {
+                    view.covered.push(facts["name"].to_string());
+                    view.revealed |= ["top", "bottom"]
+                        .iter()
+                        .any(|side| facts.get(side) == Some(&"shown"));
+                }
+            }
             _ => {}
         }
     }
@@ -415,6 +429,10 @@ struct Run {
     keep_going: bool,
     wrong: BTreeMap<String, (u64, u64)>,
     view: View,
+    /// How often a screen was seen covered by a maximised window, and
+    /// how often with the bar or the dock back over it.
+    covered: u64,
+    revealed: u64,
 }
 
 impl Run {
@@ -459,6 +477,8 @@ impl Run {
             panic!("the compositor did not answer (`{report}`); it said: {tail:#?}");
         }
         self.view = parse(&report);
+        self.covered += u64::from(!self.view.covered.is_empty());
+        self.revealed += u64::from(self.view.revealed);
     }
 
     fn look(&mut self) {
@@ -886,6 +906,102 @@ impl Run {
         self.input(&format!("move {x} {y}"));
     }
 
+    /// The pointer goes to the top or the bottom of a screen and mostly
+    /// stays long enough for the bar or the dock to come back over a
+    /// maximised window; then it may leave, or click what came.
+    fn rest_at_an_edge(&mut self) {
+        // Mostly there is a bar and a dock to bring back, a window that
+        // takes their screen and nothing held or open in the way.
+        for kind in [0, 1] {
+            let there = self
+                .actors
+                .iter()
+                .any(|actor| actor.shells.iter().any(|shell| shell.kind == kind));
+            let room = self.actors.iter().position(|actor| actor.shells.len() < 2);
+            if let Some(a) = room {
+                if !there && self.rng.chance(85) {
+                    self.new_layer_surface(a, kind);
+                }
+            }
+        }
+        // The window in front of all, mostly.
+        self.look();
+        let front = self
+            .view
+            .windows
+            .iter()
+            .rev()
+            .find(|window| window.mapped)
+            .map(|window| window.title.clone());
+        let front = front.and_then(|title| {
+            self.actors.iter().enumerate().find_map(|(a, actor)| {
+                let w = actor
+                    .windows
+                    .iter()
+                    .position(|window| window.title == title)?;
+                Some((a, w))
+            })
+        });
+        if self.rng.chance(70) {
+            if let Some((a, w)) = front {
+                let window = &self.actors[a].windows[w];
+                window.top.unset_fullscreen();
+                window.top.set_maximized();
+                let title = window.title.clone();
+                let _ = self.actors[a].client.roundtrip();
+                self.note(format!("{title} asks to be maximised"));
+            }
+        }
+        if self.rng.chance(70) {
+            self.release_all_buttons();
+            self.look();
+            if !self.view.is("overlay", "none") {
+                self.input("key esc");
+            }
+        }
+        self.look();
+        if self.view.outputs.is_empty() {
+            return;
+        }
+        let covered = self
+            .view
+            .outputs
+            .iter()
+            .position(|(name, _)| self.view.covered.contains(name));
+        let at = match covered {
+            Some(at) if self.rng.chance(85) => at,
+            _ => self.rng.below(self.view.outputs.len()),
+        };
+        let (x, y, w, h) = self.view.outputs[at].1;
+        let px = x + self.rng.between(0, w.max(1) - 1);
+        let (edge, inward) = if self.rng.chance(50) {
+            (y, 1)
+        } else {
+            (y + h.max(1) - 1, -1)
+        };
+        self.input(&format!("move {px} {}", edge + inward * (h / 3)));
+        self.input(&format!("move {px} {edge}"));
+        if self.rng.chance(80) {
+            // Not always long enough to arrive, and often long enough to
+            // be all the way in.
+            let rest = 150 + self.rng.below(400) as u64;
+            sleep(Duration::from_millis(rest));
+            self.look();
+        }
+        if self.rng.chance(60) {
+            let near = edge + inward * self.rng.between(0, 100);
+            self.input(&format!("move {px} {near}"));
+            if self.rng.chance(40) {
+                self.press_or_release();
+            }
+            if self.rng.chance(30) {
+                let rest = 100 + self.rng.below(300) as u64;
+                sleep(Duration::from_millis(rest));
+                self.look();
+            }
+        }
+    }
+
     fn press_or_release(&mut self) {
         let button: &'static str = BUTTONS[usize::from(self.rng.chance(20))];
         if let Some(at) = self.held_buttons.iter().position(|held| *held == button) {
@@ -1228,6 +1344,10 @@ impl Run {
             return;
         }
         let kind = self.rng.below(5);
+        self.new_layer_surface(a, kind);
+    }
+
+    fn new_layer_surface(&mut self, a: usize, kind: usize) {
         let actor = &mut self.actors[a];
         let Ok(shells) =
             actor
@@ -1294,6 +1414,7 @@ impl Run {
             surface: surface.clone(),
             layer: made,
             seen,
+            kind,
         };
         if let Some((serial, width, height)) = configure {
             shell.layer.ack_configure(serial);
@@ -1795,6 +1916,9 @@ impl Run {
         if self.with_x && self.rng.chance(8) {
             self.x_step();
         }
+        if self.rng.chance(7) {
+            self.rest_at_an_edge();
+        }
     }
 }
 
@@ -2134,6 +2258,8 @@ fn run(seed: u64, steps: u64, rounds: u64, with_x: bool) -> BTreeMap<String, (u6
         keep_going: variable("SENGI_STRESS_KEEP_GOING") == Some(1),
         wrong: BTreeMap::new(),
         view: View::default(),
+        covered: 0,
+        revealed: 0,
     };
     run.look();
 
@@ -2164,9 +2290,11 @@ fn run(seed: u64, steps: u64, rounds: u64, with_x: bool) -> BTreeMap<String, (u6
         let _ = writeln!(
             std::io::stderr(),
             "stress: seed {seed} round {}: {step} steps in {:?}, {resident} kB resident, \
-             {files} files open",
+             {files} files open; seen {} times covered, {} revealed",
             round + 1,
-            started.elapsed()
+            started.elapsed(),
+            run.covered,
+            run.revealed
         );
     }
     // What leaks is more at the end than it ever was early on; what only

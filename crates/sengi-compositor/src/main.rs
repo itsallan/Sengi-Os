@@ -3,6 +3,7 @@
 //! See README.md for what works and what is missing.
 
 mod apps;
+mod autohide;
 mod card;
 mod cli;
 mod clipboard;

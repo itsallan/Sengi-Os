@@ -498,7 +498,7 @@ impl Client {
             &surface,
             None,
             Layer::Top,
-            "test dock".into(),
+            "sengi-dock".into(),
             &self.handle,
             (),
         );

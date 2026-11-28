@@ -36,6 +36,7 @@ use smithay::{
 };
 
 use crate::{
+    autohide::Shifts,
     corners::{Notch, Piece},
     outputs::scale_key,
     state::State,
@@ -127,7 +128,17 @@ where
     // top layer, where the bar and the dock are; the other windows; the
     // bottom and background layers.
     let filling = state.fullscreen_in_front();
-    layers(output, &[Layer::Overlay], renderer, scale, &mut elements);
+    // The bar and the dock may be sliding, or out of sight, over a
+    // maximised window.
+    let shifts = state.panel_shifts(output, false);
+    layers(
+        output,
+        &[Layer::Overlay],
+        shifts,
+        renderer,
+        scale,
+        &mut elements,
+    );
     // The window switcher or a menu, above the windows and the bar.
     elements.extend(state.overlay_element(output, renderer));
     // Where a window dragged to a screen edge will land.
@@ -140,23 +151,41 @@ where
     order.extend(state.space.elements().rev().filter(behind).map(Some));
     for item in order {
         let Some(window) = item else {
-            layers(output, &[Layer::Top], renderer, scale, &mut elements);
+            layers(
+                output,
+                &[Layer::Top],
+                shifts,
+                renderer,
+                scale,
+                &mut elements,
+            );
             continue;
         };
         let Some(location) = state.space.element_location(window) else {
             continue;
         };
         let location = location - origin;
+        // A title bar that moved below the bar lies over the client;
+        // otherwise it is part of the frame behind it.
+        let drop = state.titlebar_drop(window);
+        let titled = location + Point::from((0, drop));
+        if drop > 0 {
+            titlebar(state, window, titled, renderer, scale, &mut elements);
+        }
         // The rounded bottom corners go in front of the client's own area.
         frame_corners(state, window, location, renderer, scale, &mut elements);
         client(window, location, renderer, scale, &mut elements);
-        frame(state, window, location, renderer, scale, &mut elements);
+        if drop == 0 {
+            titlebar(state, window, location, renderer, scale, &mut elements);
+        }
+        frame(state, window, location, scale, &mut elements);
         // Last, so it is behind the window and in front of those below.
         shadow(state, window, location, renderer, scale, &mut elements);
     }
     layers(
         output,
         &[Layer::Bottom, Layer::Background],
+        shifts,
         renderer,
         scale,
         &mut elements,
@@ -167,6 +196,7 @@ where
 fn layers<R>(
     output: &Output,
     kinds: &[Layer],
+    shifts: Shifts,
     renderer: &mut R,
     scale: Scale<f64>,
     elements: &mut Vec<OutputElement<R>>,
@@ -177,12 +207,14 @@ fn layers<R>(
     let map = layer_map_for_output(output);
     for kind in kinds {
         for layer in map.layers_on(*kind).rev() {
-            let Some(geometry) = map.layer_geometry(layer) else {
+            let (Some(geometry), Some(shift)) =
+                (map.layer_geometry(layer), shifts.of(layer.namespace()))
+            else {
                 continue;
             };
             elements.extend(layer.render_elements::<OutputElement<R>>(
                 renderer,
-                geometry.loc.to_physical_precise_round(scale),
+                (geometry.loc + Point::from((0, shift))).to_physical_precise_round(scale),
                 scale,
                 1.0,
             ));
@@ -332,9 +364,9 @@ fn client<R>(
     }
 }
 
-/// Adds the title bar and border of `window`, whose client area is at
-/// `location` on the output.
-fn frame<R>(
+/// Adds the title bar of `window`, whose client area is at `location` on
+/// the output, or would be if the bar had not moved down.
+fn titlebar<R>(
     state: &State,
     window: &Window,
     location: Point<i32, Logical>,
@@ -358,7 +390,7 @@ fn frame<R>(
 
     let metrics = &state.theme.metrics;
     let at = |x: i32, y: i32| Point::<i32, Logical>::from((location.x + x, location.y + y));
-    let titlebar = MemoryRenderBufferRenderElement::from_buffer(
+    let bar = MemoryRenderBufferRenderElement::from_buffer(
         renderer,
         at(-metrics.border, -metrics.titlebar)
             .to_f64()
@@ -369,23 +401,52 @@ fn frame<R>(
         Some(Size::from(buffers.titlebar_size)),
         Kind::Unspecified,
     );
-    match titlebar {
+    match bar {
         Ok(element) => elements.push(OutputElement::Memory(element)),
         Err(err) => crate::say!("cannot draw a title bar: {err:?}"),
     }
+    // The logical width of the bar, as the frame is laid out in.
+    let painted = buffers.titlebar_size.0;
+    elements.push(OutputElement::Solid(SolidColorRenderElement::from_buffer(
+        &buffers.rest,
+        at(painted - metrics.border, -metrics.titlebar).to_physical_precise_round(scale),
+        scale,
+        1.0,
+        Kind::Unspecified,
+    )));
+}
 
+/// Adds the border of `window`, whose client area is at `location` on the
+/// output.
+fn frame<R>(
+    state: &State,
+    window: &Window,
+    location: Point<i32, Logical>,
+    scale: Scale<f64>,
+    elements: &mut Vec<OutputElement<R>>,
+) where
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Clone + Send + Texture + 'static,
+{
+    let data = window::data(window);
+    if !data.decorated.get() {
+        return;
+    }
+    let size = window.geometry().size;
+    state.refresh_frame(window, size.w, size.h, scale.x);
+    let slot = data.frame.borrow();
+    let Some(buffers) = slot.get(&scale_key(scale.x)) else {
+        return;
+    };
+
+    let metrics = &state.theme.metrics;
+    let at = |x: i32, y: i32| Point::<i32, Logical>::from((location.x + x, location.y + y));
     let bottom_x = if buffers.bottom_corners.is_some() {
         buffers.bottom_corner
     } else {
         0
     };
-    // The logical width of the bar, as the frame is laid out in.
-    let painted = buffers.titlebar_size.0;
     let sides = [
-        (
-            &buffers.rest,
-            at(painted - metrics.border, -metrics.titlebar),
-        ),
         (&buffers.left, at(-metrics.border, 0)),
         (&buffers.right, at(size.w, 0)),
         // Drawn after the client, so it is behind it. Rounded corners draw

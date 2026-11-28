@@ -27,7 +27,11 @@ impl State {
         let mut report = String::from("ok\n");
         self.inspect_counts(&mut report);
         self.inspect_windows(&mut report);
-        for broken in self.broken() {
+        let (screens, unsettled) = self.autohide_report();
+        for screen in screens {
+            let _ = writeln!(report, "{screen}");
+        }
+        for broken in self.broken().into_iter().chain(unsettled) {
             let _ = writeln!(report, "broken {broken}");
         }
         report

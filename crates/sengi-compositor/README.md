@@ -241,8 +241,9 @@ sengi-notify and sengi-lock included):
   title bar maximises and restores.
 - wlr-layer-shell on all the layers the session uses: sengi-bar and
   sengi-dock with exclusive zones, swaybg behind, notification cards on the
-  overlay layer. Windows are kept out from under bars, also ones that appear later,
-  and maximised windows fill exactly the area left free.
+  overlay layer. Windows are kept out from under bars, also ones that appear later;
+  maximised windows fill their screen, and the bar and the dock hide over them
+  (see "The bar and the dock over a maximised window").
 - Keyboard focus for layer surfaces: a launcher is typed into while it is open
   and the window gets the keyboard back afterwards.
 - A surface on the bottom layer is a desktop program (sengi-desktop): it gets
@@ -794,6 +795,56 @@ running under systemd-sleep, the lock screen on waking, the lid switch,
 logind honouring the inhibitor, a panel dimmed through logind, and a real
 screen going dark and coming back.
 
+### The bar and the dock over a maximised window
+
+While the front window of a screen is maximised, that screen is the
+window's: it is as large as the screen, title bar at the very top, and the
+bar and the dock are out of sight. The code is `src/autohide.rs`; the bar and
+the dock are not changed by it and are told nothing. Their layer surfaces
+keep their size and the room they reserve, so no other window moves; they are
+only drawn, and take the pointer, higher or lower than where the layout has
+them, or not at all.
+
+- The front window is the top one on the screen, whoever has the keyboard. A
+  dialog (an xdg toplevel with a parent, an X11 window transient for one) over
+  its own window further back does not count, so a maximised window keeps the
+  screen under its own questions. Any other window in front, minimising,
+  closing, unmaximising or a screen with nothing on it shows the bar and the
+  dock again. Fullscreen is as it was: over everything, with no edges.
+- The pointer resting within 2 pixels of the top edge for
+  `timing.edge-reveal-delay` slides the bar in, at the bottom edge, anywhere
+  along it, the dock. Brushing an edge does nothing, nor does a pointer that
+  was there when the window was maximised, until it has left the edge, nor
+  one with a button held, unless it is dragging something.
+- A panel that came stays while the pointer is on it, between it and the
+  edge, or, under the bar, on the title bar that moved; it goes
+  `timing.edge-hide-delay` after the pointer left. After a click on it, it
+  stays at least `timing.edge-click-hold`, for what the click asked for to
+  appear.
+- It also stays while it has the keyboard (the dock's menu), while any
+  surface that demands the keyboard covers its screen (quick settings, the
+  session menu, the calendar, the notification centre, a tray menu, the
+  launcher), while a menu of the compositor or the switcher is open and while
+  a button pressed on it is held. Those opened while nothing shows bring
+  nothing.
+- While the bar shows, the title bar of the maximised window is drawn and
+  clicked below it, over the top of what the program draws, so the buttons are
+  never out of reach. The window is not resized. A window without our frame
+  (an X11 program that draws its own) has nothing moved: its top is covered
+  while the bar shows.
+- Each screen is on its own: only its own edges bring its panels, and a screen
+  without a bar or without a dock has nothing to bring there.
+- Slides take `motion.base` with `motion.easing`, no time with reduced
+  motion. One timer is armed while something is waited for or moving, and
+  none otherwise. Behind the lock nothing shows or waits.
+
+labwc, the fallback compositor, does none of this: a maximised window there
+fills what the bar and the dock leave.
+
+`tests/autohide.rs` checks these rules against the running compositor,
+`tests/x11.rs` the X11 side, and the stress test brings the pointer to the
+edges among everything else it does.
+
 ### Snap hints and the shortcut sheet
 
 Dragging a window by its title bar to the top of a screen maximises it on
@@ -868,7 +919,10 @@ labwc. `SENGI_LABWC_ENTRY=1` gets there through the boot menu instead: it
 presses the labwc entry's hotkey, L, between SeaBIOS handing over and the
 kernel starting (BIOS only). The guest reports which compositor the session
 really came up on, and the test fails if that is not the one meant. The
-checks and screenshots are the same for both.
+checks and screenshots are the same for both, except those of what only this
+compositor does: the minimised windows, and the maximised window with the bar
+and the dock hidden over it, brought back at the edges, quick settings opened
+from the bar and the dock's menu there.
 
 From inside the guest, SIGUSR1 makes the compositor print two lines to the
 journal: `N page flips, N with the cursor on its own plane, N dmabufs
@@ -1004,6 +1058,7 @@ untrusted programs in a sandbox is what protects against them.
 - `src/power.rs`: the idle clock, dimming, switching off, the idle lock and
   the lid hold. The clock is pure and unit-tested.
 - `src/snap.rs`: where a dragged window will snap, and the outline.
+- `src/autohide.rs`: the bar and the dock over a maximised window.
 - `src/idle.rs`: idle-inhibit.
 - `src/lock.rs`: session lock and who may use it.
 - `src/security.rs`: security contexts and what sandboxed clients are

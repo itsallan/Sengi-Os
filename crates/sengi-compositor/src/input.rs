@@ -538,6 +538,24 @@ impl State {
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
         let serial = SERIAL_COUNTER.next_serial();
 
+        // A click on the bar or the dock keeps it while something comes of
+        // it, see `autohide.rs`.
+        match state {
+            ButtonState::Pressed if !pointer.is_grabbed() => {
+                let under = match self.target_at(pointer.current_location()) {
+                    Some(Target::Surface {
+                        window: None,
+                        surface,
+                        ..
+                    }) if !self.overlay_open() => Some(surface),
+                    _ => None,
+                };
+                self.autohide_pressed(under.as_ref());
+            }
+            ButtonState::Released => self.autohide_released(),
+            ButtonState::Pressed => {}
+        }
+
         if state == ButtonState::Pressed && !pointer.is_grabbed() {
             let card = self.overlay_open();
             self.press(button, pointer.current_location(), serial);
@@ -855,7 +873,7 @@ impl State {
         if !window::data(window).decorated.get() {
             return None;
         }
-        let frame = self.frame_rect(window)?;
+        let frame = self.titlebar_frame(window)?;
         match self.theme.metrics.hit(frame, x, y, false) {
             Some(Hit::Button(button)) => Some(button),
             _ => None,
@@ -867,7 +885,7 @@ impl State {
         if !window::data(window).decorated.get() {
             return false;
         }
-        let Some(frame) = self.frame_rect(window) else {
+        let Some(frame) = self.titlebar_frame(window) else {
             return false;
         };
         frame.contains(x, y) && self.theme.metrics.in_button_group(x - frame.x, y - frame.y)
@@ -965,6 +983,13 @@ impl State {
             let Some(client) = self.space.element_location(window) else {
                 continue;
             };
+            // A title bar that moved below the bar lies over the client.
+            if let Some(hit) = self.dropped_titlebar_hit(window, x, y) {
+                return Some(Target::Frame {
+                    window: window.clone(),
+                    hit,
+                });
+            }
             // Surfaces first: popups and subsurfaces may reach past the frame.
             let surface_origin = client - window.geometry().loc;
             if let Some((surface, offset)) =
@@ -1002,6 +1027,7 @@ impl State {
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
         let output = self.output_at(location)?;
         let output_origin = self.space.output_geometry(&output)?.loc;
+        let shifts = self.panel_shifts(&output, true);
         let map = layer_map_for_output(&output);
         let local = location - output_origin.to_f64();
 
@@ -1009,7 +1035,9 @@ impl State {
             // A surface whose input region misses lets the one below it
             // on the same layer have the pointer.
             map.layers_on(kind).rev().find_map(|layer| {
-                let origin = map.layer_geometry(layer)?.loc;
+                // A bar or dock out of sight is not there to be clicked.
+                let shift = shifts.of(layer.namespace())?;
+                let origin = map.layer_geometry(layer)?.loc + Point::from((0, shift));
                 layer
                     .surface_under(local - origin.to_f64(), WindowSurfaceType::ALL)
                     .map(|(surface, offset)| (surface, (offset + origin + output_origin).to_f64()))

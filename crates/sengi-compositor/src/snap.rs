@@ -32,7 +32,7 @@ pub const RANGE: f64 = 1.0;
 /// What letting go of a window at some place does to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Snap {
-    /// At the top of the screen: filling the usable area.
+    /// At the top of the screen: maximised.
     Maximise,
     /// At a side or the bottom: half of the screen.
     Half(Edge),
@@ -113,7 +113,7 @@ impl State {
         match snap {
             Snap::Maximise => {
                 let frame = self.frame_rect(window)?;
-                Some(self.usable_area_near(frame))
+                Some(self.screen_rect_near(frame))
             }
             Snap::Half(edge) => self.half_frame(window, edge),
         }

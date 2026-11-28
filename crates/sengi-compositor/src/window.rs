@@ -519,15 +519,35 @@ impl State {
             .unwrap_or(Rect::new(0, 0, 0, 0))
     }
 
+    /// The whole of the screen the middle of `frame` is on, else of the
+    /// first, and nothing at all when there is no screen.
+    pub fn screen_rect_near(&self, frame: Rect) -> Rect {
+        let middle = (
+            f64::from(frame.x + frame.w / 2),
+            f64::from(frame.y + frame.h / 2),
+        );
+        self.screen_rect(self.output_at(middle.into()))
+    }
+
+    fn screen_rect(&self, output: Option<Output>) -> Rect {
+        output
+            .and_then(|output| self.space.output_geometry(&output))
+            .map(|screen| Rect::new(screen.loc.x, screen.loc.y, screen.size.w, screen.size.h))
+            .unwrap_or(Rect::new(0, 0, 0, 0))
+    }
+
+    /// The client area of `window` when it is maximised: all of its screen
+    /// but the title bar and the border. The bar and the dock get out of its
+    /// way, see `autohide.rs`.
     pub fn maximised_rect(&self, window: &Window) -> Rect {
-        let usable = match self.frame_rect(window) {
-            Some(frame) => self.usable_area_near(frame),
-            None => self.usable_area(),
+        let screen = match self.frame_rect(window) {
+            Some(frame) => self.screen_rect_near(frame),
+            None => self.screen_rect(self.active_output()),
         };
         let mut rect = if data(window).decorated.get() {
-            self.theme.metrics.client(usable)
+            self.theme.metrics.client(screen)
         } else {
-            usable
+            screen
         };
         // A client that cannot grow that far stays in the top-left corner.
         let (_, max) = self.size_limits(window);
@@ -832,8 +852,9 @@ impl State {
         self.set_maximised(window, !maximised);
     }
 
-    /// The bar or dock appeared, went away or changed size: maximised
-    /// windows follow, the others are pulled out from under it.
+    /// A screen, the bar or the dock appeared, went away or changed size:
+    /// maximised windows keep to their screen, the others are pulled out
+    /// from under the bar and the dock.
     pub fn usable_area_changed(&mut self) {
         let windows: Vec<Window> = self.space.elements().cloned().collect();
         for window in windows {
@@ -890,7 +911,7 @@ impl State {
         }
     }
 
-    /// Gives a maximised window the usable area as it is now, and pulls any
+    /// Gives a maximised window its screen as it is now, and pulls any
     /// other back within reach. One that fills its screen is left where it
     /// is: the bar and the dock are under it.
     fn fit_window(&mut self, window: &Window) {

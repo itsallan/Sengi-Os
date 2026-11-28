@@ -284,6 +284,9 @@ pub struct State {
     pub focus_stack: FocusStack<Window>,
     /// A layer surface with on-demand keyboard focus that was clicked.
     pub layer_focus: Option<WlSurface>,
+    /// Where the bar and the dock are while a window is maximised. See
+    /// `autohide.rs`.
+    pub autohide: crate::autohide::AutoHide,
     /// The title bar button under the pointer.
     pub hovered_button: Option<(Window, Button)>,
     /// The window whose group of buttons, with the space between them, the
@@ -615,6 +618,7 @@ impl State {
             minimised: Vec::new(),
             focus_stack: FocusStack::default(),
             layer_focus: None,
+            autohide: Default::default(),
             hovered_button: None,
             hovered_group: None,
             menu: None,
@@ -685,6 +689,8 @@ impl State {
             if std::mem::take(&mut state.constraint_stale) {
                 state.settle_pointer_constraint();
             }
+            // Before the pointer is looked at: this may move what it is on.
+            state.update_autohide();
             state.sync_pointer_focus();
             state.refresh_foreign_toplevels();
             state.refresh_idle_inhibit();
