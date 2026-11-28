@@ -298,6 +298,12 @@ impl State {
             return None;
         }
         let start = pointer.grab_start_data()?;
+        // A menu holds the pointer with the serial of the press that opened
+        // it, but under no button: a drag started from that would end with
+        // no release and keep the pointer for good.
+        if start.button == 0 {
+            return None;
+        }
         let (focus, _) = start.focus.as_ref()?;
         focus.id().same_client_as(&surface.id()).then_some(start)
     }

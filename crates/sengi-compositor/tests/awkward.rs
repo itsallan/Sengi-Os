@@ -202,6 +202,25 @@ fn a_resize_goes_on_while_the_only_screen_is_pulled_out() {
     pull_the_only_screen_during(|frame| (frame[0] + frame[2] - 1, frame[1] + frame[3] / 2));
 }
 
+#[test]
+fn a_move_asked_for_with_the_press_a_menu_holds_does_not_stick() {
+    let compositor = Compositor::start(None);
+    let mut app = a_program(&compositor);
+    let seat = app.seat().unwrap();
+    let parent = window(&mut app, "parent", GREEN);
+    let serial = press_on(&compositor, &mut app, "parent");
+    let held = menu(&mut app, &parent, serial);
+    parent.toplevel._move(&seat, serial);
+    app.roundtrip().unwrap();
+    compositor.input("release left");
+    held.destroy();
+    app.roundtrip().unwrap();
+    compositor.input("move 5 700");
+    let report = sound(&compositor);
+    assert!(report.contains("drag=none"), "{report}");
+    assert!(report.contains("pointer_grabbed=0"), "{report}");
+}
+
 /// The dock's side of the window list: the handles, each with its title.
 type Handles = Arc<Mutex<Vec<ZwlrForeignToplevelHandleV1>>>;
 type Title = Arc<Mutex<String>>;

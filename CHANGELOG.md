@@ -37,6 +37,8 @@ and the measured idle RAM and boot time.
   at once, not up to 15 seconds later.
 - The desktop no longer freezes when a window is being moved or resized and
   the only screen goes away, as when its cable is pulled.
+- A program can no longer leave its window stuck to the pointer by asking for
+  a move with the click that opened a menu.
 
 ## 1.0.0 - 2026-11-27
 
