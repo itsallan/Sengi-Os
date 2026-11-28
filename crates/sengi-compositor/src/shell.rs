@@ -264,6 +264,7 @@ impl XdgShellHandler for State {
         let Ok(root) = find_popup_root_surface(&kind) else {
             return;
         };
+        let root_of_grab = Some(root.clone());
         let Ok(mut grab) = self.popups.grab_popup(root, kind, &seat, serial) else {
             return;
         };
@@ -285,6 +286,11 @@ impl XdgShellHandler for State {
         keyboard.set_focus(self, grab.current_grab(), serial);
         keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
         pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
+        // Last: replacing the grab of the menu this one hangs off may end
+        // the keyboard's, and what is remembered is looked at again then.
+        if let Some(root) = root_of_grab {
+            self.menu = Some((root, grab));
+        }
     }
 }
 

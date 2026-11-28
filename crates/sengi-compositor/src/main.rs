@@ -32,6 +32,7 @@ mod lock;
 mod night;
 #[macro_use]
 mod log;
+mod menu;
 mod output_management;
 mod output_power;
 mod output_store;

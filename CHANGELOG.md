@@ -46,6 +46,9 @@ and the measured idle RAM and boot time.
 - A window restored, or leaving fullscreen, after its screen was unplugged
   comes back where it can be reached, and a fullscreen window is no longer
   pushed down when the bar or the screens change.
+- A program's open menu closes when you switch to another window, lock the
+  screen, minimise its window or open the launcher, and the keyboard goes
+  where you went.
 
 ## 1.0.0 - 2026-11-27
 

@@ -221,6 +221,122 @@ fn a_move_asked_for_with_the_press_a_menu_holds_does_not_stick() {
     assert!(report.contains("pointer_grabbed=0"), "{report}");
 }
 
+#[test]
+fn alt_tab_closes_a_menu_and_the_keyboard_goes_where_the_user_went() {
+    let compositor = Compositor::start(None);
+    let mut other = a_program(&compositor);
+    let _other = window(&mut other, "other", RED);
+    let mut app = a_program(&compositor);
+    let parent = window(&mut app, "parent", GREEN);
+    let serial = press_on(&compositor, &mut app, "parent");
+    let held = menu(&mut app, &parent, serial);
+    compositor.input("release left");
+
+    compositor.input("keydown alt");
+    compositor.input("key tab");
+    compositor.input("keyup alt");
+    assert!(window_line(&compositor, "other").contains("active=1"));
+    app.roundtrip().unwrap();
+    assert!(
+        held.dismissed.load(Ordering::Relaxed),
+        "the menu was not told to close"
+    );
+    held.destroy();
+    app.roundtrip().unwrap();
+    sound(&compositor);
+    assert!(types_into(&compositor, &mut other), "typing went elsewhere");
+}
+
+#[test]
+fn a_window_that_appears_takes_the_keyboard_from_a_menu() {
+    let compositor = Compositor::start(None);
+    let mut app = a_program(&compositor);
+    let parent = window(&mut app, "parent", GREEN);
+    let serial = press_on(&compositor, &mut app, "parent");
+    let held = menu(&mut app, &parent, serial);
+    compositor.input("release left");
+
+    let mut late = a_program(&compositor);
+    let _late = window(&mut late, "late", RED);
+    app.roundtrip().unwrap();
+    assert!(held.dismissed.load(Ordering::Relaxed));
+    sound(&compositor);
+    assert!(types_into(&compositor, &mut late));
+}
+
+#[test]
+fn a_minimised_window_takes_its_menu_with_it() {
+    let compositor = Compositor::start(None);
+    let mut app = a_program(&compositor);
+    let parent = window(&mut app, "parent", GREEN);
+    let serial = press_on(&compositor, &mut app, "parent");
+    let held = menu(&mut app, &parent, serial);
+    compositor.input("release left");
+    parent.toplevel.set_minimized();
+    app.roundtrip().unwrap();
+    assert!(held.dismissed.load(Ordering::Relaxed));
+    let report = sound(&compositor);
+    assert!(report.contains("keyboard_grabbed=0"), "{report}");
+    assert!(report.contains("pointer_grabbed=0"), "{report}");
+}
+
+#[test]
+fn a_menu_its_program_closes_lets_go_of_the_keyboard_at_once() {
+    let compositor = Compositor::start(None);
+    let mut app = a_program(&compositor);
+    let parent = window(&mut app, "parent", GREEN);
+    let serial = press_on(&compositor, &mut app, "parent");
+    let held = menu(&mut app, &parent, serial);
+    compositor.input("release left");
+    held.destroy();
+    app.roundtrip().unwrap();
+    let report = sound(&compositor);
+    assert!(report.contains("keyboard_grabbed=0"), "{report}");
+    assert!(report.contains("pointer_grabbed=0"), "{report}");
+    assert!(types_into(&compositor, &mut app));
+}
+
+#[test]
+fn the_launcher_gets_the_keyboard_over_an_open_menu() {
+    let compositor = Compositor::start(None);
+    let mut app = a_program(&compositor);
+    let parent = window(&mut app, "parent", GREEN);
+    let serial = press_on(&compositor, &mut app, "parent");
+    let held = menu(&mut app, &parent, serial);
+    compositor.input("release left");
+
+    let mut launcher = a_program(&compositor);
+    let (surface, layer) = launcher.desktop(RED).unwrap();
+    layer.set_layer(zwlr_layer_shell_v1::Layer::Overlay);
+    layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+    surface.commit();
+    launcher.roundtrip().unwrap();
+    app.roundtrip().unwrap();
+    assert!(held.dismissed.load(Ordering::Relaxed));
+    sound(&compositor);
+    assert!(types_into(&compositor, &mut launcher));
+}
+
+#[test]
+fn the_lock_closes_an_open_menu() {
+    let compositor = Compositor::start(None);
+    let mut app = a_program(&compositor);
+    let parent = window(&mut app, "parent", GREEN);
+    let serial = press_on(&compositor, &mut app, "parent");
+    let held = menu(&mut app, &parent, serial);
+    compositor.input("release left");
+    let mut locker = compositor.locker();
+    let lock = locker.lock().unwrap();
+    app.roundtrip().unwrap();
+    assert!(held.dismissed.load(Ordering::Relaxed));
+    lock.unlock_and_destroy();
+    locker.roundtrip().unwrap();
+    held.destroy();
+    app.roundtrip().unwrap();
+    sound(&compositor);
+    assert!(types_into(&compositor, &mut app));
+}
+
 /// The dock's side of the window list: the handles, each with its title.
 type Handles = Arc<Mutex<Vec<ZwlrForeignToplevelHandleV1>>>;
 type Title = Arc<Mutex<String>>;
@@ -375,6 +491,25 @@ fn a_window_that_fills_the_screen_stays_there_when_a_bar_appears() {
     compositor.plug("800x600");
     let client = numbers(&window_line(&compositor, "film"), "client");
     assert_eq!(client, [0, 0, 1280, 720]);
+}
+
+#[test]
+fn a_window_minimised_with_its_menu_open_closes_the_menu() {
+    let compositor = Compositor::start(None);
+    let mut app = a_program(&compositor);
+    let _window = window(&mut app, "framed", GREEN);
+    let (mut dock, handles) = dock(&compositor);
+    let frame = numbers(&window_line(&compositor, "framed"), "frame");
+    compositor.input(&format!(
+        "move {} {}",
+        frame[0] + frame[2] / 2,
+        frame[1] + 12
+    ));
+    compositor.input("click right");
+    assert!(sound(&compositor).contains("overlay=menu"));
+    handle(&mut dock, &handles, "framed").set_minimized();
+    dock.roundtrip().unwrap();
+    assert!(sound(&compositor).contains("overlay=none"));
 }
 
 impl Dispatch<XdgPositioner, ()> for Seen {

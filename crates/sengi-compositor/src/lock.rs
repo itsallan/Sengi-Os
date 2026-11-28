@@ -506,7 +506,9 @@ impl SessionLockHandler for State {
             return;
         }
         // Whatever the pointer or keyboard was in the middle of ends here.
-        // The grab ends a resize properly while it still knows of it.
+        // A program is told that its menu is closed, and the grab ends a
+        // resize properly while it still knows of it.
+        self.dismiss_menu();
         let time = self.start_time.elapsed().as_millis() as u32;
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");

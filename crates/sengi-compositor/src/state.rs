@@ -31,7 +31,7 @@ use smithay::{
     },
     delegate_cursor_shape, delegate_data_control, delegate_data_device,
     delegate_ext_data_control, delegate_output, delegate_seat, delegate_shm,
-    desktop::{layer_map_for_output, PopupManager, Space, Window, WindowSurfaceType},
+    desktop::{layer_map_for_output, PopupGrab, PopupManager, Space, Window, WindowSurfaceType},
     input::{
         keyboard::XkbConfig,
         pointer::{CursorIcon, CursorImageStatus},
@@ -289,6 +289,9 @@ pub struct State {
     /// The window whose group of buttons, with the space between them, the
     /// pointer is over.
     pub hovered_group: Option<Window>,
+    /// The menu that holds the keyboard and the pointer, if one was
+    /// opened, with the surface it hangs off. See `menu.rs`.
+    pub menu: Option<(WlSurface, PopupGrab<State>)>,
     /// A move, resize or button press the pointer is in the middle of.
     pub drag: Option<Drag>,
     /// A drag whose button came up, and where, until it has been carried
@@ -614,6 +617,7 @@ impl State {
             layer_focus: None,
             hovered_button: None,
             hovered_group: None,
+            menu: None,
             drag: None,
             released_drag: None,
             titlebar_press: None,
@@ -677,6 +681,7 @@ impl State {
         event_loop.run(None, &mut self, |state| {
             state.space.refresh();
             state.popups.cleanup();
+            state.release_ended_menu();
             if std::mem::take(&mut state.constraint_stale) {
                 state.settle_pointer_constraint();
             }
@@ -852,12 +857,19 @@ impl State {
 
         // Choosing a window takes the keyboard back from an on-demand layer.
         self.layer_focus = None;
+        // The user has gone elsewhere: a menu of another window closes.
+        if self.menu_window().is_some_and(|of_menu| of_menu != *window) {
+            self.dismiss_menu();
+        }
         self.update_keyboard_focus();
     }
 
     /// Forgets `window` and hands focus to the one used before it.
     pub fn remove_window(&mut self, window: &Window) {
         self.request_redraw();
+        if self.menu_window().as_ref() == Some(window) {
+            self.dismiss_menu();
+        }
         self.pending_windows.retain(|w| w != window);
         self.space.unmap_elem(window);
         self.minimised.retain(|w| w != window);
@@ -1189,8 +1201,20 @@ impl State {
             }
             return;
         }
-        // An open menu holds the keyboard until it is dismissed.
+        // An open menu holds the keyboard until it is dismissed, which the
+        // launcher and others that demand the keyboard do by appearing.
         if keyboard.is_grabbed() {
+            let demanded = self.exclusive_layer();
+            let taken = demanded.is_some()
+                && self
+                    .menu
+                    .as_ref()
+                    .is_some_and(|(root, _)| demanded.as_ref() != Some(root));
+            if !taken {
+                return;
+            }
+            // This comes back here once the menu has let go.
+            self.dismiss_menu();
             return;
         }
         // An on-demand layer keeps the keyboard only while it still exists

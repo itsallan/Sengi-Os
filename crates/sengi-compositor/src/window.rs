@@ -30,6 +30,7 @@ use crate::{
     keys::Edge,
     layout::{self, Rect},
     outputs::scale_key,
+    overlay::{MenuKind, Overlay},
     snap::Snap,
     state::{set_activated, State},
     text::Font,
@@ -333,6 +334,19 @@ impl State {
                     return;
                 };
                 data.minimised.set(Some((location.x, location.y)));
+                // Its menus go with it.
+                if self.menu_window().as_ref() == Some(window) {
+                    self.dismiss_menu();
+                }
+                if let Some(Overlay::Menu {
+                    kind: MenuKind::Window(of),
+                    ..
+                }) = &self.overlay
+                {
+                    if of == window {
+                        self.overlay = None;
+                    }
+                }
                 self.forget_pointer_state(window);
                 self.space.unmap_elem(window);
                 self.minimised.push(window.clone());
