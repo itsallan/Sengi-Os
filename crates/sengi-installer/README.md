@@ -25,18 +25,22 @@ installation. It never writes to a disk itself: that is
    cannot be chosen are listed the same way, greyed out, with the reason
    in place of the contents: the stick Sengi OS is running from, a disk
    with something mounted, in use as swap or under another volume,
-   read-only, or under 8 GB. Nothing is chosen for you. "Look again" reads
-   the disks again. The kernel's "removable" flag is not used for
-   anything: it does not say what is external.
+   read-only, under 8 GB, or in a firmware RAID. No disk is chosen for you.
+   "Look again" reads the disks again. The kernel's "removable" flag is not
+   used for anything: it does not say what is external.
+   On a disk that holds NTFS or BitLocker, whatever the firmware, neither way
+   of using it is chosen to begin with, so Continue waits; other disks start
+   with erasing.
    Where the disk has no free space and its largest Windows data partition is
-   NTFS or BitLocker, the second choice is "Install beside Windows", and neither
-   choice is made to begin with, so Continue waits. Choosing it runs
-   `sudo -n sengi-install analyze DISK`, which only looks, and then shows what
-   Windows uses, a slider for what Sengi OS gets (in whole gigabytes), what
-   Windows keeps, a warning, and a switch "I have a backup" that must be on
-   before Continue. A refusal (BitLocker is seen from the disk list alone) says why
-   in the row and what to do in Windows under it; erasing is never picked in its
-   place.
+   NTFS or BitLocker, the second choice is "Make room and install beside".
+   Choosing it runs `sudo -n sengi-install analyze DISK`, which only looks,
+   and then names the partition (Windows where Windows is installed on it,
+   its label and size where not) and shows how much of it is used, a slider for
+   what Sengi OS gets (in whole gigabytes), what it keeps, a warning, and a
+   switch "I have a backup" that must be on before Continue. A refusal
+   (BitLocker is seen from the disk list alone) says why in the row and what to
+   do in Windows under it; erasing is never picked in its place, and a choice
+   that can no longer be carried out starts nothing.
 4. **You.** Your name, a user name (offered from the name until one is
    typed), the password twice, and a name for the computer. What is wrong
    with a field is said under it once something has been typed.

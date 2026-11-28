@@ -58,15 +58,18 @@ that computer from your backup, make room from inside Windows instead (Disk
 Management, right-click the C: drive, Shrink Volume) and then choose
 "Install beside the existing system".
 
-"Install beside Windows" is offered when the computer started with UEFI, the
-disk has a GPT and an EFI system partition, there is no free space of 10 GB or
-more, and the disk's largest Windows partition holds NTFS.
+It is offered when the computer started with UEFI, the disk has a GPT and an
+EFI system partition, there is no free space of 10 GB or more, and the disk's
+largest Windows data partition holds NTFS. That partition is usually C:. If it
+is not, for instance a larger data drive, the installer names it by its label
+and size, and that one is made smaller: read the name before you go on.
 
 **In Windows, before you start:**
 
 1. Back up your files.
-2. If the drive is encrypted (BitLocker, or "device encryption" in Settings),
-   save the recovery key, turn it off and wait until decryption has finished.
+2. If a drive of this disk is encrypted (BitLocker, or "device encryption" in
+   Settings), save the recovery key, turn it off and wait until decryption has
+   finished.
 3. Turn off Fast Startup: Control Panel, Power Options, "Choose what the power
    buttons do", "Change settings that are currently unavailable", and untick
    "Turn on fast startup". Do not hibernate.
@@ -75,48 +78,62 @@ more, and the disk's largest Windows partition holds NTFS.
 5. Shut down with Shut down, not Restart, Sleep or Hibernate.
 
 **Then, on the live stick, with the charger plugged in:** on the disk page,
-choose the disk and then "Install beside Windows" (on such a disk neither
-choice is made for you). The installer looks at the
-Windows partition (this writes nothing, and can take a few minutes on a large
-disk) and shows how much Windows uses. Choose how much Sengi OS gets. Windows
-always keeps what it uses plus the larger of 15 GB or 20% of that, and Sengi
-OS gets at least 11 GB. Tick "I have a backup". The review page lists the exact
-change, and the question after it starts it.
+choose the disk and then the second choice, "Make room and install beside" (on
+a disk that holds Windows or BitLocker nothing is chosen for you). The
+installer looks at the disk (this writes nothing; after ten minutes it gives
+up and says so), names the partition and shows how much of it is used. Choose
+how much Sengi OS gets. Windows always keeps what it uses plus the larger of
+15 GB or 20% of that, and Sengi OS gets at least 11 GB. Tick "I have a
+backup". The review page lists the exact change, and the question after it
+starts it.
 
-**What happens.** The installer looks again, then `ntfsresize` makes the
-Windows file system fit its new size and the result is checked, then only the
-size of that one partition is changed (its start, type
-and identifier stay, and no other partition is touched), and Sengi OS is
-installed in the space that was given up as described above. Nothing is forced,
-and the mark that tells Windows to check its disk is left in place. **The next
-time Windows starts, it checks the disk before anything else. That is
-expected: let it finish, and do not switch the computer off.** Windows may
-restart once after it. While Windows is being made smaller the installation
-cannot be cancelled; sleep, the lid, the power button and shutting down are
-held off.
+**What happens.** The installer looks again, then `ntfsresize` makes the file
+system fit its new size and the result is checked, then only the size of that
+one partition is changed (its start, type and identifier stay, and no other
+partition is touched), and Sengi OS is installed in the space that was given
+up as described above. Nothing is forced, and the mark that tells Windows to
+check its disk is left in place. **The next time Windows starts, it checks the
+disk before anything else. That is expected: let it finish, and do not switch
+the computer off.** Windows may restart once after it. While the partition is
+being made smaller the installation cannot be cancelled; sleep, the lid, the
+power button and shutting down are held off.
 
 **It refuses, and says why,** when the volume is encrypted with BitLocker or
 cannot be read; when Windows is hibernated, Fast Startup is on or it was not
-shut down properly; when a disk check is waiting; when the file system has
-errors or records bad sectors; when the partition is in use; when a laptop is
-not on its charger; when there is not enough free space; and on disks with
-4096-byte sectors. After a refusal nothing on the disk has changed.
+shut down properly (every NTFS partition of the disk is looked at for this);
+when another partition of the disk cannot be looked at, or is encrypted with
+BitLocker while the one to be made smaller holds no Windows; when a disk check
+is waiting; when the file system has errors or records bad sectors; when the
+partition is in use; when a laptop is not on its charger; when there is not
+enough free space; and on disks with 4096-byte sectors. Disks that are part of
+a firmware RAID set (such as Intel RST in RAID mode) are not installed on at
+all. After a refusal nothing on the disk has changed.
 
 **If it stops part way,** the failure page says which state the disk is in.
-Before the resize began: nothing changed. During the resize: the Windows file
-system may be damaged; start Windows, let it check the disk, and restore your
-backup if it does not start. After the resize and before the partition was
-changed: the two agree, and Windows should start (and check the disk). Later:
-Windows is smaller and intact, and the space it gave up is free, so the
-installer can be run again. To give Windows its room back, delete Sengi OS's
-partition if there is one, then use "Extend Volume" in Windows' Disk
-Management.
+Where it names the installation's record (`/var/log/sengi-install.log`), copy
+that file to a USB stick or another computer **before** you restart: it is in
+memory, and it holds the partition table as it was.
+
+- Before the resize began: nothing changed.
+- During the resize, or its check: the file system may be damaged. Start
+  Windows, let it check the disk, and restore your backup if it does not start
+  or files are missing.
+- After the check and before the partition was changed: the two agree, and
+  Windows should start (and check the disk). To give the file system its room
+  back, run `diskpart` as administrator, choose the volume (`list volume`,
+  `select volume`) and enter `extend filesystem`. To go on instead, start
+  Windows once, shut it down, run the installer again and give Sengi OS the
+  same size as before. A larger size also works; a smaller one is not offered
+  until the file system has been extended.
+- Later: the partition is smaller and intact, and the space it gave up is free,
+  so the installer can be run again. To give it the room back, delete Sengi
+  OS's partition if there is one, then use "Extend Volume" in Windows' Disk
+  Management.
 
 **Limits.** Only NTFS is made smaller: Linux file systems are not. Only the
-largest Windows data partition of a disk is considered. Windows can only be made
-as small as it is full, with the margin above. The record of the installation
-is `/var/log/sengi-install.log` in the live session, which is lost at
-restart: copy it elsewhere if something went wrong.
+largest Windows data partition of a disk is considered. It can only be made as
+small as it is full, with the margin above. Windows on another disk is not
+looked at: if it is on another disk, shut it down fully all the same.
 
 **What it erases (whole-disk install).** The whole disk you choose: every partition and
 everything on them, with no way back. The installer shows what is on each

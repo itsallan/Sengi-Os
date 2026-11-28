@@ -150,39 +150,58 @@ disk), here it is a failure, since there is no fallback. There is no swap partit
 
 The one thing the installer does to data that is already on a disk (`shrink.rs`).
 NTFS only, with `ntfsresize` and `ntfs-3g.probe` from Debian's `ntfs-3g` (about
-1.5 MB installed, 2 MB with `libntfs-3g`; GPL-2.0-or-later, the library
-LGPL-2.0-or-later). The package is in the live image and taken off what is
-installed. No ext4 or other file system is ever made smaller, no partition is
+1.5 MB installed, 2 MB with `libntfs-3g`; GPL-2.0-or-later, as Debian's copyright
+file gives the programs and the library alike; only the `fuse-lite` sources in the
+package are LGPL-2.0-or-later). The package is in the live image and taken off what
+is installed. No ext4 or other file system is ever made smaller, no partition is
 moved, and no other partition is written to.
 
+The partition made smaller is the disk's largest "Windows data" partition that holds
+NTFS. It need not be the one Windows is on, so the window calls it Windows only
+where `Windows/System32/ntoskrnl.exe` is on it, and by its label and size otherwise.
+
+Everything is done on the kernel's own node of the partition (`/dev/sda3`), never a
+name under `/dev/disk`: a copy of the disk that is plugged in takes those names over,
+while the node of a disk that is held cannot come to mean another disk.
+
 The looks, all of them by `analyze` (the window's question), and again in the
-`check` step and in the `shrink` step right before writing:
+`check` step and in the `shrink` step before writing:
 
 1. Power: a computer with a battery needs a charger (`/sys/class/power_supply`).
+   `analyze` says so before it reads anything.
 2. The partition: GPT type "Windows data", 512-byte sectors, its identifier on one
-   partition only, the `/dev/disk/by-partuuid` name leading to the same node, and
-   the table still the one that was shown. A mounted or busy disk is refused.
+   partition only and on this node, and the table still the one that was shown. A
+   mounted or busy disk is refused, and so is a member of a firmware RAID.
 3. Its first sector: `-FVE-FS-` (BitLocker) and anything but NTFS is refused.
 4. `ntfsresize --info`: refuses a volume marked for a disk check, with bad sectors
    or inconsistent. Windows keeps what it uses plus the larger of 15 GB or 20% of
    that; Sengi OS gets at least 10 GiB.
 5. The first 4 KiB of `hiberfil.sys`, read with `ntfscat`: a hibernation
    signature (hibernation or Fast Startup) is refused. `ntfsresize` does not
-   refuse such a volume when it only looks.
+   refuse such a volume when it only looks. Every other partition of the disk that
+   holds NTFS is read the same way, and one that cannot be read is refused. Where
+   the target holds no Windows, another partition encrypted with BitLocker is
+   refused too: it may be the one with Windows.
 
-None of those opens the volume for writing. In the `check` and `shrink` steps,
-which come after the person said yes, there are two more:
+None of those opens a volume for writing, and `analyze` gives up after ten minutes
+with a refusal. In the `check` and `shrink` steps, which come after the person said
+yes, the disk is held (`O_EXCL`, which also keeps anything from mounting it) and
+there are two more:
 
 6. `ntfs-3g.probe --readwrite` (after 3): anything but status 0 is refused (14
    hibernated, 15 a journal with unfinished work, which nothing read-only can
    tell). It opens the volume as a read-write mount does; on a volume that passes,
    libntfs-3g may rewrite one small attribute of the root folder (`$TXF_DATA`)
    that Windows left outside the file table, as every such mount does.
-7. `ntfsresize --no-action --size BYTES`, the exact dry run.
+7. `ntfsresize --no-action --size BYTES`, the exact dry run, which has to say that
+   it went through.
 
-Then, with the disk held (`O_EXCL`, which also keeps anything from mounting it):
+Then:
 
-8. `ntfsresize --size BYTES`, its question answered `y`, never forced. BYTES is the
+8. Immediately before each write, and before the probe that follows the resize: the
+   held disk is still the one its name leads to and the one that was chosen, no
+   other partition has the target's identifier, and the node still has it.
+9. `ntfsresize --size BYTES`, its question answered `y`, never forced. BYTES is the
    new size of the partition: the volume ends a few kilobytes short of it, with the
    copy of its first sector in the last sector of that size, where Windows and
    `ntfsfix` look for it. It runs to its end whatever is asked of the service: it
@@ -190,19 +209,29 @@ Then, with the disk held (`O_EXCL`, which also keeps anything from mounting it):
    out and is the last the OOM killer would take, and sleep, shutdown, the lid and
    the power, suspend and hibernate keys are held off. Its dirty mark, which makes
    Windows check the disk, stays.
-9. The volume is read back: the same volume, ending inside the new size, the copy of
-   its first sector in place, and the probe passes.
-10. `sfdisk -N` with only `size=`, which keeps start, type, identifier, name and
+10. The volume is read back: the same volume, ending inside the new size, the copy of
+    its first sector in place, and the probe passes. Only then is the file system
+    said to have been made smaller; a failure before that says it may be damaged.
+11. The table as `sfdisk` listed it before anything was written goes into the record,
+    then `sfdisk -N` with only `size=`, which keeps start, type, identifier, name and
     attributes; the whole table is compared with the old one, allowing that one
-    size to differ.
-11. `partx --update --nr N`, the kernel's view compared, and then the installation
+    size to differ, and sector 0 as in free space.
+12. `partx --update --nr N`, the kernel's view compared, and then the installation
     goes on as in free space.
 
-Between 9 and 10 a power cut leaves a disk that agrees with itself: a file system
+Between 10 and 11 a power cut leaves a disk that agrees with itself: a file system
 may be smaller than its partition. If an earlier attempt stopped there and Windows
-has since checked the disk, step 8 is skipped when the volume is already small
-enough. Interrupting step 8 itself can damage the volume: `ntfsresize` moves data
-and is not journalled. That is why the window asks for a backup.
+has since checked the disk, the same size chosen again finds the file system ready:
+step 9 is skipped, and only after the same check as step 10's (same volume, ending
+within two clusters of the size, the copy of its first sector in the last sector).
+A file system that ends earlier than that is never given a partition that reaches
+beyond it: the sizes offered leave those out, and anything else is refused with how
+to make it fill its partition again (`extend filesystem` in `diskpart`).
+Interrupting step 9 itself can damage the volume: `ntfsresize` moves data and is not
+journalled. That is why the window asks for a backup.
+
+The record is in the memory of the live session. A failure that may need it says to
+copy it elsewhere before restarting.
 
 The guard allows exactly those commands, in those forms, each write only at its
 moment (`each_write_to_windows_is_allowed_at_its_own_moment_and_no_other`,
@@ -213,8 +242,11 @@ moment (`each_write_to_windows_is_allowed_at_its_own_moment_and_no_other`,
 
 A disk is not installed on if it is the one the live system was started
 from, if it or a partition of it is mounted, is swap in use, or has another
-volume built on it, if it is read-only, or if it is under 8 GB. Loop
-devices, optical drives, zram and RAM disks are never listed.
+volume built on it, if it is read-only, if it is under 8 GB, or if it is a
+member of a RAID set the firmware makes (`isw_raid_member`,
+`ddf_raid_member` and their like, as blkid names them): writing to one disk
+of a set would break it. Loop devices, optical drives, zram and RAM disks
+are never listed.
 
 A mount is looked for by device number and by the device named as its
 source, since a btrfs volume mounts under a number that is no device's.

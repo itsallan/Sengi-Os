@@ -38,8 +38,9 @@ one asks to be kept. The licence text sits next to the files it covers.
   a Windows partition smaller. The programs are run, not linked, and are not
   put on the installed system. Debian's copyright file is in the image at
   `/usr/share/doc/ntfs-3g/copyright`.
-- Licence: GNU GPL version 2 or later for the programs, GNU LGPL version 2 or
-  later for the library.
+- Licence: GNU GPL version 2 or later, for the programs and the `libntfs-3g`
+  library alike. The `fuse-lite` sources the package also holds are GNU LGPL
+  version 2 or later.
 
 ## Hardware firmware
 

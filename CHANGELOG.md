@@ -20,11 +20,19 @@ and the measured idle RAM and boot time.
   launcher and the dock, and a pinned one comes back to its place if installed
   again.
 - Install beside Windows on a disk with no free space: the installer makes the
-  Windows (NTFS) partition smaller, after checks that refuse BitLocker,
-  hibernation and Fast Startup, unclean or damaged volumes, bad sectors, a
-  missing charger and too little free space, and after you confirm that you have
-  a backup. Windows checks its disk at its next start. This has not been tried
-  on a real Windows installation yet; back up first.
+  largest Windows (NTFS) partition smaller, naming it by its label where
+  Windows is not on it, after checks that refuse BitLocker, hibernation and Fast
+  Startup on any partition of the disk, unclean or damaged volumes, bad
+  sectors, a missing charger and too little free space, and after you confirm
+  that you have a backup. Windows checks its disk at its next start. This has
+  not been tried on a real Windows installation yet; back up first.
+
+### Changed
+
+- The installer chooses nothing for you on a disk that holds Windows (NTFS) or
+  BitLocker: erasing it is chosen on purpose.
+- A disk that is part of a firmware RAID set, such as Intel RST in RAID mode,
+  is not offered: writing to one disk of a set would break it.
 
 ### Fixed
 
