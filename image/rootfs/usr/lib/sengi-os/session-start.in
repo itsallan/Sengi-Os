@@ -11,6 +11,9 @@ dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP
 . /usr/lib/sengi-os/wallpaper.sh
 # In the background: it waits a second to see the picture took.
 sengi_wallpaper_apply >/dev/null 2>&1 &
+# A sound device can come up broken as the session starts; see sound.sh.
+. /usr/lib/sengi-os/sound.sh
+sengi_sound_watch >/dev/null 2>&1 &
 # Bring the bar, dock and desktop back if any ever dies, for as long as this
 # compositor is running. Watching the compositor's own process, not its
 # socket, keeps a loop left over from a crashed session from joining the

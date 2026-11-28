@@ -13,11 +13,13 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 mkdir "$tmp/bin" "$tmp/home"
 
-# The session, reading the kernel line and the wallpaper script from here.
+# The session, reading the kernel line and the scripts it sources from here.
 sh "$root/scripts/render-tokens.sh" "$root/image/rootfs/usr/lib/sengi-os/session-start.in" |
 	sed -e "s|/proc/cmdline|$tmp/cmdline|" \
-		-e "s|/usr/lib/sengi-os/wallpaper.sh|$tmp/wallpaper.sh|" >"$tmp/session-start"
+		-e "s|/usr/lib/sengi-os/wallpaper.sh|$tmp/wallpaper.sh|" \
+		-e "s|/usr/lib/sengi-os/sound.sh|$tmp/sound.sh|" >"$tmp/session-start"
 echo 'sengi_wallpaper_apply() { :; }' >"$tmp/wallpaper.sh"
+echo 'sengi_sound_watch() { :; }' >"$tmp/sound.sh"
 cp "$root/image/rootfs/usr/bin/sengi-run" "$tmp/bin/sengi-run"
 
 FAKE_DIR=$tmp
