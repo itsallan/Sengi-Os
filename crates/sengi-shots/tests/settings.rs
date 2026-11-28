@@ -648,6 +648,61 @@ fn updates_at_extra_large_text() {
     }
 }
 
+/// The line under an update's bar ends in the speed and the time left, so
+/// none of it may be cut off, however narrow the window.
+#[test]
+fn the_longest_update_progress_is_shown_whole() {
+    harness::install();
+    // The longest the tools give: Flatpak's, and apt's while downloading.
+    const LINES: [(&str, &str, &str); 2] = [
+        (
+            "apps",
+            "Updating apps",
+            "Step 12 of 14 \u{b7} 100% \u{b7} up to 999.9 MB \u{b7} Updating \u{b7} 999.9 MB/s \u{b7} 01:02:03 left",
+        ),
+        (
+            "system",
+            "Downloading system updates",
+            "Step 188 of 245 \u{b7} 100% \u{b7} 999 MB of 999 MB \u{b7} Retrieving file 188 of 245 (12min 34s remaining)",
+        ),
+    ];
+    for scale in [1.0, 1.4] {
+        for (name, phase, line) in LINES {
+            for (width, height) in [(720u32, 480u32), (888, 600)] {
+                let draw = |line: &str| {
+                    let w = themed_look(SettingsWindow::new().unwrap(), Look::PLAIN.scaled(scale));
+                    w.set_pages(pages());
+                    w.set_page(SharedString::from("updates"));
+                    updates(&w, "progress");
+                    let d = w.global::<UpdatesData>();
+                    d.set_phase(phase.into());
+                    d.set_progress_line(line.into());
+                    w.show().unwrap();
+                    let win = harness::window();
+                    harness::resize(&win, width, height);
+                    harness::advance(300);
+                    let picture = harness::draw(&win, BACKDROP);
+                    w.hide().unwrap();
+                    picture
+                };
+                let whole = draw(line);
+                let size = if scale > 1.0 { "-extra-large" } else { "" };
+                whole.save_as(&format!(
+                    "settings-updates-longest-{name}{size}-{width}x{height}.png"
+                ));
+                // The same line with another ending has to look different:
+                // if it does not, the ending is not on the screen.
+                let ending = line.char_indices().nth_back(5).unwrap().0;
+                let other = draw(&format!("{}XXXXXX", &line[..ending]));
+                assert!(
+                    whole.rgb != other.rgb,
+                    "{name} at {width}x{height}, text {scale}: the end of the line is cut off"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn every_page() {
     harness::install();

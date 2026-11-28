@@ -103,10 +103,21 @@ export component UpdatesPage inherits Page {
                     percent: UpdatesData.percent;
                 }
 
-                SengiLabel {
-                    text: UpdatesData.progress-line;
-                    font-weight: Tokens.font-weight-regular;
-                    overflow: elide;
+                // Wraps, so that the speed and the time left are never
+                // cut off. Placed by hand, as the words of a SettingRow
+                // are, so that its height is read off at its real width.
+                Rectangle {
+                    min-height: line.preferred-height;
+
+                    line := SengiLabel {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: self.preferred-height;
+                        text: UpdatesData.progress-line;
+                        font-weight: Tokens.font-weight-regular;
+                        wrap: word-wrap;
+                    }
                 }
 
                 HorizontalLayout {

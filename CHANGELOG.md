@@ -25,6 +25,8 @@ and the measured idle RAM and boot time.
 - The Store and app updates show real progress while Flatpak works: a bar with
   the percentage, the step, the download size, the speed and the time left. A
   full disk or a lost connection is named again.
+- Settings: the progress line of an update wraps in a narrow window instead of
+  losing the speed and the time left.
 - Settings, the Store and Files opened from the first-run welcome run at the
   usual priority and no longer at the welcome's lowest one.
 - The volume in the bar follows the volume keys, quick settings and Settings
