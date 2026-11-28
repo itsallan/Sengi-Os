@@ -1066,14 +1066,16 @@ if [ "$want" = sengi-compositor ] && [ -z "$greeter_fail$minimise_fail" ]; then
 	{ [ -n "$low" ] && [ $((low - ${high:-0})) -ge 24 ] && [ $((low - ${high:-0})) -le 32 ]; } ||
 		whole "the title bar did not move below the bar (button at row ${low:-none}, before ${high:-none})"
 	# Quick settings from that bar: it stays while they are up, wherever
-	# the pointer is.
-	pointer $((screen_w - 293)) 14
+	# the pointer is. This far from the right edge is the network item, or
+	# the volume item when the bar shows one, and both open them. The panel
+	# is under the bar on the right, well within rows 100 to 300.
+	pointer $((screen_w - 232)) 14
 	click
 	park
 	sleep 2
 	dump max-quick
 	shot maximised-quick
-	[ "$(differs max-top max-quick)" -ge 20000 ] ||
+	[ "$(strip_differs max-full max-quick 100 200)" -ge 20000 ] ||
 		whole "quick settings did not open from the bar over a maximised window"
 	changed=$(strip_differs max-window max-quick 0 28)
 	[ "$changed" -lt 20000 ] ||
