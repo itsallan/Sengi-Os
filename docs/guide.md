@@ -13,7 +13,8 @@ same). To install later, open **Install Sengi OS** from the dock (or search for
 3. Your name, a user name, a password and a name for the computer.
 4. To look over all of it. Nothing on the computer has been changed until
    you press "Erase disk and install" (or "Install Sengi OS", beside
-   another system) there and answer the question that follows.
+   another system, or "Shrink Windows and install") there and answer the
+   question that follows.
 
 Then it installs, which takes a few minutes, and offers to restart. Take the
 stick out when the screen goes dark, or the computer may start from the stick
@@ -36,12 +37,86 @@ is not signed: turn Secure Boot off in the firmware settings first. Sengi OS's b
 whatever else GRUB's os-prober finds, and is shown for three seconds when
 there is something to choose from; with nothing else on the disk it stays
 hidden, as after a whole-disk install. When the option is not offered the
-row says why; to make room, shrink the other system first, from inside it.
+row says why; to make room, shrink the other system first, from inside it,
+or, on a disk where Windows has all the room, let the installer do it
+(below).
 Back up what you want to keep anyway: this part is new, and it has been
 tried on virtual disks only. If an installation fails after the partition
 was made, the installer says what exists and how to remove the partition
 (`sudo sfdisk --delete DISK NUMBER` from the live session, after looking at
 `lsblk`); it does not delete partitions itself.
+
+### Beside Windows, when Windows has the whole disk
+
+**This changes your Windows partition. Back up your files first, somewhere
+that is not this computer.** Making a file system smaller moves data. If the
+power fails, the computer is switched off or the USB stick is pulled out
+while that happens, Windows and everything on it can be lost. **It has not
+yet been tried on a real Windows installation**, only on virtual disks with
+volumes made by Linux's own NTFS tools. If you are not prepared to restore
+that computer from your backup, make room from inside Windows instead (Disk
+Management, right-click the C: drive, Shrink Volume) and then choose
+"Install beside the existing system".
+
+"Install beside Windows" is offered when the computer started with UEFI, the
+disk has a GPT and an EFI system partition, there is no free space of 10 GB or
+more, and the disk's largest Windows partition holds NTFS.
+
+**In Windows, before you start:**
+
+1. Back up your files.
+2. If the drive is encrypted (BitLocker, or "device encryption" in Settings),
+   save the recovery key, turn it off and wait until decryption has finished.
+3. Turn off Fast Startup: Control Panel, Power Options, "Choose what the power
+   buttons do", "Change settings that are currently unavailable", and untick
+   "Turn on fast startup". Do not hibernate.
+4. If Windows asks for a disk check, or you suspect one is needed, run
+   `chkdsk C: /f` as administrator and restart.
+5. Shut down with Shut down, not Restart, Sleep or Hibernate.
+
+**Then, on the live stick, with the charger plugged in:** on the disk page,
+choose the disk and then "Install beside Windows" (on such a disk neither
+choice is made for you). The installer looks at the
+Windows partition (this writes nothing, and can take a few minutes on a large
+disk) and shows how much Windows uses. Choose how much Sengi OS gets. Windows
+always keeps what it uses plus the larger of 15 GB or 20% of that, and Sengi
+OS gets at least 11 GB. Tick "I have a backup". The review page lists the exact
+change, and the question after it starts it.
+
+**What happens.** The installer looks again, then `ntfsresize` makes the
+Windows file system fit its new size and the result is checked, then only the
+size of that one partition is changed (its start, type
+and identifier stay, and no other partition is touched), and Sengi OS is
+installed in the space that was given up as described above. Nothing is forced,
+and the mark that tells Windows to check its disk is left in place. **The next
+time Windows starts, it checks the disk before anything else. That is
+expected: let it finish, and do not switch the computer off.** Windows may
+restart once after it. While Windows is being made smaller the installation
+cannot be cancelled; sleep, the lid, the power button and shutting down are
+held off.
+
+**It refuses, and says why,** when the volume is encrypted with BitLocker or
+cannot be read; when Windows is hibernated, Fast Startup is on or it was not
+shut down properly; when a disk check is waiting; when the file system has
+errors or records bad sectors; when the partition is in use; when a laptop is
+not on its charger; when there is not enough free space; and on disks with
+4096-byte sectors. After a refusal nothing on the disk has changed.
+
+**If it stops part way,** the failure page says which state the disk is in.
+Before the resize began: nothing changed. During the resize: the Windows file
+system may be damaged; start Windows, let it check the disk, and restore your
+backup if it does not start. After the resize and before the partition was
+changed: the two agree, and Windows should start (and check the disk). Later:
+Windows is smaller and intact, and the space it gave up is free, so the
+installer can be run again. To give Windows its room back, delete Sengi OS's
+partition if there is one, then use "Extend Volume" in Windows' Disk
+Management.
+
+**Limits.** Only NTFS is made smaller: Linux file systems are not. Only the
+largest Windows data partition of a disk is considered. Windows can only be made
+as small as it is full, with the margin above. The record of the installation
+is `/var/log/sengi-install.log` in the live session, which is lost at
+restart: copy it elsewhere if something went wrong.
 
 **What it erases (whole-disk install).** The whole disk you choose: every partition and
 everything on them, with no way back. The installer shows what is on each
@@ -57,11 +132,11 @@ Beside another system you get one ext4 partition in the free space, GRUB for
 UEFI in `EFI/sengios` of the EFI system partition that was there, and the same
 account.
 
-**What is not offered yet.** Encrypting the disk; shrinking or moving
-another system to make room (do that from inside it first); installing beside
-a system on a BIOS/MBR computer or a disk without an EFI system partition;
-choosing or laying out partitions by hand.
-Secure Boot has to be off.
+**What is not offered yet.** Encrypting the disk; moving partitions, or
+shrinking anything but a Windows (NTFS) partition (make room from inside the
+other system first); installing beside a system on a BIOS/MBR computer or a
+disk without an EFI system partition; choosing or laying out partitions by
+hand. Secure Boot has to be off.
 
 **Firmware.** Wi-Fi and Bluetooth chips usually need firmware that is not free
 software, and so does the audio processor in many Intel laptops. The image

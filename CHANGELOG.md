@@ -19,6 +19,12 @@ and the measured idle RAM and boot time.
   after asking: the app's settings and data are kept. A removed app leaves the
   launcher and the dock, and a pinned one comes back to its place if installed
   again.
+- Install beside Windows on a disk with no free space: the installer makes the
+  Windows (NTFS) partition smaller, after checks that refuse BitLocker,
+  hibernation and Fast Startup, unclean or damaged volumes, bad sectors, a
+  missing charger and too little free space, and after you confirm that you have
+  a backup. Windows checks its disk at its next start. This has not been tried
+  on a real Windows installation yet; back up first.
 
 ### Fixed
 
