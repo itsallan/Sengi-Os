@@ -119,6 +119,31 @@ pub fn default_output(run: impl Fn(&[&str]) -> Option<String>) -> Option<Volume>
     (!stand_in).then_some(volume)
 }
 
+/// The arguments for `pw-cli` that list the nodes PipeWire has.
+pub const LIST_NODES: [&str; 2] = ["ls", "Node"];
+
+/// Whether `pw-cli ls Node` output has an output other than the stand-in.
+///
+/// This is what to ask while sound may still be starting. `wpctl` asks
+/// every device about itself, and PipeWire 1.4 keeps the half an answer a
+/// client left behind by leaving: one that ends just as a device appears
+/// can leave it with no profiles, and the machine with no sound, until
+/// WirePlumber is restarted.
+pub fn lists_output(nodes: &str) -> bool {
+    // One node's lines at a time, each from the line with its number.
+    nodes.split("\tid ").any(|node| {
+        let value = |key: &str| {
+            node.lines().find_map(|line| {
+                let rest = line.trim().strip_prefix(key)?.strip_prefix(" = ")?;
+                Some(rest.trim_matches('"'))
+            })
+        };
+        value("media.class")
+            .is_some_and(|class| class.starts_with("Audio/Sink") || class == "Audio/Duplex")
+            && value("node.name") != Some(STAND_IN_NAME)
+    })
+}
+
 /// The arguments for `wpctl` that set the volume of `target`, which is a
 /// node's number or one of wpctl's names for a default. `-l 1` holds it at
 /// 100% whatever is asked for.
@@ -272,6 +297,32 @@ mod tests {
         // No output at all: wpctl prints nothing to read.
         assert_eq!(default_output(|_| Some(String::new())), None);
         assert_eq!(default_output(|_| None), None);
+    }
+
+    #[test]
+    fn an_output_is_found_in_the_list_of_nodes() {
+        let node = |id: u32, name: &str, class: &str| {
+            format!(
+                "\tid {id}, type PipeWire:Interface:Node/3\n \t\tobject.serial = \"{id}\"\n \
+                 \t\tnode.name = \"{name}\"\n \t\tmedia.class = \"{class}\"\n"
+            )
+        };
+        let driver = "\tid 30, type PipeWire:Interface:Node/3\n \t\tnode.name = \"Dummy-Driver\"\n";
+        let source = node(
+            50,
+            "alsa_input.pci-0000_00_1f.3.analog-stereo",
+            "Audio/Source",
+        );
+        let midi = node(43, "Midi-Bridge", "Midi/Bridge");
+        let stand_in = node(46, STAND_IN_NAME, "Audio/Sink");
+        let none = format!("{driver}{midi}{source}{stand_in}");
+        assert!(!lists_output(&none));
+        assert!(!lists_output(""));
+        assert!(!lists_output("Error: \"failed to connect\"\n"));
+        for class in ["Audio/Sink", "Audio/Sink/Virtual", "Audio/Duplex"] {
+            let speakers = node(49, "alsa_output.pci-0000_00_1f.3.analog-stereo", class);
+            assert!(lists_output(&format!("{none}{speakers}")), "{class}");
+        }
     }
 
     #[test]

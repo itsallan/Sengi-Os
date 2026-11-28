@@ -77,20 +77,30 @@ pub fn volume_label(volume: &Volume) -> String {
     }
 }
 
+/// What `program` printed, if it ran and succeeded.
+fn output_of(program: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 /// `None` on a machine with no sound device, where the bar shows no volume.
 pub fn read_volume() -> Option<Volume> {
-    volume::default_output(|args| {
-        let output = Command::new(commands::WPCTL)
-            .args(args)
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .ok()?;
-        output
-            .status
-            .success()
-            .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
-    })
+    volume::default_output(|args| output_of(commands::WPCTL, args))
+}
+
+/// Whether there is an output to read the volume of. Safe to ask while the
+/// devices are still appearing, which [`read_volume`] is not.
+pub fn has_output() -> bool {
+    output_of(commands::PW_CLI, &volume::LIST_NODES)
+        .is_some_and(|nodes| volume::lists_output(&nodes))
 }
 
 pub fn toggle_mute() {

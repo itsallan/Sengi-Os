@@ -23,7 +23,11 @@ pub enum Ask {
 }
 
 /// How the machine is read, so that tests can stand in for it.
-pub struct Readers<V, W, T> {
+pub struct Readers<O, V, W, T> {
+    /// Whether there is an output at all. It is asked while there is no
+    /// volume to show, and `volume` only once it says yes: reading the
+    /// volume while a device is appearing can break the device.
+    pub has_output: O,
     pub volume: V,
     pub wifi_name: W,
     pub toggle_mute: T,
@@ -46,15 +50,31 @@ const SETTLE: [Duration; 9] = [
     Duration::from_secs(4),
 ];
 
+impl<O, V, W, T> Readers<O, V, W, T>
+where
+    O: Fn() -> bool,
+    V: Fn() -> Option<Volume>,
+{
+    /// The volume, `shown` saying whether there was one a moment ago.
+    fn read_volume(&self, shown: bool) -> Option<Volume> {
+        if shown || (self.has_output)() {
+            (self.volume)()
+        } else {
+            None
+        }
+    }
+}
+
 /// Reads everything every `interval`, and the volume whenever asked, and
 /// gives `send` each reading that differs from the one before. Returns
 /// when `send` refuses one or nobody is left to ask.
-pub fn run<V, W, T>(
+pub fn run<O, V, W, T>(
     asks: &Receiver<Ask>,
     interval: Duration,
-    machine: &Readers<V, W, T>,
+    machine: &Readers<O, V, W, T>,
     send: impl FnMut(Slow) -> bool,
 ) where
+    O: Fn() -> bool,
     V: Fn() -> Option<Volume>,
     W: Fn() -> Option<String>,
     T: Fn(),
@@ -63,19 +83,20 @@ pub fn run<V, W, T>(
 }
 
 /// [`run`] with the waits of [`SETTLE`] given.
-fn run_settling<V, W, T>(
+fn run_settling<O, V, W, T>(
     asks: &Receiver<Ask>,
     interval: Duration,
     settle: &[Duration],
-    machine: &Readers<V, W, T>,
+    machine: &Readers<O, V, W, T>,
     mut send: impl FnMut(Slow) -> bool,
 ) where
+    O: Fn() -> bool,
     V: Fn() -> Option<Volume>,
     W: Fn() -> Option<String>,
     T: Fn(),
 {
     let mut last = Slow {
-        volume: (machine.volume)(),
+        volume: machine.read_volume(false),
         wifi_name: (machine.wifi_name)(),
     };
     if !send(last.clone()) {
@@ -108,7 +129,7 @@ fn run_settling<V, W, T>(
             slow.wifi_name = (machine.wifi_name)();
             due = Instant::now() + interval;
         }
-        slow.volume = (machine.volume)();
+        slow.volume = machine.read_volume(last.volume.is_some());
         // The first volume ends the settling for good.
         soon = match soon {
             Some(at) if slow.volume.is_none() => {
@@ -155,6 +176,7 @@ mod tests {
         let machine = machine.clone();
         thread::spawn(move || {
             let readers = Readers {
+                has_output: || true,
                 volume: || {
                     machine.volume_reads.fetch_add(1, Ordering::SeqCst);
                     Some(Volume {
@@ -239,6 +261,7 @@ mod tests {
         let counted = reads.clone();
         thread::spawn(move || {
             let readers = Readers {
+                has_output: || true,
                 volume: || {
                     (counted.fetch_add(1, Ordering::SeqCst) >= 3).then_some(Volume {
                         percent: 40,
@@ -258,6 +281,41 @@ mod tests {
         assert_eq!(reads.load(Ordering::SeqCst), 4);
     }
 
+    /// Reading the volume while a device is appearing can leave the
+    /// device broken, so it waits until there is an output to read.
+    #[test]
+    fn the_volume_is_not_read_before_there_is_an_output() {
+        let (ask, asks) = mpsc::channel();
+        let (send, readings) = mpsc::channel();
+        let looks = Arc::new(AtomicU32::new(0));
+        let reads = Arc::new(AtomicU32::new(0));
+        let (looked, read) = (looks.clone(), reads.clone());
+        thread::spawn(move || {
+            let readers = Readers {
+                has_output: || looked.fetch_add(1, Ordering::SeqCst) >= 3,
+                volume: || {
+                    read.fetch_add(1, Ordering::SeqCst);
+                    Some(Volume {
+                        percent: 40,
+                        muted: false,
+                    })
+                },
+                wifi_name: || None,
+                toggle_mute: || {},
+            };
+            run(&asks, NEVER, &readers, |slow| send.send(slow).is_ok());
+        });
+        assert_eq!(readings.recv_timeout(SOON).unwrap().volume, None);
+        assert_eq!(percent(readings.recv_timeout(SOON).unwrap()), 40);
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        assert_eq!(looks.load(Ordering::SeqCst), 4);
+        // With a volume shown it is read without looking first.
+        ask.send(Ask::Volume).unwrap();
+        thread::sleep(Duration::from_millis(300));
+        assert_eq!(reads.load(Ordering::SeqCst), 2);
+        assert_eq!(looks.load(Ordering::SeqCst), 4);
+    }
+
     #[test]
     fn a_machine_with_no_sound_is_not_asked_for_ever() {
         let (_ask, asks) = mpsc::channel();
@@ -265,6 +323,7 @@ mod tests {
         let counted = reads.clone();
         thread::spawn(move || {
             let readers = Readers {
+                has_output: || true,
                 volume: || {
                     counted.fetch_add(1, Ordering::SeqCst);
                     None

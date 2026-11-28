@@ -97,6 +97,9 @@ and the measured idle RAM and boot time.
   keyboard brings the page it is on into view.
 - The volume appears in the bar as soon as sound is ready after logging in,
   not up to 15 seconds later.
+- Logging in, most often again after logging out, could leave the computer
+  with no sound and "No sound device" in quick settings until the next
+  restart.
 
 ## 1.0.0 - 2026-11-27
 

@@ -2,6 +2,9 @@
 
 /// PipeWire's command-line tool, from the wireplumber package.
 pub const WPCTL: &str = "wpctl";
+/// PipeWire's tool that lists its objects, from pipewire-bin. A listing
+/// asks nothing of a device or a stream.
+pub const PW_CLI: &str = "pw-cli";
 /// PipeWire's own tool that prints its objects, and with `--monitor`
 /// goes on printing them as they change.
 pub const PW_DUMP: &str = "pw-dump";

@@ -167,6 +167,7 @@ fn run() -> Result<(), sengi_layer::Error> {
     listen_for_volume(mute.clone());
     thread::spawn(move || {
         let machine = Readers {
+            has_output: status::has_output,
             volume: status::read_volume,
             wifi_name: read_wifi,
             toggle_mute: status::toggle_mute,
