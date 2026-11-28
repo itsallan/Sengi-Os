@@ -122,13 +122,17 @@ impl AudioService for Wpctl {
     fn try_set_volume(&self, percent: u32) -> Result<(), Refusal> {
         let args = volume::set_volume_args(percent);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        done(output(commands::WPCTL, &args))
+        let set = done(output(commands::WPCTL, &args));
+        volume::announce();
+        set
     }
 
     fn try_set_muted(&self, muted: bool) -> Result<(), Refusal> {
         let args = volume::set_mute_args(muted);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        done(output(commands::WPCTL, &args))
+        let set = done(output(commands::WPCTL, &args));
+        volume::announce();
+        set
     }
 }
 

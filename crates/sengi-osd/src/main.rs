@@ -17,6 +17,7 @@ use sengi_osd::cli::{self, Invocation};
 use sengi_osd::instance::{self, Claim, Wait};
 use sengi_osd::level::Level;
 use sengi_osd::ui::{self, OsdWindow};
+use sengi_system::volume;
 use sengi_tokens::Tokens;
 
 /// What the loop is told by the thread that waits on the socket.
@@ -37,7 +38,11 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Ok(Invocation::Show(level)) => level,
-        Ok(Invocation::Volume) => cli::read_volume(),
+        Ok(Invocation::Volume) => {
+            // The volume keys run this right after the change.
+            volume::announce();
+            cli::read_volume()
+        }
         Err(message) => {
             eprintln!("sengi-osd: {message}\n\n{}", cli::USAGE);
             return ExitCode::from(2);

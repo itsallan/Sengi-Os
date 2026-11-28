@@ -1,5 +1,71 @@
-//! The default output's volume, through `wpctl`, and the queue that keeps
-//! a dragged slider from starting a process for every pixel.
+//! The default output's volume, through `wpctl`, the queue that keeps a
+//! dragged slider from starting a process for every pixel, and the notice
+//! that tells the bar the volume has just changed.
+
+use std::os::unix::net::UnixDatagram;
+use std::path::{Path, PathBuf};
+use std::{fs, io};
+
+/// The socket under `$XDG_RUNTIME_DIR` on which the bar waits to hear
+/// that the volume changed, so it need not ask often.
+pub const NOTICE_SOCKET: &str = "sengi-volume.sock";
+
+fn runtime_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+}
+
+/// Tells the bar that the volume may have changed. It never waits, and
+/// with nothing listening it does nothing.
+pub fn announce() {
+    if let Some(dir) = runtime_dir() {
+        announce_in(&dir);
+    }
+}
+
+/// [`announce`] for the runtime directory `dir`.
+pub fn announce_in(dir: &Path) {
+    let Ok(socket) = UnixDatagram::unbound() else {
+        return;
+    };
+    if socket.set_nonblocking(true).is_ok() {
+        // A full queue means the listener has plenty to wake up for.
+        let _ = socket.send_to(&[0], dir.join(NOTICE_SOCKET));
+    }
+}
+
+/// The listening end of [`announce`]. What is sent carries nothing: the
+/// listener asks PipeWire for the volume itself.
+pub struct Notices(UnixDatagram);
+
+impl Notices {
+    pub fn listen() -> io::Result<Notices> {
+        match runtime_dir() {
+            Some(dir) => Notices::listen_in(&dir),
+            None => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "XDG_RUNTIME_DIR is not set",
+            )),
+        }
+    }
+
+    /// Takes the socket over from whoever had it before, which for the
+    /// one bar of a session is a bar that has gone.
+    pub fn listen_in(dir: &Path) -> io::Result<Notices> {
+        let path = dir.join(NOTICE_SOCKET);
+        match fs::remove_file(&path) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        }
+        UnixDatagram::bind(path).map(Notices)
+    }
+
+    /// Sleeps until the next notice.
+    pub fn wait(&self) -> io::Result<()> {
+        self.0.recv(&mut [0]).map(drop)
+    }
+}
 
 /// The slider's range. PipeWire can go louder; the panel does not.
 pub const MAX_PERCENT: u32 = 100;
@@ -129,6 +195,29 @@ impl Echo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_notice_reaches_whoever_listens_last() {
+        let dir = std::env::temp_dir().join(format!("sengi-notice-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        // Nothing listening is not an error.
+        announce_in(&dir);
+
+        let first = Notices::listen_in(&dir).unwrap();
+        announce_in(&dir);
+        first.wait().unwrap();
+        // A bar started after one that died takes the socket over.
+        drop(first);
+        let second = Notices::listen_in(&dir).unwrap();
+        announce_in(&dir);
+        second.wait().unwrap();
+        // A listener that is not reading never holds the sender up.
+        for _ in 0..5000 {
+            announce_in(&dir);
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn volume_is_rounded_to_percent() {

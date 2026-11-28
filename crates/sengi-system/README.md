@@ -21,7 +21,9 @@ Nothing is on by default. Without features the crate is plain std:
   window checks with a function of the program's own before taking it,
   and leaves.
 - `volume` and `commands`: parsing `wpctl get-volume`, the arguments for
-  setting it, and the names of the programs involved.
+  setting it, and the names of the programs involved. Whoever changes the
+  volume calls `volume::announce`, which wakes the bar through a datagram
+  socket in `$XDG_RUNTIME_DIR` so that its number follows at once.
 
 The features add:
 

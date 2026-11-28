@@ -368,22 +368,28 @@ impl AudioDevices for Pipewire {
     }
 
     fn set_default(&self, id: u32) -> Result<(), Refusal> {
-        done(programs::output(
+        let set = done(programs::output(
             commands::WPCTL,
             &["set-default", &id.to_string()],
-        ))
+        ));
+        volume::announce();
+        set
     }
 
     fn set_volume(&self, id: u32, percent: u32) -> Result<(), Refusal> {
         let args = volume::volume_args(&id.to_string(), percent);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        done(programs::output(commands::WPCTL, &args))
+        let set = done(programs::output(commands::WPCTL, &args));
+        volume::announce();
+        set
     }
 
     fn set_muted(&self, id: u32, muted: bool) -> Result<(), Refusal> {
         let args = volume::mute_args(&id.to_string(), muted);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        done(programs::output(commands::WPCTL, &args))
+        let set = done(programs::output(commands::WPCTL, &args));
+        volume::announce();
+        set
     }
 
     fn watch(&self, changed: Notify) {

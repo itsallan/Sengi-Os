@@ -7,6 +7,7 @@
 mod status;
 mod tray;
 mod tray_ui;
+mod watch;
 
 use std::cell::{OnceCell, RefCell};
 use std::path::Path;
@@ -18,7 +19,9 @@ use std::time::Duration;
 
 use sengi_clock::Clock;
 use sengi_layer::{Anchor, App, Config, Instances, Layer, Outputs};
+use sengi_system::volume;
 use slint::{Timer, TimerMode};
+use watch::{Ask, Readers, Slow};
 
 slint::include_modules!();
 
@@ -27,15 +30,12 @@ slint::include_modules!();
 const SYS_INTERVAL: Duration = Duration::from_secs(10);
 
 /// How often the volume and Wi-Fi name are read. These run other programs,
-/// so they are polled slowly on their own thread, away from drawing.
+/// so they are polled slowly on their own thread, away from drawing. A
+/// volume change that the shell makes is announced and read at once.
 const SLOW_INTERVAL: Duration = Duration::from_secs(15);
 
-/// Readings that take a subprocess to get.
-#[derive(Clone, PartialEq, Eq)]
-struct Slow {
-    volume: Option<status::Volume>,
-    wifi_name: Option<String>,
-}
+/// The thread that hears those announcements only sleeps and forwards.
+const LISTENER_STACK: usize = 64 * 1024;
 
 /// Runs a shell command without waiting for it. The extra shell exits at
 /// once, so the command is adopted by the session and never left a zombie.
@@ -113,17 +113,33 @@ fn apply_slow(bar: &Bar, slow: &Slow) {
     bar.set_wifi_name(slow.wifi_name.clone().unwrap_or_default().into());
 }
 
-fn read_slow() -> Slow {
+fn read_wifi() -> Option<String> {
     let wifi_up = status::read_interfaces(Path::new("/sys/class/net"))
         .iter()
         .any(|interface| interface.wireless && interface.up);
-    Slow {
-        volume: status::read_volume(),
-        wifi_name: if wifi_up {
-            status::read_wifi_name()
-        } else {
-            None
-        },
+    if wifi_up {
+        status::read_wifi_name()
+    } else {
+        None
+    }
+}
+
+/// Passes on every announced volume change. Without the socket the bar
+/// still catches up at the next slow reading.
+fn listen_for_volume(asks: mpsc::Sender<Ask>) {
+    let started = volume::Notices::listen().and_then(|notices| {
+        thread::Builder::new()
+            .stack_size(LISTENER_STACK)
+            .spawn(move || {
+                while notices.wait().is_ok() {
+                    if asks.send(Ask::Volume).is_err() {
+                        return;
+                    }
+                }
+            })
+    });
+    if let Err(error) = started {
+        eprintln!("sengi-bar: volume changes are only polled: {error}");
     }
 }
 
@@ -135,9 +151,9 @@ fn run() -> Result<(), sengi_layer::Error> {
     // drawn at is known. None inside means it could not be started.
     let tray: OnceCell<Option<Rc<tray_ui::TrayUi>>> = OnceCell::new();
 
-    // The slow readings come from a worker thread. The mute button sends
-    // on `mute`, and the worker toggles and reads the result back in order.
-    // The latest reading is kept for bars that are built later.
+    // The slow readings come from a worker thread. The mute button and
+    // announced volume changes send on `asks`, and the worker toggles and
+    // reads in order. The latest reading is kept for bars built later.
     let latest: Rc<RefCell<Option<Slow>>> = Rc::default();
     let slow_sender = {
         let bars = bars.clone();
@@ -147,27 +163,17 @@ fn run() -> Result<(), sengi_layer::Error> {
             *latest.borrow_mut() = Some(slow);
         })?
     };
-    let (mute, mute_requests) = mpsc::channel::<()>();
+    let (mute, asks) = mpsc::channel::<Ask>();
+    listen_for_volume(mute.clone());
     thread::spawn(move || {
-        let mut last = None;
-        let mut toggle = false;
-        loop {
-            if toggle {
-                status::toggle_mute();
-            }
-            let slow = read_slow();
-            if last.as_ref() != Some(&slow) {
-                if slow_sender.send(slow.clone()).is_err() {
-                    return;
-                }
-                last = Some(slow);
-            }
-            toggle = match mute_requests.recv_timeout(SLOW_INTERVAL) {
-                Ok(()) => true,
-                Err(mpsc::RecvTimeoutError::Timeout) => false,
-                Err(mpsc::RecvTimeoutError::Disconnected) => return,
-            };
-        }
+        let machine = Readers {
+            volume: status::read_volume,
+            wifi_name: read_wifi,
+            toggle_mute: status::toggle_mute,
+        };
+        watch::run(&asks, SLOW_INTERVAL, &machine, |slow| {
+            slow_sender.send(slow).is_ok()
+        });
     });
 
     let clock_timer = Rc::new(Timer::default());
@@ -214,7 +220,7 @@ fn run() -> Result<(), sengi_layer::Error> {
         bar.on_open_calendar(|| spawn("sengi-calendar"));
         let mute = mute.clone();
         bar.on_toggle_mute(move || {
-            let _ = mute.send(());
+            let _ = mute.send(Ask::ToggleMute);
         });
 
         let started = tray.get_or_init(|| {
