@@ -476,6 +476,30 @@ fn a_window_leaving_fullscreen_after_its_screen_went_is_within_reach() {
 }
 
 #[test]
+fn a_hidden_window_asked_to_fill_the_screen_gives_its_place_back() {
+    let compositor = Compositor::start(None);
+    let mut app = a_program(&compositor);
+    let hidden = window(&mut app, "hidden", GREEN);
+    let before = numbers(&window_line(&compositor, "hidden"), "client");
+    let (mut dock, handles) = dock(&compositor);
+    let seat = dock.seat().unwrap();
+    let wanted = handle(&mut dock, &handles, "hidden");
+    wanted.set_minimized();
+    dock.roundtrip().unwrap();
+    hidden.toplevel.set_fullscreen(None);
+    app.roundtrip().unwrap();
+    wanted.activate(&seat);
+    dock.roundtrip().unwrap();
+    hidden.toplevel.unset_fullscreen();
+    app.roundtrip().unwrap();
+    assert_eq!(
+        numbers(&window_line(&compositor, "hidden"), "client"),
+        before
+    );
+    sound(&compositor);
+}
+
+#[test]
 fn a_window_that_fills_the_screen_stays_there_when_a_bar_appears() {
     let compositor = Compositor::start(None);
     let mut app = a_program(&compositor);

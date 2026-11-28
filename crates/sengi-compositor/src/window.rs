@@ -629,7 +629,13 @@ impl State {
                 let Some(screen) = self.fullscreen_rect(window, output) else {
                     return;
                 };
-                data.fullscreen.set(Some(self.client_rect(window)));
+                let before = self.client_rect(window).or_else(|| {
+                    // A hidden one goes back to where it was hidden.
+                    let (x, y) = data.minimised.get()?;
+                    let size = window.geometry().size;
+                    Some(Rect::new(x, y, size.w, size.h))
+                });
+                data.fullscreen.set(Some(before));
                 data.decorated.set(false);
                 data.resize_anchor.set(None);
                 self.forget_pointer_state(window);
@@ -668,8 +674,14 @@ impl State {
                         request_size(window, (rect.w, rect.h), false);
                     }
                 }
-                if let (true, Some(rect)) = (mapped, restore) {
+                if let Some(rect) = restore {
                     self.move_window(window, rect.x, rect.y);
+                    // A hidden one comes back there.
+                    if data.minimised.get().is_some() {
+                        data.minimised.set(Some((rect.x, rect.y)));
+                    }
+                }
+                if mapped {
                     // Its screen, the bar or the dock may have changed.
                     self.bring_back(window);
                 }

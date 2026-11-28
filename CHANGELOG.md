@@ -49,6 +49,8 @@ and the measured idle RAM and boot time.
 - A program's open menu closes when you switch to another window, lock the
   screen, minimise its window or open the launcher, and the keyboard goes
   where you went.
+- A window asked to fill the screen while it was minimised goes back to its
+  place afterwards, not with its title bar above the screen.
 
 ## 1.0.0 - 2026-11-27
 
