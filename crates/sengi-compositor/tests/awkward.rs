@@ -537,6 +537,31 @@ fn a_window_that_fills_the_screen_is_sized_for_the_next_one_plugged_in() {
 }
 
 #[test]
+fn a_hidden_window_asked_to_be_maximised_comes_back_so() {
+    let compositor = Compositor::start(None);
+    let mut app = a_program(&compositor);
+    let hidden = window(&mut app, "hidden", GREEN);
+    let (mut dock, handles) = dock(&compositor);
+    let seat = dock.seat().unwrap();
+    let wanted = handle(&mut dock, &handles, "hidden");
+    // While it fills the screen as well, which wins.
+    for fullscreen in [false, true] {
+        wanted.set_minimized();
+        dock.roundtrip().unwrap();
+        if fullscreen {
+            hidden.toplevel.set_fullscreen(None);
+        }
+        hidden.toplevel.set_maximized();
+        app.roundtrip().unwrap();
+        wanted.activate(&seat);
+        dock.roundtrip().unwrap();
+        sound(&compositor);
+        let line = window_line(&compositor, "hidden");
+        assert!(line.contains("maximised=1"), "{line}");
+    }
+}
+
+#[test]
 fn a_window_that_fills_the_screen_stays_there_when_a_bar_appears() {
     let compositor = Compositor::start(None);
     let mut app = a_program(&compositor);

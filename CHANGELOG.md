@@ -56,6 +56,7 @@ and the measured idle RAM and boot time.
 - Dragging the left or top edge of an X11 program's window moves that edge, not
   the one opposite.
 - Windows are fitted to a screen that is plugged in after the last one went.
+- A window asked to maximise while minimised is maximised when it returns.
 
 ## 1.0.0 - 2026-11-27
 

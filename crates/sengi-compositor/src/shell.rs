@@ -170,7 +170,8 @@ impl XdgShellHandler for State {
 
     fn maximize_request(&mut self, surface: ToplevelSurface) {
         match self.window_for_surface(surface.wl_surface()) {
-            Some(window) if self.space.element_location(&window).is_some() => {
+            // On screen, or hidden after it was.
+            Some(window) if !self.pending_windows.contains(&window) => {
                 self.set_maximised(&window, true);
             }
             // Not on screen yet: remember it, and let the first configure,
@@ -220,7 +221,7 @@ impl XdgShellHandler for State {
         // Before the window is on screen there is nothing to undo, and an
         // early configure here would beat the client's first commit.
         match self.window_for_surface(surface.wl_surface()) {
-            Some(window) if self.space.element_location(&window).is_some() => {
+            Some(window) if !self.pending_windows.contains(&window) => {
                 self.set_maximised(&window, false);
             }
             _ => {}

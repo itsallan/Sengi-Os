@@ -395,6 +395,16 @@ impl State {
         Some(Rect::new(location.x, location.y, size.w, size.h))
     }
 
+    /// The client area `window` has, or if it is minimised the one it
+    /// was hidden from.
+    fn place_of(&self, window: &Window) -> Option<Rect> {
+        self.client_rect(window).or_else(|| {
+            let (x, y) = data(window).minimised.get()?;
+            let size = window.geometry().size;
+            Some(Rect::new(x, y, size.w, size.h))
+        })
+    }
+
     /// The outline of a mapped window: its frame if it has one, else the
     /// client area.
     pub fn frame_rect(&self, window: &Window) -> Option<Rect> {
@@ -542,7 +552,7 @@ impl State {
         }
         let target = match (maximised, data.restore.get()) {
             (true, None) => {
-                let Some(current) = self.client_rect(window) else {
+                let Some(current) = self.place_of(window) else {
                     return;
                 };
                 data.restore.set(Some(current));
@@ -629,13 +639,7 @@ impl State {
                 let Some(screen) = self.fullscreen_rect(window, output) else {
                     return;
                 };
-                let before = self.client_rect(window).or_else(|| {
-                    // A hidden one goes back to where it was hidden.
-                    let (x, y) = data.minimised.get()?;
-                    let size = window.geometry().size;
-                    Some(Rect::new(x, y, size.w, size.h))
-                });
-                data.fullscreen.set(Some(before));
+                data.fullscreen.set(Some(self.place_of(window)));
                 data.decorated.set(false);
                 data.resize_anchor.set(None);
                 self.forget_pointer_state(window);
