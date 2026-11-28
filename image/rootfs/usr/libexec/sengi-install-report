@@ -53,8 +53,22 @@ if [ -d /run/sengi/medium/live ]; then
 		sleep 0.2
 	done
 	echo "SENGI-INSTALLER running" >$port
-	# The log has a line for each step as it begins and ends, and one
-	# for how it all ended. The percentages of the copy are left out.
+	# What a look at a Windows partition found, before anything is
+	# installed beside it.
+	looked=/var/log/sengi-install-analyze.log
+	{
+		until [ -f "$looked" ]; do
+			sleep 0.2
+		done
+		tail -n +1 -F "$looked" 2>/dev/null | while IFS= read -r line; do
+			case ${line#*] } in
+			analyzed\ *) echo "SENGI-INSTALL ${line#*] }" >$port ;;
+			esac
+		done
+	} &
+	# The log has a line for each step as it begins and ends, one for each
+	# stage of making Windows smaller, and one for how it all ended. The
+	# percentages of the copy are left out.
 	log=/var/log/sengi-install.log
 	until [ -f "$log" ]; do
 		pidof sengi-installer >/dev/null || { echo "SENGI-INSTALLER gone" >$port; exit 0; }
@@ -63,7 +77,7 @@ if [ -d /run/sengi/medium/live ]; then
 	tail -n +1 -F "$log" 2>/dev/null | while IFS= read -r line; do
 		event=${line#*] }
 		case $event in
-		begin\ * | end\ * | warning\ *) echo "SENGI-INSTALL $event" >$port ;;
+		begin\ * | end\ * | warning\ * | resize\ *) echo "SENGI-INSTALL $event" >$port ;;
 		done\ * | failed\ *)
 			echo "SENGI-INSTALL $event" >$port
 			{
@@ -179,6 +193,7 @@ case $(cat /etc/machine-id) in
 *) fail "the machine has no identifier" ;;
 esac
 for left in /usr/bin/sengi-install /usr/bin/sengi-installer /usr/share/applications/sengi-installer.desktop \
+	/usr/sbin/ntfsresize /usr/bin/ntfs-3g \
 	/etc/initramfs-tools/scripts/sengi /usr/libexec/sengi-boot-report \
 	/etc/systemd/system/sengi-boot-report.service; do
 	[ ! -e "$left" ] || fail "$left is still there"

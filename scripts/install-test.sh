@@ -32,8 +32,13 @@
 # clean; GRUB is in a directory of its own; the boot menu lists the other
 # system. Then the disk is started alone, as in the other mode.
 #
-# The only disk that is ever written is OUTDIR/disk.qcow2, which this
-# script makes. The ISO is attached read-only.
+# SENGI_INSTALL_MODE=shrink installs beside a Windows that has all of the
+# disk and is made smaller first, with a real NTFS volume (it needs
+# SENGI_UEFI and SENGI_NTFS, and takes SENGI_SHRINK_FAULT to inject
+# failures): see install-test-shrink.sh.
+#
+# The only disk that is ever written is the image file in OUTDIR, which
+# this script makes. The ISO is attached read-only.
 #
 # The window is driven with the keyboard, the same way boot-test.sh drives
 # the desktop, and the installation that is timed is the one the window
@@ -60,6 +65,9 @@ on_exit() {
 }
 trap on_exit EXIT
 
+# Where this script and the ones beside it are.
+scripts=$(cd "$(dirname "$0")" && pwd)
+
 iso=${1:?usage: install-test.sh ISO [OUTDIR]}
 out=${2:-test-output/install}
 budget_boot_s=${SENGI_BUDGET_BOOT_S:-10}
@@ -76,8 +84,13 @@ beside)
 	disk_size=${SENGI_INSTALL_DISK_SIZE:-14G}
 	from=${SENGI_INSTALL_FROM:-launcher}
 	;;
+shrink)
+	# The disk is made from the volume it is given.
+	disk_size=
+	from=${SENGI_INSTALL_FROM:-launcher}
+	;;
 *)
-	echo "SENGI_INSTALL_MODE is erase or beside" >&2
+	echo "SENGI_INSTALL_MODE is erase, beside or shrink" >&2
 	exit 2
 	;;
 esac
@@ -100,9 +113,13 @@ keyboard=gb
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
 rm -f "$out"/serial-*.log "$out"/*.png "$out"/*.ppm "$out/install-metrics.txt" \
-	"$out/mon.in" "$out/disk.qcow2" "$out/vars.fd" "$out"/monitor-*.log "$out"/guest-info-*.txt \
+	"$out/mon.in" "$out/disk.qcow2" "$out/disk.raw" "$out/vars.fd" "$out"/monitor-*.log "$out"/guest-info-*.txt \
 	"$out"/before.* "$out"/after.* "$out"/esp.img "$out/dualboot-checks.txt"
-disk=$out/disk.qcow2
+# A raw file where the disk is compared byte for byte or the power is cut:
+# a qcow2 left behind by a killed QEMU can be damaged in ways no real disk
+# would be.
+disk=$out/disk.qcow2 disk_format=qcow2
+[ "$mode" != shrink ] || { disk=$out/disk.raw disk_format=raw; }
 
 # Sectors of 512 bytes. The EFI system partition and the other system's
 # partition are made first; what is left to the end of the disk is free.
@@ -128,6 +145,20 @@ windows_mbr() {
 	printf '\377\377\377\377' | dd of="$1" bs=1 seek=458 conv=notrunc status=none
 }
 
+# Into the disk image $1: the EFI system partition, with what another
+# system keeps there.
+write_esp() {
+	truncate -s $((esp_sectors * 512)) "$out/esp.img"
+	mkfs.vfat -F 32 -n ESP "$out/esp.img" >/dev/null
+	echo "$marker_boot" >"$out/before.marker"
+	mmd -i "$out/esp.img" ::/EFI ::/EFI/Microsoft ::/EFI/Microsoft/Boot ::/EFI/Boot
+	mcopy -i "$out/esp.img" "$out/before.marker" ::/EFI/Microsoft/Boot/bootmgfw.efi
+	mcopy -i "$out/esp.img" "$out/before.marker" ::/EFI/Microsoft/Boot/BCD
+	mcopy -i "$out/esp.img" "$out/before.marker" ::/EFI/Boot/bootx64.efi
+	dd if="$out/esp.img" of="$1" bs=512 seek="$esp_start" conv=notrunc status=none
+	rm -f "$out/esp.img"
+}
+
 # A disk as a computer with another system on it comes: made as a raw
 # file with the tools of the host, none of which needs root, then turned
 # into the qcow2 the guest gets.
@@ -146,16 +177,7 @@ prepare_beside() {
 	truncate -s "$disk_size" "$raw"
 	printf 'label: gpt\nstart=%s, size=%s, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name="EFI System Partition"\nstart=%s, size=%s, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name="Basic data partition"\nstart=%s, size=%s, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="Linux filesystem"\nstart=%s, size=%s, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name="Windows data"\n' \
 		"$esp_start" "$esp_sectors" "$other_start" "$other_sectors" "$ext_start" "$ext_sectors" "$ntfs_start" "$ntfs_sectors" | sfdisk -q "$raw"
-	# The EFI system partition, with what another system keeps there.
-	truncate -s $((esp_sectors * 512)) "$out/esp.img"
-	mkfs.vfat -F 32 -n ESP "$out/esp.img" >/dev/null
-	echo "$marker_boot" >"$out/before.marker"
-	mmd -i "$out/esp.img" ::/EFI ::/EFI/Microsoft ::/EFI/Microsoft/Boot ::/EFI/Boot
-	mcopy -i "$out/esp.img" "$out/before.marker" ::/EFI/Microsoft/Boot/bootmgfw.efi
-	mcopy -i "$out/esp.img" "$out/before.marker" ::/EFI/Microsoft/Boot/BCD
-	mcopy -i "$out/esp.img" "$out/before.marker" ::/EFI/Boot/bootx64.efi
-	dd if="$out/esp.img" of="$raw" bs=512 seek="$esp_start" conv=notrunc status=none
-	rm -f "$out/esp.img"
+	write_esp "$raw"
 	# The other system's partition: data that has to come out the same.
 	{
 		printf '%s\n' "$marker_other"
@@ -187,11 +209,15 @@ prepare_beside() {
 	qemu-img convert -O qcow2 "$raw" "$disk"
 }
 
-if [ "$mode" = beside ]; then
-	prepare_beside
-else
-	qemu-img create -q -f qcow2 "$disk" "$disk_size"
-fi
+case $mode in
+beside) prepare_beside ;;
+shrink)
+	# shellcheck source=scripts/install-test-shrink.sh
+	. "$scripts/install-test-shrink.sh"
+	prepare_shrink
+	;;
+*) qemu-img create -q -f qcow2 "$disk" "$disk_size" ;;
+esac
 
 accel=tcg cpu=max
 if [ -w /dev/kvm ]; then accel=kvm cpu=host; fi
@@ -206,7 +232,7 @@ fi
 
 # systemd-tmpfiles makes the file early in the start, from a credential the
 # firmware tables carry. No comma may be in it.
-choice=
+choice='' hold='' fault=${fault:-}
 case "${SENGI_COMPOSITOR:-}" in
 '' | own) ;;
 labwc) choice='io.systemd.credential:tmpfiles.extra=f /run/sengi-os.compositor 0644 root root - labwc' ;;
@@ -246,6 +272,7 @@ start_qemu() {
 		-nic user,model=virtio-net-pci \
 		-smbios type=11,value=io.systemd.credential:sengi.test.install=1 \
 		${choice:+-smbios "type=11,value=$choice"} \
+		${hold:+-smbios "type=11,value=$hold"} \
 		-serial file:"$serial" \
 		-monitor stdio <"$out/mon.in" >"$monitor" 2>&1 &
 	qemu=$!
@@ -301,11 +328,77 @@ give_up() {
 	exit 1
 }
 
-# First half: the live image, with the blank disk beside it.
+# Beside another system, read from outside the guest: the disk as it is
+# now against the disk as it was made. Nothing is trusted that the guest
+# says about itself.
+dual_fail=0
+# Seconds GRUB's menu waits for a person to choose between systems. Where
+# another system is found the menu is shown, and the wait is the
+# person's, not the system's: it is left out of the boot figure and
+# reported on its own.
+menu_wait=0
+check_fail() {
+	echo "FAIL: $1" >&2
+	annotate "FAIL: $1"
+	echo "FAIL: $1" >>"$out/dualboot-checks.txt"
+	dual_fail=1
+}
+check_ok() {
+	echo "ok: $1" >>"$out/dualboot-checks.txt"
+}
+# sha256 of $3 sectors of image $1 from sector $2.
+hash_sectors() {
+	dd if="$1" bs=512 skip="$2" count="$3" status=none | sha256sum | cut -d" " -f1
+}
+# A field of the line that describes partition $2 in the dump $1.
+part_field() {
+	grep -E "^[^ ]*$2 :" "$1" | sed -n "s/.*[ ,]$3= *\\([^,]*\\).*/\\1/p" | head -1
+}
+same_sectors() {
+	what=$1 start=$2 count=$3
+	[ "$count" -gt 0 ] || return 0
+	b=$(hash_sectors "$out/before.img" "$start" "$count")
+	a=$(hash_sectors "$out/after.img" "$start" "$count")
+	if [ "$a" = "$b" ]; then
+		check_ok "$what is byte for byte as it was"
+	else
+		check_fail "$what changed (sectors $start to $((start + count - 1)))"
+	fi
+}
+
+# Sector 0 of image $1, as 1024 hexadecimal digits.
+sector0() {
+	head -c 512 "$1" | od -An -v -tx1 | tr -d ' \n'
+}
+# Sector 0 is what it was but for the size in the protective MBR, bytes 458
+# to 461, which was all ones and now is the disk's own.
+check_mbr() {
+	b=$(sector0 "$out/before.img")
+	a=$(sector0 "$out/after.img")
+	sectors=$(($(stat -c %s "$out/after.img") / 512 - 1))
+	want=$(printf '%02x%02x%02x%02x' $((sectors & 255)) $((sectors >> 8 & 255)) \
+		$((sectors >> 16 & 255)) $((sectors >> 24 & 255)))
+	if [ "$(echo "$b" | cut -c917-924)" = ffffffff ] &&
+		[ "$(echo "$a" | cut -c917-924)" = "$want" ] &&
+		[ "$(echo "$a" | cut -c1-916,925-)" = "$(echo "$b" | cut -c1-916,925-)" ]; then
+		check_ok "sector 0 is as it was but for the protective MBR's size, now the disk's own"
+	else
+		check_fail "sector 0 is not as expected: size $(echo "$b" | cut -c917-924) became $(echo "$a" | cut -c917-924), wanted $want"
+	fi
+}
+
+# First half: the live image, with the blank disk beside it. Where the
+# power is cut, the guest's flushes are honoured, as a disk honours them,
+# and the installer is told to wait between the two writes of the resize.
+target_cache=unsafe
+if [ "${fault:-}" = powercut ]; then
+	target_cache=writeback
+	hold='io.systemd.credential:sengi.test.hold-after-filesystem=1'
+fi
 start_qemu "$out/serial-install.log" "$out/monitor-install.log" \
 	-drive "file=$iso,format=raw,if=none,id=medium,readonly=on" \
 	-device virtio-blk-pci,drive=medium,bootindex=1 \
-	-drive "file=$disk,format=qcow2,if=none,id=target,cache=unsafe" \
+	-drive "file=$disk,format=$disk_format,if=none,id=target,cache=$target_cache" \
 	-device virtio-blk-pci,drive=target,bootindex=2
 wait_serial SENGI-LIVE "$timeout_s" || give_up "the live desktop did not come up" live
 live_s=$(since "$start")
@@ -369,15 +462,20 @@ shot installer-disk-chosen
 # erasing is the one that is chosen, and the second is installing beside
 # the other system.
 key tab
-if [ "$mode" = beside ]; then
-	key down
-	key ret 1
-	shot installer-disk-beside
+if [ "$mode" = shrink ]; then
+	# Its size control and tick come in between.
+	shrink_disk_page
+else
+	if [ "$mode" = beside ]; then
+		key down
+		key ret 1
+		shot installer-disk-beside
+	fi
+	key tab
+	key tab
+	key tab
+	key ret 1.5
 fi
-key tab
-key tab
-key tab
-key ret 1.5
 
 # You.
 type_text "$full_name"
@@ -408,7 +506,29 @@ fi
 if [ "$mode" != beside ]; then key tab; fi
 key ret 0.5
 wait_serial 'SENGI-INSTALL begin check' 30 || give_up "the installation did not start" installer-progress
-if wait_serial 'SENGI-INSTALL begin copy' 120; then
+copy_wait=120
+if [ "$mode" = shrink ]; then
+	copy_wait=$install_timeout_s
+	wait_serial 'SENGI-INSTALL resize writing' "$install_timeout_s" ||
+		give_up "the resize did not begin" installer-progress
+	shot installer-progress-shrink
+	if [ "$fault" = powercut ]; then
+		wait_serial 'SENGI-INSTALL resize files' "$install_timeout_s" ||
+			give_up "the file system was not made smaller" installer-progress
+		# The installer waits there for this: the power goes, with no
+		# word to anything in the guest.
+		sleep 3
+		shot installer-powercut
+		if grep -q 'SENGI-INSTALL resize table' "$serial"; then
+			give_up "the table was written before the power was cut" installer-powercut
+		fi
+		kill -9 "$qemu"
+		wait "$qemu" 2>/dev/null || true
+		exec 3>&-
+		verify_powercut
+	fi
+fi
+if wait_serial 'SENGI-INSTALL begin copy' "$copy_wait"; then
 	sleep 2
 	shot installer-progress
 fi
@@ -441,65 +561,6 @@ done
 exec 3>&-
 wait "$qemu" 2>/dev/null || true
 rm -f "$out/mon.in"
-
-# Beside another system, read from outside the guest: the disk as it is
-# now against the disk as it was made. Nothing is trusted that the guest
-# says about itself.
-dual_fail=0
-# Seconds GRUB's menu waits for a person to choose between systems. Where
-# another system is found the menu is shown, and the wait is the
-# person's, not the system's: it is left out of the boot figure and
-# reported on its own.
-menu_wait=0
-check_fail() {
-	echo "FAIL: $1" >&2
-	annotate "FAIL: $1"
-	echo "FAIL: $1" >>"$out/dualboot-checks.txt"
-	dual_fail=1
-}
-check_ok() {
-	echo "ok: $1" >>"$out/dualboot-checks.txt"
-}
-# sha256 of $3 sectors of image $1 from sector $2.
-hash_sectors() {
-	dd if="$1" bs=512 skip="$2" count="$3" status=none | sha256sum | cut -d" " -f1
-}
-# A field of the line that describes partition $2 in the dump $1.
-part_field() {
-	grep -E "^[^ ]*$2 :" "$1" | sed -n "s/.*[ ,]$3= *\\([^,]*\\).*/\\1/p" | head -1
-}
-same_sectors() {
-	what=$1 start=$2 count=$3
-	[ "$count" -gt 0 ] || return 0
-	b=$(hash_sectors "$out/before.img" "$start" "$count")
-	a=$(hash_sectors "$out/after.img" "$start" "$count")
-	if [ "$a" = "$b" ]; then
-		check_ok "$what is byte for byte as it was"
-	else
-		check_fail "$what changed (sectors $start to $((start + count - 1)))"
-	fi
-}
-
-# Sector 0 of image $1, as 1024 hexadecimal digits.
-sector0() {
-	head -c 512 "$1" | od -An -v -tx1 | tr -d ' \n'
-}
-# Sector 0 is what it was but for the size in the protective MBR, bytes 458
-# to 461, which was all ones and now is the disk's own.
-check_mbr() {
-	b=$(sector0 "$out/before.img")
-	a=$(sector0 "$out/after.img")
-	sectors=$(($(stat -c %s "$out/after.img") / 512 - 1))
-	want=$(printf '%02x%02x%02x%02x' $((sectors & 255)) $((sectors >> 8 & 255)) \
-		$((sectors >> 16 & 255)) $((sectors >> 24 & 255)))
-	if [ "$(echo "$b" | cut -c917-924)" = ffffffff ] &&
-		[ "$(echo "$a" | cut -c917-924)" = "$want" ] &&
-		[ "$(echo "$a" | cut -c1-916,925-)" = "$(echo "$b" | cut -c1-916,925-)" ]; then
-		check_ok "sector 0 is as it was but for the protective MBR's size, now the disk's own"
-	else
-		check_fail "sector 0 is not as expected: size $(echo "$b" | cut -c917-924) became $(echo "$a" | cut -c917-924), wanted $want"
-	fi
-}
 
 verify_beside() {
 	: >"$out/dualboot-checks.txt"
@@ -551,8 +612,14 @@ verify_beside() {
 	first=$(dd if="$out/after.img" bs=512 skip="$other_start" count=1 status=none | head -1)
 	[ "$first" = "$marker_other" ] && check_ok "the other system's data can be read" || check_fail "the other system's data is gone"
 
-	# The EFI system partition: every file that was there is there and
-	# unchanged; what is new is under EFI/sengios and nowhere else.
+	check_esp
+	check_new_system "$new_start"
+	sed 's/^/dualboot: /' "$out/dualboot-checks.txt"
+}
+
+# The EFI system partition: every file that was there is there and
+# unchanged; what is new is under EFI/sengios and nowhere else.
+check_esp() {
 	esp="$out/after.img@@$((esp_start * 512))"
 	mdir -i "$esp" -/ -b :: | sort >"$out/after.files"
 	if grep -v -x -F -f "$out/before.files" "$out/after.files" | grep -v -i '^::/EFI/sengios' | grep -q .; then
@@ -571,9 +638,11 @@ verify_beside() {
 	done
 	grep -q -i '^::/EFI/sengios/grubx64.efi$' "$out/after.files" && check_ok "GRUB is in EFI/sengios" ||
 		check_fail "there is no EFI/sengios/grubx64.efi"
+}
 
-	# The new file system.
-	target="$out/after.img?offset=$((new_start * 512))"
+# The new file system, which starts at sector $1, and the boot menu on it.
+check_new_system() {
+	target="$out/after.img?offset=$(($1 * 512))"
 	if e2fsck -fn "$target" >"$out/after.fsck" 2>&1; then
 		check_ok "the new ext4 file system is clean"
 	else
@@ -598,12 +667,12 @@ verify_beside() {
 	"Sengi OS"*) check_ok "Sengi OS is the first entry of the menu" ;;
 	*) check_fail "the first entry of the menu is '$first_entry'" ;;
 	esac
-	sed 's/^/dualboot: /' "$out/dualboot-checks.txt"
 }
 
-if [ "$mode" = beside ]; then
-	verify_beside
-fi
+case $mode in
+beside) verify_beside ;;
+shrink) verify_shrink ;;
+esac
 
 # Second half: the disk alone. What the first half wrote is still on its
 # way to the host's disk, since QEMU was told not to wait for it. Left to
@@ -611,7 +680,7 @@ fi
 # guest, so it is let finish first.
 sync "$disk" 2>/dev/null || sync
 start_qemu "$out/serial-installed.log" "$out/monitor-installed.log" \
-	-drive "file=$disk,format=qcow2,if=virtio,cache=unsafe"
+	-drive "file=$disk,format=$disk_format,if=virtio,cache=unsafe"
 wait_serial SENGI-LOGIN "$timeout_s" || give_up "the installed system did not reach the login screen" installed-login
 login_s=$(since "$start")
 sleep 3
@@ -669,7 +738,7 @@ else
 		-device isa-debugcon,iobase=0x402,chardev=firmware
 fi
 start_qemu "$out/serial-menu.log" "$out/monitor-menu.log" \
-	-drive "file=$disk,format=qcow2,if=virtio,cache=unsafe" "$@"
+	-drive "file=$disk,format=$disk_format,if=virtio,cache=unsafe" "$@"
 tries=3000
 until grep -a -q "$handover" "$handover_log" 2>/dev/null; do
 	tries=$((tries - 1))
@@ -744,7 +813,7 @@ fail=0
 # own entry can have started it) is the first thing the firmware tries. (Entries of the computer's own, Windows' among them, are kept by
 # the installer and checked in its unit tests: the firmware of this test starts
 # with none.)
-if [ "$mode" = beside ]; then
+if [ "$mode" != erase ]; then
 	order=$(sed -n 's/^BootOrder: *\([0-9A-Fa-f]*\).*/\1/p' "$out/guest-info-installed.txt" | head -1)
 	current=$(sed -n 's/^BootCurrent: *\([0-9A-Fa-f]*\).*/\1/p' "$out/guest-info-installed.txt" | head -1)
 	if [ -n "$order" ] && [ "$order" = "$current" ]; then
@@ -768,7 +837,7 @@ if [ -n "$menu_fail" ]; then
 	fail=1
 fi
 root_node=/dev/vda3
-[ "$mode" = beside ] && root_node=/dev/vda5
+[ "$mode" = erase ] || root_node=/dev/vda5
 expected="user=$user host=$host zone=$zone root=$root_node type=ext4 firmware=$firmware keyboard=$keyboard"
 if [ "$installed" != "$expected" ]; then
 	echo "FAIL: the installed system is '$installed', and what was asked for is '$expected'" >&2
